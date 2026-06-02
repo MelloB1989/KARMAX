@@ -40,6 +40,13 @@ func New(id, token string, log *zap.Logger) *DiscordChannel {
 func (d *DiscordChannel) ID() string   { return d.id }
 func (d *DiscordChannel) Type() string { return "discord" }
 
+// BotID returns the Discord user ID of the bot.
+func (d *DiscordChannel) BotID() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.botID
+}
+
 // Start opens a Discord session, registers the message handler, and begins
 // receiving messages.
 func (d *DiscordChannel) Start(ctx context.Context) error {
@@ -53,6 +60,7 @@ func (d *DiscordChannel) Start(ctx context.Context) error {
 		discordgo.IntentMessageContent
 
 	sess.AddHandler(d.handleMessage)
+	sess.AddHandler(d.handleDisconnect)
 
 	if err := sess.Open(); err != nil {
 		return fmt.Errorf("open discord session: %w", err)
@@ -69,6 +77,74 @@ func (d *DiscordChannel) Start(ctx context.Context) error {
 		zap.String("bot_id", d.botID),
 	)
 	return nil
+}
+
+// handleDisconnect attempts to reconnect with exponential backoff when the
+// Discord gateway connection is lost. It tries 3 times with delays of 2s, 4s,
+// and 8s before giving up.
+func (d *DiscordChannel) handleDisconnect(_ *discordgo.Session, _ *discordgo.Disconnect) {
+	d.log.Warn("discord session disconnected, attempting reconnect",
+		zap.String("channel_id", d.id),
+	)
+
+	backoff := 2 * time.Second
+	const maxAttempts = 3
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		d.mu.RLock()
+		ctx := d.ctx
+		d.mu.RUnlock()
+
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				d.log.Info("context cancelled, aborting reconnect",
+					zap.String("channel_id", d.id),
+				)
+				return
+			default:
+			}
+		}
+
+		d.log.Info("reconnect attempt",
+			zap.String("channel_id", d.id),
+			zap.Int("attempt", attempt),
+			zap.Duration("backoff", backoff),
+		)
+
+		time.Sleep(backoff)
+
+		d.mu.RLock()
+		sess := d.session
+		d.mu.RUnlock()
+
+		if sess == nil {
+			d.log.Error("session is nil, cannot reconnect",
+				zap.String("channel_id", d.id),
+			)
+			return
+		}
+
+		if err := sess.Open(); err != nil {
+			d.log.Error("reconnect failed",
+				zap.String("channel_id", d.id),
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+			backoff *= 2
+			continue
+		}
+
+		d.log.Info("reconnected successfully",
+			zap.String("channel_id", d.id),
+			zap.Int("attempt", attempt),
+		)
+		return
+	}
+
+	d.log.Error("all reconnect attempts exhausted",
+		zap.String("channel_id", d.id),
+	)
 }
 
 // handleMessage converts a discordgo MessageCreate into a comms.Message and
@@ -152,6 +228,11 @@ func (d *DiscordChannel) Send(_ context.Context, channelID, content string) erro
 	chunks := splitContent(content, 2000)
 	for _, chunk := range chunks {
 		if _, err := sess.ChannelMessageSend(channelID, chunk); err != nil {
+			d.log.Error("failed to send discord message",
+				zap.String("channel_id", d.id),
+				zap.String("target", channelID),
+				zap.Error(err),
+			)
 			return fmt.Errorf("send discord message: %w", err)
 		}
 	}

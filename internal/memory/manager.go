@@ -45,6 +45,11 @@ func NewManager(agentID, namespace, baseDir string, db *store.Store, log *zap.Lo
 	return m
 }
 
+// Namespace returns the manager's namespace identifier.
+func (m *Manager) Namespace() string {
+	return m.namespace
+}
+
 func (m *Manager) Write(entry MemoryEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -183,6 +188,29 @@ func (m *Manager) Export(path string) error {
 	}
 
 	return os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
+// CountEntries returns the total number of memory entries in this namespace.
+func (m *Manager) CountEntries() (int, error) {
+	return m.db.CountMemoryEntries(m.namespace)
+}
+
+// TreeNodeCount returns the number of nodes in the in-memory tree index.
+func (m *Manager) TreeNodeCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tree == nil {
+		return 0
+	}
+	return countTreeNodes(m.tree)
+}
+
+func countTreeNodes(node *TreeNode) int {
+	count := 1
+	for _, child := range node.Children {
+		count += countTreeNodes(child)
+	}
+	return count
 }
 
 func (m *Manager) Stop() {
@@ -366,4 +394,259 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// stopwords is the set of common English words to ignore during keyword search.
+var stopwords = map[string]bool{
+	"the": true, "a": true, "an": true, "is": true, "are": true,
+	"was": true, "were": true, "in": true, "on": true, "at": true,
+	"to": true, "for": true, "of": true, "with": true, "and": true,
+	"or": true, "but": true,
+}
+
+// SearchSemantic performs a multi-keyword search that is better than a single
+// LIKE query. It splits the query into keywords (dropping stopwords), searches
+// each keyword individually, then scores results by how many keywords matched.
+// It also searches pageindex nodes and merges results.
+func (m *Manager) SearchSemantic(query string, topK int) ([]SearchResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if topK <= 0 {
+		topK = 10
+	}
+
+	keywords := extractKeywords(query)
+	if len(keywords) == 0 {
+		// Fall back to raw query if everything was a stopword.
+		keywords = []string{strings.ToLower(strings.TrimSpace(query))}
+	}
+
+	type scored struct {
+		entry MemoryEntry
+		hits  int
+	}
+
+	seen := make(map[string]*scored) // keyed by entry ID
+
+	for _, kw := range keywords {
+		entries, err := m.db.SearchMemoryEntries(m.namespace, kw, 50)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			var tags []string
+			json.Unmarshal([]byte(e.Tags), &tags)
+
+			if s, ok := seen[e.ID]; ok {
+				s.hits++
+			} else {
+				seen[e.ID] = &scored{
+					entry: MemoryEntry{
+						ID:        e.ID,
+						AgentID:   e.AgentID,
+						Namespace: e.Namespace,
+						Role:      e.Role,
+						Content:   e.Content,
+						Tags:      tags,
+						CreatedAt: e.CreatedAt,
+					},
+					hits: 1,
+				}
+			}
+		}
+	}
+
+	// Search pageindex nodes too.
+	for _, kw := range keywords {
+		nodes, err := m.db.SearchPageIndexNodes(m.namespace, kw, 50)
+		if err != nil {
+			continue
+		}
+		for _, n := range nodes {
+			nodeKey := "pi:" + n.NodeID
+			if s, ok := seen[nodeKey]; ok {
+				s.hits++
+			} else {
+				seen[nodeKey] = &scored{
+					entry: MemoryEntry{
+						ID:        n.NodeID,
+						Namespace: m.namespace,
+						Role:      "memory",
+						Content:   n.SearchText,
+					},
+					hits: 1,
+				}
+			}
+		}
+	}
+
+	// Collect and sort by hit count descending.
+	results := make([]SearchResult, 0, len(seen))
+	for _, s := range seen {
+		excerpt := s.entry.Content
+		if len(excerpt) > 200 {
+			excerpt = excerpt[:200] + "..."
+		}
+		score := float64(s.hits) / float64(len(keywords))
+		results = append(results, SearchResult{
+			Entry:   s.entry,
+			Excerpt: excerpt,
+			Score:   score,
+		})
+	}
+
+	// Sort descending by score.
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[j].Score > results[i].Score {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+
+	if len(results) > topK {
+		results = results[:topK]
+	}
+
+	return results, nil
+}
+
+// FindDuplicates returns existing memory entries whose content has word
+// overlap similarity with the given content above the specified threshold.
+func (m *Manager) FindDuplicates(content string, threshold float64) ([]MemoryEntry, error) {
+	candidates, err := m.SearchSemantic(content, 20)
+	if err != nil {
+		return nil, err
+	}
+
+	var duplicates []MemoryEntry
+	for _, c := range candidates {
+		sim := jaccardSimilarity(content, c.Entry.Content)
+		if sim >= threshold {
+			duplicates = append(duplicates, c.Entry)
+		}
+	}
+	return duplicates, nil
+}
+
+// IngestFromSummary splits a summary text into logical chunks, deduplicates
+// each against existing memory, and saves only novel chunks.
+func (m *Manager) IngestFromSummary(summary string, agentID string) error {
+	chunks := splitIntoChunks(summary)
+
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if len(chunk) <= 20 {
+			continue
+		}
+
+		// Check for duplicates (threshold 0.7 = 70% word overlap).
+		dupes, err := m.FindDuplicates(chunk, 0.7)
+		if err != nil {
+			// Log and continue — don't abort the whole batch.
+			m.log.Warn("duplicate check failed during summary ingest", zap.Error(err))
+			continue
+		}
+		if len(dupes) > 0 {
+			continue // skip duplicate
+		}
+
+		tagsJSON, _ := json.Marshal([]string{"auto-ingested", "summary-derived"})
+		_ = tagsJSON
+
+		if err := m.Write(MemoryEntry{
+			AgentID:   agentID,
+			Namespace: m.namespace,
+			Role:      "system",
+			Content:   fmt.Sprintf("[context][medium] %s", chunk),
+			Tags:      []string{"auto-ingested", "summary-derived"},
+		}); err != nil {
+			m.log.Warn("failed to ingest summary chunk", zap.Error(err))
+		}
+	}
+
+	return nil
+}
+
+// extractKeywords splits text into lowercase words, drops stopwords and short tokens.
+func extractKeywords(text string) []string {
+	var kws []string
+	for _, w := range strings.Fields(strings.ToLower(text)) {
+		w = strings.Trim(w, ".,;:!?\"'()[]{}")
+		if w == "" || len(w) < 2 {
+			continue
+		}
+		if stopwords[w] {
+			continue
+		}
+		kws = append(kws, w)
+	}
+	return kws
+}
+
+// jaccardSimilarity computes the Jaccard index on whitespace-split word sets.
+func jaccardSimilarity(a, b string) float64 {
+	setA := makeWordSet(strings.ToLower(a))
+	setB := makeWordSet(strings.ToLower(b))
+
+	if len(setA) == 0 || len(setB) == 0 {
+		return 0
+	}
+
+	intersection := 0
+	for w := range setA {
+		if setB[w] {
+			intersection++
+		}
+	}
+
+	union := len(setA)
+	for w := range setB {
+		if !setA[w] {
+			union++
+		}
+	}
+
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+func makeWordSet(s string) map[string]bool {
+	set := make(map[string]bool)
+	for _, w := range strings.Fields(s) {
+		w = strings.Trim(w, ".,;:!?\"'()[]{}")
+		if w != "" {
+			set[w] = true
+		}
+	}
+	return set
+}
+
+// splitIntoChunks splits text at paragraph boundaries (double newlines) and,
+// if those are absent, at sentence boundaries (period + space).
+func splitIntoChunks(text string) []string {
+	// Try paragraph splitting first.
+	paragraphs := strings.Split(text, "\n\n")
+	if len(paragraphs) > 1 {
+		return paragraphs
+	}
+
+	// Fall back to sentence splitting.
+	var chunks []string
+	remaining := text
+	for {
+		idx := strings.Index(remaining, ". ")
+		if idx < 0 {
+			if remaining != "" {
+				chunks = append(chunks, remaining)
+			}
+			break
+		}
+		chunks = append(chunks, remaining[:idx+1])
+		remaining = remaining[idx+2:]
+	}
+	return chunks
 }

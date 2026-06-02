@@ -24,20 +24,22 @@ type channelEntry struct {
 // Manager owns all registered communication channels and routes messages
 // between them, the event bus, and persistent storage.
 type Manager struct {
-	channels map[string]*channelEntry
-	bus      *bus.Bus
-	store    *store.Store
-	log      *zap.Logger
-	mu       sync.RWMutex
+	channels            map[string]*channelEntry
+	lastIncomingTarget  map[string]string // agentID -> last Discord channel ID
+	bus                 *bus.Bus
+	store               *store.Store
+	log                 *zap.Logger
+	mu                  sync.RWMutex
 }
 
 // NewManager creates a Manager wired to the given bus, store, and logger.
 func NewManager(b *bus.Bus, s *store.Store, log *zap.Logger) *Manager {
 	return &Manager{
-		channels: make(map[string]*channelEntry),
-		bus:      b,
-		store:    s,
-		log:      log,
+		channels:           make(map[string]*channelEntry),
+		lastIncomingTarget: make(map[string]string),
+		bus:                b,
+		store:              s,
+		log:                log,
 	}
 }
 
@@ -129,17 +131,23 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 				)
 			}
 
+			// Record the last incoming Discord channel ID for this agent.
+			m.mu.Lock()
+			m.lastIncomingTarget[agentID] = msg.ChannelID
+			m.mu.Unlock()
+
 			// Publish to event bus.
 			m.bus.Publish(bus.NewEvent(EventCommsMessage, agentID, map[string]any{
-				"message_id":   msg.ID,
-				"channel_id":   msg.ChannelID,
-				"channel_type": msg.ChannelType,
-				"sender_id":    msg.SenderID,
-				"sender_name":  msg.SenderName,
-				"content":      msg.Content,
-				"direction":    string(msg.Direction),
-				"reply_to_id":  msg.ReplyToID,
-				"timestamp":    msg.Timestamp,
+				"message_id":       msg.ID,
+				"channel_id":       msg.ChannelID,
+				"karmax_channel_id": ch.ID(),
+				"channel_type":     msg.ChannelType,
+				"sender_id":        msg.SenderID,
+				"sender_name":      msg.SenderName,
+				"content":          msg.Content,
+				"direction":        string(msg.Direction),
+				"reply_to_id":      msg.ReplyToID,
+				"timestamp":        msg.Timestamp,
 			}))
 		}
 	}
@@ -200,4 +208,69 @@ func (m *Manager) List() []Channel {
 		out = append(out, entry.channel)
 	}
 	return out
+}
+
+// GetAgentForChannel returns the agent ID associated with the given KARMAX channel ID.
+// Returns an empty string if the channel is not registered.
+func (m *Manager) GetAgentForChannel(channelID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entry, ok := m.channels[channelID]
+	if !ok {
+		return ""
+	}
+	return entry.agentID
+}
+
+// GetChannelsForAgent returns all channels registered to the given agent ID.
+func (m *Manager) GetChannelsForAgent(agentID string) []Channel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var out []Channel
+	for _, entry := range m.channels {
+		if entry.agentID == agentID {
+			out = append(out, entry.channel)
+		}
+	}
+	return out
+}
+
+// SendToAgent finds all channels associated with the given agent and sends a
+// message to each one using the last known Discord channel ID for that agent.
+func (m *Manager) SendToAgent(agentID, content string) error {
+	channels := m.GetChannelsForAgent(agentID)
+	if len(channels) == 0 {
+		return fmt.Errorf("no channels registered for agent %s", agentID)
+	}
+
+	target := m.GetLastTarget(agentID)
+	if target == "" {
+		return fmt.Errorf("no known target channel for agent %s", agentID)
+	}
+
+	var lastErr error
+	for _, ch := range channels {
+		if err := ch.Send(context.Background(), target, content); err != nil {
+			m.log.Error("failed to send to agent channel",
+				zap.String("agent_id", agentID),
+				zap.String("channel_id", ch.ID()),
+				zap.String("target", target),
+				zap.Error(err),
+			)
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// GetLastTarget returns the Discord channel ID where the last incoming message
+// was received for the given agent. Returns an empty string if no message has
+// been received yet.
+func (m *Manager) GetLastTarget(agentID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.lastIncomingTarget[agentID]
 }

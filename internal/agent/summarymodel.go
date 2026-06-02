@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/MelloB1989/karma/models"
+	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/google/uuid"
@@ -22,8 +23,9 @@ type SummaryModel struct {
 
 // SummaryModelConfig configures the summary/compaction model.
 type SummaryModelConfig struct {
-	Provider string
-	Model    string
+	Provider       string
+	Model          string
+	FallbackModels []karmahelper.FallbackModel
 }
 
 const summaryModelSystemPrompt = `You are a conversation summarizer. Given a conversation history, produce a comprehensive summary that preserves all key information: decisions made, facts learned, user preferences, action items, project context, and any important details. The summary will replace the original conversation, so nothing important should be lost.`
@@ -31,10 +33,11 @@ const summaryModelSystemPrompt = `You are a conversation summarizer. Given a con
 // NewSummaryModel creates a summary model used to compact long chat histories.
 func NewSummaryModel(cfg SummaryModelConfig, log *zap.Logger) *SummaryModel {
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
-		Provider:     cfg.Provider,
-		Model:        cfg.Model,
-		SystemPrompt: summaryModelSystemPrompt,
-		MaxTokens:    8192,
+		Provider:       cfg.Provider,
+		Model:          cfg.Model,
+		SystemPrompt:   summaryModelSystemPrompt,
+		MaxTokens:      8192,
+		FallbackModels: cfg.FallbackModels,
 	}, nil)
 
 	return &SummaryModel{
@@ -50,7 +53,7 @@ func NewSummaryModel(cfg SummaryModelConfig, log *zap.Logger) *SummaryModel {
 //   - the keepRecent most recent messages
 //
 // The compacted history is also persisted to the store.
-func (sm *SummaryModel) Compact(ctx context.Context, history *models.AIChatHistory, keepRecent int, s *store.Store, agentID string) (*models.AIChatHistory, error) {
+func (sm *SummaryModel) Compact(ctx context.Context, history *models.AIChatHistory, keepRecent int, s *store.Store, agentID string, memMgr *memory.Manager) (*models.AIChatHistory, error) {
 	if len(history.Messages) <= keepRecent {
 		return history, nil
 	}
@@ -68,7 +71,7 @@ func (sm *SummaryModel) Compact(ctx context.Context, history *models.AIChatHisto
 
 	prompt := "Summarize the following conversation history:\n\n" + sb.String()
 
-	summaryResponse, _, err := sm.session.Chat(ctx, prompt)
+	summaryResponse, _, _, err := sm.session.Chat(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("summary model chat: %w", err)
 	}
@@ -78,6 +81,13 @@ func (sm *SummaryModel) Compact(ctx context.Context, history *models.AIChatHisto
 		zap.Int("kept_recent", len(recentMessages)),
 		zap.Int("summary_len", len(summaryResponse)),
 	)
+
+	// Ingest key facts from the summary into durable memory.
+	if memMgr != nil {
+		if err := memMgr.IngestFromSummary(summaryResponse, agentID); err != nil {
+			sm.log.Warn("memory ingestion from summary failed", zap.Error(err))
+		}
+	}
 
 	// Build the new compacted history.
 	newHistory := &models.AIChatHistory{

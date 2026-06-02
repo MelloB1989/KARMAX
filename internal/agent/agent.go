@@ -12,6 +12,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
+	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"go.uber.org/zap"
 )
@@ -42,6 +43,16 @@ type Agent struct {
 
 	// Communication send function (injected to avoid circular imports)
 	commsSend func(channelID, target, content string) error
+
+	// commsChannels holds channel info injected by the runtime so the agent
+	// can build context about available communication channels for the LLM.
+	commsChannels []CommsChannelInfo
+}
+
+// CommsChannelInfo describes a communication channel available to the agent.
+type CommsChannelInfo struct {
+	KarmaxChannelID string // KARMAX-level channel ID (e.g., "discord-main")
+	Type            string // "discord", "slack", etc.
 }
 
 func NewAgent(def AgentDef, b *bus.Bus, s *store.Store, mem *memory.Manager, agentTools []tools.Tool, mcpTools []tools.Tool, log *zap.Logger) *Agent {
@@ -62,6 +73,12 @@ func NewAgent(def AgentDef, b *bus.Bus, s *store.Store, mem *memory.Manager, age
 // to dispatch messages via communication channels.
 func (a *Agent) SetCommsSend(fn func(channelID, target, content string) error) {
 	a.commsSend = fn
+}
+
+// SetCommsChannels injects available channel info so the agent can build
+// context about which channels are available for sending messages.
+func (a *Agent) SetCommsChannels(channels []CommsChannelInfo) {
+	a.commsChannels = channels
 }
 
 func (a *Agent) Start(ctx context.Context) error {
@@ -115,7 +132,7 @@ func (a *Agent) initModels() error {
 	}
 
 	// Build the memory.retrieve tool that wraps memoryModel.Retrieve
-	allTools := make([]tools.Tool, 0, len(a.tools)+len(a.mcpTools)+1)
+	allTools := make([]tools.Tool, 0, len(a.tools)+len(a.mcpTools)+2)
 	allTools = append(allTools, a.tools...)
 	allTools = append(allTools, a.mcpTools...)
 
@@ -133,6 +150,22 @@ func (a *Agent) initModels() error {
 	// Add the memory.retrieve tool wrapper
 	allTools = append(allTools, a.buildMemoryRetrieveTool())
 
+	// Add the memory.ingest tool (agent-scoped, needs the memory manager)
+	allTools = append(allTools, &builtin.MemoryIngestTool{
+		Store:     a.store,
+		MemoryMgr: a.memory,
+		AgentID:   a.def.ID,
+	})
+
+	// Build fallback models from agent def
+	var fallbackModels []karmahelper.FallbackModel
+	for _, fb := range a.def.FallbackModels {
+		fallbackModels = append(fallbackModels, karmahelper.FallbackModel{
+			Provider: fb.Provider,
+			Model:    fb.Model,
+		})
+	}
+
 	// Initialize main model session
 	mainCfg := MainModelConfig{
 		Provider:             a.def.Provider,
@@ -142,6 +175,7 @@ func (a *Agent) initModels() error {
 		MaxTokens:            a.def.MaxTokens,
 		CompactionThreshold:  a.def.CompactionThreshold,
 		CompactionKeepRecent: a.def.CompactionKeepRecent,
+		FallbackModels:       fallbackModels,
 	}
 
 	mainSession, err := NewMainModelSession(mainCfg, allTools, a.store, a.def.ID, a.log)
@@ -150,16 +184,18 @@ func (a *Agent) initModels() error {
 	}
 	a.mainSession = mainSession
 
-	// Initialize summary model
+	// Initialize summary model with same fallback models
 	a.summaryModel = NewSummaryModel(SummaryModelConfig{
-		Provider: sumProvider,
-		Model:    sumModel,
+		Provider:       sumProvider,
+		Model:          sumModel,
+		FallbackModels: fallbackModels,
 	}, a.log)
 
 	a.log.Info("multi-model architecture initialized",
 		zap.String("main_model", a.def.Model),
 		zap.String("memory_model", memModel),
 		zap.String("summary_model", sumModel),
+		zap.Int("fallback_models", len(fallbackModels)),
 		zap.Int64("current_tokens", a.mainSession.GetTotalTokens()),
 	)
 
@@ -234,6 +270,25 @@ func (a *Agent) buildSessionContext() string {
 	for _, s := range sessions[:limit] {
 		sb.WriteString(fmt.Sprintf("- **[%s]** %s (session: %s, status: %s)\n",
 			s.ToolType, s.Description, s.SessionID, s.Status))
+	}
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// buildCommsContext formats available communication channels as context for the LLM.
+func (a *Agent) buildCommsContext() string {
+	if len(a.commsChannels) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Available Communication Channels\n\n")
+	sb.WriteString("Use the `comms.send` tool to send messages through these channels.\n\n")
+
+	for _, ch := range a.commsChannels {
+		sb.WriteString(fmt.Sprintf("- **%s** (type: %s) — use channel_id: `%s`\n",
+			ch.KarmaxChannelID, ch.Type, ch.KarmaxChannelID))
 	}
 	sb.WriteString("\n")
 
@@ -393,8 +448,16 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Inject coding session context
 	sessionCtx := a.buildSessionContext()
-	if sessionCtx != "" {
-		userPrompt = sessionCtx + userPrompt
+
+	// Inject comms context (available channels)
+	commsCtx := a.buildCommsContext()
+
+	// Combine dynamic context and inject into the main session
+	dynamicCtx := sessionCtx + commsCtx
+	if dynamicCtx != "" && a.mainSession != nil {
+		a.mainSession.SetContext(dynamicCtx)
+	} else if dynamicCtx != "" {
+		userPrompt = dynamicCtx + userPrompt
 	}
 
 	// Use multi-model session if available; otherwise fall back to legacy
@@ -402,6 +465,26 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		response, err := a.mainSession.ProcessMessage(a.ctx, userPrompt)
 		if err != nil {
 			return fmt.Errorf("main model: %w", err)
+		}
+
+		// Auto-reply to Discord messages without relying on the LLM to call comms.send
+		if evt.Kind == "comms.message" && a.commsSend != nil {
+			discordChannelID, _ := evt.Payload["channel_id"].(string)
+			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
+			if discordChannelID != "" && karmaxChannelID != "" {
+				if sendErr := a.commsSend(karmaxChannelID, discordChannelID, response); sendErr != nil {
+					a.log.Error("failed to auto-reply to comms message",
+						zap.String("karmax_channel_id", karmaxChannelID),
+						zap.String("discord_channel_id", discordChannelID),
+						zap.Error(sendErr),
+					)
+				} else {
+					a.log.Debug("auto-replied to comms message",
+						zap.String("karmax_channel_id", karmaxChannelID),
+						zap.String("discord_channel_id", discordChannelID),
+					)
+				}
+			}
 		}
 
 		// Check if compaction is needed
@@ -417,6 +500,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 				a.mainSession.GetKeepRecent(),
 				a.store,
 				a.def.ID,
+				a.memory,
 			)
 			if err != nil {
 				a.log.Error("compaction failed", zap.Error(err))
@@ -443,10 +527,16 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		}
 
 		// Publish response event
-		a.bus.Publish(bus.NewEvent(bus.EventAgentMessage, a.def.ID, map[string]any{
+		payload := map[string]any{
 			"response":      response,
 			"trigger_event": evt.ID,
-		}))
+		}
+		// Pass through comms origin info so the runtime backup router can also send if needed
+		if evt.Kind == "comms.message" {
+			payload["channel_id"] = evt.Payload["channel_id"]
+			payload["karmax_channel_id"] = evt.Payload["karmax_channel_id"]
+		}
+		a.bus.Publish(bus.NewEvent(bus.EventAgentMessage, a.def.ID, payload))
 
 		a.persistSnapshot()
 		return nil
@@ -469,7 +559,7 @@ func (a *Agent) handleEventLegacy(evt bus.Event, userPrompt string) error {
 		MaxTokens:    a.def.MaxTokens,
 	}, allTools)
 
-	response, toolCalls, err := session.Chat(a.ctx, userPrompt)
+	response, toolCalls, _, err := session.Chat(a.ctx, userPrompt)
 	if err != nil {
 		return fmt.Errorf("chat inference: %w", err)
 	}

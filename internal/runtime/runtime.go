@@ -65,6 +65,13 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 	}
 
+	// Set Google API key from config if present (for Gemini fallback)
+	if p, ok := cfg.AI.Providers["google"]; ok {
+		if p.APIKey != "" {
+			os.Setenv("GOOGLE_API_KEY", p.APIKey)
+		}
+	}
+
 	mcpBridge := mcp.NewBridge(log)
 	for _, mcpCfg := range cfg.MCPs {
 		if err := mcpBridge.AddServer(mcpCfg); err != nil {
@@ -136,6 +143,17 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 		// Wire comms send function into the agent
 		a.SetCommsSend(commsMgr.Send)
+
+		// Inject available comms channel info into the agent for context building
+		agentChannels := commsMgr.GetChannelsForAgent(agentCfg.ID)
+		var channelInfos []agent.CommsChannelInfo
+		for _, ch := range agentChannels {
+			channelInfos = append(channelInfos, agent.CommsChannelInfo{
+				KarmaxChannelID: ch.ID(),
+				Type:            ch.Type(),
+			})
+		}
+		a.SetCommsChannels(channelInfos)
 	}
 
 	sched := scheduler.New(s, b, log)
@@ -385,6 +403,13 @@ func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {
 		def.Triggers.Schedules = append(def.Triggers.Schedules, agent.ScheduleTrigger{
 			Cron:    s.Cron,
 			Payload: s.Payload,
+		})
+	}
+
+	for _, fb := range cfg.FallbackModels {
+		def.FallbackModels = append(def.FallbackModels, agent.FallbackModelDef{
+			Provider: fb.Provider,
+			Model:    fb.Model,
 		})
 	}
 

@@ -73,28 +73,34 @@ type AgentModelConfig struct {
 	Provider string `yaml:"provider"`
 }
 
+type FallbackModelConfig struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+}
+
 type AgentDefConfig struct {
-	ID                   string              `yaml:"id"`
-	Name                 string              `yaml:"name"`
-	Description          string              `yaml:"description"`
-	Tags                 []string            `yaml:"tags"`
-	SystemPrompt         string              `yaml:"system_prompt"`
-	Model                string              `yaml:"model"`
-	Provider             string              `yaml:"provider"`
-	Temperature          float32             `yaml:"temperature"`
-	MaxTokens            int                 `yaml:"max_tokens"`
-	Tools                []string            `yaml:"tools"`
-	MCPs                 []string            `yaml:"mcps"`
-	Memory               AgentMemoryConfig   `yaml:"memory"`
-	MemoryModel          AgentModelConfig    `yaml:"memory_model"`
-	SummaryModel         AgentModelConfig    `yaml:"summary_model"`
-	CompactionThreshold  int                 `yaml:"compaction_threshold"`
-	CompactionKeepRecent int                 `yaml:"compaction_keep_recent"`
-	RestartPolicy        string              `yaml:"restart_policy"`
-	MaxRestarts          int                 `yaml:"max_restarts"`
-	HealthCheck          HealthCheckConfig   `yaml:"health_check"`
-	Triggers             AgentTriggersConfig `yaml:"triggers"`
-	Env                  map[string]string   `yaml:"env"`
+	ID                   string                `yaml:"id"`
+	Name                 string                `yaml:"name"`
+	Description          string                `yaml:"description"`
+	Tags                 []string              `yaml:"tags"`
+	SystemPrompt         string                `yaml:"system_prompt"`
+	Model                string                `yaml:"model"`
+	Provider             string                `yaml:"provider"`
+	Temperature          float32               `yaml:"temperature"`
+	MaxTokens            int                   `yaml:"max_tokens"`
+	Tools                []string              `yaml:"tools"`
+	MCPs                 []string              `yaml:"mcps"`
+	Memory               AgentMemoryConfig     `yaml:"memory"`
+	MemoryModel          AgentModelConfig      `yaml:"memory_model"`
+	SummaryModel         AgentModelConfig      `yaml:"summary_model"`
+	FallbackModels       []FallbackModelConfig `yaml:"fallback_models"`
+	CompactionThreshold  int                   `yaml:"compaction_threshold"`
+	CompactionKeepRecent int                   `yaml:"compaction_keep_recent"`
+	RestartPolicy        string                `yaml:"restart_policy"`
+	MaxRestarts          int                   `yaml:"max_restarts"`
+	HealthCheck          HealthCheckConfig     `yaml:"health_check"`
+	Triggers             AgentTriggersConfig   `yaml:"triggers"`
+	Env                  map[string]string     `yaml:"env"`
 }
 
 type AgentMemoryConfig struct {
