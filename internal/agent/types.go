@@ -27,28 +27,35 @@ type ModelConfig struct {
 	Provider string `yaml:"provider" json:"provider"`
 }
 
+// FallbackModelDef specifies an alternative provider+model for fallback.
+type FallbackModelDef struct {
+	Provider string `yaml:"provider" json:"provider"`
+	Model    string `yaml:"model"    json:"model"`
+}
+
 type AgentDef struct {
-	ID                   string            `yaml:"id"                    json:"id"`
-	Name                 string            `yaml:"name"                  json:"name"`
-	Description          string            `yaml:"description"           json:"description"`
-	Tags                 []string          `yaml:"tags"                  json:"tags"`
-	SystemPrompt         string            `yaml:"system_prompt"         json:"system_prompt"`
-	Model                string            `yaml:"model"                 json:"model"`
-	Provider             string            `yaml:"provider"              json:"provider"`
-	Temperature          float32           `yaml:"temperature"           json:"temperature"`
-	MaxTokens            int               `yaml:"max_tokens"            json:"max_tokens"`
-	Tools                []string          `yaml:"tools"                 json:"tools"`
-	MCPs                 []string          `yaml:"mcps"                  json:"mcps"`
-	Memory               AgentMemoryConfig `yaml:"memory"                json:"memory"`
-	MemoryModelCfg       ModelConfig       `yaml:"memory_model"          json:"memory_model"`
-	SummaryModelCfg      ModelConfig       `yaml:"summary_model"         json:"summary_model"`
-	CompactionThreshold  int               `yaml:"compaction_threshold"  json:"compaction_threshold"`
-	CompactionKeepRecent int               `yaml:"compaction_keep_recent" json:"compaction_keep_recent"`
-	RestartPolicy        RestartPolicy     `yaml:"restart_policy"        json:"restart_policy"`
-	MaxRestarts          int               `yaml:"max_restarts"          json:"max_restarts"`
-	HealthCheck          HealthCheckConfig `yaml:"health_check"          json:"health_check"`
-	Triggers             AgentTriggers     `yaml:"triggers"              json:"triggers"`
-	Env                  map[string]string `yaml:"env"                   json:"env"`
+	ID                   string             `yaml:"id"                    json:"id"`
+	Name                 string             `yaml:"name"                  json:"name"`
+	Description          string             `yaml:"description"           json:"description"`
+	Tags                 []string           `yaml:"tags"                  json:"tags"`
+	SystemPrompt         string             `yaml:"system_prompt"         json:"system_prompt"`
+	Model                string             `yaml:"model"                 json:"model"`
+	Provider             string             `yaml:"provider"              json:"provider"`
+	Temperature          float32            `yaml:"temperature"           json:"temperature"`
+	MaxTokens            int                `yaml:"max_tokens"            json:"max_tokens"`
+	Tools                []string           `yaml:"tools"                 json:"tools"`
+	MCPs                 []string           `yaml:"mcps"                  json:"mcps"`
+	Memory               AgentMemoryConfig  `yaml:"memory"                json:"memory"`
+	MemoryModelCfg       ModelConfig        `yaml:"memory_model"          json:"memory_model"`
+	SummaryModelCfg      ModelConfig        `yaml:"summary_model"         json:"summary_model"`
+	FallbackModels       []FallbackModelDef `yaml:"fallback_models"       json:"fallback_models"`
+	CompactionThreshold  int                `yaml:"compaction_threshold"  json:"compaction_threshold"`
+	CompactionKeepRecent int                `yaml:"compaction_keep_recent" json:"compaction_keep_recent"`
+	RestartPolicy        RestartPolicy      `yaml:"restart_policy"        json:"restart_policy"`
+	MaxRestarts          int                `yaml:"max_restarts"          json:"max_restarts"`
+	HealthCheck          HealthCheckConfig  `yaml:"health_check"          json:"health_check"`
+	Triggers             AgentTriggers      `yaml:"triggers"              json:"triggers"`
+	Env                  map[string]string  `yaml:"env"                   json:"env"`
 }
 
 type AgentMemoryConfig struct {

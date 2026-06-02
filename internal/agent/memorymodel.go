@@ -52,23 +52,44 @@ func NewMemoryModel(cfg MemoryModelConfig, s *store.Store, memMgr *memory.Manage
 	}
 }
 
-// Retrieve searches both the memory manager and the page index for content
-// matching query, then returns a formatted summary of all results.
+// Retrieve searches both the memory manager (using semantic multi-keyword
+// search) and the page index for content matching query, then returns a
+// formatted summary of all results with categories and relevance scores.
 func (mm *MemoryModel) Retrieve(ctx context.Context, query string) (string, error) {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("## Memory Search Results for: %s\n\n", query))
 
-	// Search memory entries via the manager.
-	memResults, err := mm.memMgr.Search(query, 10)
+	// Get total memory entry count for context.
+	totalEntries, countErr := mm.memMgr.CountEntries()
+	if countErr == nil {
+		sb.WriteString(fmt.Sprintf("*Searching across %d memory entries.*\n\n", totalEntries))
+	}
+
+	// Search memory entries via semantic multi-keyword search.
+	memResults, err := mm.memMgr.SearchSemantic(query, 10)
 	if err != nil {
-		mm.log.Warn("memory search failed", zap.Error(err))
+		mm.log.Warn("semantic memory search failed", zap.Error(err))
 		sb.WriteString("*Memory search unavailable.*\n\n")
 	} else if len(memResults) == 0 {
 		sb.WriteString("*No memory entries matched.*\n\n")
 	} else {
+		// Group results by category (role).
+		categories := make(map[string][]memory.SearchResult)
 		for _, r := range memResults {
-			sb.WriteString(fmt.Sprintf("### [Score: %.2f] %s\n\n%s\n\n", r.Score, r.Entry.Role, r.Excerpt))
+			cat := r.Entry.Role
+			if cat == "" {
+				cat = "general"
+			}
+			categories[cat] = append(categories[cat], r)
+		}
+
+		for cat, results := range categories {
+			sb.WriteString(fmt.Sprintf("### Category: %s\n\n", cat))
+			for _, r := range results {
+				sb.WriteString(fmt.Sprintf("- **[Relevance: %.0f%%]** %s\n", r.Score*100, r.Excerpt))
+			}
+			sb.WriteString("\n")
 		}
 	}
 
@@ -111,4 +132,22 @@ func (mm *MemoryModel) Retrieve(ctx context.Context, query string) (string, erro
 	}
 
 	return result, nil
+}
+
+// Stats returns counts of total memory entries and tree nodes for
+// observability and debugging.
+func (mm *MemoryModel) Stats() map[string]int {
+	stats := make(map[string]int)
+
+	totalEntries, err := mm.memMgr.CountEntries()
+	if err != nil {
+		mm.log.Warn("failed to count memory entries for stats", zap.Error(err))
+		stats["total_entries"] = -1
+	} else {
+		stats["total_entries"] = totalEntries
+	}
+
+	stats["tree_nodes"] = mm.memMgr.TreeNodeCount()
+
+	return stats
 }

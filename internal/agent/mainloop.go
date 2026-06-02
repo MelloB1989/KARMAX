@@ -36,17 +36,19 @@ type MainModelConfig struct {
 	MaxTokens            int
 	CompactionThreshold  int
 	CompactionKeepRecent int
+	FallbackModels       []karmahelper.FallbackModel
 }
 
 // NewMainModelSession creates a new MainModelSession, loading any persisted
 // chat history from the store and resuming token tracking.
 func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.Store, agentID string, log *zap.Logger) (*MainModelSession, error) {
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
-		Provider:     cfg.Provider,
-		Model:        cfg.Model,
-		SystemPrompt: cfg.SystemPrompt,
-		Temperature:  cfg.Temperature,
-		MaxTokens:    cfg.MaxTokens,
+		Provider:       cfg.Provider,
+		Model:          cfg.Model,
+		SystemPrompt:   cfg.SystemPrompt,
+		Temperature:    cfg.Temperature,
+		MaxTokens:      cfg.MaxTokens,
+		FallbackModels: cfg.FallbackModels,
 	}, agentTools)
 
 	// Load persisted chat history.
@@ -58,18 +60,23 @@ func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.
 	var history models.AIChatHistory
 	history.Messages = make([]models.AIMessage, 0, len(stored))
 	for _, m := range stored {
+		// Skip tool-role messages — they reference stale tool call IDs
+		// from a previous API connection and cause "400 input item ID" errors.
+		if m.Role == "tool" {
+			continue
+		}
 		role := models.User
 		switch m.Role {
 		case "assistant":
 			role = models.Assistant
 		case "system":
 			role = models.System
-		case "tool":
-			role = models.Tool
 		}
 		history.Messages = append(history.Messages, models.AIMessage{
 			Role:    role,
 			Message: m.Content,
+			// Deliberately omit ToolCalls and ToolCallId to avoid
+			// stale ID references from previous sessions.
 		})
 	}
 
@@ -109,18 +116,21 @@ func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage strin
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	response, _, err := m.session.Chat(ctx, userMessage)
+	response, _, tokens, err := m.session.Chat(ctx, userMessage)
 	if err != nil {
 		return "", fmt.Errorf("main model chat: %w", err)
 	}
 
-	// Estimate token counts (will be replaced with actual counts when
-	// karmahelper exposes LastResponse token metadata).
-	userTokens := len(userMessage) / 4
+	// Use actual token counts from the provider when available,
+	// fall back to estimation (1 token ~ 4 chars) otherwise.
+	userTokens := tokens.InputTokens
 	if userTokens < 1 {
-		userTokens = 1
+		userTokens = len(userMessage) / 4
+		if userTokens < 1 {
+			userTokens = 1
+		}
 	}
-	assistantTokens := len(response) / 4
+	assistantTokens := tokens.OutputTokens
 	if assistantTokens < 1 {
 		assistantTokens = 1
 	}
@@ -181,4 +191,12 @@ func (m *MainModelSession) GetTotalTokens() int64 {
 // GetKeepRecent returns the number of recent messages to preserve during compaction.
 func (m *MainModelSession) GetKeepRecent() int {
 	return m.keepRecent
+}
+
+// SetContext injects dynamic context into the session's history so the LLM
+// receives it alongside the system prompt on the next call.
+func (m *MainModelSession) SetContext(ctx string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.session.SetContext(ctx)
 }

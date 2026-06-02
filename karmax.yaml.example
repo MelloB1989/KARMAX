@@ -1,0 +1,155 @@
+# KARMAX Configuration Example
+# Copy this file to karmax.yaml and fill in your values.
+
+karmax:
+  version: "2"
+  data_dir: "~/.karmax"        # Where KARMAX stores its database, memory, and logs
+  log_level: "info"            # Options: debug, info, warn, error
+  log_format: "pretty"         # Options: pretty, json
+
+# Dashboard — web UI for monitoring agents, memory, and events
+dashboard:
+  enabled: true
+  port: 8080
+  host: "127.0.0.1"
+
+# Webhooks — HTTP server for external trigger integrations
+webhooks:
+  enabled: true
+  port: 9090
+  host: "0.0.0.0"
+  routes: []
+  # Example route:
+  # - path: "/github"
+  #   method: "POST"
+  #   agent_id: "karmax-agent"
+  #   bus_event: "webhook.github"
+  #   secret: "YOUR_WEBHOOK_SECRET"
+  #   signature_header: "X-Hub-Signature-256"
+
+# AI provider configuration
+ai:
+  default_provider: "anthropic"
+  default_model: "claude-4-sonnet"
+  providers:
+    anthropic:
+      api_key: "YOUR_ANTHROPIC_API_KEY"
+      base_url: ""             # Leave empty for default, or set a proxy URL
+      auth_token: ""           # Optional auth token for proxy endpoints
+    openai:
+      api_key: "YOUR_OPENAI_API_KEY"
+    google:
+      api_key: "YOUR_GOOGLE_API_KEY"  # Required for Gemini fallback models
+
+# MCP (Model Context Protocol) servers — external tool providers
+mcps: []
+# Example:
+# - id: "filesystem"
+#   command: "npx"
+#   args: ["-y", "@anthropic/mcp-server-filesystem", "/home/user"]
+
+# Communication channels — how the agent talks to you
+comms:
+  channels:
+    - id: "discord-main"
+      type: "discord"
+      agent_id: "karmax-agent"
+      token: "YOUR_DISCORD_BOT_TOKEN"
+
+# Agent definitions
+agents:
+  - id: "karmax-agent"
+    name: "KARMAX Personal Agent"
+    description: "Autonomous personal AI agent with full system access and decision-making capability"
+    system_prompt: |
+      You are KARMAX, an autonomous AI agent. You have complete context about your operator and their projects.
+
+      ## Your Capabilities
+      - Full shell access to the machine
+      - File read/write access to all projects
+      - HTTP/API call capability
+      - Memory retrieval from your knowledge base (use memory.retrieve tool)
+      - Memory ingestion to save important information (use memory.ingest tool)
+      - Ability to delegate coding tasks to Claude Code or Codex (use claude_code.call or codex.call tools)
+      - Communication via Discord (use comms.send tool)
+
+      ## Decision-Making Rules
+      1. For routine tasks (reading files, searching, analyzing, responding to questions): Act autonomously
+      2. For moderate actions (writing files, making API calls, running safe commands): Act and inform via comms
+      3. For dangerous actions (deleting files, force-pushing, modifying production, spending money): ALWAYS ask for permission via comms BEFORE acting
+      4. When uncertain about anything: Ask via comms
+
+      ## Communication
+      When you need to communicate, use the comms.send tool with the appropriate channel_id.
+      When messaged via Discord, respond thoughtfully and take action as needed.
+
+      ## Coding Tasks
+      When delegating coding work:
+      - Use claude_code.call for complex, multi-file tasks
+      - Use codex.call for simpler, focused coding tasks
+      - Always provide clear, detailed prompts
+      - Track session IDs to continue related work
+
+    model: "claude-4-sonnet"            # Primary model
+    provider: "anthropic"               # Primary provider
+
+    temperature: 0.7
+    max_tokens: 8192
+
+    # Sub-models for memory retrieval and history compaction
+    memory_model:
+      model: "claude-4-sonnet"
+      provider: "anthropic"
+    summary_model:
+      model: "claude-4-sonnet"
+      provider: "anthropic"
+
+    # Fallback models — tried in order when the primary model fails
+    fallback_models:
+      - provider: "google"
+        model: "gemini-3.1-pro-high"
+      - provider: "google"
+        model: "gemini-3.1-flash-lite"
+
+    # Compaction settings — summarize chat history when token count exceeds threshold
+    compaction_threshold: 128000         # Tokens before compaction triggers
+    compaction_keep_recent: 20           # Messages to keep verbatim after compaction
+
+    # Tools available to this agent
+    tools:
+      - shell.exec
+      - file.read
+      - file.write
+      - file.list
+      - http.request
+      - email.send
+      - notify.send
+      - memory.retrieve
+      - memory.ingest
+      - claude_code.call
+      - codex.call
+      - comms.send
+
+    # Memory configuration
+    memory:
+      enabled: true
+      namespace: "karmax-agent"
+      max_entries: 1000
+
+    # Restart policy: "always", "on-failure", "never"
+    restart_policy: "always"
+    max_restarts: 10
+
+    # Health check — periodic ping to ensure the agent is responsive
+    health_check:
+      interval_seconds: 60
+      ping_prompt: "ping"
+
+    # Triggers — how this agent gets activated
+    triggers:
+      run_on_start: true
+      # webhooks: ["github-push"]
+      # schedules:
+      #   - cron: "0 9 * * *"
+      #     payload:
+      #       task: "daily_review"
