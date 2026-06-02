@@ -1,0 +1,10 @@
+karmax
+nexus
+*.log
+*.service.log
+*.lock
+*.success
+.scheduled-*
+.claude-karmax-*
+.claude/
+PLAN.md
