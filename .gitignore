@@ -1,5 +1,5 @@
-karmax
-nexus
+/karmax
+/nexus
 *.log
 *.service.log
 *.lock
