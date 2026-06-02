@@ -1,0 +1,103 @@
+karmax:
+  version: "2"
+  data_dir: "~/.karmax"
+  log_level: "info"
+  log_format: "pretty"
+
+dashboard:
+  enabled: true
+  port: 8080
+  host: "127.0.0.1"
+
+webhooks:
+  enabled: true
+  port: 9090
+  host: "0.0.0.0"
+  routes: []
+
+ai:
+  default_provider: "anthropic"
+  default_model: "claude-opus-4-6-thinking"
+  providers:
+    anthropic:
+      api_key: ""
+      base_url: "${ANTHROPIC_BASE_URL}"
+      auth_token: "${ANTHROPIC_AUTH_TOKEN}"
+    openai:
+      api_key: ""
+
+mcps: []
+
+comms:
+  channels:
+    - id: "discord-main"
+      type: "discord"
+      agent_id: "karmax-agent"
+      token: "${DISCORD_BOT_TOKEN}"
+
+agents:
+  - id: "karmax-agent"
+    name: "KARMAX Personal Agent"
+    description: "Autonomous personal AI agent with full system access and decision-making capability"
+    system_prompt: |
+      You are KARMAX, an autonomous AI agent for Kartik. You have complete context about who Kartik is, his projects, his dealings, and his current state.
+
+      ## Your Capabilities
+      - Full shell access to the machine
+      - File read/write access to all projects
+      - HTTP/API call capability
+      - Memory retrieval from your knowledge base (use memory.retrieve tool)
+      - Ability to delegate coding tasks to Claude Code or Codex (use claude_code.call or codex.call tools)
+      - Communication via Discord (use comms.send tool)
+
+      ## Decision-Making Rules
+      1. For routine tasks (reading files, searching, analyzing, responding to questions): Act autonomously
+      2. For moderate actions (writing files, making API calls, running safe commands): Act and inform via comms
+      3. For dangerous actions (deleting files, force-pushing, modifying production, spending money, sending emails): ALWAYS ask for permission via comms BEFORE acting
+      4. When uncertain about anything: Ask via comms
+
+      ## Communication
+      When you need to communicate with Kartik, use the comms.send tool with channel_id "discord-main".
+      When Kartik messages you via Discord, respond thoughtfully and take action as needed.
+
+      ## Coding Tasks
+      When delegating coding work:
+      - Use claude_code.call for complex, multi-file tasks
+      - Use codex.call for simpler, focused coding tasks
+      - Always provide clear, detailed prompts
+      - Track session IDs to continue related work
+    model: "claude-opus-4-6-thinking"
+    provider: "anthropic"
+    temperature: 0.7
+    max_tokens: 8192
+    memory_model:
+      model: "claude-opus-4-6-thinking"
+      provider: "anthropic"
+    summary_model:
+      model: "claude-opus-4-6-thinking"
+      provider: "anthropic"
+    compaction_threshold: 128000
+    compaction_keep_recent: 20
+    tools:
+      - shell.exec
+      - file.read
+      - file.write
+      - file.list
+      - http.request
+      - email.send
+      - notify.send
+      - memory.retrieve
+      - claude_code.call
+      - codex.call
+      - comms.send
+    memory:
+      enabled: true
+      namespace: "karmax-agent"
+      max_entries: 1000
+    restart_policy: "always"
+    max_restarts: 10
+    health_check:
+      interval_seconds: 60
+      ping_prompt: "ping"
+    triggers:
+      run_on_start: true
