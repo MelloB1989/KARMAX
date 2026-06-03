@@ -69,6 +69,11 @@ func (s *Session) GetLastTokens() TokenInfo {
 	return s.LastTokens
 }
 
+// GetHistory returns a pointer to the current in-memory chat history.
+func (s *Session) GetHistory() models.AIChatHistory {
+	return s.history
+}
+
 // SetContext sets the Context field on the session's history so the LLM
 // receives dynamic context alongside the system prompt.
 func (s *Session) SetContext(ctx string) {
@@ -151,11 +156,17 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 // This prevents "input item ID does not belong to this connection" errors
 // from Anthropic and similar providers when persisted history contains
 // tool call IDs from a previous API connection.
+// Tool-role messages are converted to assistant messages with a prefix to
+// preserve conversation context while removing stale API-specific IDs.
 func sanitizeHistory(history *models.AIChatHistory) {
 	cleaned := make([]models.AIMessage, 0, len(history.Messages))
 	for _, msg := range history.Messages {
-		// Remove tool-role messages entirely (they reference stale IDs)
+		// Convert tool-role messages to assistant messages to preserve context
 		if msg.Role == models.Tool {
+			cleaned = append(cleaned, models.AIMessage{
+				Role:    models.Assistant,
+				Message: "[Tool Result] " + msg.Message,
+			})
 			continue
 		}
 		// Clear tool call fields on assistant messages
@@ -214,7 +225,7 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s
-			log.Printf("[karmahelper] retry %d/%d after %v", attempt, maxRetries, backoff)
+			log.Printf("[karmahelper] retry %d/%d after %v (last error: %v)", attempt, maxRetries, backoff, lastErr)
 
 			select {
 			case <-ctx.Done():
@@ -225,9 +236,17 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 
 		resp, err := kai.ChatCompletionManaged(history)
 		if err == nil {
+			// Check for empty response
+			if resp != nil && strings.TrimSpace(resp.AIResponse) == "" {
+				log.Printf("[karmahelper] WARNING: model returned empty response (input_tokens=%d, output_tokens=%d, history_len=%d)",
+					resp.InputTokens, resp.OutputTokens, len(history.Messages))
+				// Return a fallback response instead of empty
+				resp.AIResponse = "I processed your message but was unable to generate a meaningful response. Please try rephrasing or providing more context."
+			}
 			return resp, nil
 		}
 		lastErr = err
+		log.Printf("[karmahelper] attempt %d failed: %v", attempt, err)
 
 		// On stale ID error, aggressively strip all tool-related messages
 		if isStaleIDError(err) {
@@ -405,7 +424,10 @@ func resolveModel(name string) ai.BaseModel {
 	case "llama-3.3-70b":
 		return ai.Llama33_70B
 	case "claude-opus-4-6-thinking":
-		return ai.BaseModel("claude-opus-4-6-thinking")
+		// No dedicated thinking constant in karma; use Claude4Opus as base
+		// and the provider mapping will resolve to the correct API model ID.
+		// The proxy at ANTHROPIC_BASE_URL handles thinking model routing.
+		return ai.Claude4Opus
 	default:
 		return ai.GPT4o
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/MelloB1989/karma/models"
@@ -116,9 +117,30 @@ func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage strin
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.log.Info("calling main model",
+		zap.Int("message_len", len(userMessage)),
+		zap.Int("history_len", len(m.session.GetHistory().Messages)),
+		zap.Int64("total_tokens_before", m.totalTokens),
+	)
+
 	response, _, tokens, err := m.session.Chat(ctx, userMessage)
 	if err != nil {
 		return "", fmt.Errorf("main model chat: %w", err)
+	}
+
+	m.log.Info("main model response received",
+		zap.Int("response_len", len(response)),
+		zap.Int("input_tokens", tokens.InputTokens),
+		zap.Int("output_tokens", tokens.OutputTokens),
+		zap.Int("total_tokens", tokens.TotalTokens),
+	)
+
+	if strings.TrimSpace(response) == "" {
+		m.log.Warn("main model returned empty response",
+			zap.Int("input_tokens", tokens.InputTokens),
+			zap.Int("output_tokens", tokens.OutputTokens),
+			zap.String("input_preview", truncateForLog(userMessage, 300)),
+		)
 	}
 
 	// Use actual token counts from the provider when available,
@@ -199,4 +221,12 @@ func (m *MainModelSession) SetContext(ctx string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.session.SetContext(ctx)
+}
+
+// truncateForLog truncates a string for safe logging output.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

@@ -73,7 +73,11 @@ func (h *APIHandler) RegisterRoutes(r chi.Router) {
 }
 
 func (h *APIHandler) listAgents(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, h.agents.Snapshots())
+	snaps := h.agents.Snapshots()
+	if snaps == nil {
+		snaps = []agent.AgentSnapshot{}
+	}
+	writeJSON(w, snaps)
 }
 
 func (h *APIHandler) getAgent(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +179,12 @@ func (h *APIHandler) triggerAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIHandler) listJobs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, h.scheduler.ListJobs())
+	jobs := h.scheduler.ListJobs()
+	if jobs == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	writeJSON(w, jobs)
 }
 
 func (h *APIHandler) createJob(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +219,12 @@ func (h *APIHandler) runJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIHandler) listWebhookRoutes(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, h.webhooks.ListRoutes())
+	routes := h.webhooks.ListRoutes()
+	if routes == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	writeJSON(w, routes)
 }
 
 func (h *APIHandler) listWebhookEvents(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +235,10 @@ func (h *APIHandler) listWebhookEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	events, _ := h.store.ListWebhookEvents(limit)
+	if events == nil {
+		writeJSON(w, []any{})
+		return
+	}
 	writeJSON(w, events)
 }
 
@@ -262,7 +280,12 @@ func (h *APIHandler) recentMemory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIHandler) listTools(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, h.tools.List())
+	toolList := h.tools.List()
+	if toolList == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	writeJSON(w, toolList)
 }
 
 func (h *APIHandler) executeTool(w http.ResponseWriter, r *http.Request) {
@@ -293,6 +316,10 @@ func (h *APIHandler) listEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := r.URL.Query().Get("kind")
 	events, _ := h.store.ListEvents(limit, kind)
+	if events == nil {
+		writeJSON(w, []any{})
+		return
+	}
 	writeJSON(w, events)
 }
 
