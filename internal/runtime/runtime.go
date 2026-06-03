@@ -11,6 +11,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/comms/discord"
+	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/dashboard"
 	"github.com/MelloB1989/karmax/internal/mcp"
@@ -92,6 +93,19 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 					zap.Error(err),
 				)
 			}
+		case "whatsapp":
+			wacliPath := chCfg.Settings["wacli_path"]
+			if wacliPath == "" {
+				wacliPath = "/home/mellob/code/wacli/wacli"
+			}
+			targetChat := chCfg.Settings["target_chat"]
+			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, log)
+			if err := commsMgr.Register(ch, chCfg.AgentID); err != nil {
+				log.Error("failed to register comms channel",
+					zap.String("id", chCfg.ID),
+					zap.Error(err),
+				)
+			}
 		default:
 			log.Warn("unknown comms channel type", zap.String("type", chCfg.Type))
 		}
@@ -104,6 +118,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send})
+	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: "/home/mellob/.local/bin/gws"})
+	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.local/bin/gws"})
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 

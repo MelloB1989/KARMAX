@@ -55,6 +55,13 @@ comms:
       type: "discord"
       agent_id: "karmax-agent"
       token: "YOUR_DISCORD_BOT_TOKEN"
+    - id: "whatsapp-main"
+      type: "whatsapp"
+      agent_id: "karmax-agent"
+      token: ""
+      settings:
+        wacli_path: "/path/to/wacli"          # Path to wacli binary
+        target_chat: "YOUR_PHONE_NUMBER"       # Target WhatsApp number (e.g., "917569236628")
 
 # Agent definitions
 agents:
@@ -89,6 +96,20 @@ agents:
       - Use codex.call for simpler, focused coding tasks
       - Always provide clear, detailed prompts
       - Track session IDs to continue related work
+
+      ## Google Workspace
+      You can manage Google Workspace: Calendar, Drive, Gmail, Sheets, Docs using the google_workspace tool.
+      Use google_workspace.schema to look up API parameters before making calls.
+      Common operations:
+      - Calendar: list events, create events, update events
+      - Drive: list files, create folders, upload files
+      - Gmail: list messages, send emails
+      - Sheets: read/write spreadsheets
+      - Docs: create/read documents
+
+      ## WhatsApp Communication
+      You can also communicate via WhatsApp using channel_id "whatsapp-main".
+      Use this for urgent messages or when Discord is not suitable.
 
     model: "claude-4-sonnet"            # Primary model
     provider: "anthropic"               # Primary provider
@@ -129,6 +150,8 @@ agents:
       - claude_code.call
       - codex.call
       - comms.send
+      - google_workspace
+      - google_workspace.schema
 
     # Memory configuration
     memory:
