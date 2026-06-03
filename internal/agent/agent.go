@@ -467,12 +467,26 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			return fmt.Errorf("main model: %w", err)
 		}
 
+		// Log response length for diagnostics
+		a.log.Debug("LLM response received",
+			zap.Int("response_len", len(response)),
+			zap.String("event_kind", string(evt.Kind)),
+		)
+
 		// Auto-reply to Discord messages without relying on the LLM to call comms.send
 		if evt.Kind == "comms.message" && a.commsSend != nil {
 			discordChannelID, _ := evt.Payload["channel_id"].(string)
 			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
 			if discordChannelID != "" && karmaxChannelID != "" {
-				if sendErr := a.commsSend(karmaxChannelID, discordChannelID, response); sendErr != nil {
+				replyContent := response
+				if strings.TrimSpace(replyContent) == "" {
+					a.log.Warn("LLM returned empty response for comms message, sending fallback",
+						zap.String("event_id", evt.ID),
+						zap.String("input_preview", truncateStr(userPrompt, 200)),
+					)
+					replyContent = "I received your message but couldn't generate a response. Please try again."
+				}
+				if sendErr := a.commsSend(karmaxChannelID, discordChannelID, replyContent); sendErr != nil {
 					a.log.Error("failed to auto-reply to comms message",
 						zap.String("karmax_channel_id", karmaxChannelID),
 						zap.String("discord_channel_id", discordChannelID),

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,7 +217,16 @@ func (d *DiscordChannel) Stop() error {
 
 // Send sends a text message to the given Discord channel. Messages exceeding
 // Discord's 2000-character limit are split into multiple sends.
+// Empty or whitespace-only content is silently skipped.
 func (d *DiscordChannel) Send(_ context.Context, channelID, content string) error {
+	if strings.TrimSpace(content) == "" {
+		d.log.Debug("skipping empty discord message",
+			zap.String("channel_id", d.id),
+			zap.String("target", channelID),
+		)
+		return nil
+	}
+
 	d.mu.RLock()
 	sess := d.session
 	d.mu.RUnlock()

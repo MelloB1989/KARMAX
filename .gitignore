@@ -1,5 +1,6 @@
 /karmax
 /nexus
+.env
 *.log
 *.service.log
 *.lock
