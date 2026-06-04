@@ -74,10 +74,17 @@ func (s *Session) GetHistory() models.AIChatHistory {
 	return s.history
 }
 
+// SetHistory replaces the session history after loading persisted state or
+// compacting long conversations.
+func (s *Session) SetHistory(history models.AIChatHistory) {
+	sanitizeHistory(&history)
+	s.history = history
+}
+
 // SetContext sets the Context field on the session's history so the LLM
 // receives dynamic context alongside the system prompt.
 func (s *Session) SetContext(ctx string) {
-	s.history.Context = ctx
+	s.history.Context = CleanContent(ctx)
 }
 
 // Chat sends a user message through the model and returns the response,
@@ -86,6 +93,7 @@ func (s *Session) SetContext(ctx string) {
 // transient errors with exponential backoff, and falls back to alternative
 // models if the primary is exhausted.
 func (s *Session) Chat(ctx context.Context, userMessage string) (string, []ToolCallRecord, TokenInfo, error) {
+	userMessage = CleanContent(userMessage)
 	s.history.Messages = append(s.history.Messages, models.AIMessage{
 		Role:    models.User,
 		Message: userMessage,
@@ -137,6 +145,10 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 		TotalTokens:  resp.Tokens,
 	}
 	s.LastTokens = tokens
+	response := CleanContent(resp.AIResponse)
+	if strings.TrimSpace(response) == "" {
+		return "", nil, tokens, fmt.Errorf("empty response from model after sanitization")
+	}
 
 	var records []ToolCallRecord
 	for _, tc := range resp.ToolCalls {
@@ -149,7 +161,13 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 		})
 	}
 
-	return resp.AIResponse, records, tokens, nil
+	s.history.Messages = append(s.history.Messages, models.AIMessage{
+		Role:    models.Assistant,
+		Message: response,
+	})
+	sanitizeHistory(&s.history)
+
+	return response, records, tokens, nil
 }
 
 // sanitizeHistory removes stale tool call metadata from history messages.
@@ -160,12 +178,15 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 // preserve conversation context while removing stale API-specific IDs.
 func sanitizeHistory(history *models.AIChatHistory) {
 	cleaned := make([]models.AIMessage, 0, len(history.Messages))
+	history.SystemMsg = CleanContent(history.SystemMsg)
+	history.Context = CleanContent(history.Context)
 	for _, msg := range history.Messages {
+		msg.Message = CleanContent(msg.Message)
 		// Convert tool-role messages to assistant messages to preserve context
 		if msg.Role == models.Tool {
 			cleaned = append(cleaned, models.AIMessage{
 				Role:    models.Assistant,
-				Message: "[Tool Result] " + msg.Message,
+				Message: CleanContent("[Tool Result] " + msg.Message),
 			})
 			continue
 		}
@@ -178,6 +199,26 @@ func sanitizeHistory(history *models.AIChatHistory) {
 		cleaned = append(cleaned, msg)
 	}
 	history.Messages = cleaned
+}
+
+// CleanContent strips model-internal reasoning blocks and trims whitespace
+// before text is sent to an API, saved, or sent back through a channel.
+func CleanContent(s string) string {
+	for {
+		lower := strings.ToLower(s)
+		start := strings.Index(lower, "<think>")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(lower[start:], "</think>")
+		if end == -1 {
+			s = s[:start]
+			break
+		}
+		end += start
+		s = s[:start] + s[end+len("</think>"):]
+	}
+	return strings.TrimSpace(s)
 }
 
 // isRetryableError determines whether the error is transient and worth retrying.
@@ -241,7 +282,7 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 		resp, err := kai.ChatCompletionManaged(history)
 		if err == nil {
 			// Check for empty response — treat as retryable so fallback models get a chance
-			if resp != nil && strings.TrimSpace(resp.AIResponse) == "" {
+			if resp != nil && strings.TrimSpace(CleanContent(resp.AIResponse)) == "" {
 				log.Printf("[karmahelper] WARNING: model returned empty response (input_tokens=%d, output_tokens=%d, history_len=%d)",
 					resp.InputTokens, resp.OutputTokens, len(history.Messages))
 				lastErr = fmt.Errorf("empty response from model (possible quota/rate issue)")
@@ -341,7 +382,7 @@ func karmaxToolToGoFunctionTool(t tools.Tool) ai.GoFunctionTool {
 	}
 
 	// Sanitize tool name: Anthropic requires ^[a-zA-Z0-9_-]{1,128}$
-	sanitizedName := strings.ReplaceAll(manifest.Name, ".", "_")
+	sanitizedName := tools.CanonicalName(manifest.Name)
 
 	return ai.NewGoFunctionTool(
 		sanitizedName,

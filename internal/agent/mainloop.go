@@ -75,11 +75,12 @@ func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.
 		}
 		history.Messages = append(history.Messages, models.AIMessage{
 			Role:    role,
-			Message: m.Content,
+			Message: karmahelper.CleanContent(m.Content),
 			// Deliberately omit ToolCalls and ToolCallId to avoid
 			// stale ID references from previous sessions.
 		})
 	}
+	sess.SetHistory(history)
 
 	// Retrieve persisted token sum.
 	totalTokens, err := s.GetChatTokenCount(agentID)
@@ -113,20 +114,22 @@ func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.
 // exchange, and returns the assistant response. Token counts are estimated
 // from message length (1 token ~ 4 chars) until we wire actual provider
 // token counts through karmahelper.Session.
-func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage string) (string, error) {
+func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage string) (string, []karmahelper.ToolCallRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	userMessage = karmahelper.CleanContent(userMessage)
 	m.log.Info("calling main model",
 		zap.Int("message_len", len(userMessage)),
 		zap.Int("history_len", len(m.session.GetHistory().Messages)),
 		zap.Int64("total_tokens_before", m.totalTokens),
 	)
 
-	response, _, tokens, err := m.session.Chat(ctx, userMessage)
+	response, toolCalls, tokens, err := m.session.Chat(ctx, userMessage)
 	if err != nil {
-		return "", fmt.Errorf("main model chat: %w", err)
+		return "", nil, fmt.Errorf("main model chat: %w", err)
 	}
+	response = karmahelper.CleanContent(response)
 
 	m.log.Info("main model response received",
 		zap.Int("response_len", len(response)),
@@ -141,6 +144,7 @@ func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage strin
 			zap.Int("output_tokens", tokens.OutputTokens),
 			zap.String("input_preview", truncateForLog(userMessage, 300)),
 		)
+		return "", nil, fmt.Errorf("main model returned empty response after retries and fallback")
 	}
 
 	// Use actual token counts from the provider when available,
@@ -180,8 +184,9 @@ func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage strin
 	}
 
 	m.totalTokens += int64(userTokens + assistantTokens)
+	m.history = m.session.GetHistory()
 
-	return response, nil
+	return response, toolCalls, nil
 }
 
 // NeedsCompaction returns true when the accumulated token count has reached
@@ -192,12 +197,14 @@ func (m *MainModelSession) NeedsCompaction() bool {
 
 // GetHistory returns a pointer to the current in-memory chat history.
 func (m *MainModelSession) GetHistory() *models.AIChatHistory {
+	m.history = m.session.GetHistory()
 	return &m.history
 }
 
 // SetHistory replaces the in-memory chat history (typically after compaction).
 func (m *MainModelSession) SetHistory(h models.AIChatHistory) {
 	m.history = h
+	m.session.SetHistory(h)
 }
 
 // ResetTokenCount zeroes the accumulated token count (typically after compaction).

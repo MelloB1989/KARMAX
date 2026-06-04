@@ -92,7 +92,33 @@ func applyDefaults(cfg *KarmaxConfig) {
 		if cfg.Agents[i].HealthCheck.IntervalSeconds == 0 {
 			cfg.Agents[i].HealthCheck.IntervalSeconds = 30
 		}
+		cfg.Agents[i].FallbackModels = ensureDefaultGeminiFallbacks(cfg.Agents[i].FallbackModels)
 	}
+}
+
+func ensureDefaultGeminiFallbacks(fallbacks []FallbackModelConfig) []FallbackModelConfig {
+	defaults := []FallbackModelConfig{
+		{Provider: "google", Model: "gemini-3.1-pro-high"},
+		{Provider: "google", Model: "gemini-3.1-flash-lite"},
+	}
+	if len(fallbacks) == 0 {
+		return defaults
+	}
+
+	out := append([]FallbackModelConfig(nil), fallbacks...)
+	for _, def := range defaults {
+		exists := false
+		for _, fb := range out {
+			if strings.EqualFold(fb.Provider, def.Provider) && strings.EqualFold(fb.Model, def.Model) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			out = append(out, def)
+		}
+	}
+	return out
 }
 
 func validate(cfg *KarmaxConfig) error {
@@ -121,9 +147,9 @@ func SaveDefault(path string) error {
 func defaultConfig() KarmaxConfig {
 	return KarmaxConfig{
 		Karmax: KarmaxCoreConfig{
-			Version:  "1",
-			DataDir:  "~/.karmax",
-			LogLevel: "info",
+			Version:   "1",
+			DataDir:   "~/.karmax",
+			LogLevel:  "info",
 			LogFormat: "pretty",
 		},
 		Dashboard: DashboardConfig{
@@ -141,6 +167,7 @@ func defaultConfig() KarmaxConfig {
 			DefaultModel:    "gpt-4o",
 			Providers: map[string]ProviderConfig{
 				"openai": {APIKey: "${OPENAI_API_KEY}"},
+				"google": {APIKey: "${GOOGLE_API_KEY}"},
 			},
 		},
 		Agents: []AgentDefConfig{
@@ -158,7 +185,8 @@ func defaultConfig() KarmaxConfig {
 					Namespace:  "hello-world",
 					MaxEntries: 50,
 				},
-				RestartPolicy: "on-failure",
+				RestartPolicy:  "on-failure",
+				FallbackModels: ensureDefaultGeminiFallbacks(nil),
 				Triggers: AgentTriggersConfig{
 					RunOnStart: true,
 				},

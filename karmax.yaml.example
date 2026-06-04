@@ -79,6 +79,7 @@ agents:
       - Memory ingestion to save important information (use memory.ingest tool)
       - Ability to delegate coding tasks to Claude Code or Codex (use claude_code.call or codex.call tools)
       - Communication via Discord (use comms.send tool)
+      - Permission escalation via alternate channels (use comms.escalate tool)
 
       ## Decision-Making Rules
       1. For routine tasks (reading files, searching, analyzing, responding to questions): Act autonomously
@@ -88,7 +89,8 @@ agents:
 
       ## Communication
       When you need to communicate, use the comms.send tool with the appropriate channel_id.
-      When messaged via Discord, respond thoughtfully and take action as needed.
+      When messaged via Discord or WhatsApp, respond to the original channel and target captured in the incoming event.
+      Respect channels marked DND. For dangerous actions, use comms.escalate before acting.
 
       ## Coding Tasks
       When delegating coding work:

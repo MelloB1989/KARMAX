@@ -43,16 +43,23 @@ type Agent struct {
 
 	// Communication send function (injected to avoid circular imports)
 	commsSend func(channelID, target, content string) error
+	// Communication escalation function for permission requests and failures.
+	commsEscalate func(agentID, primaryChannelID, content string) error
 
 	// commsChannels holds channel info injected by the runtime so the agent
 	// can build context about available communication channels for the LLM.
 	commsChannels []CommsChannelInfo
+
+	parentCtx      context.Context
+	errorStreak    int
+	restartPending bool
 }
 
 // CommsChannelInfo describes a communication channel available to the agent.
 type CommsChannelInfo struct {
 	KarmaxChannelID string // KARMAX-level channel ID (e.g., "discord-main")
 	Type            string // "discord", "slack", etc.
+	DND             bool
 }
 
 func NewAgent(def AgentDef, b *bus.Bus, s *store.Store, mem *memory.Manager, agentTools []tools.Tool, mcpTools []tools.Tool, log *zap.Logger) *Agent {
@@ -75,6 +82,12 @@ func (a *Agent) SetCommsSend(fn func(channelID, target, content string) error) {
 	a.commsSend = fn
 }
 
+// SetCommsEscalate injects the escalation function used for dangerous actions
+// or primary-channel failures.
+func (a *Agent) SetCommsEscalate(fn func(agentID, primaryChannelID, content string) error) {
+	a.commsEscalate = fn
+}
+
 // SetCommsChannels injects available channel info so the agent can build
 // context about which channels are available for sending messages.
 func (a *Agent) SetCommsChannels(channels []CommsChannelInfo) {
@@ -89,9 +102,12 @@ func (a *Agent) Start(ctx context.Context) error {
 	}
 
 	a.ctx, a.cancel = context.WithCancel(ctx)
+	a.parentCtx = ctx
 	a.startedAt = time.Now()
 	a.status = StatusRunning
 	a.paused = false
+	a.errorStreak = 0
+	a.restartPending = false
 	a.mu.Unlock()
 
 	// Initialize multi-model architecture
@@ -132,8 +148,8 @@ func (a *Agent) initModels() error {
 	}
 
 	// Build the memory.retrieve tool that wraps memoryModel.Retrieve
-	allTools := make([]tools.Tool, 0, len(a.tools)+len(a.mcpTools)+2)
-	allTools = append(allTools, a.tools...)
+	allTools := make([]tools.Tool, 0, len(a.tools)+len(a.mcpTools)+3)
+	allTools = append(allTools, a.bindAgentTools(a.tools)...)
 	allTools = append(allTools, a.mcpTools...)
 
 	// Initialize memory model first so we can create the memory.retrieve tool
@@ -156,6 +172,10 @@ func (a *Agent) initModels() error {
 		MemoryMgr: a.memory,
 		AgentID:   a.def.ID,
 	})
+
+	if a.commsEscalate != nil {
+		allTools = append(allTools, &commsEscalateTool{agent: a})
+	}
 
 	// Build fallback models from agent def
 	var fallbackModels []karmahelper.FallbackModel
@@ -207,6 +227,25 @@ func (a *Agent) buildMemoryRetrieveTool() tools.Tool {
 	return &memoryRetrieveTool{agent: a}
 }
 
+func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
+	out := make([]tools.Tool, 0, len(in))
+	for _, t := range in {
+		switch tt := t.(type) {
+		case *builtin.ClaudeCodeTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			out = append(out, &cp)
+		case *builtin.CodexTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			out = append(out, &cp)
+		default:
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // memoryRetrieveTool wraps the agent's memory model as a tools.Tool.
 type memoryRetrieveTool struct {
 	agent *Agent
@@ -243,6 +282,54 @@ func (t *memoryRetrieveTool) Execute(ctx context.Context, input map[string]any) 
 
 	return tools.SuccessResult(map[string]any{
 		"results": result,
+	}), nil
+}
+
+// commsEscalateTool sends permission requests through the best available
+// alternative channel when the primary channel is DND or unavailable.
+type commsEscalateTool struct {
+	agent *Agent
+}
+
+func (t *commsEscalateTool) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{
+		Name:        "comms.escalate",
+		Description: "Ask the operator for permission before dangerous actions such as deleting files, force pushing, modifying production, or spending money. Uses an alternative communication channel if the primary is unavailable or in DND.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"primary_channel_id": {"type": "string", "description": "The original KARMAX channel ID, if known"},
+				"action": {"type": "string", "description": "The action requiring approval"},
+				"risk": {"type": "string", "description": "Why the action is dangerous or irreversible"}
+			},
+			"required": ["action", "risk"]
+		}`),
+	}
+}
+
+func (t *commsEscalateTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
+	if t.agent.commsEscalate == nil {
+		return tools.ErrorResult(fmt.Errorf("comms escalation function not configured")), nil
+	}
+
+	primaryChannelID, _ := input["primary_channel_id"].(string)
+	action, _ := input["action"].(string)
+	risk, _ := input["risk"].(string)
+	if strings.TrimSpace(action) == "" {
+		return tools.ErrorResult(fmt.Errorf("action is required")), nil
+	}
+	if strings.TrimSpace(risk) == "" {
+		return tools.ErrorResult(fmt.Errorf("risk is required")), nil
+	}
+
+	message := fmt.Sprintf("Permission required before action:\n\nAction: %s\nRisk: %s\n\nReply with approval before KARMAX proceeds.", action, risk)
+	if err := t.agent.commsEscalate(t.agent.def.ID, primaryChannelID, message); err != nil {
+		return tools.ErrorResult(fmt.Errorf("failed to send escalation request: %w", err)), nil
+	}
+
+	return tools.SuccessResult(map[string]any{
+		"status":             "permission_requested",
+		"primary_channel_id": primaryChannelID,
 	}), nil
 }
 
@@ -284,11 +371,15 @@ func (a *Agent) buildCommsContext() string {
 
 	var sb strings.Builder
 	sb.WriteString("## Available Communication Channels\n\n")
-	sb.WriteString("Use the `comms.send` tool to send messages through these channels.\n\n")
+	sb.WriteString("Use the `comms.send` tool to send messages through these channels. For dangerous actions that require permission, use `comms.escalate` first.\n\n")
 
 	for _, ch := range a.commsChannels {
-		sb.WriteString(fmt.Sprintf("- **%s** (type: %s) — use channel_id: `%s`\n",
-			ch.KarmaxChannelID, ch.Type, ch.KarmaxChannelID))
+		dnd := ""
+		if ch.DND {
+			dnd = " DND"
+		}
+		sb.WriteString(fmt.Sprintf("- **%s** (type: %s%s) — use channel_id: `%s`\n",
+			ch.KarmaxChannelID, ch.Type, dnd, ch.KarmaxChannelID))
 	}
 	sb.WriteString("\n")
 
@@ -428,14 +519,22 @@ func (a *Agent) run() {
 			a.mu.Unlock()
 
 			if err := a.handleEvent(evt); err != nil {
-				a.mu.Lock()
-				a.lastErr = err
-				a.mu.Unlock()
+				streak := a.recordEventError(err)
 				a.log.Error("event handling failed", zap.Error(err))
 				a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
-					"error": err.Error(),
+					"error":              err.Error(),
+					"consecutive_errors": streak,
 				}))
+				if streak >= 3 {
+					a.publishCritical("agent error streak reached restart threshold", map[string]any{
+						"error":              err.Error(),
+						"consecutive_errors": streak,
+					})
+					a.triggerCleanRestart(err)
+				}
+				continue
 			}
+			a.resetEventErrors()
 		}
 	}
 }
@@ -452,8 +551,11 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	// Inject comms context (available channels)
 	commsCtx := a.buildCommsContext()
 
+	// Retrieve relevant long-term context before complex requests.
+	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
+
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := sessionCtx + commsCtx
+	dynamicCtx := sessionCtx + commsCtx + retrievedCtx
 	if dynamicCtx != "" && a.mainSession != nil {
 		a.mainSession.SetContext(dynamicCtx)
 	} else if dynamicCtx != "" {
@@ -462,10 +564,11 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Use multi-model session if available; otherwise fall back to legacy
 	if a.mainSession != nil {
-		response, err := a.mainSession.ProcessMessage(a.ctx, userPrompt)
+		response, toolCalls, err := a.mainSession.ProcessMessage(a.ctx, userPrompt)
 		if err != nil {
 			return fmt.Errorf("main model: %w", err)
 		}
+		response = cleanOutboundResponse(response)
 
 		// Log response length for diagnostics
 		a.log.Debug("LLM response received",
@@ -473,33 +576,14 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			zap.String("event_kind", string(evt.Kind)),
 		)
 
-		// Auto-reply to Discord messages without relying on the LLM to call comms.send
-		if evt.Kind == "comms.message" && a.commsSend != nil {
-			discordChannelID, _ := evt.Payload["channel_id"].(string)
-			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
-			if discordChannelID != "" && karmaxChannelID != "" {
-				replyContent := stripThinkTags(response)
-				if strings.TrimSpace(replyContent) == "" {
-					a.log.Warn("LLM returned empty response for comms message, sending fallback",
-						zap.String("event_id", evt.ID),
-						zap.String("input_preview", truncateStr(userPrompt, 200)),
-					)
-					replyContent = "I received your message but couldn't generate a response. Please try again."
-				}
-				if sendErr := a.commsSend(karmaxChannelID, discordChannelID, replyContent); sendErr != nil {
-					a.log.Error("failed to auto-reply to comms message",
-						zap.String("karmax_channel_id", karmaxChannelID),
-						zap.String("discord_channel_id", discordChannelID),
-						zap.Error(sendErr),
-					)
-				} else {
-					a.log.Debug("auto-replied to comms message",
-						zap.String("karmax_channel_id", karmaxChannelID),
-						zap.String("discord_channel_id", discordChannelID),
-					)
-				}
-			}
+		for _, tc := range toolCalls {
+			a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
+				"tool":  tools.CanonicalName(tc.Name),
+				"input": tc.Input,
+			}))
 		}
+
+		a.autoReplyToOrigin(evt, response, userPrompt)
 
 		// Check if compaction is needed
 		if a.mainSession.NeedsCompaction() && a.summaryModel != nil {
@@ -525,20 +609,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			}
 		}
 
-		// Write to memory
-		if a.memory != nil {
-			a.memory.Write(memory.MemoryEntry{
-				AgentID: a.def.ID,
-				Role:    "user",
-				Content: userPrompt,
-				Tags:    []string{string(evt.Kind)},
-			})
-			a.memory.Write(memory.MemoryEntry{
-				AgentID: a.def.ID,
-				Role:    "assistant",
-				Content: response,
-			})
-		}
+		a.ingestInteractionMemory(a.ctx, evt, userPrompt, response)
 
 		// Publish response event
 		payload := map[string]any{
@@ -560,10 +631,242 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	return a.handleEventLegacy(evt, userPrompt)
 }
 
+func (a *Agent) autoReplyToOrigin(evt bus.Event, response, userPrompt string) {
+	if evt.Kind != bus.EventCommsMessage || a.commsSend == nil {
+		return
+	}
+
+	target, _ := evt.Payload["channel_id"].(string)
+	karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
+	if target == "" || karmaxChannelID == "" {
+		a.log.Warn("cannot auto-reply because comms origin is incomplete",
+			zap.String("event_id", evt.ID),
+			zap.String("karmax_channel_id", karmaxChannelID),
+			zap.String("target", target),
+		)
+		return
+	}
+
+	replyContent := cleanOutboundResponse(response)
+	if strings.TrimSpace(replyContent) == "" {
+		a.log.Warn("LLM returned empty response for comms message, sending fallback",
+			zap.String("event_id", evt.ID),
+			zap.String("input_preview", truncateStr(userPrompt, 200)),
+		)
+		replyContent = "I received your message but couldn't generate a response. Please try again."
+	}
+
+	if sendErr := a.commsSend(karmaxChannelID, target, replyContent); sendErr != nil {
+		a.log.Error("failed to auto-reply to comms message",
+			zap.String("karmax_channel_id", karmaxChannelID),
+			zap.String("target", target),
+			zap.Error(sendErr),
+		)
+		a.publishCritical("failed to route response to original channel", map[string]any{
+			"karmax_channel_id":           karmaxChannelID,
+			"target":                      target,
+			"error":                       sendErr.Error(),
+			"alternative_alert_attempted": true,
+		})
+		return
+	}
+
+	a.log.Debug("auto-replied to comms message",
+		zap.String("karmax_channel_id", karmaxChannelID),
+		zap.String("target", target),
+	)
+}
+
+func (a *Agent) buildProactiveMemoryContext(ctx context.Context, evt bus.Event, userPrompt string) string {
+	if a.memoryModel == nil || !shouldRetrieveMemory(evt, userPrompt) {
+		return ""
+	}
+
+	query := memoryQueryFromEvent(evt, userPrompt)
+	if strings.TrimSpace(query) == "" {
+		return ""
+	}
+
+	result, err := a.buildMemoryRetrieveTool().Execute(ctx, map[string]any{"query": query})
+	if err != nil || result.IsError {
+		if err != nil {
+			a.log.Warn("proactive memory retrieval failed", zap.Error(err))
+		} else {
+			a.log.Warn("proactive memory retrieval failed", zap.String("error", result.Error))
+		}
+		return ""
+	}
+
+	output, ok := result.Output.(map[string]any)
+	if !ok {
+		return ""
+	}
+	results, _ := output["results"].(string)
+	results = strings.TrimSpace(results)
+	if results == "" {
+		return ""
+	}
+
+	return "## Retrieved Memory Context\n\n" + results + "\n\n"
+}
+
+func shouldRetrieveMemory(evt bus.Event, userPrompt string) bool {
+	if evt.Kind != bus.EventCommsMessage && evt.Kind != bus.EventUserDefined && evt.Kind != bus.EventWebhookFired {
+		return false
+	}
+
+	query := strings.ToLower(memoryQueryFromEvent(evt, userPrompt))
+	if len(query) > 180 {
+		return true
+	}
+
+	complexTerms := []string{
+		"remember", "decision", "decide", "preference", "project", "repo",
+		"implement", "debug", "fix", "deploy", "production", "context",
+		"why", "how", "what did we", "previous", "again",
+	}
+	for _, term := range complexTerms {
+		if strings.Contains(query, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func memoryQueryFromEvent(evt bus.Event, fallback string) string {
+	if evt.Payload != nil {
+		if content, _ := evt.Payload["content"].(string); strings.TrimSpace(content) != "" {
+			return truncateStr(cleanOutboundResponse(content), 1000)
+		}
+	}
+	return truncateStr(cleanOutboundResponse(fallback), 1000)
+}
+
+func (a *Agent) ingestInteractionMemory(ctx context.Context, evt bus.Event, userPrompt, response string) {
+	if a.memory == nil {
+		return
+	}
+
+	userContent := memoryQueryFromEvent(evt, userPrompt)
+	if strings.TrimSpace(userContent) != "" {
+		a.ingestMemory(ctx, userContent, classifyMemoryCategory(userContent), "high", []string{string(evt.Kind), "user"})
+	}
+
+	response = cleanOutboundResponse(response)
+	if strings.TrimSpace(response) != "" {
+		a.ingestMemory(ctx, truncateStr(response, 4000), classifyMemoryCategory(response), "medium", []string{string(evt.Kind), "assistant"})
+	}
+}
+
+func (a *Agent) ingestMemory(ctx context.Context, content, category, importance string, tags []string) {
+	if a.memory == nil {
+		return
+	}
+
+	tool := &builtin.MemoryIngestTool{
+		Store:     a.store,
+		MemoryMgr: a.memory,
+		AgentID:   a.def.ID,
+	}
+
+	tagSet := make(map[string]bool, len(tags)+1)
+	cleanTags := make([]string, 0, len(tags)+1)
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || tagSet[tag] {
+			continue
+		}
+		tagSet[tag] = true
+		cleanTags = append(cleanTags, tag)
+	}
+
+	result, err := tool.Execute(ctx, map[string]any{
+		"content":    truncateStr(cleanOutboundResponse(content), 4000),
+		"category":   category,
+		"importance": importance,
+		"tags":       strings.Join(cleanTags, ","),
+	})
+	if err != nil {
+		a.log.Warn("memory ingest execution failed", zap.Error(err))
+		return
+	}
+	if result.IsError {
+		a.log.Warn("memory ingest failed", zap.String("error", result.Error))
+	}
+}
+
+func classifyMemoryCategory(content string) string {
+	lower := strings.ToLower(content)
+	switch {
+	case strings.Contains(lower, "prefer") || strings.Contains(lower, "preference") || strings.Contains(lower, "always ") || strings.Contains(lower, "never "):
+		return "preference"
+	case strings.Contains(lower, "decision") || strings.Contains(lower, "decided") || strings.Contains(lower, "we will") || strings.Contains(lower, "approved"):
+		return "decision"
+	case strings.Contains(lower, "project") || strings.Contains(lower, "repo") || strings.Contains(lower, "workspace") || strings.Contains(lower, "module") || strings.Contains(lower, "production"):
+		return "project"
+	case strings.Contains(lower, "task") || strings.Contains(lower, "todo") || strings.Contains(lower, "follow up"):
+		return "task"
+	default:
+		return "context"
+	}
+}
+
+func (a *Agent) recordEventError(err error) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastErr = err
+	a.errorStreak++
+	return a.errorStreak
+}
+
+func (a *Agent) resetEventErrors() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.errorStreak = 0
+	a.lastErr = nil
+}
+
+func (a *Agent) triggerCleanRestart(reason error) {
+	a.mu.Lock()
+	if a.restartPending {
+		a.mu.Unlock()
+		return
+	}
+	a.restartPending = true
+	parentCtx := a.parentCtx
+	a.mu.Unlock()
+
+	go func() {
+		if parentCtx == nil {
+			parentCtx = context.Background()
+		}
+		a.handleRestart(parentCtx)
+		a.mu.Lock()
+		a.restartPending = false
+		a.errorStreak = 0
+		if reason != nil {
+			a.lastErr = reason
+		}
+		a.mu.Unlock()
+	}()
+}
+
+func (a *Agent) publishCritical(message string, fields map[string]any) {
+	payload := map[string]any{
+		"severity": "critical",
+		"message":  message,
+		"agent_id": a.def.ID,
+	}
+	for k, v := range fields {
+		payload[k] = v
+	}
+	a.bus.Publish(bus.NewEvent(bus.EventSystemCritical, a.def.ID, payload))
+}
+
 // handleEventLegacy is the original single-session event handler, used
 // as a fallback when multi-model initialization fails.
 func (a *Agent) handleEventLegacy(evt bus.Event, userPrompt string) error {
-	allTools := append(a.tools, a.mcpTools...)
+	allTools := append(a.bindAgentTools(a.tools), a.mcpTools...)
 
 	session := karmahelper.NewSession(karmahelper.SessionConfig{
 		Provider:     a.def.Provider,
@@ -577,26 +880,19 @@ func (a *Agent) handleEventLegacy(evt bus.Event, userPrompt string) error {
 	if err != nil {
 		return fmt.Errorf("chat inference: %w", err)
 	}
+	response = cleanOutboundResponse(response)
+	if strings.TrimSpace(response) == "" {
+		return fmt.Errorf("legacy model returned empty response after retries")
+	}
 
 	for _, tc := range toolCalls {
 		a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
-			"tool": tc.Name, "input": tc.Input,
+			"tool": tools.CanonicalName(tc.Name), "input": tc.Input,
 		}))
 	}
 
-	if a.memory != nil {
-		a.memory.Write(memory.MemoryEntry{
-			AgentID: a.def.ID,
-			Role:    "user",
-			Content: userPrompt,
-			Tags:    []string{string(evt.Kind)},
-		})
-		a.memory.Write(memory.MemoryEntry{
-			AgentID: a.def.ID,
-			Role:    "assistant",
-			Content: response,
-		})
-	}
+	a.autoReplyToOrigin(evt, response, userPrompt)
+	a.ingestInteractionMemory(a.ctx, evt, userPrompt, response)
 
 	a.bus.Publish(bus.NewEvent(bus.EventAgentMessage, a.def.ID, map[string]any{
 		"response":      response,
@@ -651,18 +947,10 @@ func truncateStr(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+func cleanOutboundResponse(s string) string {
+	return karmahelper.CleanContent(s)
+}
+
 func stripThinkTags(s string) string {
-	for {
-		start := strings.Index(s, "<think>")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(s, "</think>")
-		if end == -1 {
-			s = s[:start]
-			break
-		}
-		s = s[:start] + s[end+len("</think>"):]
-	}
-	return strings.TrimSpace(s)
+	return cleanOutboundResponse(s)
 }

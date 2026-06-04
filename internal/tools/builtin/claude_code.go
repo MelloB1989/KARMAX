@@ -41,6 +41,13 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 	}
 
 	sessionID, _ := input["session_id"].(string)
+	resumedFrom := ""
+	if sessionID == "" {
+		if reusable := findReusableCodingSession(t.Store, t.AgentID, "claude_code", prompt); reusable != nil {
+			sessionID = reusable.SessionID
+			resumedFrom = reusable.ID
+		}
+	}
 
 	workingDir, _ := input["working_dir"].(string)
 	if workingDir == "" {
@@ -83,9 +90,10 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 	}
 
 	return tools.SuccessResult(map[string]any{
-		"session_id": sessionID,
-		"output":     string(output),
-		"status":     status,
+		"session_id":   sessionID,
+		"resumed_from": resumedFrom,
+		"output":       string(output),
+		"status":       status,
 	}), nil
 }
 
