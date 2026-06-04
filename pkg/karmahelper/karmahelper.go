@@ -255,6 +255,33 @@ func isRetryableError(err error) bool {
 	return false
 }
 
+// isProxyErrorResponse detects when the proxy returns an error message
+// as valid response content instead of an HTTP error code.
+func isProxyErrorResponse(lower string) bool {
+	errorPatterns := []string{
+		"quota exceeded",
+		"rate limit",
+		"too many requests",
+		"service unavailable",
+		"internal server error",
+		"capacity exceeded",
+		"overloaded",
+	}
+	for _, p := range errorPatterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func truncateLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 // isStaleIDError checks for the specific Anthropic stale tool call ID error.
 func isStaleIDError(err error) bool {
 	if err == nil {
@@ -281,12 +308,20 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 
 		resp, err := kai.ChatCompletionManaged(history)
 		if err == nil {
-			// Check for empty response — treat as retryable so fallback models get a chance
-			if resp != nil && strings.TrimSpace(CleanContent(resp.AIResponse)) == "" {
+			cleaned := strings.TrimSpace(CleanContent(resp.AIResponse))
+			// Check for empty response
+			if resp != nil && cleaned == "" {
 				log.Printf("[karmahelper] WARNING: model returned empty response (input_tokens=%d, output_tokens=%d, history_len=%d)",
 					resp.InputTokens, resp.OutputTokens, len(history.Messages))
 				lastErr = fmt.Errorf("empty response from model (possible quota/rate issue)")
-				continue // retry
+				continue
+			}
+			// Check for proxy error messages returned as content
+			lower := strings.ToLower(cleaned)
+			if isProxyErrorResponse(lower) {
+				log.Printf("[karmahelper] WARNING: proxy returned error as content: %s", truncateLog(cleaned, 100))
+				lastErr = fmt.Errorf("proxy error in response: %s", truncateLog(cleaned, 100))
+				continue
 			}
 			return resp, nil
 		}

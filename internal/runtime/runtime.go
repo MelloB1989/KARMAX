@@ -181,6 +181,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	sched := scheduler.New(s, b, log)
 
+	// Register scheduler tool (needs scheduler instance)
+	toolReg.Register(&builtin.SchedulerTool{Scheduler: sched, AgentID: ""})
+
 	whAddr := fmt.Sprintf("%s:%d", cfg.Webhooks.Host, cfg.Webhooks.Port)
 	wh := webhook.New(whAddr, b, s, log)
 
