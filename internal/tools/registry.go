@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -16,10 +17,18 @@ func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]Tool)}
 }
 
+// CanonicalName returns the provider-safe tool name used when exposing tools
+// to LLM APIs that reject dots in function names.
+func CanonicalName(name string) string {
+	return strings.ReplaceAll(name, ".", "_")
+}
+
 func (r *Registry) Register(t Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tools[t.Manifest().Name] = t
+	name := t.Manifest().Name
+	r.tools[name] = t
+	r.tools[CanonicalName(name)] = t
 }
 
 func (r *Registry) Get(name string) (Tool, bool) {
@@ -34,8 +43,14 @@ func (r *Registry) List() []ToolManifest {
 	defer r.mu.RUnlock()
 
 	manifests := make([]ToolManifest, 0, len(r.tools))
+	seen := make(map[string]bool, len(r.tools))
 	for _, t := range r.tools {
-		manifests = append(manifests, t.Manifest())
+		manifest := t.Manifest()
+		if seen[manifest.Name] {
+			continue
+		}
+		seen[manifest.Name] = true
+		manifests = append(manifests, manifest)
 	}
 	return manifests
 }

@@ -40,6 +40,14 @@ func (t *CodexTool) Execute(ctx context.Context, input map[string]any) (tools.To
 	}
 
 	sessionID, _ := input["session_id"].(string)
+	resumedFrom := ""
+	if sessionID == "" {
+		if reusable := findReusableCodingSession(t.Store, t.AgentID, "codex", prompt); reusable != nil {
+			sessionID = reusable.SessionID
+			resumedFrom = reusable.ID
+			prompt = prependSessionContext(prompt, reusable)
+		}
+	}
 
 	workingDir, _ := input["working_dir"].(string)
 	if workingDir == "" {
@@ -81,8 +89,9 @@ func (t *CodexTool) Execute(ctx context.Context, input map[string]any) (tools.To
 	}
 
 	return tools.SuccessResult(map[string]any{
-		"session_id": sessionID,
-		"output":     string(output),
-		"status":     status,
+		"session_id":   sessionID,
+		"resumed_from": resumedFrom,
+		"output":       string(output),
+		"status":       status,
 	}), nil
 }

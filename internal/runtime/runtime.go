@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/MelloB1989/karmax/internal/agent"
@@ -87,7 +88,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		switch chCfg.Type {
 		case "discord":
 			ch := discord.New(chCfg.ID, chCfg.Token, log)
-			if err := commsMgr.Register(ch, chCfg.AgentID); err != nil {
+			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
+				DND: dndEnabled(chCfg.Settings),
+			}); err != nil {
 				log.Error("failed to register comms channel",
 					zap.String("id", chCfg.ID),
 					zap.Error(err),
@@ -100,7 +103,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			}
 			targetChat := chCfg.Settings["target_chat"]
 			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, log)
-			if err := commsMgr.Register(ch, chCfg.AgentID); err != nil {
+			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
+				DND: dndEnabled(chCfg.Settings),
+			}); err != nil {
 				log.Error("failed to register comms channel",
 					zap.String("id", chCfg.ID),
 					zap.Error(err),
@@ -159,6 +164,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 		// Wire comms send function into the agent
 		a.SetCommsSend(commsMgr.Send)
+		a.SetCommsEscalate(commsMgr.RequestEscalation)
 
 		// Inject available comms channel info into the agent for context building
 		agentChannels := commsMgr.GetChannelsForAgent(agentCfg.ID)
@@ -167,6 +173,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			channelInfos = append(channelInfos, agent.CommsChannelInfo{
 				KarmaxChannelID: ch.ID(),
 				Type:            ch.Type(),
+				DND:             commsMgr.ChannelDND(ch.ID()),
 			})
 		}
 		a.SetCommsChannels(channelInfos)
@@ -230,21 +237,26 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
+	rt.startCriticalAlertLoop(ctx)
 
 	if err := rt.mcpBridge.StartAll(ctx); err != nil {
 		rt.log.Error("MCP bridge start error", zap.Error(err))
+		rt.publishCritical("", "MCP bridge start error", map[string]any{"error": err.Error()})
 	}
 
 	if err := rt.comms.StartAll(ctx); err != nil {
 		rt.log.Error("comms start error", zap.Error(err))
+		rt.publishCritical("", "comms start error", map[string]any{"error": err.Error()})
 	}
 
 	if err := rt.scheduler.Start(ctx); err != nil {
 		rt.log.Error("scheduler start error", zap.Error(err))
+		rt.publishCritical("", "scheduler start error", map[string]any{"error": err.Error()})
 	}
 
 	if err := rt.agents.StartAll(ctx); err != nil {
 		rt.log.Error("agent start error", zap.Error(err))
+		rt.publishCritical("", "agent start error", map[string]any{"error": err.Error()})
 	}
 
 	// Start health checks for all agents
@@ -288,6 +300,21 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		}()
 	}
 
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case err := <-errCh:
+				if err == nil {
+					continue
+				}
+				rt.log.Error("runtime component failed", zap.Error(err))
+				rt.publishCritical("", "runtime component failed", map[string]any{"error": err.Error()})
+			}
+		}
+	}()
+
 	<-ctx.Done()
 	rt.log.Info("shutting down...")
 
@@ -304,9 +331,52 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	return nil
 }
 
-func (rt *KarmaxRuntime) Bus() *bus.Bus          { return rt.bus }
+func (rt *KarmaxRuntime) Bus() *bus.Bus           { return rt.bus }
 func (rt *KarmaxRuntime) Agents() *agent.Registry { return rt.agents }
 func (rt *KarmaxRuntime) Store() *store.Store     { return rt.store }
+
+func (rt *KarmaxRuntime) startCriticalAlertLoop(ctx context.Context) {
+	sub, cancel := rt.bus.Subscribe(bus.EventSystemCritical)
+	go func() {
+		defer cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case evt, ok := <-sub.Ch:
+				if !ok {
+					return
+				}
+				message, _ := evt.Payload["message"].(string)
+				if message == "" {
+					message = "KARMAX critical system event"
+				}
+				if attempted, _ := evt.Payload["alternative_alert_attempted"].(bool); attempted {
+					continue
+				}
+				primary, _ := evt.Payload["karmax_channel_id"].(string)
+				if err := rt.comms.AlertAlternative(evt.AgentID, primary, "Critical KARMAX alert: "+message); err != nil {
+					rt.log.Warn("failed to send critical alert through alternative channel",
+						zap.String("agent_id", evt.AgentID),
+						zap.String("primary_channel_id", primary),
+						zap.Error(err),
+					)
+				}
+			}
+		}
+	}()
+}
+
+func (rt *KarmaxRuntime) publishCritical(agentID, message string, fields map[string]any) {
+	payload := map[string]any{
+		"severity": "critical",
+		"message":  message,
+	}
+	for k, v := range fields {
+		payload[k] = v
+	}
+	rt.bus.Publish(bus.NewEvent(bus.EventSystemCritical, agentID, payload))
+}
 
 func (rt *KarmaxRuntime) printBanner() {
 	agentCount := len(rt.agents.List())
@@ -368,6 +438,16 @@ func registerBuiltinTools(reg *tools.Registry) {
 	reg.Register(&builtin.FileListTool{})
 	reg.Register(&builtin.EmailTool{})
 	reg.Register(&builtin.NotifyTool{})
+}
+
+func dndEnabled(settings map[string]string) bool {
+	for _, key := range []string{"dnd", "do_not_disturb", "do-not-disturb"} {
+		switch strings.ToLower(strings.TrimSpace(settings[key])) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
 }
 
 func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {

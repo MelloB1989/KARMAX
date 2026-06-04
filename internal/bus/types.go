@@ -9,17 +9,19 @@ import (
 type EventKind string
 
 const (
-	EventAgentStarted  EventKind = "agent.started"
-	EventAgentStopped  EventKind = "agent.stopped"
-	EventAgentFailed   EventKind = "agent.failed"
-	EventAgentMessage  EventKind = "agent.message"
-	EventWebhookFired  EventKind = "webhook.fired"
-	EventScheduledJob  EventKind = "scheduler.job"
-	EventMemoryUpdated EventKind = "memory.updated"
-	EventToolCalled    EventKind = "tool.called"
-	EventToolResult    EventKind = "tool.result"
-	EventUserDefined   EventKind = "user.defined"
-	EventCommsMessage  EventKind = "comms.message"
+	EventAgentStarted   EventKind = "agent.started"
+	EventAgentStopped   EventKind = "agent.stopped"
+	EventAgentFailed    EventKind = "agent.failed"
+	EventAgentMessage   EventKind = "agent.message"
+	EventWebhookFired   EventKind = "webhook.fired"
+	EventScheduledJob   EventKind = "scheduler.job"
+	EventMemoryUpdated  EventKind = "memory.updated"
+	EventToolCalled     EventKind = "tool.called"
+	EventToolResult     EventKind = "tool.result"
+	EventUserDefined    EventKind = "user.defined"
+	EventCommsMessage   EventKind = "comms.message"
+	EventCommsSent      EventKind = "comms.sent"
+	EventSystemCritical EventKind = "system.critical"
 )
 
 type Event struct {
