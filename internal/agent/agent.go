@@ -478,7 +478,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			discordChannelID, _ := evt.Payload["channel_id"].(string)
 			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
 			if discordChannelID != "" && karmaxChannelID != "" {
-				replyContent := response
+				replyContent := stripThinkTags(response)
 				if strings.TrimSpace(replyContent) == "" {
 					a.log.Warn("LLM returned empty response for comms message, sending fallback",
 						zap.String("event_id", evt.ID),
@@ -649,4 +649,20 @@ func truncateStr(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func stripThinkTags(s string) string {
+	for {
+		start := strings.Index(s, "<think>")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(s, "</think>")
+		if end == -1 {
+			s = s[:start]
+			break
+		}
+		s = s[:start] + s[end+len("</think>"):]
+	}
+	return strings.TrimSpace(s)
 }

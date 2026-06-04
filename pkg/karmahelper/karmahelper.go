@@ -282,7 +282,6 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool) *ai.KarmaAI {
 
 	if len(agentTools) > 0 {
 		options = append(options, ai.WithToolsEnabled())
-		options = append(options, ai.WithDirectToolCalls())
 		options = append(options, ai.WithMaxToolPasses(8))
 
 		for _, t := range agentTools {
