@@ -272,7 +272,7 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool) *ai.KarmaAI {
 		ai.WithMaxTokens(cfg.MaxTokens),
 	}
 
-	if cfg.Temperature > 0 {
+	if cfg.Temperature > 0 && !strings.Contains(strings.ToLower(cfg.Model), "thinking") {
 		options = append(options, ai.WithTemperature(cfg.Temperature))
 	}
 
@@ -424,11 +424,11 @@ func resolveModel(name string) ai.BaseModel {
 	case "llama-3.3-70b":
 		return ai.Llama33_70B
 	case "claude-opus-4-6-thinking":
-		// No dedicated thinking constant in karma; use Claude4Opus as base
-		// and the provider mapping will resolve to the correct API model ID.
-		// The proxy at ANTHROPIC_BASE_URL handles thinking model routing.
-		return ai.Claude4Opus
+		return ai.BaseModel("claude-opus-4-6-thinking")
+	case "claude-sonnet-4-6":
+		return ai.BaseModel("claude-sonnet-4-6")
 	default:
-		return ai.GPT4o
+		// Pass unknown model names as raw strings — allows custom proxy model IDs
+		return ai.BaseModel(name)
 	}
 }
