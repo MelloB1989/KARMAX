@@ -48,6 +48,45 @@ func TestSanitizeHistory_StripsToolCallIDs(t *testing.T) {
 	}
 }
 
+func TestCleanContent_StripsThinkTags(t *testing.T) {
+	input := "visible <think>internal reasoning</think> final"
+	got := CleanContent(input)
+	if got != "visible  final" {
+		t.Fatalf("CleanContent() = %q, want %q", got, "visible  final")
+	}
+
+	input = "<THINK>hidden</THINK>answer"
+	got = CleanContent(input)
+	if got != "answer" {
+		t.Fatalf("CleanContent() should strip case-insensitive think tags, got %q", got)
+	}
+}
+
+func TestSetHistorySanitizes(t *testing.T) {
+	session := NewSession(SessionConfig{}, nil)
+	session.SetHistory(models.AIChatHistory{
+		Context: "<think>old</think>usable context",
+		Messages: []models.AIMessage{
+			{Role: models.Assistant, Message: "ok", ToolCallId: "stale"},
+			{Role: models.Tool, Message: "<think>hidden</think>tool output", ToolCallId: "tool-1"},
+		},
+	})
+
+	history := session.GetHistory()
+	if history.Context != "usable context" {
+		t.Fatalf("context was not cleaned: %q", history.Context)
+	}
+	if history.Messages[0].ToolCallId != "" {
+		t.Fatalf("stale tool call ID was not cleared")
+	}
+	if history.Messages[1].Role != models.Assistant {
+		t.Fatalf("tool role should be converted to assistant, got %s", history.Messages[1].Role)
+	}
+	if history.Messages[1].Message != "[Tool Result] tool output" {
+		t.Fatalf("tool message was not cleaned/preserved, got %q", history.Messages[1].Message)
+	}
+}
+
 func TestSanitizeHistory_PreservesContent(t *testing.T) {
 	history := &models.AIChatHistory{
 		Messages: []models.AIMessage{

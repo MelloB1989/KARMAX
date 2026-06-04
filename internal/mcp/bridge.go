@@ -81,6 +81,7 @@ func (b *MCPBridge) GetTools(serverID string) ([]tools.Tool, error) {
 		result = append(result, &MCPToolProxy{
 			bridge:   b,
 			serverID: serverID,
+			toolName: t.Name,
 			manifest: mcpToolToToolManifest(t, serverID),
 		})
 	}
