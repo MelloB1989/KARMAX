@@ -583,36 +583,9 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			}))
 		}
 
-		// Only send a fallback reply if the LLM did NOT already reply via comms_send
-		// during its tool call loop. If it called comms_send, the reply is already sent.
-		if evt.Kind == bus.EventCommsMessage && a.commsSend != nil {
-			commsSendCalled := false
-			for _, tc := range toolCalls {
-				if tc.Name == "comms_send" || tc.Name == "comms.send" {
-					commsSendCalled = true
-					break
-				}
-			}
-			if !commsSendCalled {
-				// LLM didn't send a reply itself — send the response as fallback
-				target, _ := evt.Payload["channel_id"].(string)
-				karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
-				if target != "" && karmaxChannelID != "" {
-					replyContent := response
-					if strings.TrimSpace(replyContent) == "" {
-						replyContent = "I received your message but couldn't generate a response. Please try again."
-					}
-					if err := a.commsSend(karmaxChannelID, target, replyContent); err != nil {
-						a.log.Error("fallback reply failed", zap.Error(err))
-					} else {
-						a.log.Debug("sent fallback reply (LLM did not call comms_send)",
-							zap.String("karmax_channel_id", karmaxChannelID),
-							zap.String("target", target),
-						)
-					}
-				}
-			}
-		}
+		// NO auto-reply here. The LLM replies via comms_send tool during
+		// karma's internal tool execution loop. If the LLM chose not to
+		// call comms_send, that's intentional.
 
 		// Check if compaction is needed
 		if a.mainSession.NeedsCompaction() && a.summaryModel != nil {
@@ -920,7 +893,7 @@ func (a *Agent) handleEventLegacy(evt bus.Event, userPrompt string) error {
 		}))
 	}
 
-	a.autoReplyToOrigin(evt, response, userPrompt)
+	// No auto-reply — LLM handles it via comms_send tool.
 	a.ingestInteractionMemory(a.ctx, evt, userPrompt, response)
 
 	a.bus.Publish(bus.NewEvent(bus.EventAgentMessage, a.def.ID, map[string]any{

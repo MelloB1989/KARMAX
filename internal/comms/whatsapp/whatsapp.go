@@ -18,7 +18,7 @@ import (
 
 const (
 	defaultWacliPath = "/home/mellob/code/wacli/wacli"
-	pollInterval     = 5 * time.Second
+	pollInterval     = 30 * time.Second
 	sendTimeout      = 30 * time.Second
 	pollTimeout      = 15 * time.Second
 )
