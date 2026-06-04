@@ -201,6 +201,10 @@ func isRetryableError(err error) bool {
 		"server error",
 		"eof",
 		"broken pipe",
+		"quota",
+		"capacity",
+		"too many requests",
+		"resource exhausted",
 	}
 	for _, p := range retryablePatterns {
 		if strings.Contains(msg, p) {
@@ -236,12 +240,12 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 
 		resp, err := kai.ChatCompletionManaged(history)
 		if err == nil {
-			// Check for empty response
+			// Check for empty response — treat as retryable so fallback models get a chance
 			if resp != nil && strings.TrimSpace(resp.AIResponse) == "" {
 				log.Printf("[karmahelper] WARNING: model returned empty response (input_tokens=%d, output_tokens=%d, history_len=%d)",
 					resp.InputTokens, resp.OutputTokens, len(history.Messages))
-				// Return a fallback response instead of empty
-				resp.AIResponse = "I processed your message but was unable to generate a meaningful response. Please try rephrasing or providing more context."
+				lastErr = fmt.Errorf("empty response from model (possible quota/rate issue)")
+				continue // retry
 			}
 			return resp, nil
 		}
