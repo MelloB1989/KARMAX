@@ -129,6 +129,9 @@ func (w *WhatsAppChannel) Start(ctx context.Context) error {
 	w.ctx, w.cancel = context.WithCancel(ctx)
 	w.mu.Unlock()
 
+	// Seed lastMessageID so we only process messages that arrive AFTER startup.
+	w.seedLastMessageID(ctx)
+
 	go w.pollMessages()
 
 	w.log.Info("whatsapp channel started",
@@ -265,6 +268,43 @@ func (w *WhatsAppChannel) IncomingMessages() <-chan comms.Message {
 	return w.inbox
 }
 
+// seedLastMessageID does a silent poll to find the latest message ID so that
+// the first real poll only picks up messages arriving AFTER startup.
+func (w *WhatsAppChannel) seedLastMessageID(ctx context.Context) {
+	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+	defer cancel()
+
+	args := []string{"messages", "--chat", w.targetChat, "--limit", "1"}
+	out, err := exec.CommandContext(pollCtx, w.wacliPath, args...).CombinedOutput()
+	if err != nil {
+		w.log.Warn("failed to seed lastMessageID", zap.Error(err))
+		return
+	}
+
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return
+	}
+
+	var messages []wacliMessage
+	if err := json.Unmarshal([]byte(trimmed), &messages); err != nil {
+		var wrapper struct {
+			Messages []wacliMessage `json:"messages"`
+		}
+		if err2 := json.Unmarshal([]byte(trimmed), &wrapper); err2 != nil {
+			return
+		}
+		messages = wrapper.Messages
+	}
+
+	if len(messages) > 0 {
+		w.mu.Lock()
+		w.lastMessageID = messages[0].ID
+		w.mu.Unlock()
+		w.log.Info("seeded lastMessageID", zap.String("id", messages[0].ID))
+	}
+}
+
 // pollMessages runs a loop that polls wacli for new messages every pollInterval.
 func (w *WhatsAppChannel) pollMessages() {
 	w.mu.RLock()
@@ -290,7 +330,7 @@ func (w *WhatsAppChannel) fetchAndDispatch(ctx context.Context) {
 	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
 	defer cancel()
 
-	args := []string{"messages", "--chat", w.targetChat, "--limit", "5"}
+	args := []string{"messages", "--chat", w.targetChat, "--limit", "5", "--from-me", "no"}
 
 	cmd := exec.CommandContext(pollCtx, w.wacliPath, args...)
 	out, err := cmd.CombinedOutput()
