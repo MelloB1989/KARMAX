@@ -145,7 +145,6 @@ agents:
       - http.request
       - email.send
       - notify.send
-      - memory.retrieve
       - memory.ingest
       - claude_code.call
       - codex.call
