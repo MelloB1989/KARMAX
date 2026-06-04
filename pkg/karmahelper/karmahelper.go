@@ -340,8 +340,11 @@ func karmaxToolToGoFunctionTool(t tools.Tool) ai.GoFunctionTool {
 		}
 	}
 
+	// Sanitize tool name: Anthropic requires ^[a-zA-Z0-9_-]{1,128}$
+	sanitizedName := strings.ReplaceAll(manifest.Name, ".", "_")
+
 	return ai.NewGoFunctionTool(
-		manifest.Name,
+		sanitizedName,
 		manifest.Description,
 		fp,
 		func(ctx context.Context, args ai.FuncParams) (string, error) {
