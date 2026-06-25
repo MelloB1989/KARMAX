@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -105,6 +106,15 @@ type msgRec struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// recheckInterval bounds how often a chat is re-examined (one wacli own-message
+// lookup per chat per day), keeping the worker cheap across hundreds of chats.
+const recheckInterval = 24 * time.Hour
+
+// runOnce examines chats and summarizes the "cold" ones. Hot vs cold is decided
+// by the OPERATOR's own last message (not the chat's activity), so a group that
+// stays busy with other people but that the operator hasn't texted in for weeks
+// correctly becomes cold. Each chat is recorded (summarized | hot | skipped) so
+// subsequent ticks skip it cheaply until recheckInterval elapses.
 func (s *Scanner) runOnce(ctx context.Context) {
 	chats, err := s.listChats(ctx)
 	if err != nil {
@@ -112,57 +122,72 @@ func (s *Scanner) runOnce(ctx context.Context) {
 		return
 	}
 	cutoff := time.Now().AddDate(0, 0, -s.cfg.HotDays)
-	processed := 0
+	// Process oldest chats first so genuinely-cold conversations (the ones the
+	// operator hasn't touched in a long time) get summarized promptly.
+	sort.Slice(chats, func(i, j int) bool { return chats[i].LastMessageAt.Before(chats[j].LastMessageAt) })
+	summarized, examined := 0, 0
+	checkBudget := s.cfg.PerTick * 8
+	if checkBudget < 30 {
+		checkBudget = 30
+	}
 
 	for _, c := range chats {
-		if processed >= s.cfg.PerTick {
+		if summarized >= s.cfg.PerTick || examined >= checkBudget {
 			break
 		}
-		if c.Locked {
-			continue // respect wacli access control
+		// Note: we do NOT skip "locked" chats — when wacli access control is
+		// unconfigured every chat defaults to locked yet reads work fine.
+		// Relevance is decided by the operator's participation below.
+		ex, _ := s.store.GetChatSummary(c.JID)
+		if ex != nil && time.Since(ex.SummarizedAt) < recheckInterval {
+			continue // examined recently
 		}
-		if c.LastMessageAt.After(cutoff) {
-			continue // active/hot — handled by the foreground sync
-		}
-		// Already summarized and still up to date?
-		if ex, _ := s.store.GetChatSummary(c.JID); ex != nil && !ex.LastMessageAt.Before(c.LastMessageAt) {
+
+		ownLast, ownCount := s.ownLastMessage(ctx, c.JID)
+		examined++
+
+		// No / negligible participation -> not useful memory.
+		if ownCount == 0 || (c.IsGroup && ownCount < s.cfg.MinGroupOwn) {
+			s.record(c, "skipped", "", ownCount, ownLast, 0)
 			continue
 		}
-
-		// Skip large/community groups the operator barely texts in.
-		if c.IsGroup {
-			own := s.countOwn(ctx, c.JID)
-			if own < s.cfg.MinGroupOwn {
-				_ = s.store.UpsertChatSummary(store.ChatSummary{
-					ChatJID: c.JID, ChatName: c.Name, IsGroup: true,
-					OwnMessageCount: own, LastMessageAt: c.LastMessageAt,
-					SummarizedAt: time.Now(), Status: "skipped",
-				})
-				continue
-			}
+		// Operator still active here -> hot; leave it to the foreground sync.
+		if ownLast.After(cutoff) {
+			s.record(c, "hot", "", ownCount, ownLast, 0)
+			continue
 		}
-
+		// Cold, but don't re-summarize if nothing changed since last time.
+		if ex != nil && ex.Status == "summarized" && !ownLast.After(ex.LastMessageAt) {
+			s.record(c, "summarized", ex.Summary, ownCount, ownLast, ex.MessageCount)
+			continue
+		}
 		msgs := s.fetchMessages(ctx, c.JID, 150)
 		if len(msgs) < 3 {
+			s.record(c, "skipped", "", ownCount, ownLast, len(msgs))
 			continue
 		}
 		summary, ok := s.summarize(ctx, c, msgs)
-		status := "summarized"
 		if !ok {
-			status, summary = "skipped", ""
-		}
-		if err := s.store.UpsertChatSummary(store.ChatSummary{
-			ChatJID: c.JID, ChatName: c.Name, IsGroup: c.IsGroup,
-			Summary: summary, MessageCount: len(msgs),
-			LastMessageAt: c.LastMessageAt, SummarizedAt: time.Now(), Status: status,
-		}); err != nil {
-			s.log.Warn("cold-scan: store summary failed", zap.String("chat", c.Name), zap.Error(err))
+			s.record(c, "skipped", "", ownCount, ownLast, len(msgs))
 			continue
 		}
-		processed++
+		s.record(c, "summarized", summary, ownCount, ownLast, len(msgs))
+		summarized++
 	}
-	if processed > 0 {
-		s.log.Info("cold-scan tick complete", zap.Int("summarized", processed))
+	if summarized > 0 || examined > 0 {
+		s.log.Info("cold-scan tick", zap.Int("summarized", summarized), zap.Int("examined", examined))
+	}
+}
+
+// record upserts a chat's cold-scan state. LastMessageAt stores the operator's
+// own last message time (the signal the hot/cold decision is based on).
+func (s *Scanner) record(c chatRec, status, summary string, ownCount int, ownLast time.Time, msgCount int) {
+	if err := s.store.UpsertChatSummary(store.ChatSummary{
+		ChatJID: c.JID, ChatName: c.Name, IsGroup: c.IsGroup,
+		Summary: summary, MessageCount: msgCount, OwnMessageCount: ownCount,
+		LastMessageAt: ownLast, SummarizedAt: time.Now(), Status: status,
+	}); err != nil {
+		s.log.Warn("cold-scan: store state failed", zap.String("chat", c.Name), zap.Error(err))
 	}
 }
 
@@ -180,8 +205,17 @@ func (s *Scanner) listChats(ctx context.Context) ([]chatRec, error) {
 	return chats, nil
 }
 
-func (s *Scanner) countOwn(ctx context.Context, jid string) int {
-	return len(s.runMessages(ctx, jid, 40, true))
+// ownLastMessage returns the operator's most recent own-message time in a chat
+// and a count of their recent own messages (capped by the lookup limit).
+func (s *Scanner) ownLastMessage(ctx context.Context, jid string) (time.Time, int) {
+	msgs := s.runMessages(ctx, jid, 50, true)
+	var last time.Time
+	for _, m := range msgs {
+		if m.Timestamp.After(last) {
+			last = m.Timestamp
+		}
+	}
+	return last, len(msgs)
 }
 
 func (s *Scanner) fetchMessages(ctx context.Context, jid string, limit int) []msgRec {
