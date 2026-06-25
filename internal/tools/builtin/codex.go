@@ -62,6 +62,7 @@ func (t *CodexTool) Execute(ctx context.Context, input map[string]any) (tools.To
 
 	cmd := exec.CommandContext(timeoutCtx, "codex", args...)
 	cmd.Dir = workingDir
+	cmd.Env = harnessEnv() // use codex's own auth, not KARMAX's gateway
 
 	output, err := cmd.CombinedOutput()
 

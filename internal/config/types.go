@@ -23,9 +23,10 @@ type ColdScanConfig struct {
 	Enabled         bool   `yaml:"enabled"`
 	IntervalMinutes int    `yaml:"interval_minutes"` // default 20
 	PerTick         int    `yaml:"per_tick"`         // chats per tick, default 4
-	HotDays         int    `yaml:"hot_days"`         // active window, default 14
-	MinGroupOwn     int    `yaml:"min_group_own"`    // min own msgs for a group, default 5
-	WacliPath       string `yaml:"wacli_path"`
+	HotDays          int     `yaml:"hot_days"`            // active window, default 14
+	MinGroupOwn      int     `yaml:"min_group_own"`       // min own msgs for a group, default 5
+	MinGroupOwnRatio float64 `yaml:"min_group_own_ratio"` // min own-message fraction for a group, default 0.2
+	WacliPath        string  `yaml:"wacli_path"`
 }
 
 // LoopConfig declares a recurring trigger that fires a prompt to an agent on a

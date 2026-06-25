@@ -198,6 +198,17 @@ var migrations = []string{
 		status            TEXT DEFAULT 'pending'
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_chat_summaries_status ON chat_summaries(status)`,
+
+	// 016_app_messages (the phone-app conversation thread, separate from the
+	// agent's full working chat_history which also holds WhatsApp/loop turns)
+	`CREATE TABLE IF NOT EXISTS app_messages (
+		id         TEXT PRIMARY KEY,
+		agent_id   TEXT NOT NULL,
+		role       TEXT NOT NULL,
+		content    TEXT NOT NULL,
+		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_app_messages_agent ON app_messages(agent_id, created_at)`,
 }
 
 func (s *Store) migrate() error {
