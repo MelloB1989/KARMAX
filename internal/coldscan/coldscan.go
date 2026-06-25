@@ -25,10 +25,11 @@ import (
 type Config struct {
 	Enabled     bool
 	Interval    time.Duration
-	PerTick     int // chats summarized per tick (rate limit)
-	HotDays     int // chats with activity newer than this are "hot" and skipped
-	MinGroupOwn int // min of the operator's own messages for a GROUP to be worth summarizing
-	WacliPath   string
+	PerTick          int     // chats summarized per tick (rate limit)
+	HotDays          int     // chats with activity newer than this are "hot" and skipped
+	MinGroupOwn      int     // min of the operator's own messages for a GROUP to be worth summarizing
+	MinGroupOwnRatio float64 // min fraction of recent group messages that must be the operator's
+	WacliPath        string
 	Provider    string
 	Model       string
 	Fallbacks   []karmahelper.FallbackModel
@@ -56,6 +57,9 @@ func New(cfg Config, s *store.Store, log *zap.Logger) *Scanner {
 	}
 	if cfg.MinGroupOwn <= 0 {
 		cfg.MinGroupOwn = 5
+	}
+	if cfg.MinGroupOwnRatio <= 0 {
+		cfg.MinGroupOwnRatio = 0.2
 	}
 	if cfg.WacliPath == "" {
 		cfg.WacliPath = "/home/mellob/code/wacli/wacli"
@@ -165,6 +169,21 @@ func (s *Scanner) runOnce(ctx context.Context) {
 		if len(msgs) < 3 {
 			s.record(c, "skipped", "", ownCount, ownLast, len(msgs))
 			continue
+		}
+		// Community/broadcast group filter: if the operator's messages are only a
+		// small fraction of recent activity, it's a group they don't really
+		// converse in (e.g. promo/announcement groups) — skip it.
+		if c.IsGroup {
+			own := 0
+			for _, m := range msgs {
+				if m.IsFromMe {
+					own++
+				}
+			}
+			if float64(own)/float64(len(msgs)) < s.cfg.MinGroupOwnRatio {
+				s.record(c, "skipped", "", ownCount, ownLast, len(msgs))
+				continue
+			}
 		}
 		summary, ok := s.summarize(ctx, c, msgs)
 		if !ok {

@@ -63,7 +63,11 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 		workingDir = "/home/mellob"
 	}
 
-	args := []string{"--print", "--output-format", "text", "--session-id", sessionID}
+	// --dangerously-skip-permissions lets the headless harness actually use its
+	// tools (WebSearch/WebFetch, file, bash) without an interactive permission
+	// prompt — without it, --print mode silently blocks web search and the agent
+	// concludes "web is unavailable".
+	args := []string{"--print", "--output-format", "text", "--dangerously-skip-permissions", "--session-id", sessionID}
 	if resuming {
 		args = append(args, "--resume")
 	}
@@ -74,6 +78,7 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 
 	cmd := exec.CommandContext(timeoutCtx, "claude", args...)
 	cmd.Dir = workingDir
+	cmd.Env = harnessEnv() // use claude's own auth, not KARMAX's gateway
 
 	output, err := cmd.CombinedOutput()
 

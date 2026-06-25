@@ -17,6 +17,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -48,6 +49,7 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("/api/ping", srv.handlePing)
 	mux.HandleFunc("/api/chat", srv.auth(srv.handleChat))
 	mux.HandleFunc("/api/messages", srv.auth(srv.handleMessages))
+	mux.HandleFunc("POST /api/conversation/reset", srv.auth(srv.handleResetConversation))
 	mux.HandleFunc("/api/push/register", srv.auth(srv.handlePushRegister))
 	mux.HandleFunc("GET /api/proposals", srv.auth(srv.handleProposals))
 	mux.HandleFunc("POST /api/proposals/{id}/decision", srv.auth(srv.handleProposalDecision))
@@ -55,6 +57,8 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("POST /api/jobs/{id}/run", srv.auth(srv.handleRunJob))
 	mux.HandleFunc("GET /api/memory/tree", srv.auth(srv.handleMemoryTree))
 	mux.HandleFunc("GET /api/memory/entries", srv.auth(srv.handleMemoryEntries))
+	mux.HandleFunc("GET /api/memory/cleanup/question", srv.auth(srv.handleCleanupQuestion))
+	mux.HandleFunc("POST /api/memory/cleanup/answer", srv.auth(srv.handleCleanupAnswer))
 	mux.HandleFunc("DELETE /api/memory/entries/{id}", srv.auth(srv.handleDeleteMemoryEntry))
 	mux.HandleFunc("GET /api/profile", srv.auth(srv.handleGetProfile))
 	mux.HandleFunc("PUT /api/profile", srv.auth(srv.handlePutProfile))
@@ -154,7 +158,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"reply": reply, "agent": ag.Def().ID})
+
+	// Record the app conversation turn (separate from the agent's working history).
+	aid := ag.Def().ID
+	_ = s.store.AppendAppMessage(store.StoredAppMessage{ID: uuid.New().String(), AgentID: aid, Role: "user", Content: req.Message})
+	_ = s.store.AppendAppMessage(store.StoredAppMessage{ID: uuid.New().String(), AgentID: aid, Role: "assistant", Content: reply})
+
+	writeJSON(w, http.StatusOK, map[string]any{"reply": reply, "agent": aid})
+}
+
+// handleResetConversation clears the phone-app conversation thread (the agent's
+// memory and working history are untouched — KARMAX still remembers everything).
+func (s *Server) handleResetConversation(w http.ResponseWriter, r *http.Request) {
+	ag := s.resolveAgent(r.URL.Query().Get("agent"))
+	if ag == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no agent available"})
+		return
+	}
+	if err := s.store.ClearAppMessages(ag.Def().ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reset": true, "agent": ag.Def().ID})
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +194,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	msgs, err := s.store.LoadChatHistory(ag.Def().ID, limit)
+	msgs, err := s.store.LoadAppMessages(ag.Def().ID, limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return

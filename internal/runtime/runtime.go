@@ -260,10 +260,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	coldCfg := coldscan.Config{
 		Enabled:     cfg.ColdScan.Enabled,
 		Interval:    time.Duration(cfg.ColdScan.IntervalMinutes) * time.Minute,
-		PerTick:     cfg.ColdScan.PerTick,
-		HotDays:     cfg.ColdScan.HotDays,
-		MinGroupOwn: cfg.ColdScan.MinGroupOwn,
-		WacliPath:   cfg.ColdScan.WacliPath,
+		PerTick:          cfg.ColdScan.PerTick,
+		HotDays:          cfg.ColdScan.HotDays,
+		MinGroupOwn:      cfg.ColdScan.MinGroupOwn,
+		MinGroupOwnRatio: cfg.ColdScan.MinGroupOwnRatio,
+		WacliPath:        cfg.ColdScan.WacliPath,
 	}
 	if len(cfg.Agents) > 0 {
 		a := cfg.Agents[0]
