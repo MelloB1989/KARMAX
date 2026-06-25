@@ -1,0 +1,24 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css";
+
+/* KARMAX — "live terminal" design tokens. Dark-only by intent. */
+@layer theme {
+  @theme {
+    --color-km-ink: #0a0d12;
+    --color-km-panel: #11151c;
+    --color-km-line: #1c232e;
+    --color-km-text: #d2d8e0;
+    --color-km-muted: #6b7686;
+    --color-km-amber: #f2b43a;
+    --color-km-cyan: #62b6c9;
+    --color-km-green: #6fbf73;
+    --color-km-red: #e5675c;
+
+    /* Mono type roles. Families are registered via expo-font in _layout.tsx. */
+    --font-mono: JetBrainsMono_400Regular;
+    --font-mono-medium: JetBrainsMono_500Medium;
+    --font-mono-bold: JetBrainsMono_700Bold;
+    --font-display: SpaceMono_700Bold;
+  }
+}
