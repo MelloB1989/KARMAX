@@ -507,8 +507,14 @@ func resolveModel(name string) ai.BaseModel {
 		return ai.Llama33_70B
 	case "claude-opus-4-6-thinking":
 		return ai.BaseModel("claude-opus-4-6-thinking")
-	case "claude-sonnet-4-6":
-		return ai.BaseModel("claude-sonnet-4-6")
+	case "claude-opus-4.6", "claude-opus-4-6":
+		return ai.BaseModel("claude-opus-4.6")
+	case "claude-opus-4.7", "claude-opus-4-7":
+		return ai.BaseModel("claude-opus-4.7")
+	case "claude-sonnet-4.6", "claude-sonnet-4-6":
+		return ai.BaseModel("claude-sonnet-4.6")
+	case "deepseek-3.2", "deepseek-v3.2":
+		return ai.BaseModel("deepseek-3.2")
 	default:
 		// Pass unknown model names as raw strings — allows custom proxy model IDs
 		return ai.BaseModel(name)

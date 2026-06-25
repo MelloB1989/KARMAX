@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 )
@@ -55,19 +54,42 @@ func (r *Registry) List() []ToolManifest {
 	return manifests
 }
 
-func (r *Registry) ResolveForAgent(names []string) ([]Tool, error) {
+// agentScopedTools are injected per-agent at runtime (in agent.initModels)
+// rather than registered in the global registry, because they need per-agent
+// state (the memory manager, escalation callbacks, etc.). They may therefore
+// legitimately appear in an agent's configured tool list without being present
+// in the registry, and must not be treated as "unknown".
+var agentScopedTools = map[string]bool{
+	"memory.retrieve": true,
+	"memory.ingest":   true,
+	"comms.escalate":  true,
+	"profile.update":  true,
+}
+
+// IsAgentScoped reports whether name refers to a tool that is injected
+// per-agent at runtime instead of being registered globally.
+func IsAgentScoped(name string) bool {
+	dotted := strings.ReplaceAll(name, "_", ".")
+	return agentScopedTools[name] || agentScopedTools[dotted]
+}
+
+// ResolveForAgent resolves the named tools from the registry. Names that are
+// not present are returned in unresolved rather than causing a hard failure,
+// so a single typo (or an agent-scoped tool name) no longer wipes out an
+// agent's entire toolset. The caller decides how to report unresolved names.
+func (r *Registry) ResolveForAgent(names []string) (resolved []Tool, unresolved []string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	resolved := make([]Tool, 0, len(names))
+	resolved = make([]Tool, 0, len(names))
 	for _, name := range names {
-		t, ok := r.tools[name]
-		if !ok {
-			return nil, fmt.Errorf("tool not found: %s", name)
+		if t, ok := r.tools[name]; ok {
+			resolved = append(resolved, t)
+			continue
 		}
-		resolved = append(resolved, t)
+		unresolved = append(unresolved, name)
 	}
-	return resolved, nil
+	return resolved, unresolved
 }
 
 func (r *Registry) All() map[string]Tool {

@@ -69,6 +69,12 @@ func applyDefaults(cfg *KarmaxConfig) {
 	if cfg.Webhooks.Host == "" {
 		cfg.Webhooks.Host = "0.0.0.0"
 	}
+	if cfg.API.Port == 0 {
+		cfg.API.Port = 9091
+	}
+	if cfg.API.Host == "" {
+		cfg.API.Host = "0.0.0.0"
+	}
 
 	for i := range cfg.Agents {
 		if cfg.Agents[i].Provider == "" {
@@ -92,14 +98,41 @@ func applyDefaults(cfg *KarmaxConfig) {
 		if cfg.Agents[i].HealthCheck.IntervalSeconds == 0 {
 			cfg.Agents[i].HealthCheck.IntervalSeconds = 30
 		}
-		cfg.Agents[i].FallbackModels = ensureDefaultGeminiFallbacks(cfg.Agents[i].FallbackModels)
+		cfg.Agents[i].FallbackModels = ensureDefaultFallbacks(cfg.Agents[i].FallbackModels)
+	}
+
+	normalizeLoops(cfg)
+}
+
+// normalizeLoops fills loop defaults: a default agent (first agent), enabled=true,
+// and translates the human-friendly `every` interval into an `@every` cron spec.
+func normalizeLoops(cfg *KarmaxConfig) {
+	defaultAgent := ""
+	if len(cfg.Agents) > 0 {
+		defaultAgent = cfg.Agents[0].ID
+	}
+	for i := range cfg.Loops {
+		if cfg.Loops[i].Agent == "" {
+			cfg.Loops[i].Agent = defaultAgent
+		}
+		if cfg.Loops[i].Enabled == nil {
+			enabled := true
+			cfg.Loops[i].Enabled = &enabled
+		}
+		if cfg.Loops[i].Cron == "" && strings.TrimSpace(cfg.Loops[i].Every) != "" {
+			cfg.Loops[i].Cron = "@every " + strings.TrimSpace(cfg.Loops[i].Every)
+		}
 	}
 }
 
-func ensureDefaultGeminiFallbacks(fallbacks []FallbackModelConfig) []FallbackModelConfig {
+// ensureDefaultFallbacks guarantees that the agent always has the standard
+// fallback chain present. All fallbacks route through the local
+// Anthropic-compatible gateway (provider "anthropic"), so no extra keys are
+// required: claude-sonnet-4.6 first, then deepseek-3.2.
+func ensureDefaultFallbacks(fallbacks []FallbackModelConfig) []FallbackModelConfig {
 	defaults := []FallbackModelConfig{
-		{Provider: "google", Model: "gemini-3.1-pro-high"},
-		{Provider: "google", Model: "gemini-3.1-flash-lite"},
+		{Provider: "anthropic", Model: "claude-sonnet-4.6"},
+		{Provider: "anthropic", Model: "deepseek-3.2"},
 	}
 	if len(fallbacks) == 0 {
 		return defaults
@@ -132,6 +165,22 @@ func validate(cfg *KarmaxConfig) error {
 		}
 		seen[a.ID] = true
 	}
+
+	for _, l := range cfg.Loops {
+		if strings.TrimSpace(l.Name) == "" {
+			return fmt.Errorf("loop missing name")
+		}
+		if strings.TrimSpace(l.Cron) == "" {
+			return fmt.Errorf("loop %q must set cron or every", l.Name)
+		}
+		if strings.TrimSpace(l.Prompt) == "" {
+			return fmt.Errorf("loop %q missing prompt", l.Name)
+		}
+		if l.Agent != "" && !seen[l.Agent] {
+			return fmt.Errorf("loop %q references unknown agent %q", l.Name, l.Agent)
+		}
+	}
+
 	return nil
 }
 
@@ -163,11 +212,14 @@ func defaultConfig() KarmaxConfig {
 			Host:    "0.0.0.0",
 		},
 		AI: AIConfig{
-			DefaultProvider: "openai",
-			DefaultModel:    "gpt-4o",
+			DefaultProvider: "anthropic",
+			DefaultModel:    "claude-opus-4.6",
 			Providers: map[string]ProviderConfig{
-				"openai": {APIKey: "${OPENAI_API_KEY}"},
-				"google": {APIKey: "${GOOGLE_API_KEY}"},
+				"anthropic": {
+					APIKey:    "${ANTHROPIC_API_KEY}",
+					BaseURL:   "${ANTHROPIC_BASE_URL}",
+					AuthToken: "${ANTHROPIC_AUTH_TOKEN}",
+				},
 			},
 		},
 		Agents: []AgentDefConfig{
@@ -176,8 +228,8 @@ func defaultConfig() KarmaxConfig {
 				Name:         "Hello World Agent",
 				Description:  "A sample agent that responds to greetings",
 				SystemPrompt: "You are a friendly assistant. Respond helpfully and concisely.",
-				Model:        "gpt-4o",
-				Provider:     "openai",
+				Model:        "claude-opus-4.6",
+				Provider:     "anthropic",
 				Temperature:  0.7,
 				MaxTokens:    1024,
 				Memory: AgentMemoryConfig{
@@ -186,7 +238,7 @@ func defaultConfig() KarmaxConfig {
 					MaxEntries: 50,
 				},
 				RestartPolicy:  "on-failure",
-				FallbackModels: ensureDefaultGeminiFallbacks(nil),
+				FallbackModels: ensureDefaultFallbacks(nil),
 				Triggers: AgentTriggersConfig{
 					RunOnStart: true,
 				},

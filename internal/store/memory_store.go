@@ -77,6 +77,20 @@ func (s *Store) CountMemoryEntries(namespace string) (int, error) {
 	return count, err
 }
 
+func (s *Store) DeleteMemoryEntry(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM memory_entries WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) UpdateMemoryEntry(id, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE memory_entries SET content = ? WHERE id = ?`, content, id)
+	return err
+}
+
 func (s *Store) DeleteOldMemoryEntries(namespace string, keepLast int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -356,8 +356,10 @@ func (m *Manager) AlertAlternative(agentID, primaryChannelID, content string) er
 			targetAgentID = entry.agentID
 		}
 		target := m.lastTargetFor(targetAgentID, id)
-		if target == "" {
-			continue // skip channels with no known target
+		if target == "" && entry.channel.Type() != "whatsapp" {
+			// Skip channels with no known target, unless the channel can
+			// self-route (WhatsApp falls back to its configured target_chat).
+			continue
 		}
 		if err := m.send(context.Background(), id, target, content, false); err != nil {
 			lastErr = err

@@ -157,10 +157,20 @@ func (a *Agent) initModels() error {
 	if namespace == "" {
 		namespace = a.def.ID
 	}
+	// Build fallback models from agent def (shared by all sub-models).
+	var fallbackModels []karmahelper.FallbackModel
+	for _, fb := range a.def.FallbackModels {
+		fallbackModels = append(fallbackModels, karmahelper.FallbackModel{
+			Provider: fb.Provider,
+			Model:    fb.Model,
+		})
+	}
+
 	a.memoryModel = NewMemoryModel(MemoryModelConfig{
 		Provider:  memProvider,
 		Model:     memModel,
 		Namespace: namespace,
+		Fallbacks: fallbackModels,
 	}, a.store, a.memory, a.log)
 
 	// Add the memory.retrieve tool wrapper
@@ -173,17 +183,15 @@ func (a *Agent) initModels() error {
 		AgentID:   a.def.ID,
 	})
 
+	// Add the profile.update tool (agent-scoped) for maintaining the curated
+	// ABOUT_ME.md document about the operator.
+	allTools = append(allTools, &builtin.ProfileTool{
+		MemoryMgr: a.memory,
+		AgentID:   a.def.ID,
+	})
+
 	if a.commsEscalate != nil {
 		allTools = append(allTools, &commsEscalateTool{agent: a})
-	}
-
-	// Build fallback models from agent def
-	var fallbackModels []karmahelper.FallbackModel
-	for _, fb := range a.def.FallbackModels {
-		fallbackModels = append(fallbackModels, karmahelper.FallbackModel{
-			Provider: fb.Provider,
-			Model:    fb.Model,
-		})
 	}
 
 	// Initialize main model session
@@ -236,6 +244,18 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			cp.AgentID = a.def.ID
 			out = append(out, &cp)
 		case *builtin.CodexTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			out = append(out, &cp)
+		case *builtin.ProposeTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			out = append(out, &cp)
+		case *builtin.CalendarAddTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			out = append(out, &cp)
+		case *builtin.ReminderAddTool:
 			cp := *tt
 			cp.AgentID = a.def.ID
 			out = append(out, &cp)
@@ -331,6 +351,22 @@ func (t *commsEscalateTool) Execute(ctx context.Context, input map[string]any) (
 		"status":             "permission_requested",
 		"primary_channel_id": primaryChannelID,
 	}), nil
+}
+
+// buildProfileContext injects the curated ABOUT_ME profile so the agent always
+// knows who the operator is from the profile (never a hardcoded identity).
+func (a *Agent) buildProfileContext() string {
+	if a.memory == nil {
+		return ""
+	}
+	p, err := a.memory.ReadProfile()
+	if err != nil || strings.TrimSpace(p) == "" {
+		return ""
+	}
+	if len(p) > 8000 {
+		p = p[:8000] + "\n…(truncated)"
+	}
+	return "## Operator profile (ABOUT_ME — this is who you serve)\n\n" + p + "\n\n"
 }
 
 // buildSessionContext queries coding sessions and formats them as context.
@@ -555,7 +591,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := sessionCtx + commsCtx + retrievedCtx
+	dynamicCtx := a.buildProfileContext() + sessionCtx + commsCtx + retrievedCtx
 	if dynamicCtx != "" && a.mainSession != nil {
 		a.mainSession.SetContext(dynamicCtx)
 	} else if dynamicCtx != "" {
@@ -631,6 +667,70 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Legacy fallback: this path is only used if initModels() failed
 	return a.handleEventLegacy(evt, userPrompt)
+}
+
+// Chat processes a single synchronous user message through the agent's main
+// model and returns the reply. It refreshes long-term memory on every message
+// (per the operator's requirement) and runs compaction when needed. This is the
+// path used by the HTTP API so the phone app can talk to the agent directly.
+func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", fmt.Errorf("empty message")
+	}
+
+	a.mu.RLock()
+	session := a.mainSession
+	a.mu.RUnlock()
+	if session == nil {
+		return "", fmt.Errorf("agent %s is not ready", a.def.ID)
+	}
+
+	a.mu.Lock()
+	a.lastEvent = time.Now()
+	a.mu.Unlock()
+
+	evt := bus.Event{Kind: "api.chat", AgentID: a.def.ID, Payload: map[string]any{"content": text}}
+
+	// Inject the same dynamic context the event loop uses: active coding
+	// sessions, available comms channels, and retrieved long-term memory.
+	dynamicCtx := a.buildProfileContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
+	if strings.TrimSpace(dynamicCtx) != "" {
+		session.SetContext(dynamicCtx)
+	}
+
+	response, toolCalls, err := session.ProcessMessage(ctx, text)
+	if err != nil {
+		return "", fmt.Errorf("chat: %w", err)
+	}
+	response = cleanOutboundResponse(response)
+
+	for _, tc := range toolCalls {
+		a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
+			"tool": tools.CanonicalName(tc.Name), "input": tc.Input,
+		}))
+	}
+
+	// Keep memory updated on every interaction.
+	a.ingestInteractionMemory(ctx, evt, text, response)
+
+	if session.NeedsCompaction() && a.summaryModel != nil {
+		history := session.GetHistory()
+		if compacted, cerr := a.summaryModel.Compact(ctx, history, session.GetKeepRecent(), a.store, a.def.ID, a.memory); cerr == nil {
+			session.SetHistory(*compacted)
+			session.ResetTokenCount()
+		} else {
+			a.log.Warn("compaction failed during chat", zap.Error(cerr))
+		}
+	}
+
+	a.bus.Publish(bus.NewEvent(bus.EventAgentMessage, a.def.ID, map[string]any{
+		"response": response,
+		"source":   "api.chat",
+	}))
+	a.persistSnapshot()
+
+	return response, nil
 }
 
 func (a *Agent) autoReplyToOrigin(evt bus.Event, response, userPrompt string) {
@@ -749,10 +849,18 @@ func (a *Agent) ingestInteractionMemory(ctx context.Context, evt bus.Event, user
 		return
 	}
 
-	userContent := memoryQueryFromEvent(evt, userPrompt)
-	if strings.TrimSpace(userContent) != "" {
-		a.ingestMemory(ctx, userContent, classifyMemoryCategory(userContent), "high", []string{string(evt.Kind), "user"})
+	// Only auto-ingest genuine conversational turns — a real user message in the
+	// event payload (comms.message / api.chat). Loop/scheduled/webhook events
+	// carry prompt scaffolding ("## Recent Context …"), not facts; ingesting those
+	// pollutes memory. Those flows ingest real facts via explicit memory.ingest
+	// tool calls instead.
+	userContent, _ := evt.Payload["content"].(string)
+	userContent = strings.TrimSpace(cleanOutboundResponse(userContent))
+	if userContent == "" {
+		return
 	}
+
+	a.ingestMemory(ctx, truncateStr(userContent, 1000), classifyMemoryCategory(userContent), "high", []string{string(evt.Kind), "user"})
 
 	response = cleanOutboundResponse(response)
 	if strings.TrimSpace(response) != "" {
@@ -919,6 +1027,17 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 
 	prompt += "## Current Task\n\n"
 
+	// Loops and other prompt-carrying events surface their instruction directly
+	// so the agent acts on the prompt rather than parsing raw event JSON.
+	if loopName, p := extractLoopPrompt(evt); p != "" {
+		if loopName != "" {
+			prompt += fmt.Sprintf("Scheduled loop **%s** fired. Decide what to do and act on this instruction:\n\n%s\n", loopName, p)
+		} else {
+			prompt += p + "\n"
+		}
+		return prompt
+	}
+
 	if evt.Payload != nil {
 		payloadJSON, _ := json.MarshalIndent(evt.Payload, "", "  ")
 		prompt += fmt.Sprintf("Event: %s\nAgent: %s\n\n```json\n%s\n```\n", evt.Kind, evt.AgentID, string(payloadJSON))
@@ -927,6 +1046,26 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 	}
 
 	return prompt
+}
+
+// extractLoopPrompt pulls a human-written instruction (and optional loop name)
+// out of an event. Direct events carry "prompt" at the top level; scheduled-job
+// events nest the job payload under "payload".
+func extractLoopPrompt(evt bus.Event) (loopName, prompt string) {
+	if evt.Payload == nil {
+		return "", ""
+	}
+	if p, ok := evt.Payload["prompt"].(string); ok && strings.TrimSpace(p) != "" {
+		ln, _ := evt.Payload["loop"].(string)
+		return ln, p
+	}
+	if inner, ok := evt.Payload["payload"].(map[string]any); ok {
+		if p, ok := inner["prompt"].(string); ok && strings.TrimSpace(p) != "" {
+			ln, _ := inner["loop"].(string)
+			return ln, p
+		}
+	}
+	return "", ""
 }
 
 func (a *Agent) persistSnapshot() {

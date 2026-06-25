@@ -12,8 +12,20 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/runtime"
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
+
+// loadDotEnv loads environment variables from a .env file (working directory
+// first, then ~/.karmax/.env) so that ${VAR} references in karmax.yaml expand
+// and provider SDKs pick up credentials. It is non-fatal and never overrides
+// variables already present in the real environment.
+func loadDotEnv() {
+	_ = godotenv.Load()
+	if home, err := os.UserHomeDir(); err == nil {
+		_ = godotenv.Load(filepath.Join(home, ".karmax", ".env"))
+	}
+}
 
 var Version = "dev"
 
@@ -157,6 +169,7 @@ func findConfig() string {
 }
 
 func runStart() {
+	loadDotEnv()
 	cfgPath := findConfig()
 
 	cfg, err := config.Load(cfgPath)
@@ -238,6 +251,7 @@ func runInit() {
 }
 
 func runDoctor() {
+	loadDotEnv()
 	fmt.Println("karmax doctor")
 	fmt.Println("------------")
 
@@ -267,7 +281,7 @@ func runDoctor() {
 		fmt.Println("MISSING (will be created on first start)")
 	}
 
-	envVars := []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY"}
+	envVars := []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "WHATSAPP_TARGET"}
 	for _, v := range envVars {
 		val := os.Getenv(v)
 		if val != "" {
@@ -442,6 +456,7 @@ func runConfigCmd(args []string) {
 		fmt.Printf("  agents: %d\n", len(cfg.Agents))
 		fmt.Printf("  MCPs:   %d\n", len(cfg.MCPs))
 		fmt.Printf("  routes: %d\n", len(cfg.Webhooks.Routes))
+		fmt.Printf("  loops:  %d\n", len(cfg.Loops))
 	case "edit":
 		cfgPath := findConfig()
 		editor := os.Getenv("EDITOR")

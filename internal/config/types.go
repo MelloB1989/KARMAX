@@ -8,10 +8,38 @@ type KarmaxConfig struct {
 	Karmax    KarmaxCoreConfig      `yaml:"karmax"`
 	Dashboard DashboardConfig       `yaml:"dashboard"`
 	Webhooks  WebhooksConfig        `yaml:"webhooks"`
+	API       APIConfig             `yaml:"api"`
 	AI        AIConfig              `yaml:"ai"`
 	MCPs      []mcp.MCPServerConfig `yaml:"mcps"`
 	Comms     CommsConfig           `yaml:"comms"`
 	Agents    []AgentDefConfig      `yaml:"agents"`
+	Loops     []LoopConfig          `yaml:"loops"`
+	ColdScan  ColdScanConfig        `yaml:"cold_scan"`
+}
+
+// ColdScanConfig controls the background "cold" memory worker that summarizes
+// older WhatsApp chats into chat_summaries for the retrieval sub-agent.
+type ColdScanConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	IntervalMinutes int    `yaml:"interval_minutes"` // default 20
+	PerTick         int    `yaml:"per_tick"`         // chats per tick, default 4
+	HotDays         int    `yaml:"hot_days"`         // active window, default 14
+	MinGroupOwn     int    `yaml:"min_group_own"`    // min own msgs for a group, default 5
+	WacliPath       string `yaml:"wacli_path"`
+}
+
+// LoopConfig declares a recurring trigger that fires a prompt to an agent on a
+// schedule. The agent decides what to do based on the prompt. Use `every` for
+// simple intervals ("30m", "6h") or `cron` for a specific time
+// (sec min hour dom mon dow).
+type LoopConfig struct {
+	Name    string         `yaml:"name"`
+	Cron    string         `yaml:"cron"`
+	Every   string         `yaml:"every"`
+	Prompt  string         `yaml:"prompt"`
+	Agent   string         `yaml:"agent"`   // defaults to the first agent
+	Enabled *bool          `yaml:"enabled"` // defaults to true
+	Payload map[string]any `yaml:"payload"` // optional extra context for the event
 }
 
 type CommsConfig struct {
@@ -44,6 +72,15 @@ type WebhooksConfig struct {
 	Port    int               `yaml:"port"`
 	Host    string            `yaml:"host"`
 	Routes  []WebhookRouteConfig `yaml:"routes"`
+}
+
+// APIConfig configures the HTTP API the phone app talks to. It binds to
+// 0.0.0.0 so it is reachable over both the LAN and Tailscale. Auth is via the
+// KARMAX_API_TOKEN environment variable.
+type APIConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Port    int    `yaml:"port"`
+	Host    string `yaml:"host"`
 }
 
 type WebhookRouteConfig struct {

@@ -38,3 +38,31 @@ func TestRegistrySupportsCanonicalToolNames(t *testing.T) {
 		t.Fatalf("List() should dedupe dotted/canonical registrations, got %d", got)
 	}
 }
+
+func TestResolveForAgentSkipsUnknownTools(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(registryTestTool{}) // registers shell.exec
+
+	resolved, unresolved := reg.ResolveForAgent([]string{"shell.exec", "memory.ingest", "does.not.exist"})
+	if len(resolved) != 1 {
+		t.Fatalf("expected 1 resolved tool, got %d", len(resolved))
+	}
+	if len(unresolved) != 2 {
+		t.Fatalf("expected 2 unresolved names, got %v", unresolved)
+	}
+}
+
+func TestIsAgentScoped(t *testing.T) {
+	scoped := []string{"memory.ingest", "memory.retrieve", "comms.escalate", "profile.update", "memory_ingest"}
+	for _, name := range scoped {
+		if !IsAgentScoped(name) {
+			t.Errorf("expected %q to be agent-scoped", name)
+		}
+	}
+	global := []string{"shell.exec", "claude_code.call", "does.not.exist"}
+	for _, name := range global {
+		if IsAgentScoped(name) {
+			t.Errorf("expected %q NOT to be agent-scoped", name)
+		}
+	}
+}

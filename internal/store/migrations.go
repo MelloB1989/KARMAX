@@ -145,6 +145,59 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_chat_agent ON chat_history(agent_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_chat_time ON chat_history(created_at)`,
+
+	// 012_push_tokens
+	`CREATE TABLE IF NOT EXISTS push_tokens (
+		token       TEXT PRIMARY KEY,
+		platform    TEXT,
+		created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	// 013_proposals (human-in-the-loop approvals)
+	`CREATE TABLE IF NOT EXISTS proposals (
+		id              TEXT PRIMARY KEY,
+		agent_id        TEXT NOT NULL,
+		kind            TEXT,
+		title           TEXT NOT NULL,
+		summary         TEXT,
+		context         TEXT,
+		proposed_action TEXT,
+		status          TEXT NOT NULL DEFAULT 'pending',
+		decision_note   TEXT,
+		result          TEXT,
+		created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
+		decided_at      DATETIME
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status)`,
+	`CREATE INDEX IF NOT EXISTS idx_proposals_time ON proposals(created_at)`,
+
+	// 014_device_actions (on-device actions the phone app performs, e.g. EventKit)
+	`CREATE TABLE IF NOT EXISTS device_actions (
+		id          TEXT PRIMARY KEY,
+		agent_id    TEXT NOT NULL,
+		kind        TEXT NOT NULL,
+		payload     TEXT NOT NULL,
+		status      TEXT NOT NULL DEFAULT 'pending',
+		result      TEXT,
+		created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+		done_at     DATETIME
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_device_actions_status ON device_actions(status)`,
+
+	// 015_chat_summaries (cold per-chat context from background scans)
+	`CREATE TABLE IF NOT EXISTS chat_summaries (
+		chat_jid          TEXT PRIMARY KEY,
+		chat_name         TEXT,
+		is_group          INTEGER DEFAULT 0,
+		summary           TEXT,
+		message_count     INTEGER DEFAULT 0,
+		own_message_count INTEGER DEFAULT 0,
+		last_message_at   DATETIME,
+		summarized_at     DATETIME,
+		status            TEXT DEFAULT 'pending'
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_chat_summaries_status ON chat_summaries(status)`,
 }
 
 func (s *Store) migrate() error {
