@@ -42,11 +42,20 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 
 	sessionID, _ := input["session_id"].(string)
 	resumedFrom := ""
+	resuming := sessionID != ""
 	if sessionID == "" {
 		if reusable := findReusableCodingSession(t.Store, t.AgentID, "claude_code", prompt); reusable != nil {
 			sessionID = reusable.SessionID
 			resumedFrom = reusable.ID
+			resuming = true
 		}
+	}
+
+	// Pre-generate a stable session ID for new sessions so subsequent calls can
+	// resume them. Passing --session-id up front (instead of letting Claude Code
+	// mint its own and then discarding it) is what makes --resume work later.
+	if sessionID == "" {
+		sessionID = uuid.New().String()
 	}
 
 	workingDir, _ := input["working_dir"].(string)
@@ -54,9 +63,9 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 		workingDir = "/home/mellob"
 	}
 
-	args := []string{"--print", "--output-format", "text"}
-	if sessionID != "" {
-		args = append(args, "--session-id", sessionID, "--resume")
+	args := []string{"--print", "--output-format", "text", "--session-id", sessionID}
+	if resuming {
+		args = append(args, "--resume")
 	}
 	args = append(args, prompt)
 
@@ -67,10 +76,6 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 	cmd.Dir = workingDir
 
 	output, err := cmd.CombinedOutput()
-
-	if sessionID == "" {
-		sessionID = uuid.New().String()
-	}
 
 	status := "completed"
 	if err != nil {

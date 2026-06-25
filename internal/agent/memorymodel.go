@@ -2,49 +2,55 @@ package agent
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
-	"github.com/MelloB1989/karma/models"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
+	"github.com/MelloB1989/karmax/internal/tools"
+	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"go.uber.org/zap"
 )
 
-// MemoryModel is a lightweight model session used as a tool by the main model
-// to search the agent's memory and page index for relevant context.
+// MemoryModel is an agentic memory-retrieval sub-agent. The main orchestration
+// agent calls it via the memory.retrieve tool with a plain question; this model
+// then autonomously queries the memory database, the page-index tree, the cold
+// chat summaries, the operator profile, and (when needed) live WhatsApp — across
+// multiple tool calls — and returns a synthesized, accurate context block. The
+// orchestrator never has to know HOW the context was assembled. (Mirrors the
+// retrieve_context two-model pattern from the page-index design.)
 type MemoryModel struct {
-	session   *karmahelper.Session
-	history   models.AIChatHistory
+	cfg       MemoryModelConfig
 	store     *store.Store
 	memMgr    *memory.Manager
 	namespace string
 	log       *zap.Logger
 }
 
-// MemoryModelConfig configures the memory retrieval model.
+// MemoryModelConfig configures the retrieval sub-agent.
 type MemoryModelConfig struct {
 	Provider  string
 	Model     string
 	Namespace string
+	WacliPath string
+	Fallbacks []karmahelper.FallbackModel
 }
 
-const memoryModelSystemPrompt = `You are a memory retrieval assistant. When given a query, search through the agent's memory and page index to find relevant context. Return structured results with relevance scores. Be thorough but concise.`
+const memoryRetrieverPrompt = `You are KARMAX's memory retrieval agent. The orchestration agent will ask you for context with a question or topic. Your only job is to return the most ACCURATE, relevant context it needs — nothing more.
 
-// NewMemoryModel creates a memory model that searches memory entries and
-// the page index tree on behalf of the main model.
+Tools:
+- profile_read: the authoritative ABOUT_ME profile (identity, projects, people, goals). Read it first when identity/relationships matter.
+- mem_search: semantic search over long-term memory. Run SEVERAL focused queries with different keywords — don't rely on one.
+- mem_recent: the freshest "hot" memory (what's going on right now).
+- tree_search: the structured page-index of memory.
+- chat_summaries: background ("cold") summaries of older conversations.
+- whatsapp.read: LIVE WhatsApp — pull the actual recent messages of a chat. Use ONLY when stored memory is insufficient or you must verify the latest state, since it is slower.
+
+Method: make multiple queries, cross-check sources, and prefer specific facts over vague ones. Resolve conflicts in favor of the profile and the most recent entries. Then output a concise, well-structured context block (bullet points or short sections) containing ONLY facts relevant to the question, each with a brief source tag (profile / memory / chat / live). If you find nothing relevant, reply exactly: "No relevant context found." Never invent facts.`
+
+// NewMemoryModel creates the agentic retrieval sub-agent.
 func NewMemoryModel(cfg MemoryModelConfig, s *store.Store, memMgr *memory.Manager, log *zap.Logger) *MemoryModel {
-	sess := karmahelper.NewSession(karmahelper.SessionConfig{
-		Provider:     cfg.Provider,
-		Model:        cfg.Model,
-		SystemPrompt: memoryModelSystemPrompt,
-		MaxTokens:    4096,
-	}, nil)
-
 	return &MemoryModel{
-		session:   sess,
-		history:   models.AIChatHistory{Messages: []models.AIMessage{}},
+		cfg:       cfg,
 		store:     s,
 		memMgr:    memMgr,
 		namespace: cfg.Namespace,
@@ -52,102 +58,48 @@ func NewMemoryModel(cfg MemoryModelConfig, s *store.Store, memMgr *memory.Manage
 	}
 }
 
-// Retrieve searches both the memory manager (using semantic multi-keyword
-// search) and the page index for content matching query, then returns a
-// formatted summary of all results with categories and relevance scores.
+// retrievalTools is the tool set the sub-agent uses to query memory.
+func (mm *MemoryModel) retrievalTools() []tools.Tool {
+	return []tools.Tool{
+		&profileReadTool{mem: mm.memMgr},
+		&memSearchTool{mem: mm.memMgr},
+		&memRecentTool{mem: mm.memMgr},
+		&pageIndexTool{store: mm.store, namespace: mm.namespace},
+		&chatSummaryTool{store: mm.store},
+		&builtin.WhatsAppReadTool{WacliPath: mm.cfg.WacliPath},
+	}
+}
+
+// Retrieve runs the sub-agent for one question and returns the synthesized
+// context. A fresh session is used per call so retrieval is stateless and
+// reliable (no cross-question contamination).
 func (mm *MemoryModel) Retrieve(ctx context.Context, query string) (string, error) {
-	var sb strings.Builder
+	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Provider:       mm.cfg.Provider,
+		Model:          mm.cfg.Model,
+		SystemPrompt:   memoryRetrieverPrompt,
+		MaxTokens:      4096,
+		FallbackModels: mm.cfg.Fallbacks,
+	}, mm.retrievalTools())
 
-	sb.WriteString(fmt.Sprintf("## Memory Search Results for: %s\n\n", query))
-
-	// Get total memory entry count for context.
-	totalEntries, countErr := mm.memMgr.CountEntries()
-	if countErr == nil {
-		sb.WriteString(fmt.Sprintf("*Searching across %d memory entries.*\n\n", totalEntries))
-	}
-
-	// Search memory entries via semantic multi-keyword search.
-	memResults, err := mm.memMgr.SearchSemantic(query, 10)
+	resp, _, _, err := sess.Chat(ctx, query)
 	if err != nil {
-		mm.log.Warn("semantic memory search failed", zap.Error(err))
-		sb.WriteString("*Memory search unavailable.*\n\n")
-	} else if len(memResults) == 0 {
-		sb.WriteString("*No memory entries matched.*\n\n")
-	} else {
-		// Group results by category (role).
-		categories := make(map[string][]memory.SearchResult)
-		for _, r := range memResults {
-			cat := r.Entry.Role
-			if cat == "" {
-				cat = "general"
-			}
-			categories[cat] = append(categories[cat], r)
-		}
-
-		for cat, results := range categories {
-			sb.WriteString(fmt.Sprintf("### Category: %s\n\n", cat))
-			for _, r := range results {
-				sb.WriteString(fmt.Sprintf("- **[Relevance: %.0f%%]** %s\n", r.Score*100, r.Excerpt))
-			}
-			sb.WriteString("\n")
-		}
+		mm.log.Warn("memory retrieval failed", zap.Error(err))
+		return "", err
 	}
-
-	// Search page index nodes.
-	sb.WriteString("## PageIndex Results\n\n")
-	nodes, err := mm.store.SearchPageIndexNodes(mm.namespace, query, 10)
-	if err != nil {
-		mm.log.Warn("page index search failed", zap.Error(err))
-		sb.WriteString("*Page index search unavailable.*\n\n")
-	} else if len(nodes) == 0 {
-		sb.WriteString("*No page index nodes matched.*\n\n")
-	} else {
-		for _, n := range nodes {
-			summary := n.Summary
-			if summary == "" {
-				summary = n.SearchText
-				if len(summary) > 200 {
-					summary = summary[:200] + "..."
-				}
-			}
-			sb.WriteString(fmt.Sprintf("### %s\n\n%s\n\n", n.Title, summary))
-		}
-	}
-
-	result := sb.String()
-
-	// Track this exchange in the memory model's own history for continuity.
-	mm.history.Messages = append(mm.history.Messages, models.AIMessage{
-		Role:    models.User,
-		Message: query,
-	})
-	mm.history.Messages = append(mm.history.Messages, models.AIMessage{
-		Role:    models.Assistant,
-		Message: result,
-	})
-
-	// Trim history to prevent unbounded growth: keep last 50 messages.
-	if len(mm.history.Messages) > 100 {
-		mm.history.Messages = mm.history.Messages[len(mm.history.Messages)-50:]
-	}
-
-	return result, nil
+	return resp, nil
 }
 
 // Stats returns counts of total memory entries and tree nodes for
 // observability and debugging.
 func (mm *MemoryModel) Stats() map[string]int {
 	stats := make(map[string]int)
-
 	totalEntries, err := mm.memMgr.CountEntries()
 	if err != nil {
-		mm.log.Warn("failed to count memory entries for stats", zap.Error(err))
 		stats["total_entries"] = -1
 	} else {
 		stats["total_entries"] = totalEntries
 	}
-
 	stats["tree_nodes"] = mm.memMgr.TreeNodeCount()
-
 	return stats
 }

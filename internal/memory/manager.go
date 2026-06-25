@@ -50,6 +50,31 @@ func (m *Manager) Namespace() string {
 	return m.namespace
 }
 
+// ProfilePath returns the path to the curated "about me" profile document.
+// This is a single living Markdown file the agent rewrites over time, distinct
+// from the append-only session log.
+func (m *Manager) ProfilePath() string {
+	return filepath.Join(m.baseDir, "ABOUT_ME.md")
+}
+
+// ReadProfile returns the current curated profile document, or an empty string
+// if it has not been created yet.
+func (m *Manager) ReadProfile() (string, error) {
+	data, err := os.ReadFile(m.ProfilePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(data), nil
+}
+
+// WriteProfile overwrites the curated profile document with content.
+func (m *Manager) WriteProfile(content string) error {
+	return os.WriteFile(m.ProfilePath(), []byte(content), 0644)
+}
+
 func (m *Manager) Write(entry MemoryEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -283,14 +308,31 @@ func (m *Manager) rebuildTree() {
 		Title:  m.namespace,
 	}
 
+	// Group entries under category nodes (root → category → entries) so the
+	// tree has real structure for the 2D view and the 3D graph.
+	byCat := map[string]*TreeNode{}
+	var order []string
 	for _, e := range entries {
-		child := &TreeNode{
-			NodeID:  e.ID,
-			Title:   fmt.Sprintf("%s — %s", e.Role, e.CreatedAt.Format("2006-01-02 15:04")),
-			Content: e.Content,
-			Summary: truncate(e.Content, 100),
+		cat := categoryOf(e)
+		node := byCat[cat]
+		if node == nil {
+			node = &TreeNode{NodeID: "cat:" + cat, Title: cat}
+			byCat[cat] = node
+			order = append(order, cat)
 		}
-		root.Children = append(root.Children, child)
+		title := cleanEntryTitle(e.Content)
+		node.Children = append(node.Children, &TreeNode{
+			NodeID:  e.ID,
+			Title:   truncate(title, 70),
+			Content: e.Content,
+			Summary: truncate(title, 120),
+		})
+	}
+	for _, cat := range order {
+		n := byCat[cat]
+		n.Summary = fmt.Sprintf("%d memories", len(n.Children))
+		n.Title = fmt.Sprintf("%s (%d)", cat, len(n.Children))
+		root.Children = append(root.Children, n)
 	}
 
 	m.tree = root
@@ -387,6 +429,38 @@ func searchTree(node *TreeNode, query string, limit int) []*TreeNode {
 	walk(node)
 
 	return results
+}
+
+// categoryOf derives an entry's category from its "[category][importance] …"
+// content prefix, falling back to its first tag.
+func categoryOf(e store.StoredMemoryEntry) string {
+	c := strings.TrimSpace(e.Content)
+	if strings.HasPrefix(c, "[") {
+		if i := strings.Index(c, "]"); i > 1 {
+			if cat := strings.TrimSpace(c[1:i]); cat != "" {
+				return cat
+			}
+		}
+	}
+	var tags []string
+	_ = json.Unmarshal([]byte(e.Tags), &tags)
+	if len(tags) > 0 && strings.TrimSpace(tags[0]) != "" {
+		return strings.TrimSpace(tags[0])
+	}
+	return "context"
+}
+
+// cleanEntryTitle strips the leading "[category][importance]" tags and newlines.
+func cleanEntryTitle(content string) string {
+	s := strings.TrimSpace(content)
+	for strings.HasPrefix(s, "[") {
+		i := strings.Index(s, "]")
+		if i < 0 {
+			break
+		}
+		s = strings.TrimSpace(s[i+1:])
+	}
+	return strings.ReplaceAll(s, "\n", " ")
 }
 
 func truncate(s string, maxLen int) string {

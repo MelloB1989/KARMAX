@@ -7,13 +7,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/coldscan"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/comms/discord"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/internal/dashboard"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -38,6 +42,8 @@ type KarmaxRuntime struct {
 	webhooks  *webhook.WebhookServer
 	dashboard *dashboard.Server
 	comms     *comms.Manager
+	api       *api.Server
+	cold      *coldscan.Scanner
 }
 
 func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
@@ -84,6 +90,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Create comms manager
 	commsMgr := comms.NewManager(b, s, log)
 
+	// Capture WhatsApp settings so the whatsapp.read tool can reuse them.
+	waCLIPath := "/home/mellob/code/wacli/wacli"
+	waTarget := ""
+
 	for _, chCfg := range cfg.Comms.Channels {
 		switch chCfg.Type {
 		case "discord":
@@ -102,6 +112,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				wacliPath = "/home/mellob/code/wacli/wacli"
 			}
 			targetChat := chCfg.Settings["target_chat"]
+			waCLIPath = wacliPath
+			waTarget = targetChat
 			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
@@ -125,6 +137,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send})
 	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: "/home/mellob/.local/bin/gws"})
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.local/bin/gws"})
+	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget})
+	toolReg.Register(&builtin.NtfyPushTool{Server: os.Getenv("NTFY_SERVER"), Topic: os.Getenv("NTFY_TOPIC")})
+	toolReg.Register(&builtin.AppPushTool{Store: s})
+	toolReg.Register(&builtin.ProposeTool{Store: s})
+	toolReg.Register(&builtin.CalendarAddTool{Store: s})
+	toolReg.Register(&builtin.ReminderAddTool{Store: s})
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 
@@ -140,10 +158,19 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			mem = memFactory.For(def.ID, def.ID)
 		}
 
-		agentTools, err := toolReg.ResolveForAgent(def.Tools)
-		if err != nil {
-			log.Warn("failed to resolve tools for agent", zap.String("agent", def.ID), zap.Error(err))
-			agentTools = nil
+		agentTools, unresolved := toolReg.ResolveForAgent(def.Tools)
+		// Agent-scoped tools (memory.*, comms.escalate, profile.update) are
+		// injected per-agent in initModels, so they are expected to be absent
+		// from the global registry. Only warn about genuinely unknown names,
+		// and never drop the tools that did resolve.
+		var unknownTools []string
+		for _, name := range unresolved {
+			if !tools.IsAgentScoped(name) {
+				unknownTools = append(unknownTools, name)
+			}
+		}
+		if len(unknownTools) > 0 {
+			log.Warn("agent lists unknown tools (skipped)", zap.String("agent", def.ID), zap.Strings("tools", unknownTools))
 		}
 
 		var mcpTools []tools.Tool
@@ -202,6 +229,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	dashAddr := fmt.Sprintf("%s:%d", cfg.Dashboard.Host, cfg.Dashboard.Port)
 	dash := dashboard.NewServer(dashAddr, agentReg, sched, wh, memFactory, toolReg, s, b, log)
 
+	var apiSrv *api.Server
+	if cfg.API.Enabled {
+		apiAddr := fmt.Sprintf("%s:%d", cfg.API.Host, cfg.API.Port)
+		apiSrv = api.New(apiAddr, cfg.API.Port, os.Getenv("KARMAX_API_TOKEN"), agentReg, s, sched, memFactory, cfg, log)
+	}
+
 	// Wire bus events to agent inboxes (webhooks, scheduled jobs, user-defined, and comms messages)
 	sub, _ := b.Subscribe(bus.EventWebhookFired, bus.EventScheduledJob, bus.EventUserDefined, bus.EventCommsMessage)
 	go func() {
@@ -222,6 +255,32 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 	}()
 
+	// Cold-memory background worker: summarizes older WhatsApp chats into
+	// chat_summaries for the retrieval sub-agent (uses the cheaper summary model).
+	coldCfg := coldscan.Config{
+		Enabled:     cfg.ColdScan.Enabled,
+		Interval:    time.Duration(cfg.ColdScan.IntervalMinutes) * time.Minute,
+		PerTick:     cfg.ColdScan.PerTick,
+		HotDays:     cfg.ColdScan.HotDays,
+		MinGroupOwn: cfg.ColdScan.MinGroupOwn,
+		WacliPath:   cfg.ColdScan.WacliPath,
+	}
+	if len(cfg.Agents) > 0 {
+		a := cfg.Agents[0]
+		coldCfg.Provider = a.SummaryModel.Provider
+		if coldCfg.Provider == "" {
+			coldCfg.Provider = a.Provider
+		}
+		coldCfg.Model = a.SummaryModel.Model
+		if coldCfg.Model == "" {
+			coldCfg.Model = a.Model
+		}
+		for _, fb := range a.FallbackModels {
+			coldCfg.Fallbacks = append(coldCfg.Fallbacks, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
+		}
+	}
+	coldScanner := coldscan.New(coldCfg, s, log)
+
 	return &KarmaxRuntime{
 		cfg:       cfg,
 		log:       log,
@@ -235,6 +294,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		webhooks:  wh,
 		dashboard: dash,
 		comms:     commsMgr,
+		api:       apiSrv,
+		cold:      coldScanner,
 	}, nil
 }
 
@@ -262,21 +323,52 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		rt.publishCritical("", "agent start error", map[string]any{"error": err.Error()})
 	}
 
+	go rt.cold.Start(ctx)
+
 	// Start health checks for all agents
 	for _, a := range rt.agents.List() {
 		a.StartHealthCheck(ctx)
 	}
 
-	// Register scheduler triggers from agent definitions
+	// Register scheduler triggers from agent definitions. Stable IDs prevent
+	// duplicate jobs from accumulating in the store across restarts.
 	for _, agentCfg := range rt.cfg.Agents {
-		for _, sched := range agentCfg.Triggers.Schedules {
+		for i, sched := range agentCfg.Triggers.Schedules {
 			rt.scheduler.AddJob(scheduler.ScheduledJob{
+				ID:      fmt.Sprintf("agent:%s:sched:%d", agentCfg.ID, i),
 				Name:    fmt.Sprintf("%s-trigger", agentCfg.ID),
 				Cron:    sched.Cron,
 				AgentID: agentCfg.ID,
 				Payload: sched.Payload,
 				Enabled: true,
 			})
+		}
+	}
+
+	// Register declarative loops: each fires its prompt to the target agent.
+	for _, loop := range rt.cfg.Loops {
+		if loop.Enabled != nil && !*loop.Enabled {
+			continue
+		}
+		payload := map[string]any{
+			"loop":   loop.Name,
+			"prompt": loop.Prompt,
+		}
+		for k, v := range loop.Payload {
+			if k == "loop" || k == "prompt" {
+				continue
+			}
+			payload[k] = v
+		}
+		if err := rt.scheduler.AddJob(scheduler.ScheduledJob{
+			ID:      "loop:" + loop.Name,
+			Name:    "loop:" + loop.Name,
+			Cron:    loop.Cron,
+			AgentID: loop.Agent,
+			Payload: payload,
+			Enabled: true,
+		}); err != nil {
+			rt.log.Error("failed to register loop", zap.String("loop", loop.Name), zap.Error(err))
 		}
 	}
 
@@ -299,6 +391,16 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 			defer wg.Done()
 			if err := rt.dashboard.Start(ctx, rt.bus); err != nil {
 				errCh <- fmt.Errorf("dashboard: %w", err)
+			}
+		}()
+	}
+
+	if rt.api != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rt.api.Start(ctx); err != nil {
+				errCh <- fmt.Errorf("api server: %w", err)
 			}
 		}()
 	}
@@ -328,6 +430,9 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.memory.StopAll()
 	rt.webhooks.Stop()
 	rt.dashboard.Stop()
+	if rt.api != nil {
+		rt.api.Stop()
+	}
 	rt.store.Close()
 
 	wg.Wait()
@@ -427,6 +532,9 @@ func (rt *KarmaxRuntime) printBanner() {
 	}
 	if rt.cfg.Dashboard.Enabled {
 		fmt.Printf("  + Dashboard        http://%s:%d\n", rt.cfg.Dashboard.Host, rt.cfg.Dashboard.Port)
+	}
+	if rt.cfg.API.Enabled {
+		fmt.Printf("  + API server       http://%s:%d  (phone app)\n", rt.cfg.API.Host, rt.cfg.API.Port)
 	}
 	fmt.Println("  -------------------------------------------------")
 	fmt.Println("  karmax is running. Press Ctrl+C to stop.")
