@@ -1,4 +1,8 @@
-# KARMAX
+<p align="center">
+  <img src="app/assets/images/icon.png" alt="KARMAX logo" width="128" />
+</p>
+
+<h1 align="center">KARMAX</h1>
 
 A personal AI "Jarvis" — an always-on **orchestration daemon** you can delegate anything to, with a phone app as the cockpit. KARMAX senses (WhatsApp, news, your profile), **proposes** actions for your approval, **acts** through real tools, and **remembers** everything.
 
