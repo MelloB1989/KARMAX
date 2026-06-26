@@ -5,26 +5,20 @@ import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-g
 import { useSharedValue, type SharedValue } from 'react-native-reanimated';
 import * as THREE from 'three';
 
-import type { MemTreeNode } from '@/lib/api';
+import type { GraphLink, GraphNode } from '@/lib/api';
 import { Text, View } from '@/tw';
 
 import { KM } from './colors';
 
-// MemNodeInfo is the data surfaced to the parent screen when a node is tapped,
-// so the memory details can be rendered below the 3D view.
-export type MemNodeInfo = { id: string; title: string; content?: string; depth: number };
-
-type FlatNode = {
-  id: string;
-  title: string;
-  content?: string;
-  depth: number;
-  pos: [number, number, number];
-  color: string;
-};
-type FlatEdge = { from: [number, number, number]; to: [number, number, number]; color: string };
+export type GraphNodeInfo = { id: string; title: string; content?: string };
 
 const CAT_HUES = ['#62b6c9', '#6fbf73', '#b48ef2', '#f2b43a', '#e5675c', '#7fb2ff', '#e59ecf', '#9fd68a'];
+
+function hueFor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return CAT_HUES[h % CAT_HUES.length];
+}
 
 function fib(i: number, n: number, r: number): [number, number, number] {
   const phi = Math.acos(1 - (2 * (i + 0.5)) / Math.max(n, 1));
@@ -32,59 +26,31 @@ function fib(i: number, n: number, r: number): [number, number, number] {
   return [r * Math.sin(phi) * Math.cos(theta), r * Math.sin(phi) * Math.sin(theta), r * Math.cos(phi)];
 }
 
-function layout(root: MemTreeNode | null): { nodes: FlatNode[]; edges: FlatEdge[] } {
-  const nodes: FlatNode[] = [];
-  const edges: FlatEdge[] = [];
-  if (!root) return { nodes, edges };
-
-  let catIdx = 0;
-  const radiusFor = (depth: number) => (depth <= 1 ? 4.6 : 1.8);
-
-  const walk = (node: MemTreeNode, pos: [number, number, number], depth: number, color: string) => {
-    nodes.push({
-      id: node.node_id ?? `n${nodes.length}`,
-      title: node.title || node.node_id || 'node',
-      content: node.content || node.summary,
-      depth,
-      pos,
-      color,
-    });
-    const children = node.children ?? [];
-    children.forEach((child, i) => {
-      const childColor = depth === 0 ? CAT_HUES[catIdx++ % CAT_HUES.length] : color;
-      const f = fib(i, children.length, radiusFor(depth + 1));
-      const childPos: [number, number, number] =
-        depth === 0 ? f : [pos[0] + f[0], pos[1] + f[1], pos[2] + f[2]];
-      edges.push({ from: pos, to: childPos, color: childColor });
-      walk(child, childPos, depth + 1, childColor);
-    });
-  };
-  walk(root, [0, 0, 0], 0, KM.amber);
-  return { nodes, edges };
-}
-
-const sizeFor = (d: number) => (d === 0 ? 0.6 : d === 1 ? 0.34 : 0.2);
+type Vec3 = [number, number, number];
+type Placed = { node: GraphNode; pos: Vec3; color: string };
 
 function Graph({
-  nodes,
-  edges,
+  placed,
+  links,
+  posById,
   rotX,
   rotY,
   zoom,
   onSelect,
 }: {
-  nodes: FlatNode[];
-  edges: FlatEdge[];
+  placed: Placed[];
+  links: GraphLink[];
+  posById: Record<string, Vec3>;
   rotX: SharedValue<number>;
   rotY: SharedValue<number>;
   zoom: SharedValue<number>;
-  onSelect: (n: FlatNode) => void;
+  onSelect: (n: GraphNode) => void;
 }) {
   const group = useRef<THREE.Group>(null);
   const spin = useRef(0);
 
   useFrame((state, delta) => {
-    spin.current += delta * 0.05; // auto-spin, kept separate from gesture rotation
+    spin.current += delta * 0.04;
     if (group.current) {
       group.current.rotation.y = rotY.value + spin.current;
       group.current.rotation.x = rotX.value;
@@ -93,44 +59,62 @@ function Graph({
   });
 
   const edgeGeom = useMemo(() => {
-    const pos = new Float32Array(edges.length * 6);
-    const col = new Float32Array(edges.length * 6);
-    edges.forEach((e, i) => {
-      pos.set([...e.from, ...e.to], i * 6);
-      const c = new THREE.Color(e.color);
+    const valid = links.filter((l) => posById[l.from] && posById[l.to]);
+    const pos = new Float32Array(valid.length * 6);
+    const col = new Float32Array(valid.length * 6);
+    valid.forEach((l, i) => {
+      const a = posById[l.from];
+      const b = posById[l.to];
+      pos.set([...a, ...b], i * 6);
+      const c = new THREE.Color(hueFor(l.relation || 'rel'));
       col.set([c.r, c.g, c.b, c.r, c.g, c.b], i * 6);
     });
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     return g;
-  }, [edges]);
+  }, [links, posById]);
 
   return (
     <group ref={group}>
       <lineSegments geometry={edgeGeom}>
-        <lineBasicMaterial vertexColors transparent opacity={0.35} />
+        <lineBasicMaterial vertexColors transparent opacity={0.5} />
       </lineSegments>
-      {nodes.map((n) => (
-        <mesh key={n.id} position={n.pos} onClick={() => onSelect(n)}>
-          <sphereGeometry args={[sizeFor(n.depth), 20, 20]} />
-          <meshStandardMaterial color={n.color} emissive={n.color} emissiveIntensity={0.45} roughness={0.4} />
+      {placed.map((p) => (
+        <mesh key={p.node.id} position={p.pos} onClick={() => onSelect(p.node)}>
+          <sphereGeometry args={[0.26, 18, 18]} />
+          <meshStandardMaterial color={p.color} emissive={p.color} emissiveIntensity={0.45} roughness={0.4} />
         </mesh>
       ))}
     </group>
   );
 }
 
-export function Memory3D({
-  root,
+export function MemoryGraph3D({
+  nodes,
+  links,
   onSelect,
   height = 380,
 }: {
-  root: MemTreeNode | null;
-  onSelect?: (n: MemNodeInfo | null) => void;
+  nodes: GraphNode[];
+  links: GraphLink[];
+  onSelect?: (n: GraphNodeInfo) => void;
   height?: number;
 }) {
-  const { nodes, edges } = useMemo(() => layout(root), [root]);
+  const { placed, posById } = useMemo(() => {
+    const catColor: Record<string, string> = {};
+    let ci = 0;
+    const placedNodes: Placed[] = nodes.map((node, i) => {
+      const cat = node.category || 'context';
+      if (!(cat in catColor)) catColor[cat] = CAT_HUES[ci++ % CAT_HUES.length];
+      return { node, pos: fib(i, nodes.length, 6), color: catColor[cat] };
+    });
+    const byId: Record<string, Vec3> = {};
+    placedNodes.forEach((p) => {
+      byId[p.node.id] = p.pos;
+    });
+    return { placed: placedNodes, posById: byId };
+  }, [nodes]);
 
   const rotX = useSharedValue(0.3);
   const rotY = useSharedValue(0);
@@ -150,9 +134,6 @@ export function Memory3D({
     });
   const gesture = Gesture.Simultaneous(pan, pinch);
 
-  const handleSelect = (n: FlatNode) =>
-    onSelect?.({ id: n.id, title: n.title, content: n.content, depth: n.depth });
-
   return (
     <GestureHandlerRootView style={{ height }}>
       <GestureDetector gesture={gesture}>
@@ -162,14 +143,20 @@ export function Memory3D({
           <Canvas camera={{ position: [0, 0, 13], fov: 55 }} style={{ flex: 1, backgroundColor: KM.ink }}>
             <ambientLight intensity={0.75} />
             <pointLight position={[10, 10, 10]} intensity={1.4} />
-            <pointLight position={[-10, -6, -8]} intensity={0.5} color="#7fb2ff" />
             <fog attach="fog" args={[KM.ink, 14, 30]} />
-            <Graph nodes={nodes} edges={edges} rotX={rotX} rotY={rotY} zoom={zoom} onSelect={handleSelect} />
+            <Graph
+              placed={placed}
+              links={links}
+              posById={posById}
+              rotX={rotX}
+              rotY={rotY}
+              zoom={zoom}
+              onSelect={(n) => onSelect?.({ id: n.id, title: n.title, content: n.content })}
+            />
           </Canvas>
-
           <View className="absolute left-2 top-2 rounded bg-km-panel px-2 py-1">
             <Text className="font-mono text-[10px] text-km-muted">
-              {`${nodes.length} nodes · drag · pinch · tap a node`}
+              {`${nodes.length} memories · ${links.length} links · drag · pinch`}
             </Text>
           </View>
         </View>

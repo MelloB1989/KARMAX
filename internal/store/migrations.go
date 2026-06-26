@@ -209,6 +209,15 @@ var migrations = []string{
 		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_app_messages_agent ON app_messages(agent_id, created_at)`,
+
+	// 017_memory_links (LLM-generated relationships between memory entries)
+	`CREATE TABLE IF NOT EXISTS memory_links (
+		from_id    TEXT NOT NULL,
+		to_id      TEXT NOT NULL,
+		relation   TEXT,
+		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (from_id, to_id, relation)
+	)`,
 }
 
 func (s *Store) migrate() error {

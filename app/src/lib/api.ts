@@ -282,6 +282,27 @@ export async function fetchMemoryTree(baseUrl: string, token: string): Promise<M
   return json.tree ?? null;
 }
 
+export type GraphNode = { id: string; title: string; content?: string; category?: string };
+export type GraphLink = { from: string; to: string; relation?: string };
+export type MemoryGraph = { nodes: GraphNode[]; links: GraphLink[] };
+
+export async function fetchMemoryGraph(baseUrl: string, token: string): Promise<MemoryGraph> {
+  const res = await fetch(`${baseUrl}/api/memory/graph`, { headers: authHeaders(token) });
+  if (!res.ok) throw new ApiError(`Graph failed (${res.status})`, res.status);
+  const j = (await res.json()) as Partial<MemoryGraph>;
+  return { nodes: j.nodes ?? [], links: j.links ?? [] };
+}
+
+export async function rebuildMemoryGraph(baseUrl: string, token: string): Promise<MemoryGraph> {
+  const res = await fetch(`${baseUrl}/api/memory/graph/rebuild`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new ApiError(`Rebuild failed (${res.status})`, res.status);
+  const j = (await res.json()) as Partial<MemoryGraph>;
+  return { nodes: j.nodes ?? [], links: j.links ?? [] };
+}
+
 export async function fetchProfile(baseUrl: string, token: string): Promise<string> {
   const res = await fetch(`${baseUrl}/api/profile`, { headers: authHeaders(token) });
   if (!res.ok) throw new ApiError(`Failed to load profile (${res.status})`, res.status);

@@ -59,6 +59,8 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("GET /api/memory/entries", srv.auth(srv.handleMemoryEntries))
 	mux.HandleFunc("GET /api/memory/cleanup/question", srv.auth(srv.handleCleanupQuestion))
 	mux.HandleFunc("POST /api/memory/cleanup/answer", srv.auth(srv.handleCleanupAnswer))
+	mux.HandleFunc("GET /api/memory/graph", srv.auth(srv.handleMemoryGraph))
+	mux.HandleFunc("POST /api/memory/graph/rebuild", srv.auth(srv.handleRebuildGraph))
 	mux.HandleFunc("DELETE /api/memory/entries/{id}", srv.auth(srv.handleDeleteMemoryEntry))
 	mux.HandleFunc("GET /api/profile", srv.auth(srv.handleGetProfile))
 	mux.HandleFunc("PUT /api/profile", srv.auth(srv.handlePutProfile))

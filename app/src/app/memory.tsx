@@ -3,14 +3,16 @@ import { ActivityIndicator } from 'react-native';
 
 import { KM } from '@/components/km/colors';
 import { formatLogTime } from '@/components/km/log-line';
-import { Memory3D, type MemNodeInfo } from '@/components/km/memory-3d';
+import { MemoryGraph3D, type GraphNodeInfo } from '@/components/km/memory-graph-3d';
 import type { CleanupQuestion, MemoryEntry, MemTreeNode } from '@/lib/api';
 import {
   useCleanupAnswer,
   useCleanupQuestion,
   useForgetEntry,
   useMemoryEntries,
+  useMemoryGraph,
   useMemoryTree,
+  useRebuildGraph,
   useProfile,
   useSaveProfile,
 } from '@/lib/hooks';
@@ -84,7 +86,9 @@ export default function MemoryScreen() {
 
   const entries = useMemoryEntries(tab === 'entries' ? q : '');
   const tree = useMemoryTree();
-  const [sel3d, setSel3d] = useState<MemNodeInfo | null>(null);
+  const graph = useMemoryGraph();
+  const rebuildGraph = useRebuildGraph();
+  const [sel3d, setSel3d] = useState<GraphNodeInfo | null>(null);
 
   const cleanupQ = useCleanupQuestion();
   const cleanupA = useCleanupAnswer();
@@ -157,38 +161,47 @@ export default function MemoryScreen() {
       ) : null}
 
       {connected && tab === '3d' ? (
-        tree.isLoading ? (
-          <ActivityIndicator color={KM.muted} />
+        graph.isLoading || rebuildGraph.isPending ? (
+          <View className="gap-2">
+            <ActivityIndicator color={KM.muted} style={{ marginTop: 12 }} />
+            <Text className="text-center font-mono text-[11px] text-km-muted">
+              mapping relationships between memories…
+            </Text>
+          </View>
         ) : (
           <View className="gap-3">
-            <Memory3D root={tree.data ?? null} onSelect={setSel3d} />
+            <MemoryGraph3D nodes={graph.data?.nodes ?? []} links={graph.data?.links ?? []} onSelect={setSel3d} />
+            <View className="flex-row items-center justify-between">
+              <Text className="font-mono text-[11px] text-km-muted">
+                {`${graph.data?.nodes.length ?? 0} memories · ${graph.data?.links.length ?? 0} links`}
+              </Text>
+              <Pressable onPress={() => rebuildGraph.mutate()} disabled={rebuildGraph.isPending} hitSlop={8}>
+                <Text className="font-mono text-[11px] text-km-amber">↻ rebuild</Text>
+              </Pressable>
+            </View>
             {sel3d ? (
               <View
                 className="gap-2 rounded-md border border-km-line bg-km-panel p-3"
                 style={{ borderCurve: 'continuous' }}>
                 <View className="flex-row items-start justify-between gap-3">
                   <Text className="flex-1 font-mono-medium text-[13px] text-km-amber">{sel3d.title}</Text>
-                  {sel3d.depth > 1 ? (
-                    <Pressable
-                      onPress={() => {
-                        forget.mutate(sel3d.id);
-                        setSel3d(null);
-                      }}
-                      hitSlop={8}>
-                      <Text className="font-mono text-[12px] text-km-red">forget</Text>
-                    </Pressable>
-                  ) : null}
+                  <Pressable
+                    onPress={() => {
+                      forget.mutate(sel3d.id);
+                      setSel3d(null);
+                    }}
+                    hitSlop={8}>
+                    <Text className="font-mono text-[12px] text-km-red">forget</Text>
+                  </Pressable>
                 </View>
                 {sel3d.content ? (
                   <Text className="font-mono text-[12.5px] leading-5 text-km-text">{sel3d.content}</Text>
-                ) : (
-                  <Text className="font-mono text-[12px] text-km-muted">
-                    category node — tap a leaf node to see a memory.
-                  </Text>
-                )}
+                ) : null}
               </View>
             ) : (
-              <Text className="font-mono text-[11px] text-km-muted">tap a node to see its memory here.</Text>
+              <Text className="font-mono text-[11px] text-km-muted">
+                tap a node to see its memory & relationships here.
+              </Text>
             )}
           </View>
         )

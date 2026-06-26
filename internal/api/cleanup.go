@@ -34,6 +34,10 @@ const cleanupAnswerPrompt = `You correct ONE memory entry using the operator's a
 
 Respond with ONLY JSON: {"action":"update"|"delete","content":"<new memory content>"}`
 
+// cleanupSession builds the model session for structured utility tasks (memory
+// cleanup + relationship graph). It uses the agent's model + fallbacks, so it
+// works whenever the agent can reason (i.e. when Claude access is available) and
+// fails fast otherwise rather than hanging on a slow/uncompliant fallback.
 func (s *Server) cleanupSession(prompt string) *karmahelper.Session {
 	provider, model := "anthropic", ""
 	var fbs []karmahelper.FallbackModel
@@ -69,17 +73,30 @@ func extractJSON(s string) string {
 // isJunkMemory filters out AI/system scaffolding and trivial entries so the
 // cleanup only ever asks about real facts in the operator's world.
 func isJunkMemory(content string) bool {
-	c := strings.ToLower(content)
+	c := strings.ToLower(strings.TrimSpace(content))
+	// Strip leading [category][importance] tags before judging length/content.
+	for strings.HasPrefix(c, "[") {
+		i := strings.IndexByte(c, ']')
+		if i < 0 {
+			break
+		}
+		c = strings.TrimSpace(c[i+1:])
+	}
+	if len(c) < 12 { // "hi", "hey", "ok", trivial chatter
+		return true
+	}
 	for _, bad := range []string{
 		"you are nexus", "system prompt", "## recent context", "recent context",
 		"operator profile", "about_me", "memory retrieval", "claude_code", "codex.call",
 		"as an ai", "language model", "no relevant context found", "i don't have", "i do not have",
+		"automated system message", "how's it going", "how is it going", "anything specific you need",
+		"anything i can help", "just catching up", "let me know if", "what's up",
 	} {
 		if strings.Contains(c, bad) {
 			return true
 		}
 	}
-	return len(strings.TrimSpace(content)) < 15
+	return false
 }
 
 func cleanupTruncate(s string, max int) string {

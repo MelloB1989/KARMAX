@@ -21,6 +21,8 @@ import {
   resetConversation,
   fetchCleanupQuestion,
   submitCleanupAnswer,
+  fetchMemoryGraph,
+  rebuildMemoryGraph,
 } from '@/lib/api';
 import {
   createCalendarEvent,
@@ -63,6 +65,28 @@ export function useResetConversation() {
   return useMutation({
     mutationFn: () => resetConversation(baseUrl as string, token),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['messages', baseUrl] }),
+  });
+}
+
+export function useMemoryGraph() {
+  const baseUrl = useConnection((s) => s.baseUrl);
+  const token = useConnection((s) => s.token);
+  const connected = useConnection((s) => s.status === 'connected');
+  return useQuery({
+    queryKey: ['memory-graph', baseUrl],
+    queryFn: () => fetchMemoryGraph(baseUrl as string, token),
+    enabled: connected && !!baseUrl && !!token,
+    staleTime: 60_000,
+  });
+}
+
+export function useRebuildGraph() {
+  const baseUrl = useConnection((s) => s.baseUrl);
+  const token = useConnection((s) => s.token);
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => rebuildMemoryGraph(baseUrl as string, token),
+    onSuccess: (data) => queryClient.setQueryData(['memory-graph', baseUrl], data),
   });
 }
 
