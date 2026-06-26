@@ -1,4 +1,4 @@
-import * as Contacts from 'expo-contacts';
+import * as Contacts from 'expo-contacts/legacy';
 
 async function ensurePermission(): Promise<boolean> {
   const { status } = await Contacts.requestPermissionsAsync();
