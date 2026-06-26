@@ -38,7 +38,7 @@ func (s *Store) UpsertContacts(cs []Contact) (int, error) {
 
 // LookupContactName resolves a phone number (digits) to a saved name. It tries
 // an exact match, then a last-10-digits suffix match to tolerate country-code
-// differences (e.g. WhatsApp "12025550123" vs a contact saved as "7569236628").
+// differences (e.g. WhatsApp "12025550123" vs a contact saved as "2025550123").
 func (s *Store) LookupContactName(phone string) string {
 	if phone == "" {
 		return ""
