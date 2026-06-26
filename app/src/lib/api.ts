@@ -136,6 +136,13 @@ export async function syncContacts(
   return (await res.json()) as { synced: number; total: number };
 }
 
+export async function fetchContactsCount(baseUrl: string, token: string): Promise<number> {
+  const res = await fetch(`${baseUrl}/api/contacts`, { headers: authHeaders(token) });
+  if (!res.ok) throw new ApiError(`Contacts status failed (${res.status})`, res.status);
+  const j = (await res.json()) as { count?: number };
+  return j.count ?? 0;
+}
+
 export async function registerPushToken(
   baseUrl: string,
   token: string,

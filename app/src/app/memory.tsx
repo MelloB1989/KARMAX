@@ -8,6 +8,7 @@ import type { CleanupQuestion, MemoryEntry, MemTreeNode } from '@/lib/api';
 import {
   useCleanupAnswer,
   useCleanupQuestion,
+  useContactsStatus,
   useForgetEntry,
   useMemoryEntries,
   useMemoryGraph,
@@ -88,6 +89,7 @@ export default function MemoryScreen() {
   const tree = useMemoryTree();
   const graph = useMemoryGraph();
   const rebuildGraph = useRebuildGraph();
+  const contacts = useContactsStatus();
   const [sel3d, setSel3d] = useState<GraphNodeInfo | null>(null);
 
   const cleanupQ = useCleanupQuestion();
@@ -124,6 +126,12 @@ export default function MemoryScreen() {
 
       {!connected ? (
         <Text className="font-mono text-xs text-km-muted">not connected — open config.</Text>
+      ) : null}
+
+      {connected ? (
+        <Text className="font-mono text-[11px] text-km-muted">
+          {`🔗 ${contacts.data ?? 0} contacts linked${contacts.data ? ' — WhatsApp shows names' : ' · sync in config'}`}
+        </Text>
       ) : null}
 
       {connected && tab === 'entries' ? (
