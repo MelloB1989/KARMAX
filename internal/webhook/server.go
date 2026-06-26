@@ -65,18 +65,6 @@ func (s *WebhookServer) AddRoute(route WebhookRoute) error {
 	return nil
 }
 
-func (s *WebhookServer) RemoveRoute(path string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.routes[path]; !ok {
-		return fmt.Errorf("route not found: %s", path)
-	}
-
-	delete(s.routes, path)
-	return nil
-}
-
 func (s *WebhookServer) Start(ctx context.Context) error {
 	s.server = &http.Server{
 		Addr:    s.addr,
@@ -103,17 +91,6 @@ func (s *WebhookServer) Stop() {
 		defer cancel()
 		s.server.Shutdown(ctx)
 	}
-}
-
-func (s *WebhookServer) ListRoutes() []WebhookRoute {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	routes := make([]WebhookRoute, 0, len(s.routes))
-	for _, r := range s.routes {
-		routes = append(routes, r)
-	}
-	return routes
 }
 
 func (s *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {

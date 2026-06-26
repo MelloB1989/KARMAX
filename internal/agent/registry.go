@@ -87,31 +87,3 @@ func (r *Registry) StopAll() error {
 	}
 	return nil
 }
-
-func (r *Registry) Remove(id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	a, ok := r.agents[id]
-	if !ok {
-		return fmt.Errorf("agent not found: %s", id)
-	}
-
-	if a.Status() == StatusRunning || a.Status() == StatusPaused {
-		a.Stop()
-	}
-
-	delete(r.agents, id)
-	return nil
-}
-
-func (r *Registry) Snapshots() []AgentSnapshot {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	snaps := make([]AgentSnapshot, 0, len(r.agents))
-	for _, a := range r.agents {
-		snaps = append(snaps, a.Snapshot())
-	}
-	return snaps
-}

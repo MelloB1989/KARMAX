@@ -20,7 +20,7 @@ type CalendarAddTool struct {
 
 func (t *CalendarAddTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
-		Name: "calendar.add",
+		Name:        "calendar.add",
 		Description: "Add an event to Nikhil's phone calendar (it appears on his iPhone via the KARMAX app). Provide start/end as ISO-8601 with a timezone offset, e.g. 2026-06-25T09:00:00+05:30. End defaults to start + 1h. Direct, low-risk — no approval needed.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
@@ -73,7 +73,7 @@ type ReminderAddTool struct {
 
 func (t *ReminderAddTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
-		Name: "reminder.add",
+		Name:        "reminder.add",
 		Description: "Add a reminder to Nikhil's phone (iOS Reminders). Optional due date as ISO-8601 with timezone. Direct, low-risk — no approval needed.",
 		Parameters: json.RawMessage(`{
 			"type": "object",

@@ -15,7 +15,13 @@
       "infoPlist": {
         "NSCalendarsUsageDescription": "KARMAX adds your events and meetings to your calendar.",
         "NSRemindersFullAccessUsageDescription": "KARMAX sets reminders for you.",
-        "ITSAppUsesNonExemptEncryption": false
+        "NSLocalNetworkUsageDescription": "KARMAX connects to your KARMAX daemon on your local network or Tailscale.",
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        },
+        "UIBackgroundModes": ["fetch", "processing", "remote-notification"],
+        "BGTaskSchedulerPermittedIdentifiers": ["com.expo.modules.backgroundtask.processing"]
       }
     },
     "android": {
@@ -54,7 +60,8 @@
           "remindersPermission": "KARMAX sets reminders for you."
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      "expo-background-task"
     ],
     "experiments": {
       "typedRoutes": true,

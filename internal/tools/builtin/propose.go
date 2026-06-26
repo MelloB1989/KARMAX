@@ -22,7 +22,7 @@ type ProposeTool struct {
 
 func (t *ProposeTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
-		Name: "propose",
+		Name:        "propose",
 		Description: "Propose an action that needs Nikhil's approval BEFORE you take it — sending a message/WhatsApp, scheduling, spending, posting, or anything outward-facing or irreversible. This creates a pending approval in his phone app and notifies him. Do NOT perform the action yet: once he approves, you'll be asked to execute it. Use this instead of acting silently or just describing what you'd do.",
 		Parameters: json.RawMessage(`{
 			"type": "object",

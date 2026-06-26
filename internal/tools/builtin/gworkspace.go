@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	defaultGWSPath  = "/home/mellob/.local/bin/gws"
-	maxOutputLen    = 10000
-	gwsTimeoutSecs  = 60
+	defaultGWSPath = "/home/mellob/.local/bin/gws"
+	maxOutputLen   = 10000
+	gwsTimeoutSecs = 60
 )
 
 type GoogleWorkspaceTool struct {

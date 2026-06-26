@@ -19,6 +19,7 @@ import { useProcessDeviceActions, usePushRegistration } from '@/lib/hooks';
 import { addNotificationListeners } from '@/lib/notifications';
 import { QueryProvider } from '@/lib/query-provider';
 import { useConnection } from '@/stores/connection';
+import { registerBackgroundTasks } from '@/tasks';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -35,6 +36,12 @@ function AppBootstrap() {
   useEffect(() => {
     init();
   }, [init]);
+
+  // Register background execution (periodic BGTaskScheduler sync + push-triggered
+  // background sync) so KARMAX's queued on-device actions run while backgrounded.
+  useEffect(() => {
+    void registerBackgroundTasks();
+  }, []);
 
   // Refresh on incoming push; deep-link to the right surface when tapped
   // (approvals → inbox, otherwise → chat).

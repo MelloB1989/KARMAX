@@ -24,7 +24,7 @@ type NtfyPushTool struct {
 
 func (t *NtfyPushTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
-		Name: "notify.push",
+		Name:        "notify.push",
 		Description: "Send a push notification to Nikhil's phone via ntfy. Use for urgent or time-sensitive alerts, reminders, and direct pings. priority is 1-5 (5 = max/urgent, 3 = default).",
 		Parameters: json.RawMessage(`{
 			"type": "object",

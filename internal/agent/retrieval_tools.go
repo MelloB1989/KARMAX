@@ -127,7 +127,7 @@ type chatSummaryTool struct{ store *store.Store }
 
 func (t *chatSummaryTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
-		Name: "chat_summaries",
+		Name:        "chat_summaries",
 		Description: "Search the background ('cold') summaries of older WhatsApp conversations — useful for context about people the operator spoke to weeks or months ago.",
 		Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","description":"default 8"}},"required":["query"]}`),
 	}

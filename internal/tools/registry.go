@@ -91,14 +91,3 @@ func (r *Registry) ResolveForAgent(names []string) (resolved []Tool, unresolved 
 	}
 	return resolved, unresolved
 }
-
-func (r *Registry) All() map[string]Tool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make(map[string]Tool, len(r.tools))
-	for k, v := range r.tools {
-		result[k] = v
-	}
-	return result
-}

@@ -7,16 +7,16 @@ import (
 )
 
 type AgentSnapshot struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	Restarts  int       `json:"restarts"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Status    string     `json:"status"`
+	Restarts  int        `json:"restarts"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	LastEvent *time.Time `json:"last_event,omitempty"`
-	LastErr   string    `json:"last_err,omitempty"`
-	DefJSON   string    `json:"def_json"`
-	StateJSON string    `json:"state_json,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	LastErr   string     `json:"last_err,omitempty"`
+	DefJSON   string     `json:"def_json"`
+	StateJSON string     `json:"state_json,omitempty"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 func (s *Store) SaveAgentSnapshot(snap AgentSnapshot) error {

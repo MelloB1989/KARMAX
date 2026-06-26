@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -101,12 +100,4 @@ func (s *Store) GetJob(id string) (*StoredJob, error) {
 	j.Enabled = enabled == 1
 	j.CatchUp = catchUp == 1
 	return &j, nil
-}
-
-func marshalPayload(p map[string]any) string {
-	if p == nil {
-		return "{}"
-	}
-	data, _ := json.Marshal(p)
-	return string(data)
 }

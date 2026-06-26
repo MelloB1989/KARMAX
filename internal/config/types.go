@@ -5,24 +5,23 @@ import (
 )
 
 type KarmaxConfig struct {
-	Karmax    KarmaxCoreConfig      `yaml:"karmax"`
-	Dashboard DashboardConfig       `yaml:"dashboard"`
-	Webhooks  WebhooksConfig        `yaml:"webhooks"`
-	API       APIConfig             `yaml:"api"`
-	AI        AIConfig              `yaml:"ai"`
-	MCPs      []mcp.MCPServerConfig `yaml:"mcps"`
-	Comms     CommsConfig           `yaml:"comms"`
-	Agents    []AgentDefConfig      `yaml:"agents"`
-	Loops     []LoopConfig          `yaml:"loops"`
-	ColdScan  ColdScanConfig        `yaml:"cold_scan"`
+	Karmax   KarmaxCoreConfig      `yaml:"karmax"`
+	Webhooks WebhooksConfig        `yaml:"webhooks"`
+	API      APIConfig             `yaml:"api"`
+	AI       AIConfig              `yaml:"ai"`
+	MCPs     []mcp.MCPServerConfig `yaml:"mcps"`
+	Comms    CommsConfig           `yaml:"comms"`
+	Agents   []AgentDefConfig      `yaml:"agents"`
+	Loops    []LoopConfig          `yaml:"loops"`
+	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 }
 
 // ColdScanConfig controls the background "cold" memory worker that summarizes
 // older WhatsApp chats into chat_summaries for the retrieval sub-agent.
 type ColdScanConfig struct {
-	Enabled         bool   `yaml:"enabled"`
-	IntervalMinutes int    `yaml:"interval_minutes"` // default 20
-	PerTick         int    `yaml:"per_tick"`         // chats per tick, default 4
+	Enabled          bool    `yaml:"enabled"`
+	IntervalMinutes  int     `yaml:"interval_minutes"`    // default 20
+	PerTick          int     `yaml:"per_tick"`            // chats per tick, default 4
 	HotDays          int     `yaml:"hot_days"`            // active window, default 14
 	MinGroupOwn      int     `yaml:"min_group_own"`       // min own msgs for a group, default 5
 	MinGroupOwnRatio float64 `yaml:"min_group_own_ratio"` // min own-message fraction for a group, default 0.2
@@ -56,22 +55,16 @@ type ChannelConfig struct {
 }
 
 type KarmaxCoreConfig struct {
-	Version  string `yaml:"version"`
-	DataDir  string `yaml:"data_dir"`
-	LogLevel string `yaml:"log_level"`
+	Version   string `yaml:"version"`
+	DataDir   string `yaml:"data_dir"`
+	LogLevel  string `yaml:"log_level"`
 	LogFormat string `yaml:"log_format"`
 }
 
-type DashboardConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Port    int    `yaml:"port"`
-	Host    string `yaml:"host"`
-}
-
 type WebhooksConfig struct {
-	Enabled bool              `yaml:"enabled"`
-	Port    int               `yaml:"port"`
-	Host    string            `yaml:"host"`
+	Enabled bool                 `yaml:"enabled"`
+	Port    int                  `yaml:"port"`
+	Host    string               `yaml:"host"`
 	Routes  []WebhookRouteConfig `yaml:"routes"`
 }
 
@@ -95,8 +88,8 @@ type WebhookRouteConfig struct {
 }
 
 type AIConfig struct {
-	DefaultProvider string                   `yaml:"default_provider"`
-	DefaultModel    string                   `yaml:"default_model"`
+	DefaultProvider string                    `yaml:"default_provider"`
+	DefaultModel    string                    `yaml:"default_model"`
 	Providers       map[string]ProviderConfig `yaml:"providers"`
 }
 

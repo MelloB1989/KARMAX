@@ -21,10 +21,10 @@ type SearchResult struct {
 }
 
 type TreeNode struct {
-	NodeID   string            `json:"node_id"`
-	Title    string            `json:"title"`
-	Summary  string            `json:"summary,omitempty"`
-	Content  string            `json:"content,omitempty"`
-	Metadata map[string]any    `json:"metadata,omitempty"`
-	Children []*TreeNode       `json:"children,omitempty"`
+	NodeID   string         `json:"node_id"`
+	Title    string         `json:"title"`
+	Summary  string         `json:"summary,omitempty"`
+	Content  string         `json:"content,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	Children []*TreeNode    `json:"children,omitempty"`
 }

@@ -17,7 +17,7 @@ type AppPushTool struct {
 
 func (t *AppPushTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
-		Name: "app.push",
+		Name:        "app.push",
 		Description: "Send a push notification to Nikhil's KARMAX phone app (Expo push). Use for proactive briefings, reminders, and alerts that should surface in the app. Returns gracefully if no device is registered.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
