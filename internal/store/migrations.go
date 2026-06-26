@@ -218,6 +218,14 @@ var migrations = []string{
 		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
 		PRIMARY KEY (from_id, to_id, relation)
 	)`,
+
+	// 018_contacts (phone contact directory synced from the app, to resolve
+	// WhatsApp numbers -> saved names)
+	`CREATE TABLE IF NOT EXISTS contacts (
+		phone      TEXT PRIMARY KEY,
+		name       TEXT NOT NULL,
+		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
 }
 
 func (s *Store) migrate() error {

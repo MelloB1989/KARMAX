@@ -66,7 +66,7 @@ func (mm *MemoryModel) retrievalTools() []tools.Tool {
 		&memRecentTool{mem: mm.memMgr},
 		&pageIndexTool{store: mm.store, namespace: mm.namespace},
 		&chatSummaryTool{store: mm.store},
-		&builtin.WhatsAppReadTool{WacliPath: mm.cfg.WacliPath},
+		&builtin.WhatsAppReadTool{WacliPath: mm.cfg.WacliPath, Store: mm.store},
 	}
 }
 

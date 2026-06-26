@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 )
 
@@ -19,6 +20,7 @@ const defaultWacliPath = "/home/mellob/code/wacli/wacli"
 type WhatsAppReadTool struct {
 	WacliPath   string // path to the wacli binary
 	DefaultChat string // chat used when none is specified
+	Store       *store.Store // optional: resolves WhatsApp numbers -> saved contact names
 }
 
 func (t *WhatsAppReadTool) Manifest() tools.ToolManifest {
@@ -54,7 +56,7 @@ func (t *WhatsAppReadTool) Execute(ctx context.Context, input map[string]any) (t
 			return tools.ErrorResult(fmt.Errorf("wacli chats: %w (%s)", err, strings.TrimSpace(string(out)))), nil
 		}
 		return tools.SuccessResult(map[string]any{
-			"chats": parseWacliJSON(out),
+			"chats": t.enrichChats(parseWacliJSON(out)),
 		}), nil
 	}
 
@@ -77,8 +79,95 @@ func (t *WhatsAppReadTool) Execute(ctx context.Context, input map[string]any) (t
 	return tools.SuccessResult(map[string]any{
 		"chat":     chat,
 		"limit":    limit,
-		"messages": parseWacliJSON(out),
+		"messages": t.enrichMessages(parseWacliJSON(out)),
 	}), nil
+}
+
+// jidNumber extracts the digits of a WhatsApp JID's phone part
+// ("12025550123:61@s.whatsapp.net" -> "12025550123"). LID JIDs (…@lid) are
+// privacy identifiers, not phone numbers, so they won't match the directory.
+func jidNumber(jid string) string {
+	s := jid
+	if i := strings.IndexAny(s, ":@"); i >= 0 {
+		s = s[:i]
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func (t *WhatsAppReadTool) resolveJID(jid string) string {
+	if t.Store == nil {
+		return ""
+	}
+	return t.Store.LookupContactName(jidNumber(jid))
+}
+
+// enrichMessages adds saved contact names (sender_name / chat_name) to wacli
+// message objects so the agent sees people by name, not number.
+func (t *WhatsAppReadTool) enrichMessages(v any) any {
+	if t.Store == nil {
+		return v
+	}
+	add := func(m map[string]any) {
+		if sj, ok := m["sender_jid"].(string); ok {
+			if name := t.resolveJID(sj); name != "" {
+				m["sender_name"] = name
+			}
+		}
+		if cj, ok := m["chat_jid"].(string); ok {
+			if name := t.resolveJID(cj); name != "" {
+				m["chat_name"] = name
+			}
+		}
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		if msgs, ok := x["messages"].([]any); ok {
+			for _, mi := range msgs {
+				if m, ok := mi.(map[string]any); ok {
+					add(m)
+				}
+			}
+		}
+	case []any:
+		for _, mi := range x {
+			if m, ok := mi.(map[string]any); ok {
+				add(m)
+			}
+		}
+	}
+	return v
+}
+
+// enrichChats adds the saved contact name to DM chat objects.
+func (t *WhatsAppReadTool) enrichChats(v any) any {
+	if t.Store == nil {
+		return v
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return v
+	}
+	for _, ci := range arr {
+		c, ok := ci.(map[string]any)
+		if !ok {
+			continue
+		}
+		if isGroup, _ := c["is_group"].(bool); isGroup {
+			continue
+		}
+		if jid, ok := c["jid"].(string); ok {
+			if name := t.resolveJID(jid); name != "" {
+				c["contact_name"] = name
+			}
+		}
+	}
+	return v
 }
 
 func normalizeLimit(v any) int {

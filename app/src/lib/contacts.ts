@@ -48,3 +48,21 @@ export async function createContact(name: string, phone: string): Promise<string
 
   return Contacts.addContactAsync(contact);
 }
+
+// getAllContacts returns the phone's directory as {name, phones[]} for syncing
+// to KARMAX (so it can resolve WhatsApp numbers to saved names).
+export async function getAllContacts(): Promise<{ name: string; phones: string[] }[]> {
+  if (!(await ensurePermission())) return [];
+  const { data } = await Contacts.getContactsAsync({
+    fields: [Contacts.Fields.Name, Contacts.Fields.PhoneNumbers],
+  });
+  const out: { name: string; phones: string[] }[] = [];
+  for (const c of data) {
+    const name = (c.name ?? '').trim();
+    const phones = (c.phoneNumbers ?? [])
+      .map((pn) => (pn.number ?? pn.digits ?? '').trim())
+      .filter(Boolean);
+    if (name && phones.length) out.push({ name, phones });
+  }
+  return out;
+}

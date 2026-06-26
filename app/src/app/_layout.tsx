@@ -15,7 +15,7 @@ import { useEffect } from 'react';
 import { AppState } from 'react-native';
 
 import AppTabs from '@/components/app-tabs';
-import { useProcessDeviceActions, usePushRegistration } from '@/lib/hooks';
+import { useContactSync, useProcessDeviceActions, usePushRegistration } from '@/lib/hooks';
 import { addNotificationListeners } from '@/lib/notifications';
 import { QueryProvider } from '@/lib/query-provider';
 import { useConnection } from '@/stores/connection';
@@ -32,6 +32,7 @@ function AppBootstrap() {
 
   usePushRegistration();
   useProcessDeviceActions();
+  useContactSync();
 
   useEffect(() => {
     init();
