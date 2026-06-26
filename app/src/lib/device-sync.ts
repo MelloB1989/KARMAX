@@ -1,5 +1,6 @@
 import { completeDeviceAction, fetchDeviceActions } from './api';
 import { createCalendarEvent, createReminder, type CalendarEventSpec, type ReminderSpec } from './calendar';
+import { createContact } from './contacts';
 
 // syncDeviceActions pulls KARMAX's pending on-device actions and performs them
 // locally (EventKit calendar/reminders), reporting each result back. Plain async
@@ -14,6 +15,9 @@ export async function syncDeviceActions(baseUrl: string, token: string): Promise
         result = `event:${await createCalendarEvent(a.payload as unknown as CalendarEventSpec)}`;
       } else if (a.kind === 'reminder') {
         result = `reminder:${await createReminder(a.payload as unknown as ReminderSpec)}`;
+      } else if (a.kind === 'create_contact') {
+        const p = a.payload as unknown as { name?: string; phone?: string };
+        result = `contact:${await createContact(p.name ?? '', p.phone ?? '')}`;
       }
       await completeDeviceAction(baseUrl, token, a.id, 'done', result);
       done++;

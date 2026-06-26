@@ -259,6 +259,10 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			cp := *tt
 			cp.AgentID = a.def.ID
 			out = append(out, &cp)
+		case *builtin.ContactAddTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			out = append(out, &cp)
 		default:
 			out = append(out, t)
 		}

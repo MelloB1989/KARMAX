@@ -61,7 +61,13 @@
         }
       ],
       "expo-notifications",
-      "expo-background-task"
+      "expo-background-task",
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "KARMAX resolves and creates contacts so people show up by name, not just a number."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
