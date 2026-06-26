@@ -3,7 +3,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { KM } from '@/components/km/colors';
 import { Field } from '@/components/km/field';
-import { useIntegrations } from '@/lib/hooks';
+import { useContactsStatus, useIntegrations, useSyncContactsNow } from '@/lib/hooks';
 import { Pressable, ScrollView, Text, View } from '@/tw';
 import { useConnection, type ConnStatus } from '@/stores/connection';
 
@@ -47,6 +47,8 @@ export default function ConfigScreen() {
   const [busy, setBusy] = useState(false);
   const s = statusLine(status);
   const integrations = useIntegrations();
+  const contactsStatus = useContactsStatus();
+  const syncNow = useSyncContactsNow();
 
   const onSave = async () => {
     setBusy(true);
@@ -140,6 +142,38 @@ export default function ConfigScreen() {
               </View>
             ))
           )}
+        </View>
+      </View>
+
+      <View className="gap-2">
+        <Text className="font-mono text-xs uppercase text-km-muted">contacts</Text>
+        <View
+          className="gap-2.5 rounded-md border border-km-line bg-km-panel p-3"
+          style={{ borderCurve: 'continuous' }}>
+          <Text className="font-mono text-[12px] leading-4 text-km-muted">
+            {contactsStatus.data != null
+              ? `${contactsStatus.data} contacts linked — WhatsApp people show up by name.`
+              : 'Link your contacts so WhatsApp numbers resolve to saved names.'}
+          </Text>
+          <Pressable
+            onPress={() => syncNow.mutate()}
+            disabled={syncNow.isPending}
+            className="items-center rounded-md px-3 py-2.5"
+            style={{ borderCurve: 'continuous', backgroundColor: KM.amber }}>
+            <Text className="font-mono-bold text-[13px]" style={{ color: KM.ink }}>
+              {syncNow.isPending ? 'syncing…' : 'sync contacts'}
+            </Text>
+          </Pressable>
+          {syncNow.isSuccess ? (
+            <Text className="font-mono text-[11px] text-km-green">
+              {`✓ synced ${syncNow.data?.synced ?? 0} contacts`}
+            </Text>
+          ) : null}
+          {syncNow.isError ? (
+            <Text className="font-mono text-[11px] text-km-red">
+              {(syncNow.error as Error)?.message ?? 'sync failed'}
+            </Text>
+          ) : null}
         </View>
       </View>
 

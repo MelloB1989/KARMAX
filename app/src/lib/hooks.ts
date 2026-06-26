@@ -24,6 +24,7 @@ import {
   fetchMemoryGraph,
   rebuildMemoryGraph,
   syncContacts,
+  fetchContactsCount,
 } from '@/lib/api';
 import { getAllContacts } from '@/lib/contacts';
 import {
@@ -67,6 +68,32 @@ export function useResetConversation() {
   return useMutation({
     mutationFn: () => resetConversation(baseUrl as string, token),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['messages', baseUrl] }),
+  });
+}
+
+// useContactsStatus reports how many contacts KARMAX has synced.
+export function useContactsStatus() {
+  const baseUrl = useConnection((s) => s.baseUrl);
+  const token = useConnection((s) => s.token);
+  const connected = useConnection((s) => s.status === 'connected');
+  return useQuery({
+    queryKey: ['contacts-status', baseUrl],
+    queryFn: () => fetchContactsCount(baseUrl as string, token),
+    enabled: connected && !!baseUrl && !!token,
+  });
+}
+
+// useSyncContactsNow reads the phone directory and uploads it on demand.
+export function useSyncContactsNow() {
+  const baseUrl = useConnection((s) => s.baseUrl);
+  const token = useConnection((s) => s.token);
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const contacts = await getAllContacts();
+      return syncContacts(baseUrl as string, token, contacts);
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['contacts-status', baseUrl] }),
   });
 }
 
