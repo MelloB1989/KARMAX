@@ -141,6 +141,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.ProposeTool{Store: s})
 	toolReg.Register(&builtin.CalendarAddTool{Store: s})
 	toolReg.Register(&builtin.ReminderAddTool{Store: s})
+	toolReg.Register(&builtin.ContactAddTool{Store: s})
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 

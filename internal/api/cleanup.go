@@ -16,11 +16,19 @@ import (
 // suggested options; the operator may also answer freely). The answer is then
 // applied to correct or enrich that memory entry.
 
-const cleanupQuestionPrompt = `You help the operator correct and enrich the AI's long-term memory. You are given stored memory entries (id + content). Pick the SINGLE entry that is most ambiguous, low-confidence, missing context, or possibly wrong — where a clarifying question would most improve accuracy. Write one short, specific question about it, plus 2-4 plausible short answer options (the operator can also answer in their own words).
+const cleanupQuestionPrompt = `You help the operator correct and enrich the AI's long-term memory about THEIR life and work. You are given stored memory entries (id + content).
+
+Pick the SINGLE entry that is most ambiguous, low-confidence, missing context, or possibly wrong — where one clarifying question would most improve accuracy. Strongly prefer entries about real PEOPLE, PROJECTS, COMMITMENTS, EVENTS, DECISIONS, and PREFERENCES. Use the OTHER entries as context: when entries are about the same person or project, ask a question that connects or disambiguates them (relationships matter).
+
+Your question MUST be specific and concrete about the operator's world — e.g. "Who is <name> to you?", "Is <project> still active?", "When is <deadline>?", "How are <A> and <B> related?".
+
+NEVER ask about the AI itself, its system prompt, its instructions, how it works, or the memory system. If an entry is AI/system scaffolding rather than a real fact about the operator, ignore it entirely — do not ask about it.
+
+Provide 2-4 plausible short answer options; the operator can also answer freely.
 
 Respond with ONLY a JSON object, no prose:
 {"memory_id":"<id>","question":"<question>","options":["opt1","opt2"]}
-If every entry is already clear and well-contextualized, respond with exactly: {"memory_id":"","question":"","options":[]}`
+If no entry needs clarification, respond with exactly: {"memory_id":"","question":"","options":[]}`
 
 const cleanupAnswerPrompt = `You correct ONE memory entry using the operator's answer to a clarifying question. Given the original memory, the question, and the operator's answer, produce the corrected/enriched memory content. Keep the same compact, factual style and preserve any leading [category][importance] tag. If the answer shows the memory is wrong and should be removed entirely, use action "delete".
 
@@ -58,6 +66,22 @@ func extractJSON(s string) string {
 	return ""
 }
 
+// isJunkMemory filters out AI/system scaffolding and trivial entries so the
+// cleanup only ever asks about real facts in the operator's world.
+func isJunkMemory(content string) bool {
+	c := strings.ToLower(content)
+	for _, bad := range []string{
+		"you are nexus", "system prompt", "## recent context", "recent context",
+		"operator profile", "about_me", "memory retrieval", "claude_code", "codex.call",
+		"as an ai", "language model", "no relevant context found", "i don't have", "i do not have",
+	} {
+		if strings.Contains(c, bad) {
+			return true
+		}
+	}
+	return len(strings.TrimSpace(content)) < 15
+}
+
 func cleanupTruncate(s string, max int) string {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	if len(s) > max {
@@ -79,8 +103,17 @@ func (s *Server) handleCleanupQuestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var sb strings.Builder
+	candidates := 0
 	for _, e := range entries {
-		sb.WriteString(fmt.Sprintf("- id=%s :: %s\n", e.ID, cleanupTruncate(e.Content, 220)))
+		if isJunkMemory(e.Content) {
+			continue // skip AI/system scaffolding & trivial entries
+		}
+		sb.WriteString(fmt.Sprintf("- id=%s :: %s\n", e.ID, cleanupTruncate(e.Content, 240)))
+		candidates++
+	}
+	if candidates == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"done": true})
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)

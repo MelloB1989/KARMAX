@@ -21,7 +21,7 @@ type CalendarAddTool struct {
 func (t *CalendarAddTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "calendar.add",
-		Description: "Add an event to Nikhil's phone calendar (it appears on his iPhone via the KARMAX app). Provide start/end as ISO-8601 with a timezone offset, e.g. 2026-06-25T09:00:00+05:30. End defaults to start + 1h. Direct, low-risk — no approval needed.",
+		Description: "Add an event to the operator's phone calendar (it appears on his iPhone via the KARMAX app). Provide start/end as ISO-8601 with a timezone offset, e.g. 2026-06-25T09:00:00+05:30. End defaults to start + 1h. Direct, low-risk — no approval needed.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -61,7 +61,7 @@ func (t *CalendarAddTool) Execute(ctx context.Context, input map[string]any) (to
 
 	return tools.SuccessResult(map[string]any{
 		"status": "queued", "kind": "calendar_event", "id": id,
-		"message": "Event queued for Nikhil's phone calendar.",
+		"message": "Event queued for the operator's phone calendar.",
 	}), nil
 }
 
@@ -74,7 +74,7 @@ type ReminderAddTool struct {
 func (t *ReminderAddTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "reminder.add",
-		Description: "Add a reminder to Nikhil's phone (iOS Reminders). Optional due date as ISO-8601 with timezone. Direct, low-risk — no approval needed.",
+		Description: "Add a reminder to the operator's phone (iOS Reminders). Optional due date as ISO-8601 with timezone. Direct, low-risk — no approval needed.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -107,6 +107,49 @@ func (t *ReminderAddTool) Execute(ctx context.Context, input map[string]any) (to
 
 	return tools.SuccessResult(map[string]any{
 		"status": "queued", "kind": "reminder", "id": id,
-		"message": "Reminder queued for Nikhil's phone.",
+		"message": "Reminder queued for the operator's phone.",
+	}), nil
+}
+
+// ContactAddTool enqueues a new phone contact for the app to create on-device
+// (since WhatsApp only exposes a number). Additive and low-risk — no approval.
+type ContactAddTool struct {
+	Store   *store.Store
+	AgentID string
+}
+
+func (t *ContactAddTool) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{
+		Name:        "contact.add",
+		Description: "Save a new contact (name + phone number) to the operator's phone via the KARMAX app — useful since WhatsApp only gives a raw number. Direct, low-risk — no approval needed.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string"},
+				"phone": {"type": "string", "description": "Phone number, ideally with country code."}
+			},
+			"required": ["name", "phone"]
+		}`),
+	}
+}
+
+func (t *ContactAddTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
+	name, _ := input["name"].(string)
+	phone, _ := input["phone"].(string)
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(phone) == "" {
+		return tools.ErrorResult(fmt.Errorf("name and phone are required")), nil
+	}
+	payload, _ := json.Marshal(map[string]any{"name": name, "phone": phone})
+	id := uuid.New().String()
+	if err := t.Store.CreateDeviceAction(store.StoredDeviceAction{
+		ID: id, AgentID: t.AgentID, Kind: "create_contact", Payload: string(payload),
+	}); err != nil {
+		return tools.ErrorResult(fmt.Errorf("queue contact: %w", err)), nil
+	}
+	_, _, _ = SendExpoPush(t.Store, "👤 contact saved", name, "default", map[string]any{"type": "device_action"})
+
+	return tools.SuccessResult(map[string]any{
+		"status": "queued", "kind": "create_contact", "id": id,
+		"message": "Contact queued to save on the operator's phone.",
 	}), nil
 }
