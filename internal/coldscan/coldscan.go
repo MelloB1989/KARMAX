@@ -23,16 +23,16 @@ import (
 
 // Config controls the cold-scan worker.
 type Config struct {
-	Enabled     bool
-	Interval    time.Duration
+	Enabled          bool
+	Interval         time.Duration
 	PerTick          int     // chats summarized per tick (rate limit)
 	HotDays          int     // chats with activity newer than this are "hot" and skipped
 	MinGroupOwn      int     // min of the operator's own messages for a GROUP to be worth summarizing
 	MinGroupOwnRatio float64 // min fraction of recent group messages that must be the operator's
 	WacliPath        string
-	Provider    string
-	Model       string
-	Fallbacks   []karmahelper.FallbackModel
+	Provider         string
+	Model            string
+	Fallbacks        []karmahelper.FallbackModel
 }
 
 // Scanner is the background cold-memory worker.

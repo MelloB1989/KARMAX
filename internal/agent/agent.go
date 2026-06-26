@@ -733,52 +733,6 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 	return response, nil
 }
 
-func (a *Agent) autoReplyToOrigin(evt bus.Event, response, userPrompt string) {
-	if evt.Kind != bus.EventCommsMessage || a.commsSend == nil {
-		return
-	}
-
-	target, _ := evt.Payload["channel_id"].(string)
-	karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
-	if target == "" || karmaxChannelID == "" {
-		a.log.Warn("cannot auto-reply because comms origin is incomplete",
-			zap.String("event_id", evt.ID),
-			zap.String("karmax_channel_id", karmaxChannelID),
-			zap.String("target", target),
-		)
-		return
-	}
-
-	replyContent := cleanOutboundResponse(response)
-	if strings.TrimSpace(replyContent) == "" {
-		a.log.Warn("LLM returned empty response for comms message, sending fallback",
-			zap.String("event_id", evt.ID),
-			zap.String("input_preview", truncateStr(userPrompt, 200)),
-		)
-		replyContent = "I received your message but couldn't generate a response. Please try again."
-	}
-
-	if sendErr := a.commsSend(karmaxChannelID, target, replyContent); sendErr != nil {
-		a.log.Error("failed to auto-reply to comms message",
-			zap.String("karmax_channel_id", karmaxChannelID),
-			zap.String("target", target),
-			zap.Error(sendErr),
-		)
-		a.publishCritical("failed to route response to original channel", map[string]any{
-			"karmax_channel_id":           karmaxChannelID,
-			"target":                      target,
-			"error":                       sendErr.Error(),
-			"alternative_alert_attempted": true,
-		})
-		return
-	}
-
-	a.log.Debug("auto-replied to comms message",
-		zap.String("karmax_channel_id", karmaxChannelID),
-		zap.String("target", target),
-	)
-}
-
 func (a *Agent) buildProactiveMemoryContext(ctx context.Context, evt bus.Event, userPrompt string) string {
 	if a.memoryModel == nil || !shouldRetrieveMemory(evt, userPrompt) {
 		return ""
@@ -1090,8 +1044,4 @@ func truncateStr(s string, maxLen int) string {
 
 func cleanOutboundResponse(s string) string {
 	return karmahelper.CleanContent(s)
-}
-
-func stripThinkTags(s string) string {
-	return cleanOutboundResponse(s)
 }

@@ -104,7 +104,7 @@ Usage:
   karmax <command> [options]
 
 Commands:
-  start                Start the runtime (agents + webhook + scheduler + dashboard)
+  start                Start the runtime (agents + webhook + scheduler + phone API)
   init                 Interactive first-run setup wizard
   doctor               Check environment, config, and connections
   status               Show all agent statuses
@@ -246,7 +246,7 @@ func runInit() {
 	fmt.Println("    export OPENAI_API_KEY=sk-...")
 	fmt.Println()
 	fmt.Println("  Run with:  karmax start")
-	fmt.Println("  Dashboard: http://localhost:8080")
+	fmt.Println("  Phone app API: http://localhost:9091")
 	fmt.Println()
 }
 
@@ -295,14 +295,14 @@ func runDoctor() {
 func runStatus() {
 	fmt.Println("Agent Status")
 	fmt.Println("(Note: full status requires a running karmax instance)")
-	fmt.Println("Use the dashboard at http://localhost:8080 or 'karmax start' first.")
+	fmt.Println("Run 'karmax start', then use the phone app or the API on :9091.")
 }
 
 func runAgentCmd(args []string) {
 	switch args[0] {
 	case "list":
 		fmt.Println("Agent list requires a running karmax instance.")
-		fmt.Println("Use the dashboard API: curl http://localhost:8080/api/agents")
+		fmt.Println("Use the API: curl http://localhost:9091/api/activity")
 	case "start", "stop", "pause", "resume", "restart":
 		if len(args) < 2 {
 			fmt.Fprintf(os.Stderr, "usage: karmax agent %s <id>\n", args[0])

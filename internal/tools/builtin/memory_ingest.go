@@ -180,10 +180,3 @@ func truncateStr(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

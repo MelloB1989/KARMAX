@@ -17,8 +17,6 @@ import (
 	"github.com/MelloB1989/karmax/internal/comms/discord"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
-	"github.com/MelloB1989/karmax/pkg/karmahelper"
-	"github.com/MelloB1989/karmax/internal/dashboard"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
@@ -26,6 +24,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/webhook"
+	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"go.uber.org/zap"
 )
 
@@ -40,7 +39,6 @@ type KarmaxRuntime struct {
 	agents    *agent.Registry
 	scheduler *scheduler.Scheduler
 	webhooks  *webhook.WebhookServer
-	dashboard *dashboard.Server
 	comms     *comms.Manager
 	api       *api.Server
 	cold      *coldscan.Scanner
@@ -226,9 +224,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		})
 	}
 
-	dashAddr := fmt.Sprintf("%s:%d", cfg.Dashboard.Host, cfg.Dashboard.Port)
-	dash := dashboard.NewServer(dashAddr, agentReg, sched, wh, memFactory, toolReg, s, b, log)
-
 	var apiSrv *api.Server
 	if cfg.API.Enabled {
 		apiAddr := fmt.Sprintf("%s:%d", cfg.API.Host, cfg.API.Port)
@@ -258,8 +253,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Cold-memory background worker: summarizes older WhatsApp chats into
 	// chat_summaries for the retrieval sub-agent (uses the cheaper summary model).
 	coldCfg := coldscan.Config{
-		Enabled:     cfg.ColdScan.Enabled,
-		Interval:    time.Duration(cfg.ColdScan.IntervalMinutes) * time.Minute,
+		Enabled:          cfg.ColdScan.Enabled,
+		Interval:         time.Duration(cfg.ColdScan.IntervalMinutes) * time.Minute,
 		PerTick:          cfg.ColdScan.PerTick,
 		HotDays:          cfg.ColdScan.HotDays,
 		MinGroupOwn:      cfg.ColdScan.MinGroupOwn,
@@ -293,7 +288,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		agents:    agentReg,
 		scheduler: sched,
 		webhooks:  wh,
-		dashboard: dash,
 		comms:     commsMgr,
 		api:       apiSrv,
 		cold:      coldScanner,
@@ -386,16 +380,6 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		}()
 	}
 
-	if rt.cfg.Dashboard.Enabled {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := rt.dashboard.Start(ctx, rt.bus); err != nil {
-				errCh <- fmt.Errorf("dashboard: %w", err)
-			}
-		}()
-	}
-
 	if rt.api != nil {
 		wg.Add(1)
 		go func() {
@@ -430,7 +414,6 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.mcpBridge.StopAll()
 	rt.memory.StopAll()
 	rt.webhooks.Stop()
-	rt.dashboard.Stop()
 	if rt.api != nil {
 		rt.api.Stop()
 	}
@@ -439,10 +422,6 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	wg.Wait()
 	return nil
 }
-
-func (rt *KarmaxRuntime) Bus() *bus.Bus           { return rt.bus }
-func (rt *KarmaxRuntime) Agents() *agent.Registry { return rt.agents }
-func (rt *KarmaxRuntime) Store() *store.Store     { return rt.store }
 
 func (rt *KarmaxRuntime) startCriticalAlertLoop(ctx context.Context) {
 	sub, cancel := rt.bus.Subscribe(bus.EventSystemCritical)
@@ -530,9 +509,6 @@ func (rt *KarmaxRuntime) printBanner() {
 	fmt.Printf("  + Scheduler        (%d jobs)\n", len(rt.scheduler.ListJobs()))
 	if rt.cfg.Webhooks.Enabled {
 		fmt.Printf("  + Webhook server   http://%s:%d\n", rt.cfg.Webhooks.Host, rt.cfg.Webhooks.Port)
-	}
-	if rt.cfg.Dashboard.Enabled {
-		fmt.Printf("  + Dashboard        http://%s:%d\n", rt.cfg.Dashboard.Host, rt.cfg.Dashboard.Port)
 	}
 	if rt.cfg.API.Enabled {
 		fmt.Printf("  + API server       http://%s:%d  (phone app)\n", rt.cfg.API.Host, rt.cfg.API.Port)

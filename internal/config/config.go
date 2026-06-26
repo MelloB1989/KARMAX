@@ -57,12 +57,6 @@ func applyDefaults(cfg *KarmaxConfig) {
 	if cfg.Karmax.LogFormat == "" {
 		cfg.Karmax.LogFormat = "pretty"
 	}
-	if cfg.Dashboard.Port == 0 {
-		cfg.Dashboard.Port = 8080
-	}
-	if cfg.Dashboard.Host == "" {
-		cfg.Dashboard.Host = "127.0.0.1"
-	}
 	if cfg.Webhooks.Port == 0 {
 		cfg.Webhooks.Port = 9090
 	}
@@ -200,11 +194,6 @@ func defaultConfig() KarmaxConfig {
 			DataDir:   "~/.karmax",
 			LogLevel:  "info",
 			LogFormat: "pretty",
-		},
-		Dashboard: DashboardConfig{
-			Enabled: true,
-			Port:    8080,
-			Host:    "127.0.0.1",
 		},
 		Webhooks: WebhooksConfig{
 			Enabled: true,

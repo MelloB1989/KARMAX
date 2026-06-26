@@ -7,12 +7,6 @@ karmax:
   log_level: "info"            # Options: debug, info, warn, error
   log_format: "pretty"         # Options: pretty, json
 
-# Dashboard — web UI for monitoring agents, memory, and events
-dashboard:
-  enabled: true
-  port: 8080
-  host: "127.0.0.1"
-
 # Webhooks — HTTP server for external trigger integrations
 webhooks:
   enabled: true
