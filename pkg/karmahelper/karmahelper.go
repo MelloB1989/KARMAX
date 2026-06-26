@@ -454,6 +454,8 @@ func resolveProvider(name string) ai.Provider {
 		return ai.OpenAI
 	case "anthropic":
 		return ai.Anthropic
+	case "codex":
+		return ai.Codex
 	case "groq":
 		return ai.Groq
 	case "google":

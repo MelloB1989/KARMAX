@@ -3,12 +3,10 @@ module github.com/MelloB1989/karmax
 go 1.24.4
 
 require (
-	github.com/MelloB1989/karma v1.17.81
+	github.com/MelloB1989/karma v1.18.0
 	github.com/bwmarrin/discordgo v0.29.0
-	github.com/fsnotify/fsnotify v1.8.0
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-sqlite3 v1.14.24
@@ -57,6 +55,7 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
