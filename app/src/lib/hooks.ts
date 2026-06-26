@@ -23,7 +23,9 @@ import {
   submitCleanupAnswer,
   fetchMemoryGraph,
   rebuildMemoryGraph,
+  syncContacts,
 } from '@/lib/api';
+import { getAllContacts } from '@/lib/contacts';
 import {
   createCalendarEvent,
   createReminder,
@@ -66,6 +68,27 @@ export function useResetConversation() {
     mutationFn: () => resetConversation(baseUrl as string, token),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['messages', baseUrl] }),
   });
+}
+
+// useContactSync uploads the phone's contact directory to KARMAX once per
+// session so it can resolve WhatsApp numbers to saved names.
+export function useContactSync() {
+  const baseUrl = useConnection((s) => s.baseUrl);
+  const token = useConnection((s) => s.token);
+  const connected = useConnection((s) => s.status === 'connected');
+  const done = useRef(false);
+  useEffect(() => {
+    if (!connected || !baseUrl || !token || done.current) return;
+    done.current = true;
+    (async () => {
+      try {
+        const contacts = await getAllContacts();
+        if (contacts.length) await syncContacts(baseUrl, token, contacts);
+      } catch {
+        done.current = false; // allow a retry next time
+      }
+    })();
+  }, [connected, baseUrl, token]);
 }
 
 export function useMemoryGraph() {

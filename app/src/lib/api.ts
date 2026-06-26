@@ -122,6 +122,20 @@ export async function submitCleanupAnswer(
   if (!res.ok) throw new ApiError(`Answer failed (${res.status})`, res.status);
 }
 
+export async function syncContacts(
+  baseUrl: string,
+  token: string,
+  contacts: { name: string; phones: string[] }[],
+): Promise<{ synced: number; total: number }> {
+  const res = await fetch(`${baseUrl}/api/contacts/sync`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ contacts }),
+  });
+  if (!res.ok) throw new ApiError(`Contacts sync failed (${res.status})`, res.status);
+  return (await res.json()) as { synced: number; total: number };
+}
+
 export async function registerPushToken(
   baseUrl: string,
   token: string,

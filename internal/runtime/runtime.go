@@ -135,7 +135,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send})
 	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: "/home/mellob/.local/bin/gws"})
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.local/bin/gws"})
-	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget})
+	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
 	toolReg.Register(&builtin.NtfyPushTool{Server: os.Getenv("NTFY_SERVER"), Topic: os.Getenv("NTFY_TOPIC")})
 	toolReg.Register(&builtin.AppPushTool{Store: s})
 	toolReg.Register(&builtin.ProposeTool{Store: s})
