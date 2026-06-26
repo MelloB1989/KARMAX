@@ -802,28 +802,11 @@ func memoryQueryFromEvent(evt bus.Event, fallback string) string {
 	return truncateStr(cleanOutboundResponse(fallback), 1000)
 }
 
-func (a *Agent) ingestInteractionMemory(ctx context.Context, evt bus.Event, userPrompt, response string) {
-	if a.memory == nil {
-		return
-	}
-
-	// Only auto-ingest genuine conversational turns — a real user message in the
-	// event payload (comms.message / api.chat). Loop/scheduled/webhook events
-	// carry prompt scaffolding ("## Recent Context …"), not facts; ingesting those
-	// pollutes memory. Those flows ingest real facts via explicit memory.ingest
-	// tool calls instead.
-	userContent, _ := evt.Payload["content"].(string)
-	userContent = strings.TrimSpace(cleanOutboundResponse(userContent))
-	if userContent == "" {
-		return
-	}
-
-	a.ingestMemory(ctx, truncateStr(userContent, 1000), classifyMemoryCategory(userContent), "high", []string{string(evt.Kind), "user"})
-
-	response = cleanOutboundResponse(response)
-	if strings.TrimSpace(response) != "" {
-		a.ingestMemory(ctx, truncateStr(response, 4000), classifyMemoryCategory(response), "medium", []string{string(evt.Kind), "assistant"})
-	}
+func (a *Agent) ingestInteractionMemory(_ context.Context, _ bus.Event, _, _ string) {
+	// No-op: raw conversation turns (chat questions, the agent's replies, incoming
+	// WhatsApp messages) are NOT auto-stored — that floods memory with chatter.
+	// Durable facts are saved deliberately via the memory.ingest tool (by the
+	// agent and the sync loops).
 }
 
 func (a *Agent) ingestMemory(ctx context.Context, content, category, importance string, tags []string) {

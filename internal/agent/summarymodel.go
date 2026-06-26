@@ -82,12 +82,11 @@ func (sm *SummaryModel) Compact(ctx context.Context, history *models.AIChatHisto
 		zap.Int("summary_len", len(summaryResponse)),
 	)
 
-	// Ingest key facts from the summary into durable memory.
-	if memMgr != nil {
-		if err := memMgr.IngestFromSummary(summaryResponse, agentID); err != nil {
-			sm.log.Warn("memory ingestion from summary failed", zap.Error(err))
-		}
-	}
+	// The compaction summary is used only to shrink the working context — it is
+	// NOT ingested into long-term memory (that stored conversational chatter).
+	// Durable facts come from explicit memory.ingest calls.
+	_ = memMgr
+	_ = agentID
 
 	// Build the new compacted history.
 	newHistory := &models.AIChatHistory{
