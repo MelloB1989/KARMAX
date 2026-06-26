@@ -226,6 +226,11 @@ func isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Codex transient failures (429/5xx, codeless response.failed) — classified
+	// by karma so we don't rely on string matching.
+	if ai.IsCodexRetryable(err) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	retryablePatterns := []string{
 		"429",

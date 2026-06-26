@@ -3,7 +3,7 @@ module github.com/MelloB1989/karmax
 go 1.24.4
 
 require (
-	github.com/MelloB1989/karma v1.18.0
+	github.com/MelloB1989/karma v1.18.1
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/google/uuid v1.6.0
