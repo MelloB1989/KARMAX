@@ -20,13 +20,15 @@ type ClaudeCodeTool struct {
 
 func (t *ClaudeCodeTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
-		Name:        "claude_code.call",
-		Description: "Call Claude Code CLI to perform coding tasks. Can create new sessions or continue existing ones. Session IDs are tracked for continuity.",
+		Name: "claude_code.call",
+		Description: "Delegate a coding/engineering task to the Claude Code CLI — a full coding agent with file, shell, and web tools, running on the operator's Claude subscription. " +
+			"CONTINUITY IS IMPORTANT: to continue earlier work on the same project/feature, pass its session_id (find it in the '## Active Coding Sessions' list in your context, matched by the task description) — this resumes the exact session with all prior context, even days later. " +
+			"Omit session_id ONLY for genuinely new, unrelated work; otherwise KARMAX auto-resumes the closest matching prior session. Prefer this over codex.call.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"prompt": {"type": "string", "description": "The coding task or prompt to send to Claude Code"},
-				"session_id": {"type": "string", "description": "Optional: continue an existing session. Leave empty for new session."},
+				"prompt": {"type": "string", "description": "The coding task or follow-up instruction to send to Claude Code"},
+				"session_id": {"type": "string", "description": "To CONTINUE prior work: the session_id from '## Active Coding Sessions' in your context. Omit only for brand-new, unrelated tasks."},
 				"working_dir": {"type": "string", "description": "Working directory for the coding task"}
 			},
 			"required": ["prompt"]
@@ -67,9 +69,16 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 	// tools (WebSearch/WebFetch, file, bash) without an interactive permission
 	// prompt — without it, --print mode silently blocks web search and the agent
 	// concludes "web is unavailable".
-	args := []string{"--print", "--output-format", "text", "--dangerously-skip-permissions", "--session-id", sessionID}
+	//
+	// Session args differ by case (current Claude CLI):
+	//   - new session:  --session-id <uuid>   (pre-mint an id we can resume later)
+	//   - resume:       --resume <uuid>        (the id is the VALUE of --resume;
+	//                   "--session-id X --resume" is rejected by the CLI)
+	args := []string{"--print", "--output-format", "text", "--dangerously-skip-permissions"}
 	if resuming {
-		args = append(args, "--resume")
+		args = append(args, "--resume", sessionID)
+	} else {
+		args = append(args, "--session-id", sessionID)
 	}
 	args = append(args, prompt)
 

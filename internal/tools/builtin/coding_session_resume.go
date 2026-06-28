@@ -29,10 +29,13 @@ func findReusableCodingSession(s *store.Store, agentID, toolType, prompt string)
 			continue
 		}
 
-		searchText := strings.TrimSpace(cs.Description + " " + cs.Output)
-		score := wordOverlap(prompt, searchText)
+		// Score against the task DESCRIPTION (the original prompt), not the
+		// session output — including the (often large) output in the comparison
+		// balloons the word set and tanks the match even for identical tasks.
+		// Containment-based so a short follow-up on the same subject still scores.
+		score := taskContainment(prompt, cs.Description)
 		if status == "active" || status == "running" {
-			score += 0.25
+			score += 0.2
 		}
 		if score > bestScore {
 			bestScore = score
@@ -41,10 +44,35 @@ func findReusableCodingSession(s *store.Store, agentID, toolType, prompt string)
 		}
 	}
 
-	if bestScore < 0.2 {
+	// Conservative threshold: only auto-resume on a strong subject match. Weaker
+	// follow-ups should resume via an explicit session_id (the agent sees prior
+	// sessions + their ids in its "Active Coding Sessions" context).
+	if bestScore < 0.6 {
 		return nil
 	}
 	return best
+}
+
+// taskContainment scores how much the smaller of the two word sets is covered
+// by the other (intersection / min set size). Unlike Jaccard, a short follow-up
+// fully contained in a longer task description still scores ~1.0.
+func taskContainment(a, b string) float64 {
+	setA := wordSet(strings.ToLower(a))
+	setB := wordSet(strings.ToLower(b))
+	if len(setA) == 0 || len(setB) == 0 {
+		return 0
+	}
+	inter := 0
+	for w := range setA {
+		if setB[w] {
+			inter++
+		}
+	}
+	smaller := len(setA)
+	if len(setB) < smaller {
+		smaller = len(setB)
+	}
+	return float64(inter) / float64(smaller)
 }
 
 func prependSessionContext(prompt string, session *store.StoredCodingSession) string {
