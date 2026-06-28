@@ -391,16 +391,17 @@ func (a *Agent) buildSessionContext() string {
 
 	var sb strings.Builder
 	sb.WriteString("## Active Coding Sessions\n\n")
+	sb.WriteString("These are prior coding tasks you delegated. To CONTINUE any of them (a follow-up on the same work), call claude_code.call with its exact `session_id` — do NOT start a fresh session for work that matches one of these.\n\n")
 
-	// Show only the 10 most recent sessions
-	limit := 10
+	// Show the 12 most recent sessions so a follow-up days later can still match.
+	limit := 12
 	if len(sessions) < limit {
 		limit = len(sessions)
 	}
 
 	for _, s := range sessions[:limit] {
-		sb.WriteString(fmt.Sprintf("- **[%s]** %s (session: %s, status: %s)\n",
-			s.ToolType, s.Description, s.SessionID, s.Status))
+		sb.WriteString(fmt.Sprintf("- **[%s]** %s (session_id: %s, status: %s, last active: %s)\n",
+			s.ToolType, s.Description, s.SessionID, s.Status, s.UpdatedAt.Format("2006-01-02")))
 	}
 	sb.WriteString("\n")
 
