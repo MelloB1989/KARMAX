@@ -40,6 +40,11 @@ type LoopConfig struct {
 	Agent   string         `yaml:"agent"`   // defaults to the first agent
 	Enabled *bool          `yaml:"enabled"` // defaults to true
 	Payload map[string]any `yaml:"payload"` // optional extra context for the event
+	// Harness, when set (e.g. "claude_code"), runs the loop prompt DIRECTLY
+	// through that coding harness and ingests its output to memory, bypassing
+	// the main model. Use for web-research loops that must keep working even
+	// when the main model is rate-limited.
+	Harness string `yaml:"harness"`
 }
 
 type CommsConfig struct {

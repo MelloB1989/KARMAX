@@ -1,11 +1,12 @@
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
 
 import { KM } from '@/components/km/colors';
-import { useProposals } from '@/lib/hooks';
+import { useNotifications, useProposals } from '@/lib/hooks';
 
 export default function AppTabs() {
   const { data: pending = [] } = useProposals('pending');
-  const count = pending.length;
+  const { data: notifData } = useNotifications();
+  const count = pending.length + (notifData?.unread ?? 0);
 
   return (
     <NativeTabs

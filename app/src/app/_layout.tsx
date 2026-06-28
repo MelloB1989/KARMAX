@@ -51,10 +51,13 @@ function AppBootstrap() {
       () => {
         queryClient.invalidateQueries({ queryKey: ['messages'] });
         queryClient.invalidateQueries({ queryKey: ['proposals'] });
+        queryClient.invalidateQueries({ queryKey: ['notifications'] });
       },
       (response) => {
         const data = response.notification.request.content.data as { type?: string } | undefined;
-        router.navigate(data?.type === 'proposal' ? '/inbox' : '/');
+        if (data?.type === 'proposal') router.navigate('/inbox');
+        else if (data?.type === 'notification') router.navigate('/inbox?tab=notifications');
+        else router.navigate('/');
       },
     );
   }, [queryClient, router]);

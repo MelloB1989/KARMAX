@@ -251,6 +251,10 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			cp := *tt
 			cp.AgentID = a.def.ID
 			out = append(out, &cp)
+		case *builtin.AppPushTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			out = append(out, &cp)
 		case *builtin.CalendarAddTool:
 			cp := *tt
 			cp.AgentID = a.def.ID
@@ -580,6 +584,13 @@ func (a *Agent) run() {
 }
 
 func (a *Agent) handleEvent(evt bus.Event) error {
+	// Harness loops (e.g. tech-news) run their prompt directly through a coding
+	// harness and ingest the result, bypassing the main model entirely — so they
+	// keep working even when the main model is rate-limited.
+	if handled, err := a.runHarnessLoop(evt); handled {
+		return err
+	}
+
 	recentMem, _ := a.memory.Recent(20)
 
 	// Build user prompt from event and context
@@ -1007,6 +1018,90 @@ func extractLoopPrompt(evt bus.Event) (loopName, prompt string) {
 		}
 	}
 	return "", ""
+}
+
+// runHarnessLoop handles scheduled loops that declare a `harness` (e.g.
+// "claude_code"): it runs the loop prompt DIRECTLY through that coding harness
+// and ingests the output to long-term memory, bypassing the main model. This
+// keeps web-research loops (e.g. tech-news) working even when the main model is
+// rate-limited. Returns handled=true if it took ownership of the event.
+func (a *Agent) runHarnessLoop(evt bus.Event) (bool, error) {
+	if evt.Kind != bus.EventScheduledJob {
+		return false, nil
+	}
+	inner, _ := evt.Payload["payload"].(map[string]any)
+	if inner == nil {
+		return false, nil
+	}
+	harness, _ := inner["harness"].(string)
+	harness = strings.TrimSpace(harness)
+	if harness == "" {
+		return false, nil
+	}
+	prompt, _ := inner["prompt"].(string)
+	loopName, _ := inner["loop"].(string)
+	if strings.TrimSpace(prompt) == "" {
+		return true, fmt.Errorf("harness loop %q has no prompt", loopName)
+	}
+
+	want := "claude_code.call"
+	if harness == "codex" {
+		want = "codex.call"
+	}
+	var tool tools.Tool
+	for _, t := range a.bindAgentTools(a.tools) {
+		if tools.CanonicalName(t.Manifest().Name) == tools.CanonicalName(want) {
+			tool = t
+			break
+		}
+	}
+	if tool == nil {
+		return true, fmt.Errorf("harness loop %q: tool %s not available", loopName, want)
+	}
+
+	a.log.Info("running harness loop", zap.String("loop", loopName), zap.String("harness", harness))
+	ctx, cancel := context.WithTimeout(a.ctx, 9*time.Minute)
+	defer cancel()
+
+	res, err := tool.Execute(ctx, map[string]any{"prompt": prompt})
+	if err != nil {
+		return true, fmt.Errorf("harness loop %q: %w", loopName, err)
+	}
+	out := harnessOutputText(res)
+	if strings.TrimSpace(out) == "" {
+		a.log.Warn("harness loop produced no output", zap.String("loop", loopName))
+		return true, nil
+	}
+
+	if a.memory != nil {
+		if werr := a.memory.Write(memory.MemoryEntry{
+			Role:    "assistant",
+			Content: out,
+			Tags:    []string{"loop", loopName},
+		}); werr != nil {
+			a.log.Warn("harness loop ingest failed", zap.String("loop", loopName), zap.Error(werr))
+		}
+	}
+	a.log.Info("harness loop done", zap.String("loop", loopName), zap.Int("chars", len(out)))
+	a.persistSnapshot()
+	return true, nil
+}
+
+// harnessOutputText pulls the text body out of a coding-harness tool result
+// (claude_code.call / codex.call both return {"output": "..."}).
+func harnessOutputText(res tools.ToolResult) string {
+	if res.IsError {
+		return ""
+	}
+	if m, ok := res.Output.(map[string]any); ok {
+		if s, ok := m["output"].(string); ok {
+			return s
+		}
+	}
+	if s, ok := res.Output.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func (a *Agent) persistSnapshot() {
