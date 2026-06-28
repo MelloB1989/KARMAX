@@ -226,6 +226,21 @@ var migrations = []string{
 		name       TEXT NOT NULL,
 		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
+
+	// 019_notifications (agent updates/alerts surfaced in the app feed; every
+	// app.push is persisted here so the feed survives a missed/undelivered push)
+	`CREATE TABLE IF NOT EXISTS notifications (
+		id         TEXT PRIMARY KEY,
+		agent_id   TEXT NOT NULL,
+		kind       TEXT,
+		title      TEXT,
+		body       TEXT NOT NULL,
+		data       TEXT,
+		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		read_at    DATETIME
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_notifications_time ON notifications(created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(read_at)`,
 }
 
 func (s *Store) migrate() error {

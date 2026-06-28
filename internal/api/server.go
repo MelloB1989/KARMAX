@@ -53,6 +53,9 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("/api/push/register", srv.auth(srv.handlePushRegister))
 	mux.HandleFunc("GET /api/proposals", srv.auth(srv.handleProposals))
 	mux.HandleFunc("POST /api/proposals/{id}/decision", srv.auth(srv.handleProposalDecision))
+	mux.HandleFunc("GET /api/notifications", srv.auth(srv.handleNotifications))
+	mux.HandleFunc("POST /api/notifications/read-all", srv.auth(srv.handleReadAllNotifications))
+	mux.HandleFunc("POST /api/notifications/{id}/read", srv.auth(srv.handleReadNotification))
 	mux.HandleFunc("GET /api/activity", srv.auth(srv.handleActivity))
 	mux.HandleFunc("POST /api/jobs/{id}/run", srv.auth(srv.handleRunJob))
 	mux.HandleFunc("GET /api/memory/tree", srv.auth(srv.handleMemoryTree))
@@ -307,11 +310,11 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 	}
 
 	prompt := fmt.Sprintf(
-		"Nikhil APPROVED this proposed action. Execute it now using your tools, then confirm exactly what you did.\n\nTitle: %s\nAction: %s",
+		"The operator APPROVED this proposed action. Execute it now using your tools, then confirm exactly what you did.\n\nTitle: %s\nAction: %s",
 		p.Title, action,
 	)
 	if strings.TrimSpace(req.Note) != "" {
-		prompt += "\nNote from Nikhil: " + req.Note
+		prompt += "\nNote from the operator: " + req.Note
 	}
 
 	// Execute in the background so the decision request returns immediately;
@@ -346,6 +349,59 @@ func proposalJSON(p store.StoredProposal) map[string]any {
 	}
 	if p.DecidedAt != nil {
 		m["decided_at"] = p.DecidedAt.Format(time.RFC3339)
+	}
+	return m
+}
+
+func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	ns, err := s.store.ListNotifications(limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	unread, _ := s.store.CountUnreadNotifications()
+	out := make([]map[string]any, 0, len(ns))
+	for _, n := range ns {
+		out = append(out, notificationJSON(n))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": out, "unread": unread})
+}
+
+func (s *Server) handleReadNotification(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.MarkNotificationRead(r.PathValue("id")); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	unread, _ := s.store.CountUnreadNotifications()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unread": unread})
+}
+
+func (s *Server) handleReadAllNotifications(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.MarkAllNotificationsRead(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unread": 0})
+}
+
+func notificationJSON(n store.StoredNotification) map[string]any {
+	m := map[string]any{
+		"id":         n.ID,
+		"kind":       n.Kind,
+		"title":      n.Title,
+		"body":       n.Body,
+		"data":       n.Data,
+		"read":       n.ReadAt != nil,
+		"created_at": n.CreatedAt.Format(time.RFC3339),
+	}
+	if n.ReadAt != nil {
+		m["read_at"] = n.ReadAt.Format(time.RFC3339)
 	}
 	return m
 }

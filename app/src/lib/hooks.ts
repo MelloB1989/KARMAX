@@ -13,6 +13,9 @@ import {
   fetchMessages,
   fetchProfile,
   fetchProposals,
+  fetchNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
   forgetMemoryEntry,
   registerPushToken,
   runJob,
@@ -329,6 +332,41 @@ export function useDecideProposal() {
       queryClient.invalidateQueries({ queryKey: ['proposals'] });
       queryClient.invalidateQueries({ queryKey: ['messages'] });
     },
+  });
+}
+
+export function useNotifications() {
+  const baseUrl = useConnection((s) => s.baseUrl);
+  const token = useConnection((s) => s.token);
+  const connected = useConnection((s) => s.status === 'connected');
+
+  return useQuery({
+    queryKey: ['notifications', baseUrl],
+    queryFn: () => fetchNotifications(baseUrl as string, token),
+    enabled: connected && !!baseUrl && !!token,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useMarkNotificationRead() {
+  const baseUrl = useConnection((s) => s.baseUrl);
+  const token = useConnection((s) => s.token);
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => markNotificationRead(baseUrl as string, token, id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
+  });
+}
+
+export function useMarkAllNotificationsRead() {
+  const baseUrl = useConnection((s) => s.baseUrl);
+  const token = useConnection((s) => s.token);
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => markAllNotificationsRead(baseUrl as string, token),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
   });
 }
 

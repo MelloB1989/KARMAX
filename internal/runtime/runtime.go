@@ -136,7 +136,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: "/home/mellob/.local/bin/gws"})
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.local/bin/gws"})
 	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
-	toolReg.Register(&builtin.NtfyPushTool{Server: os.Getenv("NTFY_SERVER"), Topic: os.Getenv("NTFY_TOPIC")})
+	// Only expose notify.push (ntfy) to the agent when a topic is actually
+	// configured — otherwise the tool can only ever fail, so we don't offer it.
+	if ntfyTopic := os.Getenv("NTFY_TOPIC"); ntfyTopic != "" {
+		toolReg.Register(&builtin.NtfyPushTool{Server: os.Getenv("NTFY_SERVER"), Topic: ntfyTopic})
+	}
 	toolReg.Register(&builtin.AppPushTool{Store: s})
 	toolReg.Register(&builtin.ProposeTool{Store: s})
 	toolReg.Register(&builtin.CalendarAddTool{Store: s})
@@ -350,8 +354,11 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 			"loop":   loop.Name,
 			"prompt": loop.Prompt,
 		}
+		if loop.Harness != "" {
+			payload["harness"] = loop.Harness
+		}
 		for k, v := range loop.Payload {
-			if k == "loop" || k == "prompt" {
+			if k == "loop" || k == "prompt" || k == "harness" {
 				continue
 			}
 			payload[k] = v

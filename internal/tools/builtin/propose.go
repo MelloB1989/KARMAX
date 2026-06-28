@@ -12,8 +12,8 @@ import (
 )
 
 // ProposeTool creates a human-in-the-loop approval request: KARMAX proposes an
-// action, it appears in Nikhil's phone app (with a push), and only once he
-// approves does the agent execute it. This is what makes "delegate anything
+// action, it appears in the operator's phone app (with a push), and only once
+// they approve does the agent execute it. This is what makes "delegate anything
 // with full access" safe.
 type ProposeTool struct {
 	Store   *store.Store
@@ -23,7 +23,7 @@ type ProposeTool struct {
 func (t *ProposeTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "propose",
-		Description: "Propose an action that needs Nikhil's approval BEFORE you take it — sending a message/WhatsApp, scheduling, spending, posting, or anything outward-facing or irreversible. This creates a pending approval in his phone app and notifies him. Do NOT perform the action yet: once he approves, you'll be asked to execute it. Use this instead of acting silently or just describing what you'd do.",
+		Description: "Propose an action that needs the operator's approval BEFORE you take it — sending a message/WhatsApp, scheduling, spending, posting, or anything outward-facing or irreversible. This creates a pending approval in their phone app and notifies them. Do NOT perform the action yet: once they approve, you'll be asked to execute it. Use this instead of acting silently or just describing what you'd do.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -73,6 +73,6 @@ func (t *ProposeTool) Execute(ctx context.Context, input map[string]any) (tools.
 	return tools.SuccessResult(map[string]any{
 		"status":      "pending_approval",
 		"proposal_id": id,
-		"message":     "Proposed to Nikhil for approval. Wait for his decision before acting.",
+		"message":     "Proposed to the operator for approval. Wait for their decision before acting.",
 	}), nil
 }

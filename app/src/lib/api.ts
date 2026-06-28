@@ -208,6 +208,56 @@ export async function decideProposal(
   return ProposalSchema.parse((json as { proposal: unknown }).proposal);
 }
 
+// ---- Notifications (agent updates/alerts feed) ----
+
+export const NotificationSchema = z.object({
+  id: z.string(),
+  kind: z.string().optional().default(''),
+  title: z.string().optional().default(''),
+  body: z.string(),
+  data: z.string().optional().default(''),
+  read: z.boolean().optional().default(false),
+  created_at: z.string().optional(),
+});
+export type Notification = z.infer<typeof NotificationSchema>;
+
+const NotificationsResponseSchema = z.object({
+  notifications: z.array(NotificationSchema).default([]),
+  unread: z.number().optional().default(0),
+});
+
+export async function fetchNotifications(
+  baseUrl: string,
+  token: string,
+  limit = 50,
+): Promise<{ notifications: Notification[]; unread: number }> {
+  const res = await fetch(`${baseUrl}/api/notifications?limit=${limit}`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new ApiError(`Failed to load notifications (${res.status})`, res.status);
+  return NotificationsResponseSchema.parse(await res.json());
+}
+
+export async function markNotificationRead(
+  baseUrl: string,
+  token: string,
+  id: string,
+): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/notifications/${id}/read`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new ApiError(`Failed to mark read (${res.status})`, res.status);
+}
+
+export async function markAllNotificationsRead(baseUrl: string, token: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/notifications/read-all`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new ApiError(`Failed to mark all read (${res.status})`, res.status);
+}
+
 // ---- Activity ----
 
 export const JobSchema = z.object({

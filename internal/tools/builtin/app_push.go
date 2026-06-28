@@ -8,22 +8,27 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
+	"github.com/google/uuid"
 )
 
-// AppPushTool sends a push notification to the KARMAX phone app via Expo.
+// AppPushTool sends a notification to the KARMAX phone app: it is persisted to
+// the in-app notification feed AND delivered as an Expo push. The feed entry
+// survives even if the push itself is missed or no device is registered.
 type AppPushTool struct {
-	Store *store.Store
+	Store   *store.Store
+	AgentID string
 }
 
 func (t *AppPushTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "app.push",
-		Description: "Send a push notification to Nikhil's KARMAX phone app (Expo push). Use for proactive briefings, reminders, and alerts that should surface in the app. Returns gracefully if no device is registered.",
+		Description: "Send a notification to the operator's KARMAX phone app. It is saved to the in-app notification feed AND delivered as a push. Use for proactive briefings, reminders, status updates, and alerts that should surface in the app. Always succeeds (the feed entry is saved even if no device is registered for push).",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"title": {"type": "string", "description": "Notification title."},
 				"body": {"type": "string", "description": "Notification body."},
+				"kind": {"type": "string", "description": "Optional category: briefing, reminder, alert, update."},
 				"data": {"type": "string", "description": "Optional JSON string of extra data delivered with the notification."},
 				"priority": {"type": "string", "enum": ["default", "high"], "description": "Delivery priority (default 'high')."}
 			},
@@ -38,19 +43,50 @@ func (t *AppPushTool) Execute(ctx context.Context, input map[string]any) (tools.
 		return tools.ErrorResult(fmt.Errorf("body is required")), nil
 	}
 	title, _ := input["title"].(string)
+	kind, _ := input["kind"].(string)
 	priority, _ := input["priority"].(string)
 
+	rawData, _ := input["data"].(string)
 	var data map[string]any
-	if raw, _ := input["data"].(string); strings.TrimSpace(raw) != "" {
-		_ = json.Unmarshal([]byte(raw), &data)
+	if strings.TrimSpace(rawData) != "" {
+		_ = json.Unmarshal([]byte(rawData), &data)
 	}
 
-	devices, result, err := SendExpoPush(t.Store, title, body, priority, data)
-	if err != nil {
-		return tools.ErrorResult(fmt.Errorf("expo push failed: %w", err)), nil
+	// Persist to the in-app feed first so it shows even if push delivery fails.
+	notifID := uuid.New().String()
+	if err := t.Store.CreateNotification(store.StoredNotification{
+		ID:      notifID,
+		AgentID: t.AgentID,
+		Kind:    kind,
+		Title:   title,
+		Body:    body,
+		Data:    rawData,
+	}); err != nil {
+		return tools.ErrorResult(fmt.Errorf("save notification: %w", err)), nil
 	}
-	if devices == 0 {
-		return tools.SuccessResult(map[string]any{"sent": false, "reason": "no devices registered"}), nil
+
+	// Tag the push payload so a tap can deep-link to the notifications feed.
+	if data == nil {
+		data = map[string]any{}
 	}
-	return tools.SuccessResult(map[string]any{"sent": true, "devices": devices, "result": result}), nil
+	if _, ok := data["type"]; !ok {
+		data["type"] = "notification"
+	}
+	data["notification_id"] = notifID
+
+	devices, _, err := SendExpoPush(t.Store, title, body, priority, data)
+	return tools.SuccessResult(map[string]any{
+		"saved":      true,
+		"id":         notifID,
+		"pushed":     err == nil && devices > 0,
+		"devices":    devices,
+		"push_error": errString(err),
+	}), nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

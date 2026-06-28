@@ -173,3 +173,27 @@ agents:
       #   - cron: "0 9 * * *"
       #     payload:
       #       task: "daily_review"
+
+# Loops — declarative recurring triggers. Each fires its prompt to the agent on
+# its schedule (cron "sec min hour dom mon dow", or every: "2h"/"30m") and the
+# agent decides what to do.
+loops:
+  # A "harness" loop runs its prompt DIRECTLY through a coding harness (e.g.
+  # claude_code) and ingests the output to memory — bypassing the main model, so
+  # web-research loops keep working even when the main model is rate-limited.
+  - name: "tech-news"
+    cron: "0 0 9 * * *"           # 09:00 daily
+    harness: "claude_code"        # run via the Claude CLI (has web access), independent of the main model
+    prompt: >-
+      Search the web for the latest AI/tech/security news from the last 24-48h. Output a clean
+      digest of 5-8 fresh, relevant items (one line + source each). Your output is saved to memory.
+
+  # A normal loop fires the prompt to the agent, which uses its tools. Deliver
+  # proactive updates to the phone app with app.push (lands in the app's
+  # notification feed AND sends a push); use comms.send for WhatsApp/Discord.
+  - name: "daily-briefing"
+    cron: "0 30 8 * * *"          # 08:30 daily
+    prompt: >-
+      Compile a short morning briefing (top tech news from memory, today's calendar/reminders,
+      open coding sessions, anything pending from WhatsApp). You MUST deliver it by calling the
+      app.push tool (title "Morning briefing") — that is the required final step.
