@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KM } from '@/components/km/colors';
 import { Field } from '@/components/km/field';
 import { useContactsStatus, useIntegrations, useSyncContactsNow } from '@/lib/hooks';
+import { useSpeech } from '@/lib/speech';
 import { Pressable, ScrollView, Text, View } from '@/tw';
 import { useConnection, type ConnStatus } from '@/stores/connection';
 
@@ -49,6 +50,8 @@ export default function ConfigScreen() {
   const integrations = useIntegrations();
   const contactsStatus = useContactsStatus();
   const syncNow = useSyncContactsNow();
+  const autoSpeak = useSpeech((s) => s.autoSpeak);
+  const setAutoSpeak = useSpeech((s) => s.setAutoSpeak);
 
   const onSave = async () => {
     setBusy(true);
@@ -175,6 +178,29 @@ export default function ConfigScreen() {
             </Text>
           ) : null}
         </View>
+      </View>
+
+      <View className="gap-2">
+        <Text className="font-mono text-xs uppercase text-km-muted">voice</Text>
+        <Pressable
+          onPress={() => setAutoSpeak(!autoSpeak)}
+          className="flex-row items-center justify-between rounded-md border border-km-line bg-km-panel p-4"
+          style={{ borderCurve: 'continuous' }}>
+          <View className="flex-1 gap-1 pr-3">
+            <Text className="font-mono-medium text-[13px] text-km-text">speak replies aloud</Text>
+            <Text className="font-mono text-[11px] leading-4 text-km-muted">
+              read karmax&apos;s answers with text-to-speech as they arrive. You can also tap 🔊 on any
+              message or notification.
+            </Text>
+          </View>
+          <View
+            className="rounded-full px-2.5 py-1"
+            style={{ borderCurve: 'continuous', backgroundColor: autoSpeak ? KM.amber : KM.line }}>
+            <Text className="font-mono-bold text-[11px]" style={{ color: autoSpeak ? KM.ink : KM.muted }}>
+              {autoSpeak ? 'ON' : 'OFF'}
+            </Text>
+          </View>
+        </Pressable>
       </View>
 
       {knownAddresses.length > 0 ? (

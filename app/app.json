@@ -20,8 +20,14 @@
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         },
-        "UIBackgroundModes": ["fetch", "processing", "remote-notification"],
-        "BGTaskSchedulerPermittedIdentifiers": ["com.expo.modules.backgroundtask.processing"]
+        "UIBackgroundModes": [
+          "fetch",
+          "processing",
+          "remote-notification"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "com.expo.modules.backgroundtask.processing"
+        ]
       }
     },
     "android": {
@@ -66,6 +72,13 @@
         "expo-contacts",
         {
           "contactsPermission": "KARMAX resolves and creates contacts so people show up by name, not just a number."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "KARMAX uses the microphone so you can talk to it instead of typing.",
+          "speechRecognitionPermission": "KARMAX transcribes your speech into commands for the agent."
         }
       ]
     ],

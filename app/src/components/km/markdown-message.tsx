@@ -1,6 +1,7 @@
 import * as Clipboard from 'expo-clipboard';
 import Markdown from 'react-native-markdown-display';
 
+import { useSpeech } from '@/lib/speech';
 import { Pressable, Text, View } from '@/tw';
 
 import { KM, MONO } from './colors';
@@ -27,16 +28,29 @@ const mdStyles = {
   td: { padding: 6 },
 };
 
-// KARMAX's replies render as markdown (the machine's voice). Long-press to copy.
-export function KrmxMarkdown({ content, time }: { content?: string; time?: string }) {
+// KARMAX's replies render as markdown (the machine's voice). Long-press to copy,
+// tap the speaker to hear it read aloud (expo-speech TTS).
+export function KrmxMarkdown({ id, content, time }: { id?: string; content?: string; time?: string }) {
   const body = content ?? '';
+  const speakId = id ?? body.slice(0, 32);
+  const speaking = useSpeech((s) => s.speakingId === speakId);
+  const toggle = useSpeech((s) => s.toggle);
   return (
     <Pressable onLongPress={() => Clipboard.setStringAsync(body)}>
       <View className="gap-1">
-        <Text className="font-mono text-[13px] leading-5">
-          <Text className="text-km-muted">{`[${formatLogTime(time)}] `}</Text>
-          <Text className="font-mono-medium text-km-amber">krmx ‹</Text>
-        </Text>
+        <View className="flex-row items-center justify-between">
+          <Text className="font-mono text-[13px] leading-5">
+            <Text className="text-km-muted">{`[${formatLogTime(time)}] `}</Text>
+            <Text className="font-mono-medium text-km-amber">krmx ‹</Text>
+          </Text>
+          {body ? (
+            <Pressable onPress={() => toggle(speakId, body)} hitSlop={10} className="px-1">
+              <Text className="font-mono text-[12px]" style={{ color: speaking ? KM.amber : KM.muted }}>
+                {speaking ? '◼ stop' : '🔊 listen'}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
         <View className="pl-1">
           <Markdown style={mdStyles}>{body}</Markdown>
         </View>

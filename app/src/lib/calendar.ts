@@ -67,6 +67,6 @@ export async function createReminder(spec: ReminderSpec): Promise<string> {
     title: spec.title,
     notes: spec.notes ?? undefined,
     dueDate: due,
-    alarms: due ? [{ absoluteDate: due }] : undefined,
+    alarms: due ? [{ absoluteDate: due.toISOString() }] : undefined,
   });
 }

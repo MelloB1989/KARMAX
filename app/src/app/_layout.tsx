@@ -18,6 +18,7 @@ import AppTabs from '@/components/app-tabs';
 import { useContactSync, useProcessDeviceActions, usePushRegistration } from '@/lib/hooks';
 import { addNotificationListeners } from '@/lib/notifications';
 import { QueryProvider } from '@/lib/query-provider';
+import { useSpeech } from '@/lib/speech';
 import { useConnection } from '@/stores/connection';
 import { registerBackgroundTasks } from '@/tasks';
 
@@ -36,6 +37,7 @@ function AppBootstrap() {
 
   useEffect(() => {
     init();
+    void useSpeech.getState().init();
   }, [init]);
 
   // Register background execution (periodic BGTaskScheduler sync + push-triggered

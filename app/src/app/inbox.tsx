@@ -11,6 +11,7 @@ import {
   useNotifications,
   useProposals,
 } from '@/lib/hooks';
+import { useSpeech } from '@/lib/speech';
 import { Pressable, ScrollView, Text, TextInput, View } from '@/tw';
 import { useConnection } from '@/stores/connection';
 
@@ -155,6 +156,9 @@ function DecidedRow({ p }: { p: Proposal }) {
 }
 
 function NotificationRow({ n, onPress }: { n: Notification; onPress: () => void }) {
+  const speaking = useSpeech((s) => s.speakingId === `notif:${n.id}`);
+  const toggle = useSpeech((s) => s.toggle);
+  const title = n.title || (n.kind ? n.kind : 'update');
   return (
     <Pressable
       onPress={onPress}
@@ -172,8 +176,13 @@ function NotificationRow({ n, onPress }: { n: Notification; onPress: () => void 
       <View className="flex-1 gap-1">
         <View className="flex-row items-center justify-between gap-2">
           <Text className="flex-1 font-mono-bold text-[13px] text-km-text" numberOfLines={1}>
-            {n.title || (n.kind ? n.kind : 'update')}
+            {title}
           </Text>
+          <Pressable onPress={() => toggle(`notif:${n.id}`, `${title}. ${n.body}`)} hitSlop={10}>
+            <Text className="font-mono text-[11px]" style={{ color: speaking ? KM.amber : KM.muted }}>
+              {speaking ? '◼' : '🔊'}
+            </Text>
+          </Pressable>
           <Text className="font-mono text-[10px] text-km-muted">{timeAgo(n.created_at)}</Text>
         </View>
         <Text selectable className="font-mono text-xs leading-5 text-km-muted">
