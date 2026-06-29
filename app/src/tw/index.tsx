@@ -8,6 +8,8 @@ import {
   TouchableHighlight as RNTouchableHighlight,
   View as RNView,
   StyleSheet,
+  type ColorValue,
+  type ViewStyle,
 } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useCssElement, useNativeVariable as useFunctionalVariable } from 'react-native-css';
@@ -15,7 +17,7 @@ import { useCssElement, useNativeVariable as useFunctionalVariable } from 'react
 // CSS-enabled Link
 export const Link = (
   props: React.ComponentProps<typeof RouterLink> & { className?: string }
-) => {
+): React.ReactElement => {
   return useCssElement(RouterLink, props, { className: 'style' });
 };
 
@@ -48,7 +50,7 @@ export const ScrollView = (
     className?: string;
     contentContainerClassName?: string;
   }
-) => {
+): React.ReactElement => {
   return useCssElement(RNScrollView, props, {
     className: 'style',
     contentContainerClassName: 'contentContainerStyle',
@@ -75,7 +77,7 @@ export const AnimatedScrollView = (
     className?: string;
     contentContainerClassName?: string;
   }
-) => {
+): React.ReactElement => {
   return useCssElement(Animated.ScrollView, props, {
     className: 'style',
     contentContainerClassName: 'contentContainerStyle',
@@ -83,7 +85,8 @@ export const AnimatedScrollView = (
 };
 
 function XXTouchableHighlight(props: React.ComponentProps<typeof RNTouchableHighlight>) {
-  const { underlayColor, ...style } = StyleSheet.flatten(props.style) || {};
+  const flat = (StyleSheet.flatten(props.style) ?? {}) as ViewStyle & { underlayColor?: ColorValue };
+  const { underlayColor, ...style } = flat;
   return <RNTouchableHighlight underlayColor={underlayColor} {...props} style={style} />;
 }
 

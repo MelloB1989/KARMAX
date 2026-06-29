@@ -1,5 +1,5 @@
 import { Link } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, KeyboardAvoidingView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -10,7 +10,9 @@ import { LogLine, type LogRole } from '@/components/km/log-line';
 import { KrmxMarkdown } from '@/components/km/markdown-message';
 import { PresenceHeader } from '@/components/km/presence-header';
 import type { Message } from '@/lib/api';
+import { useDictation } from '@/lib/dictation';
 import { useMessages, useResetConversation, useSendMessage } from '@/lib/hooks';
+import { useSpeech } from '@/lib/speech';
 import { Pressable, Text, TextInput, View } from '@/tw';
 import { useConnection } from '@/stores/connection';
 
@@ -39,8 +41,13 @@ export default function ChatScreen() {
   const { data: messages = [], isLoading } = useMessages();
   const send = useSendMessage();
   const reset = useResetConversation();
+  const autoSpeak = useSpeech((s) => s.autoSpeak);
+  const speak = useSpeech((s) => s.speak);
   const [text, setText] = useState('');
   const [pending, setPending] = useState<string | null>(null);
+  // Voice input: dictation streams the transcript straight into the input so
+  // you can review/edit before sending.
+  const dictation = useDictation(useCallback((t: string) => setText(t), []));
 
   const now = new Date().toISOString();
   const listRef = useRef<FlatList<Row>>(null);
@@ -63,7 +70,12 @@ export default function ChatScreen() {
     if (!trimmed || send.isPending) return;
     setText('');
     setPending(trimmed);
-    send.mutate(trimmed, { onSettled: () => setPending(null) });
+    send.mutate(trimmed, {
+      onSuccess: (reply) => {
+        if (autoSpeak && typeof reply === 'string' && reply.trim()) speak(`reply:${Date.now()}`, reply);
+      },
+      onSettled: () => setPending(null),
+    });
   };
   const canSend = canChat && !!text.trim() && !send.isPending;
 
@@ -107,7 +119,7 @@ export default function ChatScreen() {
                 );
               }
               if (item.role === 'krmx') {
-                return <KrmxMarkdown content={item.content} time={item.time} />;
+                return <KrmxMarkdown id={item.id} content={item.content} time={item.time} />;
               }
               return <LogLine role={item.role} time={item.time} content={item.content} />;
             }}
@@ -131,6 +143,9 @@ export default function ChatScreen() {
             {`! ${(send.error as Error)?.message ?? 'send failed'}`}
           </Text>
         ) : null}
+        {dictation.error ? (
+          <Text className="px-4 pb-1 font-mono text-xs text-km-red">{`! ${dictation.error}`}</Text>
+        ) : null}
 
         <View
           className="flex-row items-center gap-2 border-t border-km-line bg-km-ink px-3 pt-2"
@@ -138,13 +153,25 @@ export default function ChatScreen() {
           <Text className="font-mono-bold text-base text-km-amber">›</Text>
           <TextInput
             className="max-h-28 flex-1 font-mono text-[15px] text-km-text"
-            placeholder={canChat ? 'type a command…' : 'connect in config first'}
+            placeholder={
+              dictation.listening ? 'listening…' : canChat ? 'type or speak a command…' : 'connect in config first'
+            }
             placeholderTextColor={KM.muted}
             value={text}
             onChangeText={setText}
             editable={canChat}
             multiline
           />
+          <Pressable
+            onPress={dictation.toggle}
+            disabled={!canChat}
+            hitSlop={6}
+            className="h-9 w-9 items-center justify-center rounded-md"
+            style={{ borderCurve: 'continuous', backgroundColor: dictation.listening ? KM.amber : KM.panel }}>
+            <Text className="text-base" style={{ color: dictation.listening ? KM.ink : KM.muted }}>
+              {dictation.listening ? '◉' : '🎤'}
+            </Text>
+          </Pressable>
           <Pressable
             onPress={onSend}
             disabled={!canSend}
