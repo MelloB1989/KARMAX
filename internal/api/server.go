@@ -288,6 +288,24 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 
 	if req.Decision == "reject" {
 		_ = s.store.DecideProposal(id, "rejected", req.Note)
+		// Reject WITH feedback = revise, not drop: feed the feedback back to the
+		// agent so it reworks its approach and (if still sensible) submits a NEW
+		// proposal via the propose tool. Plain reject (no note) just drops it.
+		if strings.TrimSpace(req.Note) != "" {
+			if ag := s.resolveAgent(""); ag != nil {
+				prompt := fmt.Sprintf(
+					"The operator REJECTED your proposed action and left feedback. Rework your approach using that feedback. If a revised action still makes sense, call the `propose` tool to submit a NEW proposal that incorporates the feedback (do not repeat the rejected version). If the feedback means they don't want this at all, just acknowledge and do not re-propose.\n\nRejected title: %s\nRejected action: %s\nOperator feedback: %s",
+					p.Title, p.ProposedAction, req.Note,
+				)
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					defer cancel()
+					if _, gerr := ag.Chat(ctx, prompt); gerr != nil {
+						s.log.Warn("proposal revision failed", zap.String("proposal", id), zap.Error(gerr))
+					}
+				}()
+			}
+		}
 		updated, _ := s.store.GetProposal(id)
 		writeJSON(w, http.StatusOK, map[string]any{"proposal": proposalJSON(*updated)})
 		return
