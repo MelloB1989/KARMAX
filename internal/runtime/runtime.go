@@ -375,6 +375,9 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		}
 	}
 
+	// Loops authored via the public loopkit SDK (third-party + installed).
+	rt.startLoopkitLoops(ctx)
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 
