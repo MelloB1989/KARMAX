@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/MelloB1989/karmax/internal/config"
+	_ "github.com/MelloB1989/karmax/internal/installedloops" // registers installed loopkit loops (managed by `karmax loops`)
 	"github.com/MelloB1989/karmax/internal/runtime"
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
@@ -74,6 +75,8 @@ func main() {
 			os.Exit(1)
 		}
 		runToolCmd(os.Args[2:])
+	case "loops":
+		runLoopsCmd(os.Args[2:])
 	case "mcp":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: karmax mcp <list|connect>")
