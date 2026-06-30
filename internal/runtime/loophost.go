@@ -183,6 +183,16 @@ func (k *loopKit) Notify(title, body string) error {
 	return nil
 }
 
+func (k *loopKit) SendWhatsApp(_ context.Context, target, content string) error {
+	if k.rt.comms == nil {
+		return fmt.Errorf("comms manager unavailable")
+	}
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("empty WhatsApp target")
+	}
+	return k.rt.comms.Send("whatsapp-main", target, content)
+}
+
 func (k *loopKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error) {
 	tool := &builtin.WhatsAppReadTool{WacliPath: k.wacliPath, Store: k.rt.store}
 	in := map[string]any{}

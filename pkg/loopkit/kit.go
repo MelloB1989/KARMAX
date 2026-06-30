@@ -31,6 +31,11 @@ type Kit interface {
 	// the in-app feed AND delivered as a push (so it survives a missed push).
 	Notify(title, body string) error
 
+	// SendWhatsApp sends a message through the operator's connected WhatsApp
+	// account to target (a phone number, contact name, or chat JID). Use for
+	// loops that deliver to a specific recipient rather than the app.
+	SendWhatsApp(ctx context.Context, target, content string) error
+
 	// ReadWhatsApp returns recent WhatsApp messages as formatted text. Pass a
 	// chat name or JID, or "" for the most recent messages across chats.
 	ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error)

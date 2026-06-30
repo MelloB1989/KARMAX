@@ -68,17 +68,29 @@ func looksLikeError(s string) bool {
 		strings.Contains(low, "i cannot help")
 }
 
-// runDailyBriefing delegates to the agent. The WhatsApp recipient is read from
-// the environment (KARMAX_LOOP_DAILY_BRIEFING_WHATSAPP) so no personal number
-// lives in source. If unset, the briefing is app-only.
+// runDailyBriefing has the agent COMPILE the briefing text, then delivers it
+// deterministically from the loop (app feed + optional WhatsApp) rather than
+// relying on the agent to call the delivery tools — smaller models skip them.
+// The WhatsApp recipient is read from the environment
+// (KARMAX_LOOP_DAILY_BRIEFING_WHATSAPP) via Kit.Config, so no number in source.
 func runDailyBriefing(ctx context.Context, k loopkit.Kit) error {
-	prompt := briefingPrompt
-	if num := strings.TrimSpace(k.Config("whatsapp")); num != "" {
-		prompt += fmt.Sprintf(" Also call comms.send with channel_id \"whatsapp-main\", target %q, "+
-			"content = the briefing, to send it to that WhatsApp number — do not finish until you have called both.", num)
+	text, err := k.Ask(ctx, briefingPrompt)
+	if err != nil {
+		return err
 	}
-	_, err := k.Ask(ctx, prompt)
-	return err
+	text = strings.TrimSpace(text)
+	if text == "" || looksLikeError(text) {
+		return fmt.Errorf("daily-briefing: no usable briefing (%.120s)", text)
+	}
+	if err := k.Notify("Morning briefing", text); err != nil {
+		k.Logf("app push failed: %v", err)
+	}
+	if num := strings.TrimSpace(k.Config("whatsapp")); num != "" {
+		if err := k.SendWhatsApp(ctx, num, text); err != nil {
+			return fmt.Errorf("daily-briefing: whatsapp send failed: %w", err)
+		}
+	}
+	return nil
 }
 
 // agentTask returns a Run that delegates a fixed prompt to the main agent
@@ -106,8 +118,8 @@ const hotSyncPrompt = `Scan the operator's ACTIVE WhatsApp chats (people and gro
 const profileRefreshPrompt = `Retrieve recent context from memory, read the current ABOUT_ME.md profile, and rewrite ` +
 	`it with profile.update so it reflects the latest truth about your operator. Preserve facts that are still valid.`
 
-const briefingPrompt = `Send the operator their morning briefing NOW. Steps: (1) gather today's calendar and reminders, ` +
+const briefingPrompt = `Write the operator's morning briefing. Gather what you can — today's calendar and reminders, ` +
 	`the latest tech-news digest from your memory, any open coding sessions, and anything pending or urgent from recent ` +
-	`WhatsApp — skip any source that errors, don't get stuck; (2) write a short, skimmable briefing (a few bullet lines); ` +
-	`(3) you MUST deliver it by calling the app.push tool with title "Morning briefing" and the briefing text as the body ` +
-	`so it lands in the app feed.`
+	`WhatsApp; skip any source that errors, don't get stuck. Then RETURN the briefing itself as your reply: a few short, ` +
+	`skimmable bullet lines, no preamble. Do NOT call app.push or comms.send — just return the briefing text; delivery is ` +
+	`handled for you.`
