@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -12,33 +11,49 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/spf13/cobra"
 )
 
-// runLoopsCmd launches the `karmax loops` TUI for installing/removing loopkit
-// loops. `karmax loops list` prints them headlessly (for scripting/CI).
-func runLoopsCmd(args []string) {
-	root, err := loopinstall.RepoRoot()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+// newLoopsCmd builds the `karmax loops` command: a TUI for installing/removing
+// loopkit loops, plus a headless `karmax loops list`.
+func newLoopsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "loops",
+		Short:         "Install, remove, and inspect loopkit loops (TUI)",
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			root, err := loopinstall.RepoRoot()
+			if err != nil {
+				return err
+			}
+			_, err = tea.NewProgram(newLoopsModel(root)).Run()
+			return err
+		},
 	}
-	if len(args) > 0 && args[0] == "list" {
-		loops := loopkit.Registered()
-		fmt.Printf("Active loops (%d):\n", len(loops))
-		for _, l := range loops {
-			fmt.Printf("  • %-20s [%s]  %s\n", l.Name, l.Schedule.CronExpr(), l.Description)
-		}
-		mods, _ := loopinstall.InstalledModules(root)
-		fmt.Printf("\nInstalled modules (%d):\n", len(mods))
-		for _, m := range mods {
-			fmt.Printf("  - %s\n", m)
-		}
-		return
-	}
-	if _, err := tea.NewProgram(newLoopsModel(root)).Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "tui error:", err)
-		os.Exit(1)
-	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List active and installed loops (headless)",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			root, err := loopinstall.RepoRoot()
+			if err != nil {
+				return err
+			}
+			loops := loopkit.Registered()
+			fmt.Printf("Active loops (%d):\n", len(loops))
+			for _, l := range loops {
+				fmt.Printf("  • %-20s [%s]  %s\n", l.Name, l.Schedule.CronExpr(), l.Description)
+			}
+			mods, _ := loopinstall.InstalledModules(root)
+			fmt.Printf("\nInstalled modules (%d):\n", len(mods))
+			for _, m := range mods {
+				fmt.Printf("  - %s\n", m)
+			}
+			return nil
+		},
+	})
+	return cmd
 }
 
 var (
