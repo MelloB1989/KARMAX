@@ -378,6 +378,10 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// Loops authored via the public loopkit SDK (third-party + installed).
 	rt.startLoopkitLoops(ctx)
 
+	// Drop persisted scheduler jobs for loops that no longer exist or are
+	// disabled, so stale entries don't reload and fire as duplicates.
+	rt.pruneStaleLoopJobs()
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 

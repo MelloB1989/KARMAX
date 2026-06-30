@@ -9,7 +9,9 @@ import (
 	"syscall"
 
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/runtime"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -162,6 +164,27 @@ func newDoctorCmd() *cobra.Command {
 					fmt.Printf("%-16s NOT SET\n", v+":")
 				}
 			}
+
+			fmt.Println()
+			fmt.Println("Loops & build environment (for `karmax loops`):")
+			checkLine("Go compiler", loopinstall.HaveGo(), "run `karmax setup` or install Go")
+			checkLine("git", loopinstall.HaveGit(), "install git (needed to clone the source)")
+			checkLine("C compiler (cgo)", commandOnPath("gcc") || commandOnPath("cc"), "apt install build-essential")
+			if root, err := loopinstall.RepoRoot(); err == nil {
+				fmt.Printf("  %-18s OK (%s)\n", "source checkout", root)
+			} else {
+				fmt.Printf("  %-18s MISSING (run `karmax setup`)\n", "source checkout")
+			}
+			fmt.Printf("  %-18s %d registered, %d disabled\n", "loops",
+				len(loopkit.Registered()), len(loopinstall.LoadDisabledLoops()))
 		},
+	}
+}
+
+func checkLine(label string, ok bool, hint string) {
+	if ok {
+		fmt.Printf("  %-18s OK\n", label)
+	} else {
+		fmt.Printf("  %-18s MISSING — %s\n", label, hint)
 	}
 }

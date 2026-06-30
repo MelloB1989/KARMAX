@@ -71,6 +71,7 @@ const (
 	scrActive
 	scrInstall
 	scrRemove
+	scrToggle
 	scrWorking
 	scrResult
 )
@@ -88,6 +89,8 @@ type loopsModel struct {
 	cursor    int
 	loops     []loopkit.Loop
 	installed []string
+	disabled  map[string]bool
+	dirty     bool // a toggle changed; restart needed to apply
 	input     textinput.Model
 	spin      spinner.Model
 	working   string
@@ -105,7 +108,7 @@ func newLoopsModel(root string) loopsModel {
 	sp.Style = stAmber
 	m := loopsModel{
 		root:  root,
-		menu:  []string{"Active loops", "Install a loop", "Remove a loop", "Restart KARMAX", "Quit"},
+		menu:  []string{"Active loops", "Enable / disable loops", "Install a loop", "Remove a loop", "Restart KARMAX", "Quit"},
 		input: ti,
 		spin:  sp,
 	}
@@ -118,6 +121,7 @@ func (m *loopsModel) reload() {
 	mods, _ := loopinstall.InstalledModules(m.root)
 	sort.Strings(mods)
 	m.installed = mods
+	m.disabled = loopinstall.LoadDisabledLoops()
 }
 
 func (m loopsModel) Init() tea.Cmd { return m.spin.Tick }
@@ -197,6 +201,9 @@ func (m loopsModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch m.menu[m.cursor] {
 			case "Active loops":
 				m.screen = scrActive
+			case "Enable / disable loops":
+				m.cursor = 0
+				m.screen = scrToggle
 			case "Install a loop":
 				m.input.SetValue("")
 				m.input.Focus()
@@ -216,6 +223,26 @@ func (m loopsModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case scrActive:
 		if key == "q" || key == "esc" || key == "enter" {
 			m.screen = scrMenu
+		}
+	case scrToggle:
+		switch key {
+		case "q", "esc":
+			m.screen = scrMenu
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.loops)-1 {
+				m.cursor++
+			}
+		case "enter", " ":
+			if len(m.loops) > 0 {
+				name := m.loops[m.cursor].Name
+				_ = loopinstall.SetLoopDisabled(name, !m.disabled[name])
+				m.disabled = loopinstall.LoadDisabledLoops()
+				m.dirty = true
+			}
 		}
 	case scrInstall:
 		switch key {
@@ -299,6 +326,32 @@ func (m loopsModel) View() string {
 			}
 		}
 		b.WriteString("\n" + stMuted.Render("enter/esc back"))
+
+	case scrToggle:
+		b.WriteString(stBold.Render("Enable / disable loops") + "\n\n")
+		if len(m.loops) == 0 {
+			b.WriteString(stMuted.Render("no loops registered.\n"))
+		}
+		for i, l := range m.loops {
+			cursor := "  "
+			if i == m.cursor {
+				cursor = stAmber.Render("› ")
+			}
+			state := stGreen.Render("[on] ")
+			name := l.Name
+			if m.disabled[l.Name] {
+				state = stMuted.Render("[off]")
+				name = stMuted.Render(l.Name)
+			} else {
+				name = stAmber.Render(l.Name)
+			}
+			b.WriteString(cursor + state + " " + name + "\n")
+		}
+		hint := "↑/↓ move · enter/space toggle · esc back"
+		if m.dirty {
+			hint = "changes saved — Restart KARMAX (menu) to apply. " + hint
+		}
+		b.WriteString("\n" + stMuted.Render(hint))
 
 	case scrInstall:
 		b.WriteString(stBold.Render("Install a loop") + "\n\n")
