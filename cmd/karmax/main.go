@@ -11,7 +11,8 @@ import (
 	"syscall"
 
 	"github.com/MelloB1989/karmax/internal/config"
-	_ "github.com/MelloB1989/karmax/internal/installedloops" // registers installed loopkit loops (managed by `karmax loops`)
+	_ "github.com/MelloB1989/karmax/internal/installedloops" // third-party loopkit loops (managed by `karmax loops`)
+	_ "github.com/MelloB1989/karmax/internal/loops/core"     // built-in loopkit loops (migrated from karmax.yaml)
 	"github.com/MelloB1989/karmax/internal/runtime"
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
