@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -34,6 +35,7 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 	for _, l := range rt.cfg.Loops {
 		yamlNames[l.Name] = true
 	}
+	disabled := loopinstall.LoadDisabledLoops()
 	defaultAgent := ""
 	if len(rt.cfg.Agents) > 0 {
 		defaultAgent = rt.cfg.Agents[0].ID
@@ -43,6 +45,10 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 	for _, l := range loops {
 		if yamlNames[l.Name] {
 			rt.log.Warn("loopkit loop name clashes with a yaml loop; skipping", zap.String("loop", l.Name))
+			continue
+		}
+		if disabled[l.Name] {
+			rt.log.Info("loopkit loop disabled by operator; not scheduling", zap.String("loop", l.Name))
 			continue
 		}
 		byName[l.Name] = l
@@ -87,6 +93,35 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// pruneStaleLoopJobs removes persisted scheduler jobs for loops that no longer
+// exist or are disabled — old YAML loops left in the DB, deactivated/uninstalled
+// loopkit loops, or ones the operator disabled. Without this they'd reload from
+// the store on every start and fire as duplicates.
+func (rt *KarmaxRuntime) pruneStaleLoopJobs() {
+	disabled := loopinstall.LoadDisabledLoops()
+	yamlNames := map[string]bool{}
+	valid := map[string]bool{}
+	for _, l := range rt.cfg.Loops {
+		yamlNames[l.Name] = true
+		valid["loop:"+l.Name] = true
+	}
+	for _, l := range loopkit.Registered() {
+		if yamlNames[l.Name] || disabled[l.Name] {
+			continue
+		}
+		valid["loopkit:"+l.Name] = true
+	}
+	for _, j := range rt.scheduler.ListJobs() {
+		if (strings.HasPrefix(j.ID, "loop:") || strings.HasPrefix(j.ID, "loopkit:")) && !valid[j.ID] {
+			if err := rt.scheduler.RemoveJob(j.ID); err != nil {
+				rt.log.Warn("failed to prune stale loop job", zap.String("job", j.ID), zap.Error(err))
+			} else {
+				rt.log.Info("pruned stale loop job", zap.String("job", j.ID))
+			}
+		}
+	}
 }
 
 func (rt *KarmaxRuntime) runLoopkitLoop(parent context.Context, l loopkit.Loop, agentID string) {

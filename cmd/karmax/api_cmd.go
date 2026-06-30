@@ -2,144 +2,196 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 
+	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/spf13/cobra"
 )
 
-// These command groups print the API calls to run against a live instance
-// (the daemon exposes everything over HTTP); they don't talk to it directly.
+// These commands talk to a running KARMAX instance over its API (see
+// apiclient.go), or read the config locally where that's the source of truth.
 
 func newAgentCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "agent", Short: "Interact with agents (via the running instance's API)"}
-
+	cmd := &cobra.Command{Use: "agent", Short: "Inspect configured agents"}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
-		Short: "List agents",
+		Short: "List configured agents",
 		Args:  cobra.NoArgs,
-		Run: func(_ *cobra.Command, _ []string) {
-			fmt.Println("Agent list requires a running karmax instance.")
-			fmt.Println("Use the API: curl http://localhost:9091/api/activity")
+		RunE: func(_ *cobra.Command, _ []string) error {
+			cfg, err := config.Load(findConfig())
+			if err != nil {
+				return err
+			}
+			if len(cfg.Agents) == 0 {
+				fmt.Println("no agents configured.")
+				return nil
+			}
+			for _, a := range cfg.Agents {
+				fmt.Printf("• %-12s %s  (model: %s/%s, %d tools)\n", a.ID, a.Name, a.Provider, a.Model, len(a.Tools))
+			}
+			return nil
 		},
 	})
-
-	for _, action := range []string{"start", "stop", "pause", "resume", "restart"} {
-		cmd.AddCommand(&cobra.Command{
-			Use:   action + " <id>",
-			Short: "Send " + action + " to an agent",
-			Args:  cobra.ExactArgs(1),
-			Run: func(_ *cobra.Command, args []string) {
-				fmt.Printf("Sending %s to agent %s...\n", action, args[0])
-				fmt.Printf("curl -X POST http://localhost:8080/api/agents/%s/%s\n", args[0], action)
-			},
-		})
-	}
-
-	var payload string
-	trigger := &cobra.Command{
-		Use:   "trigger <id>",
-		Short: "Trigger an agent with a JSON payload",
-		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
-			fmt.Printf("Triggering agent %s with payload: %s\n", args[0], payload)
-			fmt.Printf("curl -X POST http://localhost:8080/api/agents/%s/trigger -d '%s'\n", args[0], payload)
-		},
-	}
-	trigger.Flags().StringVar(&payload, "payload", "{}", "JSON payload")
-	cmd.AddCommand(trigger)
 	return cmd
 }
 
 func newSchedulerCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "scheduler", Short: "Manage scheduled jobs"}
+	cmd := &cobra.Command{Use: "scheduler", Short: "Inspect and run scheduled jobs / loops"}
 	cmd.AddCommand(
-		&cobra.Command{Use: "list", Short: "List jobs", Args: cobra.NoArgs, Run: func(_ *cobra.Command, _ []string) {
-			fmt.Println("curl http://localhost:8080/api/scheduler/jobs")
-		}},
-		&cobra.Command{Use: "add", Short: "Add a job", Args: cobra.NoArgs, Run: func(_ *cobra.Command, _ []string) {
-			fmt.Println("usage: karmax scheduler add --name <name> --cron <expr> --agent <id>")
-		}},
-		&cobra.Command{Use: "remove <id>", Short: "Remove a job", Args: cobra.ExactArgs(1), Run: func(_ *cobra.Command, args []string) {
-			fmt.Printf("curl -X DELETE http://localhost:8080/api/scheduler/jobs/%s\n", args[0])
-		}},
-		&cobra.Command{Use: "run <id>", Short: "Run a job immediately", Args: cobra.ExactArgs(1), Run: func(_ *cobra.Command, args []string) {
-			fmt.Printf("curl -X POST http://localhost:8080/api/scheduler/jobs/%s/run\n", args[0])
-		}},
+		&cobra.Command{
+			Use:   "list",
+			Short: "List scheduled jobs and loops",
+			Args:  cobra.NoArgs,
+			RunE: func(_ *cobra.Command, _ []string) error {
+				out, err := apiGET("/api/activity")
+				if err != nil {
+					return err
+				}
+				jobs := asList(out["jobs"])
+				if len(jobs) == 0 {
+					fmt.Println("no scheduled jobs.")
+					return nil
+				}
+				for _, j := range jobs {
+					next := asStr(j["next_run"])
+					if next == "" {
+						next = "—"
+					}
+					fmt.Printf("• %-22s cron=%-14s runs=%v  next=%s\n", asStr(j["name"]), asStr(j["cron"]), j["run_count"], next)
+				}
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "run <id>",
+			Short: "Run a job/loop now (e.g. loopkit:tech-news)",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(_ *cobra.Command, args []string) error {
+				out, err := apiPOST("/api/jobs/" + url.PathEscape(args[0]) + "/run")
+				if err != nil {
+					return err
+				}
+				fmt.Printf("ran: %s\n", asStr(out["ran"]))
+				return nil
+			},
+		},
 	)
 	return cmd
 }
 
 func newWebhookCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "webhook", Short: "List and test webhook routes"}
-	cmd.AddCommand(&cobra.Command{Use: "list", Short: "List routes", Args: cobra.NoArgs, Run: func(_ *cobra.Command, _ []string) {
-		fmt.Println("curl http://localhost:8080/api/webhooks/routes")
-	}})
-	var body string
-	test := &cobra.Command{
-		Use:   "test <path>",
-		Short: "Test a webhook route",
-		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
-			fmt.Printf("curl -X POST http://localhost:9090%s -H 'Content-Type: application/json' -d '%s'\n", args[0], body)
+	cmd := &cobra.Command{Use: "webhook", Short: "Inspect webhook activity"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List recent webhook events",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			out, err := apiGET("/api/activity")
+			if err != nil {
+				return err
+			}
+			whs := asList(out["webhooks"])
+			if len(whs) == 0 {
+				fmt.Println("no recent webhook events.")
+				return nil
+			}
+			for _, w := range whs {
+				fmt.Printf("• %-6s %-24s %s\n", asStr(w["method"]), asStr(w["route"]), asStr(w["received_at"]))
+			}
+			return nil
 		},
-	}
-	test.Flags().StringVar(&body, "body", "{}", "JSON body")
-	cmd.AddCommand(test)
+	})
 	return cmd
 }
 
 func newMemoryCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "memory", Short: "Search and export agent memory"}
-	var query string
-	search := &cobra.Command{
-		Use:   "search <namespace>",
-		Short: "Search memory",
-		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
-			fmt.Printf("curl 'http://localhost:8080/api/memory/%s/search?query=%s'\n", args[0], query)
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "search <query>",
+			Short: "Search long-term memory",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(_ *cobra.Command, args []string) error {
+				out, err := apiGET("/api/memory/entries?limit=25&q=" + url.QueryEscape(args[0]))
+				if err != nil {
+					return err
+				}
+				entries := asList(out["entries"])
+				if len(entries) == 0 {
+					fmt.Println("no matching memory entries.")
+					return nil
+				}
+				for _, e := range entries {
+					fmt.Printf("• %s\n", oneLine(asStr(e["content"]), 200))
+				}
+				return nil
+			},
 		},
-	}
-	search.Flags().StringVar(&query, "query", "", "search query")
-	export := &cobra.Command{
-		Use:   "export <namespace>",
-		Short: "Export memory",
-		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
-			fmt.Printf("curl 'http://localhost:8080/api/memory/%s/recent?n=10000'\n", args[0])
+		&cobra.Command{
+			Use:   "export",
+			Short: "Dump recent memory entries",
+			Args:  cobra.NoArgs,
+			RunE: func(_ *cobra.Command, _ []string) error {
+				out, err := apiGET("/api/memory/entries?limit=10000")
+				if err != nil {
+					return err
+				}
+				entries := asList(out["entries"])
+				for _, e := range entries {
+					fmt.Printf("- %s\n", oneLine(asStr(e["content"]), 400))
+				}
+				fmt.Printf("\n%d entries\n", len(entries))
+				return nil
+			},
 		},
-	}
-	cmd.AddCommand(search, export)
+	)
 	return cmd
 }
 
 func newToolCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "tool", Short: "List and execute tools"}
-	cmd.AddCommand(&cobra.Command{Use: "list", Short: "List tools", Args: cobra.NoArgs, Run: func(_ *cobra.Command, _ []string) {
-		fmt.Println("curl http://localhost:8080/api/tools")
-	}})
-	var input string
-	exec := &cobra.Command{
-		Use:   "exec <name>",
-		Short: "Execute a tool",
-		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
-			fmt.Printf("curl -X POST http://localhost:8080/api/tools/%s/execute -d '%s'\n", args[0], input)
+	cmd := &cobra.Command{Use: "tool", Short: "Inspect the agent's tools"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List the tools available to the agent (from config)",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			cfg, err := config.Load(findConfig())
+			if err != nil {
+				return err
+			}
+			if len(cfg.Agents) == 0 || len(cfg.Agents[0].Tools) == 0 {
+				fmt.Println("no tools configured.")
+				return nil
+			}
+			for _, t := range cfg.Agents[0].Tools {
+				fmt.Printf("• %s\n", t)
+			}
+			return nil
 		},
-	}
-	exec.Flags().StringVar(&input, "input", "{}", "JSON input")
-	cmd.AddCommand(exec)
+	})
 	return cmd
 }
 
 func newMCPCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "mcp", Short: "Inspect MCP servers"}
-	cmd.AddCommand(
-		&cobra.Command{Use: "list", Short: "List MCP tools", Args: cobra.NoArgs, Run: func(_ *cobra.Command, _ []string) {
-			fmt.Println("curl http://localhost:8080/api/tools")
-			fmt.Println("(MCP tools are listed alongside built-in tools)")
-		}},
-		&cobra.Command{Use: "connect <server-id>", Short: "Connect to an MCP server", Args: cobra.ExactArgs(1), Run: func(_ *cobra.Command, args []string) {
-			fmt.Printf("MCP connection to %s — configure in karmax.yaml under 'mcps'\n", args[0])
-		}},
-	)
+	cmd := &cobra.Command{Use: "mcp", Short: "Inspect configured MCP servers"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List configured MCP servers (from config)",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			cfg, err := config.Load(findConfig())
+			if err != nil {
+				return err
+			}
+			if len(cfg.MCPs) == 0 {
+				fmt.Println("no MCP servers configured.")
+				return nil
+			}
+			for _, m := range cfg.MCPs {
+				fmt.Printf("• %s\n", m.ID)
+			}
+			return nil
+		},
+	})
 	return cmd
 }

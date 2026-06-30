@@ -9,10 +9,68 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 const registryRel = "internal/installedloops/installed.go"
+
+// DataDir is KARMAX's data directory (state + disabled-loops list). Honors
+// $KARMAX_DATA_DIR, else ~/.karmax.
+func DataDir() string {
+	if d := strings.TrimSpace(os.Getenv("KARMAX_DATA_DIR")); d != "" {
+		return d
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".karmax")
+}
+
+func disabledLoopsPath() string { return filepath.Join(DataDir(), "loops-disabled.txt") }
+
+// LoadDisabledLoops returns the set of loop names the operator has disabled.
+// Disabling happens at the runtime level (the loop isn't scheduled) — no rebuild
+// required, and it works for built-in and installed loops alike.
+func LoadDisabledLoops() map[string]bool {
+	set := map[string]bool{}
+	b, err := os.ReadFile(disabledLoopsPath())
+	if err != nil {
+		return set
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		name := strings.TrimSpace(line)
+		if name != "" && !strings.HasPrefix(name, "#") {
+			set[name] = true
+		}
+	}
+	return set
+}
+
+// SetLoopDisabled toggles whether a loop (by name) is disabled and persists it.
+func SetLoopDisabled(name string, disabled bool) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("empty loop name")
+	}
+	set := LoadDisabledLoops()
+	if disabled {
+		set[name] = true
+	} else {
+		delete(set, name)
+	}
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if err := os.MkdirAll(DataDir(), 0755); err != nil {
+		return err
+	}
+	body := "# Loops disabled by the operator (one name per line). Managed by `karmax loops`.\n"
+	if len(names) > 0 {
+		body += strings.Join(names, "\n") + "\n"
+	}
+	return os.WriteFile(disabledLoopsPath(), []byte(body), 0644)
+}
 
 // RepoRoot locates the KARMAX source module root (the dir with a go.mod whose
 // module is github.com/MelloB1989/karmax). It checks $KARMAX_SRC, then walks up
@@ -31,6 +89,7 @@ func RepoRoot() (string, error) {
 	if wd, err := os.Getwd(); err == nil {
 		starts = append(starts, wd)
 	}
+	starts = append(starts, WorkspaceDir()) // managed clone (binary-only installs)
 	for _, start := range starts {
 		for dir := start; ; {
 			b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
@@ -44,7 +103,7 @@ func RepoRoot() (string, error) {
 			dir = parent
 		}
 	}
-	return "", fmt.Errorf("could not find the KARMAX source (go.mod). Run from the repo or set KARMAX_SRC=/path/to/KARMAX")
+	return "", fmt.Errorf("no KARMAX source found — run `karmax setup` to clone it, or set KARMAX_SRC=/path/to/KARMAX")
 }
 
 // InstalledModules returns the loop module import paths in the registry file.
@@ -82,6 +141,7 @@ func Install(root, module string) (string, error) {
 		return "", fmt.Errorf("invalid module path %q", module)
 	}
 	var log strings.Builder
+	goBin := GoBin()
 	step := func(label, name string, args ...string) error {
 		fmt.Fprintf(&log, "$ %s %s\n", name, strings.Join(args, " "))
 		out, err := run(root, name, args...)
@@ -91,13 +151,13 @@ func Install(root, module string) (string, error) {
 		}
 		return nil
 	}
-	if err := step("go get", "go", "get", module); err != nil {
+	if err := step("go get", goBin, "get", module); err != nil {
 		return log.String(), err
 	}
 	if err := addImport(root, module); err != nil {
 		return log.String(), err
 	}
-	if err := step("go mod tidy", "go", "mod", "tidy"); err != nil {
+	if err := step("go mod tidy", goBin, "mod", "tidy"); err != nil {
 		return log.String(), err
 	}
 	if err := rebuild(root, &log); err != nil {
@@ -116,7 +176,7 @@ func Remove(root, module string) (string, error) {
 		return "", err
 	}
 	fmt.Fprintf(&log, "$ go mod tidy\n")
-	if out, err := run(root, "go", "mod", "tidy"); err != nil {
+	if out, err := run(root, GoBin(), "mod", "tidy"); err != nil {
 		log.WriteString(out)
 	}
 	if err := rebuild(root, &log); err != nil {
@@ -131,11 +191,16 @@ func Restart() (string, error) {
 }
 
 func rebuild(root string, log *strings.Builder) error {
-	fmt.Fprintf(log, "$ CGO_ENABLED=1 go build -o karmax ./cmd/karmax\n")
-	out, err := runEnv(root, []string{"CGO_ENABLED=1"}, "go", "build", "-o", "karmax", "./cmd/karmax")
+	fmt.Fprintf(log, "$ CGO_ENABLED=1 %s build -o karmax ./cmd/karmax\n", GoBin())
+	out, err := runEnv(root, []string{"CGO_ENABLED=1"}, GoBin(), "build", "-o", "karmax", "./cmd/karmax")
 	log.WriteString(out)
 	if err != nil {
 		return fmt.Errorf("rebuild failed: %w", err)
+	}
+	// On a binary-only install (workspace != running binary), replace the
+	// running binary with the freshly built one.
+	if err := swapBinary(root); err != nil {
+		return fmt.Errorf("rebuild ok but binary swap failed: %w", err)
 	}
 	return nil
 }
