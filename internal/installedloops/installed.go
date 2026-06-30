@@ -8,7 +8,6 @@
 package installedloops
 
 import (
-	// karmax:loops:begin
-	_ "github.com/MelloB1989/karmax/internal/loops/hndigest"
-	// karmax:loops:end
+// karmax:loops:begin
+// karmax:loops:end
 )
