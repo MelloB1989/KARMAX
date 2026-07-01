@@ -230,6 +230,11 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 			m.lastIncomingTargets[agentID][ch.ID()] = msg.ChannelID
 			m.mu.Unlock()
 
+			// Surface a couple of metadata fields the agent uses for proactive
+			// routing (group vs 1:1, chat display name).
+			isGroup, _ := msg.Metadata["is_group"].(bool)
+			chatName, _ := msg.Metadata["chat_name"].(string)
+
 			// Publish to event bus.
 			m.bus.Publish(bus.NewEvent(EventCommsMessage, agentID, map[string]any{
 				"message_id":        msg.ID,
@@ -242,6 +247,8 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 				"direction":         string(msg.Direction),
 				"reply_to_id":       msg.ReplyToID,
 				"timestamp":         msg.Timestamp,
+				"is_group":          isGroup,
+				"chat_name":         chatName,
 			}))
 		}
 	}

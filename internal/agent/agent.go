@@ -50,6 +50,12 @@ type Agent struct {
 	// can build context about available communication channels for the LLM.
 	commsChannels []CommsChannelInfo
 
+	// operatorChats are the normalized chat identifiers that are the OPERATOR's
+	// own (their command chats). Messages from these are commands to KARMAX;
+	// messages from any other monitored chat are third parties the agent acts
+	// for (proactive proxy mode).
+	operatorChats map[string]bool
+
 	parentCtx      context.Context
 	errorStreak    int
 	restartPending bool
@@ -86,6 +92,43 @@ func (a *Agent) SetCommsSend(fn func(channelID, target, content string) error) {
 // or primary-channel failures.
 func (a *Agent) SetCommsEscalate(fn func(agentID, primaryChannelID, content string) error) {
 	a.commsEscalate = fn
+}
+
+// SetOperatorChats registers the operator's own chat identifiers (phone/JID/
+// "@lid"). Messages from these are treated as commands; messages from any other
+// monitored chat trigger proactive proxy handling.
+func (a *Agent) SetOperatorChats(chats []string) {
+	set := make(map[string]bool)
+	for _, c := range chats {
+		if n := normalizeChat(c); n != "" {
+			set[n] = true
+		}
+	}
+	a.operatorChats = set
+}
+
+// normalizeChat reduces a chat id/phone to comparable digits/id, stripping any
+// "@domain" and ":device" suffix.
+func normalizeChat(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if i := strings.IndexAny(s, "@:"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// isFromOperator reports whether a chat id belongs to the operator (a command
+// chat). Unknown/empty chats default to true (treat as operator/command) so we
+// never accidentally auto-proxy an unrecognized chat.
+func (a *Agent) isFromOperator(chatID string) bool {
+	if len(a.operatorChats) == 0 {
+		return true
+	}
+	n := normalizeChat(chatID)
+	if n == "" {
+		return true
+	}
+	return a.operatorChats[n]
 }
 
 // SetCommsChannels injects available channel info so the agent can build
@@ -604,24 +647,40 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		return err
 	}
 
-	// Pre-delegation: for a clearly actionable task from a chat, hand the real
-	// work straight to claude_code instead of running the mini orchestration
-	// model — which tends to reply with a fabricated "done" (via comms.send,
-	// mid-turn) without ever calling a tool. Delegating up front means the fake
-	// completion never gets a chance to fire; the operator sees "on it" then the
-	// real result. Questions and conversational messages still go to the model.
+	// Proactive routing for WhatsApp/chat events.
 	if evt.Kind == bus.EventCommsMessage && a.commsSend != nil {
 		userMsg, _ := evt.Payload["content"].(string)
-		if isActionableTask(userMsg, "") && !isClarifyingQuestion(userMsg) {
-			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
-			target, _ := evt.Payload["channel_id"].(string)
-			if karmaxChannelID != "" {
-				a.log.Info("pre-delegating actionable chat task to claude_code",
-					zap.String("channel", karmaxChannelID))
-				a.delegateChatTask(karmaxChannelID, target, userMsg)
-				a.ingestInteractionMemory(a.ctx, evt, userMsg, "[delegated to claude_code]")
+		chatID, _ := evt.Payload["channel_id"].(string)
+		karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
+		senderName, _ := evt.Payload["sender_name"].(string)
+		if senderName == "" {
+			senderName, _ = evt.Payload["chat_name"].(string)
+		}
+		isGroup, _ := evt.Payload["is_group"].(bool)
+
+		if !a.isFromOperator(chatID) {
+			// PROACTIVE PROXY: a monitored third party messaged the operator.
+			// Act on the operator's behalf via claude_code. Skip group chats
+			// (too risky/noisy to auto-reply) and trivial acks (save tokens).
+			if karmaxChannelID == "" || isGroup || isTrivialMessage(userMsg) {
+				a.ingestInteractionMemory(a.ctx, evt, userMsg, "[monitored: no action]")
 				return nil
 			}
+			a.log.Info("proactive proxy for monitored chat",
+				zap.String("chat", chatID), zap.String("from", senderName))
+			a.delegateProxyTask(karmaxChannelID, chatID, senderName, userMsg)
+			a.ingestInteractionMemory(a.ctx, evt, userMsg, "[proxy handling]")
+			return nil
+		}
+
+		// OPERATOR COMMAND: pre-delegate a clearly actionable task straight to
+		// claude_code (the mini model tends to fabricate "done" without acting).
+		if karmaxChannelID != "" && isActionableTask(userMsg, "") && !isClarifyingQuestion(userMsg) {
+			a.log.Info("pre-delegating actionable chat task to claude_code",
+				zap.String("channel", karmaxChannelID))
+			a.delegateChatTask(karmaxChannelID, chatID, userMsg)
+			a.ingestInteractionMemory(a.ctx, evt, userMsg, "[delegated to claude_code]")
+			return nil
 		}
 	}
 
@@ -785,6 +844,72 @@ func (a *Agent) delegateChatTask(channelID, target, task string) {
 			a.log.Info("delegated task result sent", zap.String("channel", channelID))
 		}
 	}()
+}
+
+// delegateProxyTask runs proactive-assistant handling for a message from a
+// monitored third party: claude_code reads the chat context and either acts on
+// the operator's behalf (routine replies/scheduling) or flags a decision for the
+// operator's approval. The operator is always informed of the outcome.
+func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg string) {
+	who := senderName
+	if who == "" {
+		who = chatID
+	}
+	go func() {
+		cc := &builtin.ClaudeCodeTool{Store: a.store, AgentID: a.def.ID}
+		prompt := "You are the proactive WhatsApp assistant managing the operator's WhatsApp account via the wacli CLI. A monitored contact just messaged the operator.\n\n" +
+			"Contact: " + who + "\n" +
+			"Chat id: " + chatID + "\n" +
+			"Their message: " + incomingMsg + "\n\n" +
+			"Steps:\n" +
+			"1. Read recent context: run `/home/mellob/code/wacli/wacli messages --chat " + chatID + " --limit 15` (newest last). If the operator or you already replied and nothing new is needed, do nothing.\n" +
+			"2. Decide on the operator's behalf:\n" +
+			"   - If a reply/action is ROUTINE and you're confident how the operator would respond (acknowledgements, simple scheduling, sharing already-known info, confirming availability), DO IT NOW: send with `/home/mellob/code/wacli/wacli send --to " + chatID + " --text \"...\"` in the operator's natural human voice (concise; never say you're an AI/assistant). Use the `gws` CLI for calendar/email if clearly asked.\n" +
+			"   - If it involves a real DECISION, a commitment, money, or anything sensitive/ambiguous, or you're not confident → DO NOT send anything.\n" +
+			"3. Output EXACTLY one line, beginning with one of:\n" +
+			"   ACTED: <one line on what you sent/did>\n" +
+			"   APPROVE: <the decision + your suggested reply, for the operator to approve>\n" +
+			"   SKIP: <why nothing was needed>"
+		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "working_dir": "/home/mellob"})
+		if err != nil {
+			a.log.Warn("proxy delegation failed", zap.String("chat", chatID), zap.Error(err))
+			return
+		}
+		a.reportProxyOutcome(who, claudeResultSummary(res))
+	}()
+}
+
+// reportProxyOutcome tells the operator what the proactive assistant did or what
+// it needs a decision on. SKIP outcomes are silent (nothing worth surfacing).
+func (a *Agent) reportProxyOutcome(who, outcome string) {
+	outcome = strings.TrimSpace(outcome)
+	if outcome == "" {
+		return
+	}
+	upper := strings.ToUpper(outcome)
+	switch {
+	case strings.HasPrefix(upper, "SKIP"):
+		a.log.Info("proxy: nothing needed", zap.String("chat", who))
+	case strings.HasPrefix(upper, "APPROVE"):
+		builtin.PushAppNotification(a.store, a.def.ID, "alert", "🤔 Needs your decision — "+who, outcome)
+	default: // ACTED or freeform
+		builtin.PushAppNotification(a.store, a.def.ID, "update", "✅ Handled — "+who, outcome)
+	}
+}
+
+// isTrivialMessage reports whether an incoming message is too trivial to warrant
+// spinning up the proactive assistant (acks, emoji, one-word replies).
+func isTrivialMessage(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" || len([]rune(t)) <= 3 {
+		return true
+	}
+	switch strings.ToLower(t) {
+	case "ok", "okay", "okk", "thanks", "thank you", "thx", "ty", "cool", "nice",
+		"great", "done", "haha", "lol", "yep", "nope", "sure", "fine", "hmm", "hmmm":
+		return true
+	}
+	return false
 }
 
 // claudeResultSummary extracts a concise user-facing summary from a claude_code

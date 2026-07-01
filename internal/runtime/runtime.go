@@ -228,6 +228,16 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		a.SetCommsSend(commsMgr.Send)
 		a.SetCommsEscalate(commsMgr.RequestEscalation)
 
+		// Operator identity: the operator's own chats (commands) vs monitored
+		// third-party chats (proactive proxy). WHATSAPP_OPERATOR_CHATS is a
+		// comma-separated list of the operator's phone/JID/@lid; falls back to
+		// WHATSAPP_TARGET.
+		operatorChats := splitCSV(os.Getenv("WHATSAPP_OPERATOR_CHATS"))
+		if len(operatorChats) == 0 && waTarget != "" {
+			operatorChats = []string{waTarget}
+		}
+		a.SetOperatorChats(operatorChats)
+
 		// Inject available comms channel info into the agent for context building
 		agentChannels := commsMgr.GetChannelsForAgent(agentCfg.ID)
 		var channelInfos []agent.CommsChannelInfo
@@ -583,6 +593,17 @@ func registerBuiltinTools(reg *tools.Registry) {
 	reg.Register(&builtin.FileListTool{})
 	reg.Register(&builtin.EmailTool{})
 	reg.Register(&builtin.NotifyTool{})
+}
+
+// splitCSV splits a comma-separated env value into trimmed non-empty parts.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func dndEnabled(settings map[string]string) bool {

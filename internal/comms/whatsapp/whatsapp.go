@@ -45,9 +45,10 @@ type wacliWebhookPayload struct {
 }
 
 type wacliChat struct {
-	JID    string `json:"jid"`
-	Name   string `json:"name"`
-	Locked bool   `json:"locked"`
+	JID     string `json:"jid"`
+	Name    string `json:"name"`
+	Locked  bool   `json:"locked"`
+	IsGroup bool   `json:"is_group"`
 }
 
 // wacliMessage mirrors wacli's MessageRecord JSON tags.
@@ -221,6 +222,8 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 			"chat_jid":         chatJID,
 			"event":            env.Event,
 			"source":           env.Payload.Source,
+			"is_group":         env.Payload.Chat.IsGroup,
+			"chat_name":        env.Payload.Chat.Name,
 		},
 		Timestamp: ts,
 	}
