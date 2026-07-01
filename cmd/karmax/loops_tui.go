@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -31,6 +32,19 @@ func newLoopsCmd() *cobra.Command {
 			return err
 		},
 	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "run <name>",
+		Short: "Run a loop now (manual trigger)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			out, err := apiPOST("/api/loops/" + url.PathEscape(args[0]) + "/run")
+			if err != nil {
+				return err
+			}
+			fmt.Printf("ran: %s\n", asStr(out["ran"]))
+			return nil
+		},
+	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List active and installed loops (headless)",

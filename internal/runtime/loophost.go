@@ -16,6 +16,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
+	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
@@ -36,12 +37,13 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 		yamlNames[l.Name] = true
 	}
 	disabled := loopinstall.LoadDisabledLoops()
-	defaultAgent := ""
+	rt.loopDefaultAgent = ""
 	if len(rt.cfg.Agents) > 0 {
-		defaultAgent = rt.cfg.Agents[0].ID
+		rt.loopDefaultAgent = rt.cfg.Agents[0].ID
 	}
 
-	byName := make(map[string]loopkit.Loop, len(loops))
+	rt.loopkitLoops = make(map[string]loopkit.Loop, len(loops))
+	rt.loopWebhooks = map[string]string{}
 	for _, l := range loops {
 		if yamlNames[l.Name] {
 			rt.log.Warn("loopkit loop name clashes with a yaml loop; skipping", zap.String("loop", l.Name))
@@ -51,34 +53,50 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 			rt.log.Info("loopkit loop disabled by operator; not scheduling", zap.String("loop", l.Name))
 			continue
 		}
-		byName[l.Name] = l
-		if err := rt.scheduler.AddJob(scheduler.ScheduledJob{
-			ID:      "loopkit:" + l.Name,
-			Name:    "loopkit:" + l.Name,
-			Cron:    l.Schedule.CronExpr(),
-			AgentID: "", // empty => agent router skips it; our runner handles it
-			Payload: map[string]any{"loopkit": l.Name},
-			Enabled: true,
-		}); err != nil {
-			rt.log.Error("failed to register loopkit loop", zap.String("loop", l.Name), zap.Error(err))
-			delete(byName, l.Name)
-			continue
+		rt.loopkitLoops[l.Name] = l
+		triggers := []string{"manual"}
+
+		// Schedule trigger (cron/interval) → a scheduler job.
+		if cron := l.Schedule.CronExpr(); cron != "" {
+			if err := rt.scheduler.AddJob(scheduler.ScheduledJob{
+				ID:      "loopkit:" + l.Name,
+				Name:    "loopkit:" + l.Name,
+				Cron:    cron,
+				AgentID: "", // empty => agent router skips it; our runner handles it
+				Payload: map[string]any{"loopkit": l.Name},
+				Enabled: true,
+			}); err != nil {
+				rt.log.Error("failed to schedule loopkit loop", zap.String("loop", l.Name), zap.Error(err))
+			} else {
+				triggers = append(triggers, "schedule("+cron+")")
+			}
 		}
-		rt.log.Info("registered loopkit loop",
-			zap.String("loop", l.Name), zap.String("schedule", l.Schedule.CronExpr()))
+
+		// Webhook trigger → a webhook route (fires when the route is hit).
+		if l.Webhook != "" {
+			if err := rt.webhooks.AddRoute(webhook.WebhookRoute{Path: l.Webhook, Method: "*", AgentID: ""}); err != nil {
+				rt.log.Error("failed to register loopkit webhook", zap.String("loop", l.Name), zap.String("route", l.Webhook), zap.Error(err))
+			} else {
+				rt.loopWebhooks[l.Webhook] = l.Name
+				triggers = append(triggers, "webhook("+l.Webhook+")")
+			}
+		}
+
+		rt.log.Info("registered loopkit loop", zap.String("loop", l.Name), zap.Strings("triggers", triggers))
 	}
-	if len(byName) == 0 {
+	if len(rt.loopkitLoops) == 0 {
 		return
 	}
 
-	sub, cancel := rt.bus.Subscribe(bus.EventScheduledJob)
+	// Scheduled-job fires.
+	subSched, cancelSched := rt.bus.Subscribe(bus.EventScheduledJob)
 	go func() {
-		defer cancel()
+		defer cancelSched()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case evt, ok := <-sub.Ch:
+			case evt, ok := <-subSched.Ch:
 				if !ok {
 					return
 				}
@@ -86,13 +104,49 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 				if inner == nil {
 					continue
 				}
-				name, _ := inner["loopkit"].(string)
-				if l, found := byName[name]; found {
-					go rt.runLoopkitLoop(ctx, l, defaultAgent)
+				if name, _ := inner["loopkit"].(string); name != "" {
+					if l, found := rt.loopkitLoops[name]; found {
+						go rt.runLoopkitLoop(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerSchedule})
+					}
 				}
 			}
 		}
 	}()
+
+	// Webhook fires (only subscribe if some loop listens on a route).
+	if len(rt.loopWebhooks) > 0 {
+		subWh, cancelWh := rt.bus.Subscribe(bus.EventWebhookFired)
+		go func() {
+			defer cancelWh()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case evt, ok := <-subWh.Ch:
+					if !ok {
+						return
+					}
+					route, _ := evt.Payload["route"].(string)
+					if name, ok := rt.loopWebhooks[route]; ok {
+						if l, found := rt.loopkitLoops[name]; found {
+							go rt.runLoopkitLoop(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerWebhook, Payload: evt.Payload})
+						}
+					}
+				}
+			}
+		}()
+	}
+}
+
+// RunLoopByName runs a registered loopkit loop on demand (manual trigger).
+// Returns false if no loop with that name is registered/enabled.
+func (rt *KarmaxRuntime) RunLoopByName(name string) (bool, error) {
+	l, ok := rt.loopkitLoops[name]
+	if !ok {
+		return false, nil
+	}
+	go rt.runLoopkitLoop(context.Background(), l, loopkit.Trigger{Kind: loopkit.TriggerManual})
+	return true, nil
 }
 
 // pruneStaleLoopJobs removes persisted scheduler jobs for loops that no longer
@@ -124,10 +178,11 @@ func (rt *KarmaxRuntime) pruneStaleLoopJobs() {
 	}
 }
 
-func (rt *KarmaxRuntime) runLoopkitLoop(parent context.Context, l loopkit.Loop, agentID string) {
+func (rt *KarmaxRuntime) runLoopkitLoop(parent context.Context, l loopkit.Loop, trigger loopkit.Trigger) {
 	ctx, cancel := context.WithTimeout(parent, 12*time.Minute)
 	defer cancel()
 
+	agentID := rt.loopDefaultAgent
 	ns := agentID
 	if len(rt.cfg.Agents) > 0 && rt.cfg.Agents[0].Memory.Namespace != "" {
 		ns = rt.cfg.Agents[0].Memory.Namespace
@@ -143,8 +198,9 @@ func (rt *KarmaxRuntime) runLoopkitLoop(parent context.Context, l loopkit.Loop, 
 		rt:        rt,
 		mem:       rt.memory.For(agentID, ns),
 		wacliPath: wacliPath,
+		trigger:   trigger,
 	}
-	rt.log.Info("running loopkit loop", zap.String("loop", l.Name))
+	rt.log.Info("running loopkit loop", zap.String("loop", l.Name), zap.String("trigger", trigger.Kind))
 	if err := l.Run(ctx, k); err != nil {
 		rt.log.Warn("loopkit loop failed", zap.String("loop", l.Name), zap.Error(err))
 		return
@@ -159,7 +215,10 @@ type loopKit struct {
 	rt        *KarmaxRuntime
 	mem       *memory.Manager
 	wacliPath string
+	trigger   loopkit.Trigger
 }
+
+func (k *loopKit) Trigger() loopkit.Trigger { return k.trigger }
 
 func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
 	ag, ok := k.rt.agents.Get(k.agentID)

@@ -38,7 +38,11 @@ type Server struct {
 	log       *zap.Logger
 	httpSrv   *http.Server
 	mdns      *mdnsAd
+	runLoop   func(name string) (bool, error) // injected: run a loopkit loop by name
 }
+
+// SetRunLoop wires the manual loop-run callback (POST /api/loops/{name}/run).
+func (s *Server) SetRunLoop(fn func(name string) (bool, error)) { s.runLoop = fn }
 
 // New builds the API server. token (from KARMAX_API_TOKEN) gates everything
 // except /api/ping; an empty token disables auth (development only).
@@ -58,6 +62,7 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("POST /api/notifications/{id}/read", srv.auth(srv.handleReadNotification))
 	mux.HandleFunc("GET /api/activity", srv.auth(srv.handleActivity))
 	mux.HandleFunc("POST /api/jobs/{id}/run", srv.auth(srv.handleRunJob))
+	mux.HandleFunc("POST /api/loops/{name}/run", srv.auth(srv.handleRunLoop))
 	mux.HandleFunc("GET /api/memory/tree", srv.auth(srv.handleMemoryTree))
 	mux.HandleFunc("GET /api/memory/entries", srv.auth(srv.handleMemoryEntries))
 	mux.HandleFunc("GET /api/memory/cleanup/question", srv.auth(srv.handleCleanupQuestion))
@@ -476,6 +481,25 @@ func (s *Server) handleRunJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ran": id})
+}
+
+// handleRunLoop runs a loopkit loop by name on demand (manual trigger).
+func (s *Server) handleRunLoop(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if s.runLoop == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "loops not available"})
+		return
+	}
+	ran, err := s.runLoop(name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if !ran {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such loop: " + name})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ran": name})
 }
 
 func (s *Server) defaultNamespace() string {

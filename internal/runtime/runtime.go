@@ -25,6 +25,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
 
@@ -42,6 +43,11 @@ type KarmaxRuntime struct {
 	comms     *comms.Manager
 	api       *api.Server
 	cold      *coldscan.Scanner
+
+	// loopkit runtime state (set by startLoopkitLoops)
+	loopkitLoops     map[string]loopkit.Loop
+	loopWebhooks     map[string]string // webhook route -> loop name
+	loopDefaultAgent string
 }
 
 func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
@@ -110,9 +116,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				wacliPath = "/home/mellob/code/wacli/wacli"
 			}
 			targetChat := chCfg.Settings["target_chat"]
+			commandChat := chCfg.Settings["command_chat"]
 			waCLIPath = wacliPath
 			waTarget = targetChat
-			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, log)
+			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, commandChat, log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
 			}); err != nil {
@@ -381,6 +388,11 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// Drop persisted scheduler jobs for loops that no longer exist or are
 	// disabled, so stale entries don't reload and fire as duplicates.
 	rt.pruneStaleLoopJobs()
+
+	// Let the API run any loop on demand (manual trigger).
+	if rt.api != nil {
+		rt.api.SetRunLoop(rt.RunLoopByName)
+	}
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
