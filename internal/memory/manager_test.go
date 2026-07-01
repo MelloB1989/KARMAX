@@ -3,7 +3,43 @@ package memory
 import (
 	"math"
 	"testing"
+	"time"
 )
+
+func TestRelevanceBoost_ImportanceOrdering(t *testing.T) {
+	low := relevanceBoost(MemoryEntry{Importance: 1})
+	med := relevanceBoost(MemoryEntry{Importance: 2})
+	high := relevanceBoost(MemoryEntry{Importance: 3})
+	crit := relevanceBoost(MemoryEntry{Importance: 4})
+	if !(low < med && med < high && high < crit) {
+		t.Errorf("boost must increase with importance: low=%f med=%f high=%f crit=%f", low, med, high, crit)
+	}
+}
+
+func TestRelevanceBoost_PinnedRecentDominatesStaleLow(t *testing.T) {
+	staleLow := relevanceBoost(MemoryEntry{
+		Importance: 1,
+		CreatedAt:  time.Now().Add(-200 * 24 * time.Hour),
+	})
+	pinnedRecentCritical := relevanceBoost(MemoryEntry{
+		Importance:  4,
+		Pinned:      true,
+		AccessCount: 5,
+		CreatedAt:   time.Now(),
+	})
+	if pinnedRecentCritical <= staleLow {
+		t.Errorf("pinned/critical/recent (%f) should rank above stale low-importance (%f)",
+			pinnedRecentCritical, staleLow)
+	}
+}
+
+func TestRelevanceBoost_RecencyDecays(t *testing.T) {
+	fresh := relevanceBoost(MemoryEntry{Importance: 2, CreatedAt: time.Now()})
+	old := relevanceBoost(MemoryEntry{Importance: 2, CreatedAt: time.Now().Add(-120 * 24 * time.Hour)})
+	if fresh <= old {
+		t.Errorf("fresh memory (%f) should outrank old memory (%f)", fresh, old)
+	}
+}
 
 func TestJaccardSimilarity_ExactMatch(t *testing.T) {
 	sim := jaccardSimilarity("hello world foo bar", "hello world foo bar")

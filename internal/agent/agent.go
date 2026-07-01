@@ -183,6 +183,18 @@ func (a *Agent) initModels() error {
 		AgentID:   a.def.ID,
 	})
 
+	// Add the memory.forget tool so the agent can curate/correct its own memory.
+	allTools = append(allTools, &builtin.MemoryForgetTool{
+		Store:     a.store,
+		MemoryMgr: a.memory,
+		AgentID:   a.def.ID,
+	})
+
+	// Apply the configured capacity cap for the forgetting curve.
+	if a.memory != nil && a.def.Memory.MaxEntries > 0 {
+		a.memory.SetMaxEntries(a.def.Memory.MaxEntries)
+	}
+
 	// Add the profile.update tool (agent-scoped) for maintaining the curated
 	// ABOUT_ME.md document about the operator.
 	allTools = append(allTools, &builtin.ProfileTool{

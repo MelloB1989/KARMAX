@@ -1,26 +1,67 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"time"
 )
 
 type StoredMemoryEntry struct {
-	ID        string    `json:"id"`
-	AgentID   string    `json:"agent_id"`
-	Namespace string    `json:"namespace"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Tags      string    `json:"tags"`
-	CreatedAt time.Time `json:"created_at"`
+	ID             string     `json:"id"`
+	AgentID        string     `json:"agent_id"`
+	Namespace      string     `json:"namespace"`
+	Role           string     `json:"role"`
+	Content        string     `json:"content"`
+	Tags           string     `json:"tags"`
+	Category       string     `json:"category"`
+	Importance     int        `json:"importance"` // 1=low, 2=medium, 3=high, 4=critical
+	Pinned         bool       `json:"pinned"`
+	AccessCount    int        `json:"access_count"`
+	LastAccessedAt *time.Time `json:"last_accessed_at,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+// memColumns is the canonical column list for memory_entries SELECTs, matched by
+// scanMemoryRows.
+const memColumns = "id, agent_id, namespace, role, content, tags, category, importance, pinned, access_count, last_accessed_at, expires_at, created_at"
+
+func scanMemoryRows(rows *sql.Rows) ([]StoredMemoryEntry, error) {
+	var entries []StoredMemoryEntry
+	for rows.Next() {
+		var e StoredMemoryEntry
+		var pinned int
+		var last, exp sql.NullTime
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.Namespace, &e.Role, &e.Content, &e.Tags,
+			&e.Category, &e.Importance, &pinned, &e.AccessCount, &last, &exp, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		e.Pinned = pinned != 0
+		if last.Valid {
+			t := last.Time
+			e.LastAccessedAt = &t
+		}
+		if exp.Valid {
+			t := exp.Time
+			e.ExpiresAt = &t
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
 }
 
 func (s *Store) InsertMemoryEntry(e StoredMemoryEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`INSERT INTO memory_entries (id, agent_id, namespace, role, content, tags) VALUES (?, ?, ?, ?, ?, ?)`,
-		e.ID, e.AgentID, e.Namespace, e.Role, e.Content, e.Tags)
+	if e.Importance == 0 {
+		e.Importance = 2 // medium
+	}
+	_, err := s.db.Exec(`INSERT INTO memory_entries
+		(id, agent_id, namespace, role, content, tags, category, importance, pinned, access_count, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.AgentID, e.Namespace, e.Role, e.Content, e.Tags, e.Category,
+		e.Importance, boolToInt(e.Pinned), e.AccessCount, nullTime(e.ExpiresAt))
 	return err
 }
 
@@ -28,21 +69,12 @@ func (s *Store) ListMemoryEntries(namespace string, limit int) ([]StoredMemoryEn
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, agent_id, namespace, role, content, tags, created_at FROM memory_entries WHERE namespace = ? ORDER BY created_at DESC LIMIT ?`, namespace, limit)
+	rows, err := s.db.Query(`SELECT `+memColumns+` FROM memory_entries WHERE namespace = ? ORDER BY created_at DESC LIMIT ?`, namespace, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var entries []StoredMemoryEntry
-	for rows.Next() {
-		var e StoredMemoryEntry
-		if err := rows.Scan(&e.ID, &e.AgentID, &e.Namespace, &e.Role, &e.Content, &e.Tags, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		entries = append(entries, e)
-	}
-	return entries, nil
+	return scanMemoryRows(rows)
 }
 
 func (s *Store) SearchMemoryEntries(namespace, query string, limit int) ([]StoredMemoryEntry, error) {
@@ -50,22 +82,13 @@ func (s *Store) SearchMemoryEntries(namespace, query string, limit int) ([]Store
 	defer s.mu.RUnlock()
 
 	pattern := "%" + query + "%"
-	rows, err := s.db.Query(`SELECT id, agent_id, namespace, role, content, tags, created_at FROM memory_entries WHERE namespace = ? AND (content LIKE ? OR tags LIKE ?) ORDER BY created_at DESC LIMIT ?`,
-		namespace, pattern, pattern, limit)
+	rows, err := s.db.Query(`SELECT `+memColumns+` FROM memory_entries WHERE namespace = ? AND (content LIKE ? OR tags LIKE ? OR category LIKE ?) ORDER BY created_at DESC LIMIT ?`,
+		namespace, pattern, pattern, pattern, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var entries []StoredMemoryEntry
-	for rows.Next() {
-		var e StoredMemoryEntry
-		if err := rows.Scan(&e.ID, &e.AgentID, &e.Namespace, &e.Role, &e.Content, &e.Tags, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		entries = append(entries, e)
-	}
-	return entries, nil
+	return scanMemoryRows(rows)
 }
 
 func (s *Store) CountMemoryEntries(namespace string) (int, error) {
@@ -98,6 +121,82 @@ func (s *Store) DeleteOldMemoryEntries(namespace string, keepLast int) error {
 	_, err := s.db.Exec(`DELETE FROM memory_entries WHERE namespace = ? AND id NOT IN (SELECT id FROM memory_entries WHERE namespace = ? ORDER BY created_at DESC LIMIT ?)`,
 		namespace, namespace, keepLast)
 	return err
+}
+
+// TouchMemoryEntries reinforces recalled memories: it bumps access_count and
+// sets last_accessed_at to now, so frequently/recently used facts rank higher
+// and survive forgetting. Best-effort per id.
+func (s *Store) TouchMemoryEntries(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		_, _ = s.db.Exec(`UPDATE memory_entries SET access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?`, id)
+	}
+	return nil
+}
+
+// SetMemoryPinned pins/unpins an entry. Pinned entries are never auto-forgotten.
+func (s *Store) SetMemoryPinned(id string, pinned bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE memory_entries SET pinned = ? WHERE id = ?`, boolToInt(pinned), id)
+	return err
+}
+
+// UpdateMemoryImportance sets an entry's importance (1=low..4=critical).
+func (s *Store) UpdateMemoryImportance(id string, importance int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE memory_entries SET importance = ? WHERE id = ?`, importance, id)
+	return err
+}
+
+// PruneExpiredMemories deletes entries whose expires_at has passed. Returns the
+// number removed.
+func (s *Store) PruneExpiredMemories(namespace string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`DELETE FROM memory_entries WHERE namespace = ? AND expires_at IS NOT NULL AND expires_at <= datetime('now')`, namespace)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// ForgetLeastValuable deletes up to `count` non-pinned entries in the namespace,
+// choosing the lowest-value ones first: lowest importance, then least-accessed,
+// then least-recently used/created. This enforces a capacity cap — the memory's
+// forgetting curve. Returns the number removed.
+func (s *Store) ForgetLeastValuable(namespace string, count int) (int, error) {
+	if count <= 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`DELETE FROM memory_entries WHERE id IN (
+		SELECT id FROM memory_entries
+		WHERE namespace = ? AND pinned = 0
+		ORDER BY importance ASC, access_count ASC, COALESCE(last_accessed_at, created_at) ASC
+		LIMIT ?)`, namespace, count)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+func nullTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return *t
 }
 
 // PageIndex tree persistence

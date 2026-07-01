@@ -1,5 +1,7 @@
 package store
 
+import "strings"
+
 var migrations = []string{
 	// 001_agents
 	`CREATE TABLE IF NOT EXISTS agent_snapshots (
@@ -241,11 +243,27 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_notifications_time ON notifications(created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(read_at)`,
+
+	// 020_memory_metadata — structured fields for agentic recall: importance
+	// (1=low..4=critical), pinned, usage reinforcement, TTL, and category. These
+	// ADD COLUMNs are idempotent (migrate() tolerates "duplicate column name").
+	`ALTER TABLE memory_entries ADD COLUMN category TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE memory_entries ADD COLUMN importance INTEGER NOT NULL DEFAULT 2`,
+	`ALTER TABLE memory_entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE memory_entries ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE memory_entries ADD COLUMN last_accessed_at DATETIME`,
+	`ALTER TABLE memory_entries ADD COLUMN expires_at DATETIME`,
+	`CREATE INDEX IF NOT EXISTS idx_mem_ns_importance ON memory_entries(namespace, importance)`,
+	`CREATE INDEX IF NOT EXISTS idx_mem_expires ON memory_entries(expires_at)`,
 }
 
 func (s *Store) migrate() error {
 	for _, stmt := range migrations {
 		if _, err := s.db.Exec(stmt); err != nil {
+			// ALTER TABLE ADD COLUMN is not idempotent; tolerate re-runs.
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
 			return err
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -22,14 +23,16 @@ type MemoryIngestTool struct {
 func (t *MemoryIngestTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "memory.ingest",
-		Description: "Save important information to long-term memory. Use this to remember facts about the user, decisions, project context, preferences, and anything that should persist across conversations. The system automatically checks for duplicates to avoid storing redundant information.",
+		Description: "Save durable information to long-term memory: facts about the operator, decisions, project state, preferences, people, commitments — anything worth recalling across conversations. Duplicates are detected automatically. Set 'importance' so it ranks correctly, 'pinned' for facts that must never be forgotten, and 'ttl_days' for facts that expire (e.g. a temporary plan).",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"content": {"type": "string", "description": "The information to remember. Be specific and structured."},
+				"content": {"type": "string", "description": "The information to remember. Be specific, atomic, and self-contained (it will be read without conversation context)."},
 				"category": {"type": "string", "description": "Category: 'user_info', 'project', 'decision', 'preference', 'context', 'task', 'relationship'"},
-				"tags": {"type": "string", "description": "Comma-separated tags for organization (e.g., 'kartik,preferences,coding')"},
-				"importance": {"type": "string", "description": "Priority: 'critical', 'high', 'medium', 'low'"}
+				"tags": {"type": "string", "description": "Comma-separated tags for organization (e.g., 'preferences,coding')"},
+				"importance": {"type": "string", "description": "Priority: 'critical', 'high', 'medium', 'low' (default 'medium'). Drives recall ranking and what survives forgetting."},
+				"pinned": {"type": "boolean", "description": "If true, this memory is never auto-forgotten and is always front-of-mind (use for core, enduring facts)."},
+				"ttl_days": {"type": "integer", "description": "Optional: auto-expire this memory after N days (use for time-bound facts like a temporary plan or deadline)."}
 			},
 			"required": ["content", "category"]
 		}`),
@@ -41,6 +44,7 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 	category, _ := input["category"].(string)
 	tagsRaw, _ := input["tags"].(string)
 	importance, _ := input["importance"].(string)
+	pinned, _ := input["pinned"].(bool)
 
 	if content == "" {
 		return tools.ErrorResult(fmt.Errorf("content is required")), nil
@@ -50,6 +54,21 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 	}
 	if importance == "" {
 		importance = "medium"
+	}
+
+	// Optional TTL → expiry timestamp.
+	var expiresAt *time.Time
+	switch v := input["ttl_days"].(type) {
+	case float64:
+		if v > 0 {
+			t := time.Now().AddDate(0, 0, int(v))
+			expiresAt = &t
+		}
+	case int:
+		if v > 0 {
+			t := time.Now().AddDate(0, 0, v)
+			expiresAt = &t
+		}
 	}
 
 	// Parse tags.
@@ -112,26 +131,49 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 		}
 	}
 
-	// Write to memory.
-	tagsJSON, _ := json.Marshal(tags)
+	// Write to memory. The [category][importance] prefix is kept for the human
+	// -readable tree/markdown; the structured fields drive ranking & forgetting.
 	formattedContent := fmt.Sprintf("[%s][%s] %s", category, importance, content)
 
 	entry := memory.MemoryEntry{
-		AgentID:   t.AgentID,
-		Namespace: namespace,
-		Role:      "system",
-		Content:   formattedContent,
-		Tags:      tags,
+		AgentID:    t.AgentID,
+		Namespace:  namespace,
+		Role:       "system",
+		Content:    formattedContent,
+		Tags:       tags,
+		Category:   category,
+		Importance: importanceToInt(importance),
+		Pinned:     pinned,
+		ExpiresAt:  expiresAt,
 	}
 
 	if err := t.MemoryMgr.Write(entry); err != nil {
 		return tools.ErrorResult(fmt.Errorf("failed to write memory: %w", err)), nil
 	}
 
-	_ = tagsJSON // tags already passed via entry.Tags
-
+	extra := partialWarning
+	if pinned {
+		extra += " (pinned)"
+	}
+	if expiresAt != nil {
+		extra += fmt.Sprintf(" (expires %s)", expiresAt.Format("2006-01-02"))
+	}
 	return tools.SuccessResult(fmt.Sprintf("Memory saved [%s/%s]: %s%s",
-		category, importance, truncateStr(content, 80), partialWarning)), nil
+		category, importance, truncateStr(content, 80), extra)), nil
+}
+
+// importanceToInt maps the importance label to its stored priority (1=low..4=critical).
+func importanceToInt(s string) int {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "low":
+		return 1
+	default:
+		return 2 // medium
+	}
 }
 
 // wordOverlap computes normalized Jaccard similarity on whitespace-split word sets.
