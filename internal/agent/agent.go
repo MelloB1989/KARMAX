@@ -640,16 +640,46 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			zap.String("event_kind", string(evt.Kind)),
 		)
 
+		sentViaComms := false
 		for _, tc := range toolCalls {
+			canonical := tools.CanonicalName(tc.Name)
+			if canonical == "comms_send" {
+				sentViaComms = true
+			}
 			a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
-				"tool":  tools.CanonicalName(tc.Name),
+				"tool":  canonical,
 				"input": tc.Input,
 			}))
 		}
 
-		// NO auto-reply here. The LLM replies via comms_send tool during
-		// karma's internal tool execution loop. If the LLM chose not to
-		// call comms_send, that's intentional.
+		// Fallback delivery: for an incoming chat message, if the agent produced
+		// a reply but never sent it via comms.send, deliver its final response to
+		// the originating chat so the user always gets an answer instead of a
+		// silent drop. (The small orchestration model doesn't always remember to
+		// call comms.send; without this, its reply is logged and thrown away.)
+		if evt.Kind == bus.EventCommsMessage && a.commsSend != nil && !sentViaComms {
+			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
+			target, _ := evt.Payload["channel_id"].(string)
+			reply := strings.TrimSpace(response)
+			switch {
+			case karmaxChannelID == "":
+				// no channel to reply on
+			case reply != "":
+				if err := a.commsSend(karmaxChannelID, target, reply); err != nil {
+					a.log.Warn("fallback auto-reply failed",
+						zap.String("channel", karmaxChannelID), zap.Error(err))
+				} else {
+					a.log.Info("delivered fallback auto-reply (model did not call comms.send)",
+						zap.String("channel", karmaxChannelID), zap.Int("len", len(reply)))
+				}
+			case len(toolCalls) == 0:
+				// The model neither replied nor acted — don't leave the user
+				// hanging on their own message.
+				a.log.Warn("no reply and no action for incoming message",
+					zap.String("channel", karmaxChannelID))
+				_ = a.commsSend(karmaxChannelID, target, "⚠️ I hit a snag handling that and couldn't complete it. Mind resending or rephrasing?")
+			}
+		}
 
 		// Check if compaction is needed
 		if a.mainSession.NeedsCompaction() && a.summaryModel != nil {
