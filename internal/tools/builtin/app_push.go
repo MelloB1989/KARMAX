@@ -90,3 +90,27 @@ func errString(err error) string {
 	}
 	return err.Error()
 }
+
+// PushAppNotification persists an app-feed notification and delivers it as a
+// push. Reusable by non-tool code paths (e.g. the proactive "message sent"
+// notice fired by the comms manager). Best-effort; never blocks the caller.
+func PushAppNotification(s *store.Store, agentID, kind, title, body string) {
+	if s == nil || strings.TrimSpace(body) == "" {
+		return
+	}
+	if agentID == "" {
+		agentID = "nexus"
+	}
+	id := uuid.New().String()
+	if err := s.CreateNotification(store.StoredNotification{
+		ID:      id,
+		AgentID: agentID,
+		Kind:    kind,
+		Title:   title,
+		Body:    body,
+	}); err != nil {
+		return
+	}
+	data := map[string]any{"type": "notification", "notification_id": id}
+	_, _, _ = SendExpoPush(s, title, body, "default", data)
+}

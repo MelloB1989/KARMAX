@@ -97,6 +97,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Capture WhatsApp settings so the whatsapp.read tool can reuse them.
 	waCLIPath := "/home/mellob/code/wacli/wacli"
 	waTarget := ""
+	waAgentID := "nexus"
 
 	// WhatsApp is event-based: wacli pushes message events to KARMAX's webhook
 	// endpoint (/comms/whatsapp, mounted below). KARMAX does NOT register or
@@ -126,6 +127,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			targetChat := chCfg.Settings["target_chat"]
 			waCLIPath = wacliPath
 			waTarget = targetChat
+			if chCfg.AgentID != "" {
+				waAgentID = chCfg.AgentID
+			}
 			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, waWebhookSecret, log)
 			waChannel = ch
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
@@ -140,6 +144,18 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			log.Warn("unknown comms channel type", zap.String("type", chCfg.Type))
 		}
 	}
+
+	// Act-and-inform: messages KARMAX sends to people OTHER than the operator
+	// don't need approval, but the operator is shown every one via an app push.
+	// Replies to the operator's own chats are skipped (they see those directly).
+	commsMgr.RegisterOperatorTarget(waTarget)
+	commsMgr.SetProactiveNotifier(func(target, content string) {
+		body := content
+		if len(body) > 240 {
+			body = body[:240] + "…"
+		}
+		builtin.PushAppNotification(s, waAgentID, "update", "Sent to "+target, body)
+	})
 
 	toolReg := tools.NewRegistry()
 	registerBuiltinTools(toolReg)

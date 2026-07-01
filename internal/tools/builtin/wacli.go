@@ -29,7 +29,7 @@ func (t *WacliTool) Manifest() tools.ToolManifest {
 			"- See who has received/read a message: [\"receipts\",\"--id\",\"<message-id>\"].\n" +
 			"- Control which chats are exposed to automation: [\"access\",\"list\"], [\"access\",\"lock\",\"<ref>\"], [\"access\",\"unlock\",\"<ref>\"].\n" +
 			"- Inspect: [\"chats\"], [\"resolve\",\"<ref>\"], [\"contacts\",\"lookup\",\"<ref>\"], [\"dnd\"].\n" +
-			"Notes: wacli only sends and delivers webhooks while DND is ON. To message a THIRD PARTY, prefer comms.send (with approval) over [\"send\",...]. Returns wacli's JSON/text output.",
+			"Notes: wacli only sends and delivers webhooks while DND is ON. To message someone, prefer comms.send over [\"send\",...] so it routes through the channel and the operator is auto-notified. Returns wacli's JSON/text output.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {

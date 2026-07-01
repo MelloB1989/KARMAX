@@ -34,6 +34,8 @@ type Manager struct {
 	channels            map[string]*channelEntry
 	lastIncomingTarget  map[string]string            // agentID -> last Discord channel ID
 	lastIncomingTargets map[string]map[string]string // agentID -> KARMAX channel ID -> target
+	operatorTargets     map[string]bool              // normalized targets that are the operator (never "proactive")
+	proactiveNotify     func(target, content string) // fired when a message is sent to a NON-operator target
 	bus                 *bus.Bus
 	store               *store.Store
 	log                 *zap.Logger
@@ -46,10 +48,64 @@ func NewManager(b *bus.Bus, s *store.Store, log *zap.Logger) *Manager {
 		channels:            make(map[string]*channelEntry),
 		lastIncomingTarget:  make(map[string]string),
 		lastIncomingTargets: make(map[string]map[string]string),
+		operatorTargets:     make(map[string]bool),
 		bus:                 b,
 		store:               s,
 		log:                 log,
 	}
+}
+
+// SetProactiveNotifier registers a callback fired after a message is sent to a
+// target that is NOT the operator (a proactive, act-and-inform notification).
+func (m *Manager) SetProactiveNotifier(fn func(target, content string)) {
+	m.mu.Lock()
+	m.proactiveNotify = fn
+	m.mu.Unlock()
+}
+
+// RegisterOperatorTarget marks a target (phone/JID/chat) as the operator's own,
+// so messages to it are treated as replies, not proactive outbound.
+func (m *Manager) RegisterOperatorTarget(target string) {
+	t := normalizeTarget(target)
+	if t == "" {
+		return
+	}
+	m.mu.Lock()
+	m.operatorTargets[t] = true
+	m.mu.Unlock()
+}
+
+// isOperatorTarget reports whether a send target is the operator (so it should
+// NOT trigger a proactive "sent" notification). Empty target = a reply/default
+// (operator-facing). Also matches any chat the operator has messaged from.
+func (m *Manager) isOperatorTarget(target string) bool {
+	t := normalizeTarget(target)
+	if t == "" {
+		return true
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.operatorTargets[t] {
+		return true
+	}
+	for _, byChannel := range m.lastIncomingTargets {
+		for _, in := range byChannel {
+			if normalizeTarget(in) == t {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// normalizeTarget reduces a target to comparable digits/id, stripping any
+// "@domain" and ":device" suffix.
+func normalizeTarget(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if i := strings.IndexAny(s, "@:"); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }
 
 // Register adds a channel to the manager, associating it with the given agent.
@@ -206,9 +262,21 @@ func (m *Manager) StopAll() {
 	}
 }
 
-// Send dispatches a text message through the specified channel.
+// Send dispatches a text message through the specified channel. When the target
+// is someone OTHER than the operator, it fires the proactive notifier so the
+// operator sees every outbound message KARMAX sends on their behalf.
 func (m *Manager) Send(channelID, target, content string) error {
-	return m.send(context.Background(), channelID, target, content, true)
+	err := m.send(context.Background(), channelID, target, content, true)
+	if err != nil {
+		return err
+	}
+	m.mu.RLock()
+	notify := m.proactiveNotify
+	m.mu.RUnlock()
+	if notify != nil && !m.isOperatorTarget(target) {
+		notify(target, content)
+	}
+	return nil
 }
 
 // List returns all registered channels.
