@@ -5,13 +5,18 @@ import (
 )
 
 type MemoryEntry struct {
-	ID        string    `json:"id"`
-	AgentID   string    `json:"agent_id"`
-	Namespace string    `json:"namespace"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Tags      []string  `json:"tags"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	AgentID     string     `json:"agent_id"`
+	Namespace   string     `json:"namespace"`
+	Role        string     `json:"role"`
+	Content     string     `json:"content"`
+	Tags        []string   `json:"tags"`
+	Category    string     `json:"category,omitempty"`
+	Importance  int        `json:"importance,omitempty"` // 1=low, 2=medium, 3=high, 4=critical
+	Pinned      bool       `json:"pinned,omitempty"`
+	AccessCount int        `json:"access_count,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 type SearchResult struct {

@@ -14,16 +14,21 @@ import (
 	"go.uber.org/zap"
 )
 
+// defaultMaxEntries caps how many memories a namespace keeps before the
+// forgetting curve prunes the least-valuable non-pinned ones.
+const defaultMaxEntries = 5000
+
 type Manager struct {
-	agentID   string
-	namespace string
-	baseDir   string
-	db        *store.Store
-	tree      *TreeNode
-	log       *zap.Logger
-	dirty     bool
-	mu        sync.Mutex
-	stopCh    chan struct{}
+	agentID    string
+	namespace  string
+	baseDir    string
+	db         *store.Store
+	tree       *TreeNode
+	log        *zap.Logger
+	dirty      bool
+	maxEntries int
+	mu         sync.Mutex
+	stopCh     chan struct{}
 }
 
 func NewManager(agentID, namespace, baseDir string, db *store.Store, log *zap.Logger) *Manager {
@@ -31,18 +36,29 @@ func NewManager(agentID, namespace, baseDir string, db *store.Store, log *zap.Lo
 	os.MkdirAll(dir, 0755)
 
 	m := &Manager{
-		agentID:   agentID,
-		namespace: namespace,
-		baseDir:   dir,
-		db:        db,
-		log:       log,
-		stopCh:    make(chan struct{}),
+		agentID:    agentID,
+		namespace:  namespace,
+		baseDir:    dir,
+		db:         db,
+		log:        log,
+		maxEntries: defaultMaxEntries,
+		stopCh:     make(chan struct{}),
 	}
 
 	m.loadTree()
 	go m.reindexWorker()
+	go m.maintenanceWorker()
 
 	return m
+}
+
+// SetMaxEntries overrides the capacity cap for the forgetting curve.
+func (m *Manager) SetMaxEntries(n int) {
+	if n > 0 {
+		m.mu.Lock()
+		m.maxEntries = n
+		m.mu.Unlock()
+	}
 }
 
 // Namespace returns the manager's namespace identifier.
@@ -96,12 +112,16 @@ func (m *Manager) Write(entry MemoryEntry) error {
 
 	tagsJSON, _ := json.Marshal(entry.Tags)
 	if err := m.db.InsertMemoryEntry(store.StoredMemoryEntry{
-		ID:        entry.ID,
-		AgentID:   entry.AgentID,
-		Namespace: entry.Namespace,
-		Role:      entry.Role,
-		Content:   entry.Content,
-		Tags:      string(tagsJSON),
+		ID:         entry.ID,
+		AgentID:    entry.AgentID,
+		Namespace:  entry.Namespace,
+		Role:       entry.Role,
+		Content:    entry.Content,
+		Tags:       string(tagsJSON),
+		Category:   entry.Category,
+		Importance: entry.Importance,
+		Pinned:     entry.Pinned,
+		ExpiresAt:  entry.ExpiresAt,
 	}); err != nil {
 		return fmt.Errorf("insert memory entry: %w", err)
 	}
@@ -294,6 +314,70 @@ func (m *Manager) reindexWorker() {
 			m.mu.Unlock()
 		}
 	}
+}
+
+// maintenanceWorker runs the memory's forgetting curve on a slow cadence: it
+// drops expired memories and, when a namespace grows past its capacity cap,
+// forgets the least-valuable non-pinned entries.
+func (m *Manager) maintenanceWorker() {
+	// Run once shortly after boot, then hourly.
+	first := time.NewTimer(2 * time.Minute)
+	defer first.Stop()
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case <-first.C:
+			m.Maintain()
+		case <-ticker.C:
+			m.Maintain()
+		}
+	}
+}
+
+// Maintain performs one forgetting pass: prune expired memories, then enforce
+// the capacity cap by forgetting the least-valuable non-pinned entries. Safe to
+// call on demand. Returns the number of memories removed.
+func (m *Manager) Maintain() int {
+	removed := 0
+
+	if n, err := m.db.PruneExpiredMemories(m.namespace); err != nil {
+		m.log.Warn("prune expired memories failed", zap.Error(err))
+	} else if n > 0 {
+		removed += n
+		m.log.Info("pruned expired memories", zap.String("namespace", m.namespace), zap.Int("count", n))
+	}
+
+	m.mu.Lock()
+	limit := m.maxEntries
+	m.mu.Unlock()
+	if limit <= 0 {
+		limit = defaultMaxEntries
+	}
+
+	if total, err := m.db.CountMemoryEntries(m.namespace); err == nil && total > limit {
+		over := total - limit
+		if n, err := m.db.ForgetLeastValuable(m.namespace, over); err != nil {
+			m.log.Warn("forget least-valuable memories failed", zap.Error(err))
+		} else if n > 0 {
+			removed += n
+			m.log.Info("forgot least-valuable memories over capacity",
+				zap.String("namespace", m.namespace),
+				zap.Int("count", n),
+				zap.Int("cap", limit),
+			)
+		}
+	}
+
+	if removed > 0 {
+		m.mu.Lock()
+		m.dirty = true // trigger a tree rebuild
+		m.mu.Unlock()
+	}
+	return removed
 }
 
 func (m *Manager) rebuildTree() {
@@ -517,13 +601,18 @@ func (m *Manager) SearchSemantic(query string, topK int) ([]SearchResult, error)
 			} else {
 				seen[e.ID] = &scored{
 					entry: MemoryEntry{
-						ID:        e.ID,
-						AgentID:   e.AgentID,
-						Namespace: e.Namespace,
-						Role:      e.Role,
-						Content:   e.Content,
-						Tags:      tags,
-						CreatedAt: e.CreatedAt,
+						ID:          e.ID,
+						AgentID:     e.AgentID,
+						Namespace:   e.Namespace,
+						Role:        e.Role,
+						Content:     e.Content,
+						Tags:        tags,
+						Category:    e.Category,
+						Importance:  e.Importance,
+						Pinned:      e.Pinned,
+						AccessCount: e.AccessCount,
+						ExpiresAt:   e.ExpiresAt,
+						CreatedAt:   e.CreatedAt,
 					},
 					hits: 1,
 				}
@@ -555,18 +644,20 @@ func (m *Manager) SearchSemantic(query string, topK int) ([]SearchResult, error)
 		}
 	}
 
-	// Collect and sort by hit count descending.
+	// Collect and score. The final score blends keyword relevance with what a
+	// personal assistant should surface first: important, pinned, recent, and
+	// frequently-recalled memories.
 	results := make([]SearchResult, 0, len(seen))
 	for _, s := range seen {
 		excerpt := s.entry.Content
 		if len(excerpt) > 200 {
 			excerpt = excerpt[:200] + "..."
 		}
-		score := float64(s.hits) / float64(len(keywords))
+		base := float64(s.hits) / float64(len(keywords))
 		results = append(results, SearchResult{
 			Entry:   s.entry,
 			Excerpt: excerpt,
-			Score:   score,
+			Score:   base + relevanceBoost(s.entry),
 		})
 	}
 
@@ -583,7 +674,60 @@ func (m *Manager) SearchSemantic(query string, topK int) ([]SearchResult, error)
 		results = results[:topK]
 	}
 
+	// Reinforcement: surfacing a memory counts as using it, so bump its
+	// access_count/last_accessed so useful facts rank higher and survive
+	// forgetting. Only real entries (not pageindex nodes) carry an importance.
+	var touch []string
+	for _, r := range results {
+		if r.Entry.ID != "" && r.Entry.Role != "memory" {
+			touch = append(touch, r.Entry.ID)
+		}
+	}
+	if len(touch) > 0 {
+		_ = m.db.TouchMemoryEntries(touch)
+	}
+
 	return results, nil
+}
+
+// relevanceBoost adds priority for important, pinned, recent, and
+// frequently-recalled memories on top of the keyword-match base score.
+func relevanceBoost(e MemoryEntry) float64 {
+	boost := 0.0
+
+	// Importance: low=-0.25, medium=0, high=+0.25, critical=+0.5.
+	if e.Importance > 0 {
+		boost += float64(e.Importance-2) * 0.25
+	}
+
+	// Pinned facts are always kept front-of-mind.
+	if e.Pinned {
+		boost += 0.5
+	}
+
+	// Recency: fresher memories are more likely relevant right now.
+	if !e.CreatedAt.IsZero() {
+		age := time.Since(e.CreatedAt)
+		switch {
+		case age < 7*24*time.Hour:
+			boost += 0.5
+		case age < 30*24*time.Hour:
+			boost += 0.25
+		case age < 90*24*time.Hour:
+			boost += 0.1
+		}
+	}
+
+	// Usage: repeatedly-recalled memories matter (capped).
+	if e.AccessCount > 0 {
+		used := float64(e.AccessCount) * 0.03
+		if used > 0.3 {
+			used = 0.3
+		}
+		boost += used
+	}
+
+	return boost
 }
 
 // FindDuplicates returns existing memory entries whose content has word
@@ -626,15 +770,14 @@ func (m *Manager) IngestFromSummary(summary string, agentID string) error {
 			continue // skip duplicate
 		}
 
-		tagsJSON, _ := json.Marshal([]string{"auto-ingested", "summary-derived"})
-		_ = tagsJSON
-
 		if err := m.Write(MemoryEntry{
-			AgentID:   agentID,
-			Namespace: m.namespace,
-			Role:      "system",
-			Content:   fmt.Sprintf("[context][medium] %s", chunk),
-			Tags:      []string{"auto-ingested", "summary-derived"},
+			AgentID:    agentID,
+			Namespace:  m.namespace,
+			Role:       "system",
+			Content:    fmt.Sprintf("[context][medium] %s", chunk),
+			Tags:       []string{"auto-ingested", "summary-derived"},
+			Category:   "context",
+			Importance: 2, // medium; auto-derived, so first to be forgotten under pressure
 		}); err != nil {
 			m.log.Warn("failed to ingest summary chunk", zap.Error(err))
 		}
