@@ -71,29 +71,60 @@ func (m *wacliMessage) parsedTimestamp() time.Time {
 
 // WhatsAppChannel implements comms.Channel for WhatsApp via the local wacli binary.
 type WhatsAppChannel struct {
-	id            string
-	wacliPath     string
-	targetChat    string
+	id         string
+	wacliPath  string
+	targetChat string
+	// commandChat, when set, is the operator's dedicated KARMAX chat: the
+	// operator's OWN messages there route to the agent (a command channel) and
+	// the agent replies there. KARMAX's own replies are skipped (sentIDs) so it
+	// doesn't answer itself.
+	commandChat   string
 	inbox         chan comms.Message
 	log           *zap.Logger
 	ctx           context.Context
 	cancel        context.CancelFunc
 	lastMessageID string
+	lastCommandID string
+	sentIDs       map[string]struct{}
 	mu            sync.RWMutex
 }
 
-// New creates a WhatsAppChannel with the given ID, wacli binary path, and target chat.
-func New(id string, wacliPath string, targetChat string, log *zap.Logger) *WhatsAppChannel {
+// New creates a WhatsAppChannel. targetChat is monitored for others' messages;
+// commandChat (optional) is the operator's command channel.
+func New(id, wacliPath, targetChat, commandChat string, log *zap.Logger) *WhatsAppChannel {
 	if wacliPath == "" {
 		wacliPath = defaultWacliPath
 	}
 	return &WhatsAppChannel{
-		id:         id,
-		wacliPath:  wacliPath,
-		targetChat: targetChat,
-		inbox:      make(chan comms.Message, 256),
-		log:        log,
+		id:          id,
+		wacliPath:   wacliPath,
+		targetChat:  targetChat,
+		commandChat: commandChat,
+		inbox:       make(chan comms.Message, 256),
+		sentIDs:     make(map[string]struct{}),
+		log:         log,
 	}
+}
+
+// recordSent remembers a message ID KARMAX sent, so the command-chat poll skips
+// KARMAX's own replies (which are from-me) and doesn't answer itself.
+func (w *WhatsAppChannel) recordSent(id string) {
+	if id == "" {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.sentIDs) > 500 { // keep the set bounded; old ids are past lastCommandID
+		w.sentIDs = make(map[string]struct{})
+	}
+	w.sentIDs[id] = struct{}{}
+}
+
+func (w *WhatsAppChannel) wasSent(id string) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	_, ok := w.sentIDs[id]
+	return ok
 }
 
 func (w *WhatsAppChannel) ID() string   { return w.id }
@@ -134,9 +165,17 @@ func (w *WhatsAppChannel) Start(ctx context.Context) error {
 
 	go w.pollMessages()
 
+	// If a command chat is configured, poll it for the operator's own messages
+	// (the KARMAX command channel), skipping KARMAX's own replies.
+	if w.commandChat != "" {
+		w.seedLastCommandID(ctx)
+		go w.pollCommandChat()
+	}
+
 	w.log.Info("whatsapp channel started",
 		zap.String("channel_id", w.id),
 		zap.String("target_chat", w.targetChat),
+		zap.String("command_chat", w.commandChat),
 		zap.String("wacli_path", w.wacliPath),
 	)
 	return nil
@@ -187,6 +226,15 @@ func (w *WhatsAppChannel) Send(ctx context.Context, target, content string) erro
 				zap.Error(err),
 			)
 			return fmt.Errorf("send whatsapp message: %w", err)
+		}
+		// Record the sent message ID so the command-chat poll skips our own reply.
+		var resp struct {
+			Message struct {
+				ID string `json:"id"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(out, &resp) == nil {
+			w.recordSent(resp.Message.ID)
 		}
 	}
 	return nil
@@ -373,15 +421,23 @@ func (w *WhatsAppChannel) fetchAndDispatch(ctx context.Context) {
 	lastID := w.lastMessageID
 	w.mu.RUnlock()
 
-	// Find new messages: iterate from oldest to newest. Messages are assumed
-	// to be returned newest-first, so we reverse before processing.
-	reversed := make([]wacliMessage, len(messages))
-	for i, m := range messages {
-		reversed[len(messages)-1-i] = m
+	// wacli returns the N most recent messages in ascending (oldest→newest)
+	// order, so we process them in place — no reversing.
+	newestID := messages[len(messages)-1].ID
+
+	// First poll with no baseline: record the newest and dispatch nothing so we
+	// don't replay the backlog. (seedLastMessageID normally prevents this.)
+	if lastID == "" {
+		w.mu.Lock()
+		w.lastMessageID = newestID
+		w.mu.Unlock()
+		return
 	}
 
-	foundLast := lastID == ""
-	for _, msg := range reversed {
+	// Skip everything up to and including the last message we've seen, then
+	// dispatch what's newer.
+	foundLast := false
+	for _, msg := range messages {
 		if !foundLast {
 			if msg.ID == lastID {
 				foundLast = true
@@ -430,20 +486,147 @@ func (w *WhatsAppChannel) fetchAndDispatch(ctx context.Context) {
 		w.mu.Unlock()
 	}
 
-	// If we never found lastID in the batch (e.g. first run or messages
-	// rotated out), update to the newest message to avoid re-processing.
-	if !foundLast && lastID != "" {
+	// If we never found lastID in the batch (it rotated out of the window),
+	// jump to the newest so we don't replay the whole batch next time.
+	if !foundLast {
 		w.mu.Lock()
-		w.lastMessageID = messages[0].ID
+		w.lastMessageID = newestID
+		w.mu.Unlock()
+	}
+}
+
+// seedLastCommandID records the newest message in the command chat so we only
+// process messages that arrive after startup.
+func (w *WhatsAppChannel) seedLastCommandID(ctx context.Context) {
+	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(pollCtx, w.wacliPath, "messages", "--chat", w.commandChat, "--limit", "1").CombinedOutput()
+	if err != nil {
+		return
+	}
+	msgs := parseWacliMessages(strings.TrimSpace(string(out)))
+	if len(msgs) > 0 {
+		w.mu.Lock()
+		w.lastCommandID = msgs[0].ID
+		w.mu.Unlock()
+	}
+}
+
+// pollCommandChat polls the command chat for the operator's messages.
+func (w *WhatsAppChannel) pollCommandChat() {
+	w.mu.RLock()
+	ctx := w.ctx
+	w.mu.RUnlock()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.fetchCommandMessages(ctx)
+		}
+	}
+}
+
+// fetchCommandMessages polls the command chat (including the operator's own
+// messages), skips KARMAX's own replies, and dispatches the rest to the agent.
+func (w *WhatsAppChannel) fetchCommandMessages(ctx context.Context) {
+	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+	defer cancel()
+
+	// No --from-me filter: we WANT the operator's own messages here.
+	out, err := exec.CommandContext(pollCtx, w.wacliPath, "messages", "--chat", w.commandChat, "--limit", "5").CombinedOutput()
+	if err != nil {
+		w.log.Warn("wacli command-chat poll failed", zap.String("channel_id", w.id), zap.Error(err))
+		return
+	}
+	messages := parseWacliMessages(strings.TrimSpace(string(out)))
+	if len(messages) == 0 {
+		return
+	}
+
+	w.mu.RLock()
+	lastID := w.lastCommandID
+	w.mu.RUnlock()
+
+	// wacli returns the N most recent messages oldest→newest, so process in
+	// place (no reversing).
+	newestID := messages[len(messages)-1].ID
+
+	// First poll with no baseline: record the newest and dispatch nothing so we
+	// don't replay history. (seedLastCommandID normally prevents this.)
+	if lastID == "" {
+		w.mu.Lock()
+		w.lastCommandID = newestID
+		w.mu.Unlock()
+		return
+	}
+
+	foundLast := false
+	for _, msg := range messages {
+		if !foundLast {
+			if msg.ID == lastID {
+				foundLast = true
+			}
+			continue
+		}
+		// Skip KARMAX's own replies (from-me but sent by us) and empties.
+		if w.wasSent(msg.ID) || strings.TrimSpace(msg.body()) == "" {
+			w.mu.Lock()
+			w.lastCommandID = msg.ID
+			w.mu.Unlock()
+			continue
+		}
+		cm := comms.Message{
+			ID:          uuid.New().String(),
+			ChannelID:   w.commandChat, // reply goes back here
+			ChannelType: "whatsapp",
+			SenderID:    msg.senderID(),
+			SenderName:  msg.senderID(),
+			Content:     msg.body(),
+			Direction:   comms.Inbound,
+			Metadata: map[string]any{
+				"wacli_message_id": msg.ID,
+				"chat":             msg.Chat,
+				"command_chat":     true,
+			},
+			Timestamp: msg.parsedTimestamp(),
+		}
+		select {
+		case w.inbox <- cm:
+		default:
+			w.log.Warn("whatsapp inbox full, dropping command message", zap.String("channel_id", w.id))
+		}
+		w.mu.Lock()
+		w.lastCommandID = msg.ID
 		w.mu.Unlock()
 	}
 
-	// On first poll, just record the newest ID without dispatching.
-	if lastID == "" && len(messages) > 0 {
+	// lastID rotated out of the window — jump to newest to avoid replaying.
+	if !foundLast {
 		w.mu.Lock()
-		w.lastMessageID = messages[0].ID
+		w.lastCommandID = newestID
 		w.mu.Unlock()
 	}
+}
+
+// parseWacliMessages parses `wacli messages` output (array or {messages:[...]}).
+func parseWacliMessages(trimmed string) []wacliMessage {
+	if trimmed == "" {
+		return nil
+	}
+	var messages []wacliMessage
+	if err := json.Unmarshal([]byte(trimmed), &messages); err != nil {
+		var wrapper struct {
+			Messages []wacliMessage `json:"messages"`
+		}
+		if json.Unmarshal([]byte(trimmed), &wrapper) != nil {
+			return nil
+		}
+		messages = wrapper.Messages
+	}
+	return messages
 }
 
 // splitContent breaks s into chunks of at most maxLen bytes.

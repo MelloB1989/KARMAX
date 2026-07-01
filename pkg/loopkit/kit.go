@@ -44,6 +44,10 @@ type Kit interface {
 	// and any transport error. Headers and body may be empty.
 	HTTP(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, error)
 
+	// Trigger reports what fired this run (schedule / webhook / manual) and any
+	// payload — e.g. for a webhook, Payload["body"] holds the request body.
+	Trigger() Trigger
+
 	// Config returns an install-time configuration value for this loop (for
 	// example an API key the operator entered when installing it), or "" if the
 	// key is unset.

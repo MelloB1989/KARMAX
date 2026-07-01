@@ -77,17 +77,38 @@ func (s Schedule) CronExpr() string {
 	}
 }
 
-// Loop is a unit of recurring work, authored against the Kit capability API.
+// Loop is a unit of work, authored against the Kit capability API. A loop can
+// fire on any combination of triggers: a Schedule (cron/interval), an incoming
+// Webhook, and/or a manual run — set whichever you need. Inside Run, call
+// Kit.Trigger() to see what fired this run and read its payload.
 type Loop struct {
 	// Name is a unique, kebab-case identifier (e.g. "hn-digest").
 	Name string
 	// Description is a one-line summary shown in the installer/activity views.
 	Description string
-	// Schedule controls when Run fires.
+	// Schedule fires the loop on a cron/interval (optional).
 	Schedule Schedule
+	// Webhook, when set (e.g. "/hooks/deploy"), fires the loop whenever that
+	// webhook route receives a request. The request body/headers are available
+	// via Kit.Trigger().Payload. Optional.
+	Webhook string
 	// Run does the work. It receives a per-run context (honor cancellation/
 	// timeout) and the Kit capability API. Return an error to log a failed run.
 	Run func(ctx context.Context, k Kit) error
+}
+
+// Trigger kinds.
+const (
+	TriggerSchedule = "schedule"
+	TriggerWebhook  = "webhook"
+	TriggerManual   = "manual"
+)
+
+// Trigger describes what caused the current run and carries any payload (e.g.
+// the webhook body under key "body", plus "route", "method", "headers").
+type Trigger struct {
+	Kind    string
+	Payload map[string]any
 }
 
 var (
@@ -106,8 +127,9 @@ func Register(l Loop) {
 		panic("loopkit: loop has an empty Name")
 	case l.Run == nil:
 		panic(fmt.Sprintf("loopkit: loop %q has a nil Run", l.Name))
-	case l.Schedule.CronExpr() == "":
-		panic(fmt.Sprintf("loopkit: loop %q has no Schedule (set Cron or Every)", l.Name))
+	case l.Schedule.CronExpr() == "" && l.Webhook == "":
+		// A loop with no schedule and no webhook is manual-only, which is valid
+		// (run it via the API / `karmax loops run`). Nothing to validate here.
 	}
 	if _, dup := registry[l.Name]; dup {
 		panic(fmt.Sprintf("loopkit: duplicate loop name %q", l.Name))
