@@ -62,6 +62,7 @@ func (r *Registry) List() []ToolManifest {
 var agentScopedTools = map[string]bool{
 	"memory.retrieve": true,
 	"memory.ingest":   true,
+	"memory.forget":   true,
 	"comms.escalate":  true,
 	"profile.update":  true,
 }
