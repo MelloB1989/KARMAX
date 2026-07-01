@@ -145,6 +145,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 	}
 
+	// Operator identity: the operator's own chats (commands to KARMAX) vs
+	// monitored third-party chats (proactive proxy). Comma-separated
+	// phone/JID/@lid in WHATSAPP_OPERATOR_CHATS; falls back to WHATSAPP_TARGET.
+	operatorChats := splitCSV(os.Getenv("WHATSAPP_OPERATOR_CHATS"))
+	if len(operatorChats) == 0 && waTarget != "" {
+		operatorChats = []string{waTarget}
+	}
+
 	// Act-and-inform: messages KARMAX sends to people OTHER than the operator
 	// don't need approval, but the operator is shown every one via an app push.
 	// Replies to the operator's own chats are skipped (they see those directly).
@@ -168,6 +176,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.hermes/node/bin/gws"})
 	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
 	toolReg.Register(&builtin.WacliTool{WacliPath: waCLIPath})
+	if cfg.Webhooks.Enabled {
+		toolReg.Register(&builtin.WhatsAppMonitorTool{
+			WacliPath:  waCLIPath,
+			WebhookURL: fmt.Sprintf("http://127.0.0.1:%d/comms/whatsapp", cfg.Webhooks.Port),
+			Secret:     waWebhookSecret,
+			Protected:  operatorChats,
+		})
+	}
 	// Only expose notify.push (ntfy) to the agent when a topic is actually
 	// configured — otherwise the tool can only ever fail, so we don't offer it.
 	if ntfyTopic := os.Getenv("NTFY_TOPIC"); ntfyTopic != "" {
@@ -228,14 +244,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		a.SetCommsSend(commsMgr.Send)
 		a.SetCommsEscalate(commsMgr.RequestEscalation)
 
-		// Operator identity: the operator's own chats (commands) vs monitored
-		// third-party chats (proactive proxy). WHATSAPP_OPERATOR_CHATS is a
-		// comma-separated list of the operator's phone/JID/@lid; falls back to
-		// WHATSAPP_TARGET.
-		operatorChats := splitCSV(os.Getenv("WHATSAPP_OPERATOR_CHATS"))
-		if len(operatorChats) == 0 && waTarget != "" {
-			operatorChats = []string{waTarget}
-		}
 		a.SetOperatorChats(operatorChats)
 
 		// Inject available comms channel info into the agent for context building
