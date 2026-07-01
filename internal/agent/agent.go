@@ -604,6 +604,27 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		return err
 	}
 
+	// Pre-delegation: for a clearly actionable task from a chat, hand the real
+	// work straight to claude_code instead of running the mini orchestration
+	// model — which tends to reply with a fabricated "done" (via comms.send,
+	// mid-turn) without ever calling a tool. Delegating up front means the fake
+	// completion never gets a chance to fire; the operator sees "on it" then the
+	// real result. Questions and conversational messages still go to the model.
+	if evt.Kind == bus.EventCommsMessage && a.commsSend != nil {
+		userMsg, _ := evt.Payload["content"].(string)
+		if isActionableTask(userMsg, "") && !isClarifyingQuestion(userMsg) {
+			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
+			target, _ := evt.Payload["channel_id"].(string)
+			if karmaxChannelID != "" {
+				a.log.Info("pre-delegating actionable chat task to claude_code",
+					zap.String("channel", karmaxChannelID))
+				a.delegateChatTask(karmaxChannelID, target, userMsg)
+				a.ingestInteractionMemory(a.ctx, evt, userMsg, "[delegated to claude_code]")
+				return nil
+			}
+		}
+	}
+
 	recentMem, _ := a.memory.Recent(20)
 
 	// Build user prompt from event and context
@@ -657,24 +678,14 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// the originating chat so the user always gets an answer instead of a
 		// silent drop. (The small orchestration model doesn't always remember to
 		// call comms.send; without this, its reply is logged and thrown away.)
+		// Fallback delivery for conversational messages (actionable tasks are
+		// pre-delegated above and never reach here). If the model produced a reply
+		// but didn't send it via comms.send, deliver it so the user isn't ghosted.
 		if evt.Kind == bus.EventCommsMessage && a.commsSend != nil && !sentViaComms {
 			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
 			target, _ := evt.Payload["channel_id"].(string)
 			reply := strings.TrimSpace(response)
-			userMsg, _ := evt.Payload["content"].(string)
-
-			switch {
-			case karmaxChannelID == "":
-				// no channel to reply on
-			case len(toolCalls) == 0 && isActionableTask(userMsg, reply) && !isClarifyingQuestion(reply):
-				// The mini orchestration model produced only text for an
-				// actionable task — and may have fabricated completion (e.g.
-				// "Done, I added it") without calling any tool. Don't trust or
-				// deliver that. Delegate the real work to claude_code (which
-				// reliably executes, incl. the gws CLI) and report the actual
-				// result — so the operator sees the work actually happen.
-				a.delegateChatTask(karmaxChannelID, target, userMsg)
-			case reply != "":
+			if karmaxChannelID != "" && reply != "" {
 				if err := a.commsSend(karmaxChannelID, target, reply); err != nil {
 					a.log.Warn("fallback auto-reply failed",
 						zap.String("channel", karmaxChannelID), zap.Error(err))
@@ -682,12 +693,6 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 					a.log.Info("delivered fallback auto-reply (model did not call comms.send)",
 						zap.String("channel", karmaxChannelID), zap.Int("len", len(reply)))
 				}
-			case len(toolCalls) == 0:
-				// The model neither replied nor acted — don't leave the user
-				// hanging on their own message.
-				a.log.Warn("no reply and no action for incoming message",
-					zap.String("channel", karmaxChannelID))
-				_ = a.commsSend(karmaxChannelID, target, "⚠️ I hit a snag handling that and couldn't complete it. Mind resending or rephrasing?")
 			}
 		}
 
