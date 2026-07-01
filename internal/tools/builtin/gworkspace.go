@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultGWSPath = "/home/mellob/.local/bin/gws"
+	defaultGWSPath = "/home/mellob/.hermes/node/bin/gws"
 	maxOutputLen   = 10000
 	gwsTimeoutSecs = 60
 )

@@ -164,8 +164,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send})
-	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: "/home/mellob/.local/bin/gws"})
-	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.local/bin/gws"})
+	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: "/home/mellob/.hermes/node/bin/gws"})
+	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.hermes/node/bin/gws"})
 	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
 	toolReg.Register(&builtin.WacliTool{WacliPath: waCLIPath})
 	// Only expose notify.push (ntfy) to the agent when a topic is actually

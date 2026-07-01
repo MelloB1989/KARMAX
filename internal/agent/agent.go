@@ -661,9 +661,19 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
 			target, _ := evt.Payload["channel_id"].(string)
 			reply := strings.TrimSpace(response)
+			userMsg, _ := evt.Payload["content"].(string)
+
 			switch {
 			case karmaxChannelID == "":
 				// no channel to reply on
+			case len(toolCalls) == 0 && isActionableTask(userMsg, reply) && !isClarifyingQuestion(reply):
+				// The mini orchestration model produced only text for an
+				// actionable task — and may have fabricated completion (e.g.
+				// "Done, I added it") without calling any tool. Don't trust or
+				// deliver that. Delegate the real work to claude_code (which
+				// reliably executes, incl. the gws CLI) and report the actual
+				// result — so the operator sees the work actually happen.
+				a.delegateChatTask(karmaxChannelID, target, userMsg)
 			case reply != "":
 				if err := a.commsSend(karmaxChannelID, target, reply); err != nil {
 					a.log.Warn("fallback auto-reply failed",
@@ -725,6 +735,111 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Legacy fallback: this path is only used if initModels() failed
 	return a.handleEventLegacy(evt, userPrompt)
+}
+
+// delegateChatTask hands an actionable task the mini orchestration model didn't
+// actually execute to claude_code, which reliably does the work (including
+// running the gws CLI). It acks immediately, runs the delegation in the
+// background, and reports the real result — so the operator sees work actually
+// happen instead of a fabricated "done".
+func (a *Agent) delegateChatTask(channelID, target, task string) {
+	task = strings.TrimSpace(task)
+	if task == "" || a.commsSend == nil {
+		return
+	}
+	if err := a.commsSend(channelID, target, "⏳ On it — working on that now, I'll report back shortly."); err != nil {
+		a.log.Warn("delegation ack send failed", zap.Error(err))
+	}
+	a.log.Info("delegating chat task to claude_code",
+		zap.String("channel", channelID), zap.String("task", truncateForLog(task, 120)))
+
+	go func() {
+		cc := &builtin.ClaudeCodeTool{Store: a.store, AgentID: a.def.ID}
+		prompt := "The operator sent this request over WhatsApp:\n\n" + task + "\n\n" +
+			"Actually perform this task now on their machine — do NOT just describe it. Useful local CLIs available in the shell:\n" +
+			"- `gws` — Google Workspace (calendar, gmail, drive, docs, sheets). Run `gws --help` (and e.g. `gws calendar --help`) to discover exact commands.\n" +
+			"- standard shell, file, and web tools.\n" +
+			"Complete the task end to end. Then, as your FINAL line, output ONE concise WhatsApp-friendly sentence stating exactly what you did (with key details like date/time), or why you couldn't."
+		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "working_dir": "/home/mellob"})
+		var msg string
+		switch {
+		case err != nil:
+			msg = "⚠️ I tried but the task failed: " + err.Error()
+		case res.IsError:
+			msg = "⚠️ I tried but couldn't complete that task."
+		default:
+			summary := claudeResultSummary(res)
+			if summary == "" {
+				summary = "task processed (no summary returned)."
+			}
+			msg = "✅ " + summary
+		}
+		if serr := a.commsSend(channelID, target, msg); serr != nil {
+			a.log.Warn("delegation result send failed", zap.Error(serr))
+		} else {
+			a.log.Info("delegated task result sent", zap.String("channel", channelID))
+		}
+	}()
+}
+
+// claudeResultSummary extracts a concise user-facing summary from a claude_code
+// tool result — its final non-empty output line (claude_code is instructed to
+// end with a one-sentence summary), truncated for WhatsApp.
+func claudeResultSummary(res tools.ToolResult) string {
+	out, _ := res.Output.(map[string]any)
+	text, _ := out["output"].(string)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if s := strings.TrimSpace(lines[i]); s != "" {
+			text = s
+			break
+		}
+	}
+	if len(text) > 600 {
+		text = text[:600] + "…"
+	}
+	return text
+}
+
+// isActionableTask reports whether an incoming message is a task the agent
+// should DO (vs chit-chat / a question). It fires on imperative requests in the
+// user's message, or on completion/action claims in the model's reply — which,
+// with no tool call, signal a fabricated "done".
+func isActionableTask(userMsg, reply string) bool {
+	u := strings.ToLower(userMsg)
+	for _, kw := range []string{
+		"do it", "set up", "setup", "schedule", "reschedule", "cancel", "book ",
+		"add to", "add a", "add it", "create", "send ", "send a", "email ",
+		"message ", "remind", "reminder", "draft", "look up", "find out",
+		"research", "build ", "fix ", "update the", "make a", "put it on", "on my calendar",
+	} {
+		if strings.Contains(u, kw) {
+			return true
+		}
+	}
+	r := strings.ToLower(reply)
+	for _, kw := range []string{
+		"done", "i added", "i've added", "i have added", "added the", "i created",
+		"i've created", "created the", "i sent", "i've sent", "sent the",
+		"i scheduled", "i've scheduled", "scheduled the", "i set up", "i've set up",
+		"set it up", "i booked", "booked the", "i updated", "updated the",
+		"i emailed", "i've drafted", "i drafted",
+	} {
+		if strings.Contains(r, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// isClarifyingQuestion reports whether a reply is primarily a question asking
+// the operator for more info — deliver it rather than delegating.
+func isClarifyingQuestion(reply string) bool {
+	return strings.HasSuffix(strings.TrimSpace(reply), "?")
 }
 
 // Chat processes a single synchronous user message through the agent's main
