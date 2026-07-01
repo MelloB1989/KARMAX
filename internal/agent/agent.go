@@ -871,8 +871,13 @@ func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg str
 			"   APPROVE: <the decision + your suggested reply, for the operator to approve>\n" +
 			"   SKIP: <why nothing was needed>"
 		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "working_dir": "/home/mellob"})
-		if err != nil {
+		if err != nil || res.IsError {
+			// Never fail silently: the operator must know a monitored message
+			// went unhandled (especially while they sleep).
 			a.log.Warn("proxy delegation failed", zap.String("chat", chatID), zap.Error(err))
+			builtin.PushAppNotification(a.store, a.def.ID, "alert",
+				"⚠️ Couldn't handle — "+who,
+				"A monitored message needs you (assistant failed): "+truncateForLog(incomingMsg, 200))
 			return
 		}
 		a.reportProxyOutcome(who, claudeResultSummary(res))
