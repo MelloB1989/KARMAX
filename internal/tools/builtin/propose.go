@@ -23,7 +23,7 @@ type ProposeTool struct {
 func (t *ProposeTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "propose",
-		Description: "Propose an action that needs the operator's approval BEFORE you take it — sending a message/WhatsApp, scheduling, spending, posting, or anything outward-facing or irreversible. This creates a pending approval in their phone app and notifies them. Do NOT perform the action yet: once they approve, you'll be asked to execute it. Use this instead of acting silently or just describing what you'd do.",
+		Description: "Request the operator's approval BEFORE a CRITICAL, hard-to-undo action. Use ONLY for: messaging or contacting a THIRD PARTY (anyone other than the operator), spending money / purchases, posting publicly, or deleting/overwriting data. This creates a pending approval in their phone app and notifies them; do NOT perform the action yet — once they approve you'll be asked to execute it. Do NOT use it for ordinary work: replying to the operator on any channel, sending them briefings/notifications, adding calendar events or reminders, reading/searching, writing local files, running safe commands, or delegating coding — just do those. When unsure about a routine action, act; reserve propose for things that are genuinely risky or affect someone else.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {

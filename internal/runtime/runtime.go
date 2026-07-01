@@ -98,6 +98,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	waCLIPath := "/home/mellob/code/wacli/wacli"
 	waTarget := ""
 
+	// WhatsApp is event-based: wacli pushes message events to KARMAX's webhook
+	// endpoint (/comms/whatsapp, mounted below). KARMAX does NOT register or
+	// scope that webhook — it's managed in wacli (via the `wacli` agent tool or
+	// CLI), so no chat is hardcoded. The optional HMAC secret must match the
+	// wacli webhook's --secret (set WHATSAPP_WEBHOOK_SECRET; empty = no verify).
+	waWebhookSecret := os.Getenv("WHATSAPP_WEBHOOK_SECRET")
+	var waChannel *whatsapp.WhatsAppChannel
+
 	for _, chCfg := range cfg.Comms.Channels {
 		switch chCfg.Type {
 		case "discord":
@@ -116,10 +124,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				wacliPath = "/home/mellob/code/wacli/wacli"
 			}
 			targetChat := chCfg.Settings["target_chat"]
-			commandChat := chCfg.Settings["command_chat"]
 			waCLIPath = wacliPath
 			waTarget = targetChat
-			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, commandChat, log)
+			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, waWebhookSecret, log)
+			waChannel = ch
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
 			}); err != nil {
@@ -143,6 +151,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: "/home/mellob/.local/bin/gws"})
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.local/bin/gws"})
 	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
+	toolReg.Register(&builtin.WacliTool{WacliPath: waCLIPath})
 	// Only expose notify.push (ntfy) to the agent when a topic is actually
 	// configured — otherwise the tool can only ever fail, so we don't offer it.
 	if ntfyTopic := os.Getenv("NTFY_TOPIC"); ntfyTopic != "" {
@@ -223,6 +232,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	whAddr := fmt.Sprintf("%s:%d", cfg.Webhooks.Host, cfg.Webhooks.Port)
 	wh := webhook.New(whAddr, b, s, log)
+
+	// Mount the WhatsApp event endpoint that wacli pushes message events to.
+	if waChannel != nil {
+		wh.AddHandler("/comms/whatsapp", waChannel.HandleWebhook)
+	}
 
 	for _, route := range cfg.Webhooks.Routes {
 		wh.AddRoute(webhook.WebhookRoute{
