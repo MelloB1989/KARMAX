@@ -65,6 +65,14 @@ func (s *WebhookServer) AddRoute(route WebhookRoute) error {
 	return nil
 }
 
+// AddHandler mounts a raw HTTP handler at pattern (all methods). Used by comms
+// channels (e.g. WhatsApp/wacli) that receive provider webhooks and translate
+// them into inbound messages rather than generic bus events.
+func (s *WebhookServer) AddHandler(pattern string, h http.HandlerFunc) {
+	s.router.HandleFunc(pattern, h)
+	s.log.Info("webhook handler registered", zap.String("pattern", pattern))
+}
+
 func (s *WebhookServer) Start(ctx context.Context) error {
 	s.server = &http.Server{
 		Addr:    s.addr,
