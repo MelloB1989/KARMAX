@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/google/uuid"
@@ -51,7 +52,7 @@ func (t *CodexTool) Execute(ctx context.Context, input map[string]any) (tools.To
 
 	workingDir, _ := input["working_dir"].(string)
 	if workingDir == "" {
-		workingDir = "/home/mellob"
+		workingDir = hostpaths.WorkDir()
 	}
 
 	// Codex CLI uses --quiet for non-interactive output

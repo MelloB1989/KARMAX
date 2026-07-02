@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"go.uber.org/zap"
@@ -62,7 +63,7 @@ func New(cfg Config, s *store.Store, log *zap.Logger) *Scanner {
 		cfg.MinGroupOwnRatio = 0.2
 	}
 	if cfg.WacliPath == "" {
-		cfg.WacliPath = "/home/mellob/code/wacli/wacli"
+		cfg.WacliPath = hostpaths.Wacli()
 	}
 	return &Scanner{cfg: cfg, store: s, log: log}
 }

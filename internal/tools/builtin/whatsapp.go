@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 )
 
-const defaultWacliPath = "/home/mellob/code/wacli/wacli"
+// defaultWacliPath resolves the wacli binary when no explicit path was
+// configured (env -> PATH -> well-known home locations).
+func defaultWacliPath() string { return hostpaths.Wacli() }
 
 // WhatsAppReadTool reads recent WhatsApp messages via the local wacli binary,
 // giving the agent real-time awareness of the operator's conversations.
@@ -43,7 +46,7 @@ func (t *WhatsAppReadTool) Manifest() tools.ToolManifest {
 func (t *WhatsAppReadTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
 	wacli := t.WacliPath
 	if wacli == "" {
-		wacli = defaultWacliPath
+		wacli = defaultWacliPath()
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

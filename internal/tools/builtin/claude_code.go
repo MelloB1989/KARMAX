@@ -10,17 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/google/uuid"
 )
 
-// karmaxBin is the KARMAX CLI Claude Code shells out to for memory retrieval.
-const karmaxBin = "/home/mellob/code/KARMAX/karmax"
-
 type ClaudeCodeTool struct {
 	Store   *store.Store
 	AgentID string
+	// Namespace is the memory namespace whose profile/entries are injected into
+	// every call. Set per-agent in bindAgentTools; falls back to AgentID.
+	Namespace string
 }
 
 func (t *ClaudeCodeTool) Manifest() tools.ToolManifest {
@@ -47,9 +48,12 @@ func (t *ClaudeCodeTool) Manifest() tools.ToolManifest {
 // self-serve more via the karmax CLI. This is what makes the executor act with
 // the operator's full context instead of cold.
 func (t *ClaudeCodeTool) memoryContext(prompt string) string {
-	ns := t.AgentID
+	ns := t.Namespace
 	if ns == "" {
-		ns = "nexus"
+		ns = t.AgentID
+	}
+	if ns == "" {
+		ns = discoverNamespace()
 	}
 	var sb strings.Builder
 	sb.WriteString("# KARMAX context (auto-injected)\n\n")
@@ -87,11 +91,40 @@ func (t *ClaudeCodeTool) memoryContext(prompt string) string {
 		}
 	}
 
-	sb.WriteString("## More memory on demand\n" +
-		"Query the operator's full long-term memory anytime with: `" + karmaxBin + " memory search \"<query>\"` " +
-		"(local, no auth). Use it whenever you need context about people, projects, commitments, or preferences before acting.\n\n" +
+	karmaxBin := hostpaths.KarmaxBin()
+	sb.WriteString("## KARMAX CLI — full harness access\n" +
+		"You can reach EVERYTHING the KARMAX harness can do through its CLI at `" + karmaxBin + "` (talks to the running daemon; auth is picked up from the environment):\n" +
+		"- `" + karmaxBin + " memory search \"<query>\"` — search the operator's long-term memory. Use before acting when you need context about people, projects, commitments, or preferences.\n" +
+		"- `" + karmaxBin + " memory add \"<fact>\" [--category <c>] [--importance <i>]` — save a durable fact you learned while working.\n" +
+		"- `" + karmaxBin + " notify \"<title>\" \"<body>\"` — notify the operator via their phone app (feed + push). Use for results, alerts, or anything they should see.\n" +
+		"- `" + karmaxBin + " send \"<target>\" \"<message>\"` — send a WhatsApp message through the operator's account.\n" +
+		"- `" + karmaxBin + " ask \"<prompt>\"` — ask the orchestrator agent (it has the operator's full context and judgement).\n" +
+		"- `" + karmaxBin + " tool list` and `" + karmaxBin + " tool call <name> --json '<input>'` — list and invoke ANY harness tool (calendar.add, reminder.add, propose, google_workspace, whatsapp.read, scheduler.add, …).\n\n" +
 		"----\n\n# TASK\n\n")
 	return sb.String()
+}
+
+// discoverNamespace finds the memory namespace when none was injected: the
+// single directory under ~/.karmax/memory (ambiguous → empty, inject nothing).
+func discoverNamespace() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".karmax", "memory"))
+	if err != nil {
+		return ""
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	if len(dirs) == 1 {
+		return dirs[0]
+	}
+	return ""
 }
 
 // pickKeywords extracts up to n distinctive words (>4 chars) from a prompt for
@@ -142,7 +175,7 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 
 	workingDir, _ := input["working_dir"].(string)
 	if workingDir == "" {
-		workingDir = "/home/mellob"
+		workingDir = hostpaths.WorkDir()
 	}
 
 	// --dangerously-skip-permissions lets the headless harness actually use its

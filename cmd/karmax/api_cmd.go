@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/spf13/cobra"
@@ -105,7 +108,40 @@ func newWebhookCmd() *cobra.Command {
 }
 
 func newMemoryCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "memory", Short: "Search and export agent memory"}
+	cmd := &cobra.Command{Use: "memory", Short: "Search, add to, and export agent memory"}
+
+	var category, importance, tags string
+	var pinned bool
+	var ttlDays int
+	add := &cobra.Command{
+		Use:   "add <fact...>",
+		Short: "Save a durable fact to long-term memory (deduplicated)",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			input := map[string]any{
+				"content":    strings.Join(args, " "),
+				"category":   category,
+				"importance": importance,
+			}
+			if tags != "" {
+				input["tags"] = tags
+			}
+			if pinned {
+				input["pinned"] = true
+			}
+			if ttlDays > 0 {
+				input["ttl_days"] = ttlDays
+			}
+			return callTool("memory.ingest", input, time.Minute)
+		},
+	}
+	add.Flags().StringVar(&category, "category", "context", "category: user_info, project, decision, preference, context, task, relationship")
+	add.Flags().StringVar(&importance, "importance", "medium", "importance: critical, high, medium, low")
+	add.Flags().StringVar(&tags, "tags", "", "comma-separated tags")
+	add.Flags().BoolVar(&pinned, "pinned", false, "never auto-forget this fact")
+	add.Flags().IntVar(&ttlDays, "ttl-days", 0, "auto-expire after N days")
+	cmd.AddCommand(add)
+
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "search <query>",
@@ -149,26 +185,61 @@ func newMemoryCmd() *cobra.Command {
 }
 
 func newToolCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "tool", Short: "Inspect the agent's tools"}
+	cmd := &cobra.Command{Use: "tool", Short: "List and invoke the agent's tools"}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
-		Short: "List the tools available to the agent (from config)",
+		Short: "List every tool the agent runs with (live, incl. memory/profile/MCP tools)",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			cfg, err := config.Load(findConfig())
+			out, err := apiGET("/api/tools")
 			if err != nil {
-				return err
-			}
-			if len(cfg.Agents) == 0 || len(cfg.Agents[0].Tools) == 0 {
-				fmt.Println("no tools configured.")
+				// Daemon not running — fall back to the configured tool names.
+				cfg, cerr := config.Load(findConfig())
+				if cerr != nil || len(cfg.Agents) == 0 {
+					return err
+				}
+				fmt.Println("(daemon not reachable — showing configured tool names only)")
+				for _, t := range cfg.Agents[0].Tools {
+					fmt.Printf("• %s\n", t)
+				}
 				return nil
 			}
-			for _, t := range cfg.Agents[0].Tools {
-				fmt.Printf("• %s\n", t)
+			toolsList := asList(out["tools"])
+			if len(toolsList) == 0 {
+				fmt.Println("no tools available.")
+				return nil
+			}
+			for _, t := range toolsList {
+				fmt.Printf("• %-24s %s\n", asStr(t["name"]), oneLine(asStr(t["description"]), 110))
 			}
 			return nil
 		},
 	})
+
+	var jsonInput string
+	call := &cobra.Command{
+		Use:   "call <name> [key=value ...]",
+		Short: "Invoke any harness tool (e.g. karmax tool call app.push title=Hi body=There)",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			input := map[string]any{}
+			if jsonInput != "" {
+				if err := json.Unmarshal([]byte(jsonInput), &input); err != nil {
+					return fmt.Errorf("--json must be a JSON object: %w", err)
+				}
+			}
+			kv, err := parseKVArgs(args[1:])
+			if err != nil {
+				return err
+			}
+			for k, v := range kv {
+				input[k] = v
+			}
+			return callTool(args[0], input, 12*time.Minute)
+		},
+	}
+	call.Flags().StringVar(&jsonInput, "json", "", "tool input as a JSON object (merged with key=value args)")
+	cmd.AddCommand(call)
 	return cmd
 }
 

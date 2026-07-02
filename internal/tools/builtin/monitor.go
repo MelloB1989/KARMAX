@@ -49,7 +49,7 @@ func (t *WhatsAppMonitorTool) Execute(ctx context.Context, input map[string]any)
 
 	wacli := t.WacliPath
 	if wacli == "" {
-		wacli = defaultWacliPath
+		wacli = defaultWacliPath()
 	}
 
 	id, chats, err := t.currentWebhook(ctx, wacli)

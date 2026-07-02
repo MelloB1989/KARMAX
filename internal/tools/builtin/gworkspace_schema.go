@@ -19,7 +19,7 @@ func (t *GoogleWorkspaceSchemaLookupTool) path() string {
 	if t.GWSPath != "" {
 		return t.GWSPath
 	}
-	return defaultGWSPath
+	return defaultGWSPath()
 }
 
 func (t *GoogleWorkspaceSchemaLookupTool) Manifest() tools.ToolManifest {

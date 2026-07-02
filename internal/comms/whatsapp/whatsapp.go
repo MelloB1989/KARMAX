@@ -17,12 +17,12 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/comms"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 const (
-	defaultWacliPath = "/home/mellob/code/wacli/wacli"
 	sendTimeout      = 30 * time.Second
 	statusTimeout    = 10 * time.Second
 	wacliCmdTimeout  = 15 * time.Second
@@ -85,7 +85,7 @@ type WhatsAppChannel struct {
 // empty to skip verification (fine for a localhost-only endpoint).
 func New(id, wacliPath, targetChat, webhookSecret string, log *zap.Logger) *WhatsAppChannel {
 	if wacliPath == "" {
-		wacliPath = defaultWacliPath
+		wacliPath = hostpaths.Wacli()
 	}
 	return &WhatsAppChannel{
 		id:            id,
