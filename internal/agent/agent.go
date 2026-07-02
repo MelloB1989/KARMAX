@@ -659,16 +659,17 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		isGroup, _ := evt.Payload["is_group"].(bool)
 
 		if !a.isFromOperator(chatID) {
-			// PROACTIVE PROXY: a monitored third party messaged the operator.
-			// Act on the operator's behalf via claude_code. Skip group chats
-			// (too risky/noisy to auto-reply) and trivial acks (save tokens).
-			if karmaxChannelID == "" || isGroup || isTrivialMessage(userMsg) {
+			// PROACTIVE PROXY: a monitored chat (DM or group) had a message. Skip
+			// only trivial acks (save tokens). Groups ARE handled — just more
+			// conservatively (the proxy replies only when the operator is
+			// actually addressed, and flags important updates otherwise).
+			if karmaxChannelID == "" || isTrivialMessage(userMsg) {
 				a.ingestInteractionMemory(a.ctx, evt, userMsg, "[monitored: no action]")
 				return nil
 			}
 			a.log.Info("proactive proxy for monitored chat",
-				zap.String("chat", chatID), zap.String("from", senderName))
-			a.delegateProxyTask(karmaxChannelID, chatID, senderName, userMsg)
+				zap.String("chat", chatID), zap.String("from", senderName), zap.Bool("group", isGroup))
+			a.delegateProxyTask(karmaxChannelID, chatID, senderName, userMsg, isGroup)
 			a.ingestInteractionMemory(a.ctx, evt, userMsg, "[proxy handling]")
 			return nil
 		}
@@ -832,25 +833,44 @@ func (a *Agent) startAckWatchdog(evt bus.Event) func() {
 // monitored third party: claude_code reads the chat context and either acts on
 // the operator's behalf (routine replies/scheduling) or flags a decision for the
 // operator's approval. The operator is always informed of the outcome.
-func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg string) {
+func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg string, isGroup bool) {
 	who := senderName
 	if who == "" {
 		who = chatID
 	}
 	go func() {
 		cc := &builtin.ClaudeCodeTool{Store: a.store, AgentID: a.def.ID}
-		prompt := "You are the proactive WhatsApp assistant managing the operator's WhatsApp account via the wacli CLI. A monitored contact just messaged the operator.\n\n" +
-			"Contact: " + who + "\n" +
+
+		operator := "the operator"
+		if len(a.operatorChats) > 0 {
+			ids := make([]string, 0, len(a.operatorChats))
+			for id := range a.operatorChats {
+				ids = append(ids, id)
+			}
+			operator = "the operator (their own numbers/JIDs: " + strings.Join(ids, ", ") + ")"
+		}
+
+		context := "A monitored 1:1 chat just messaged " + operator + "."
+		policy := "   - If a reply/action is ROUTINE and you're confident how the operator would respond (acknowledgements, simple scheduling, sharing already-known info, confirming availability), DO IT NOW: send with `/home/mellob/code/wacli/wacli send --to " + chatID + " --text \"...\"` in the operator's natural human voice (concise; never say you're an AI/assistant). Use the `gws` CLI for calendar/email if clearly asked.\n" +
+			"   - If it involves a real DECISION, a commitment, money, or anything sensitive/ambiguous, or you're not confident → DO NOT send anything; flag it.\n"
+		if isGroup {
+			context = "A monitored GROUP chat just had a new message. " + operator + " is a member."
+			policy = "   - This is a GROUP. Only SEND a reply if the operator is directly addressed — @-mentioned, or asked a question they clearly must answer. Reply via `/home/mellob/code/wacli/wacli send --to " + chatID + " --text \"...\"` in the operator's casual voice, and only for genuinely routine/known answers.\n" +
+				"   - Do NOT reply to general group discussion or messages meant for other members.\n" +
+				"   - If the message is a meaningful update on an active project/deal/commitment (e.g. a client saying they'll get back, a deadline, a decision) but needs no reply, treat it as APPROVE so the operator sees it — do not silently skip important client/deal activity.\n" +
+				"   - Only truly irrelevant chatter is SKIP.\n"
+		}
+
+		prompt := "You are the proactive WhatsApp assistant managing the operator's WhatsApp account via the wacli CLI. " + context + "\n\n" +
+			"Chat: " + who + "\n" +
 			"Chat id: " + chatID + "\n" +
-			"Their message: " + incomingMsg + "\n\n" +
+			"Latest message: " + incomingMsg + "\n\n" +
 			"Steps:\n" +
-			"1. Read recent context: run `/home/mellob/code/wacli/wacli messages --chat " + chatID + " --limit 15` (newest last). If the operator or you already replied and nothing new is needed, do nothing.\n" +
-			"2. Decide on the operator's behalf:\n" +
-			"   - If a reply/action is ROUTINE and you're confident how the operator would respond (acknowledgements, simple scheduling, sharing already-known info, confirming availability), DO IT NOW: send with `/home/mellob/code/wacli/wacli send --to " + chatID + " --text \"...\"` in the operator's natural human voice (concise; never say you're an AI/assistant). Use the `gws` CLI for calendar/email if clearly asked.\n" +
-			"   - If it involves a real DECISION, a commitment, money, or anything sensitive/ambiguous, or you're not confident → DO NOT send anything.\n" +
+			"1. Read recent context: run `/home/mellob/code/wacli/wacli messages --chat " + chatID + " --limit 15` (newest last). If it's already handled/answered and nothing new is needed, do nothing.\n" +
+			"2. Decide on the operator's behalf:\n" + policy +
 			"3. Output EXACTLY one line, beginning with one of:\n" +
 			"   ACTED: <one line on what you sent/did>\n" +
-			"   APPROVE: <the decision + your suggested reply, for the operator to approve>\n" +
+			"   APPROVE: <what it is + your suggested reply/action, for the operator>\n" +
 			"   SKIP: <why nothing was needed>"
 		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "working_dir": "/home/mellob", "ephemeral": true})
 		if err != nil || res.IsError {
