@@ -240,6 +240,17 @@ func (k *loopKit) Harness(ctx context.Context, prompt string) (string, error) {
 	return loopToolField(res, "output"), nil
 }
 
+func (k *loopKit) RunLoop(name string) error {
+	ok, err := k.rt.RunLoopByName(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("loop %q not found", name)
+	}
+	return nil
+}
+
 func (k *loopKit) Remember(fact string) error {
 	if k.mem == nil {
 		return fmt.Errorf("memory unavailable")
