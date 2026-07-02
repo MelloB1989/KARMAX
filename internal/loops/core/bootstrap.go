@@ -91,6 +91,7 @@ func runMemoryBootstrap(ctx context.Context, k loopkit.Kit) error {
 	}
 
 	totalFacts, chatsDone := 0, 0
+	var todos []string
 	for b := 0; b < bootstrapMaxBatches && len(remaining) > 0; b++ {
 		if ctx.Err() != nil {
 			break
@@ -102,7 +103,7 @@ func runMemoryBootstrap(ctx context.Context, k loopkit.Kit) error {
 		batch := remaining[:n]
 		remaining = remaining[n:]
 
-		facts, err := scanChatBatch(ctx, k, wacli, batch)
+		facts, batchTodos, err := scanChatBatch(ctx, k, wacli, batch)
 		if err != nil {
 			// Don't checkpoint a failed batch — it will retry next tick.
 			k.Logf("memory-bootstrap: batch failed (will retry next tick): %v", err)
@@ -113,24 +114,37 @@ func runMemoryBootstrap(ctx context.Context, k loopkit.Kit) error {
 				k.Logf("memory-bootstrap: remember failed: %v", err)
 			}
 		}
+		todos = append(todos, batchTodos...)
 		totalFacts += len(facts)
 		chatsDone += len(batch)
 		appendCheckpoint(ckptPath, batch)
-		k.Logf("memory-bootstrap: batch %d done — %d chats, %d facts (%d chats left)",
-			b+1, len(batch), len(facts), len(remaining))
+		k.Logf("memory-bootstrap: batch %d done — %d chats, %d facts, %d todos (%d chats left)",
+			b+1, len(batch), len(facts), len(batchTodos), len(remaining))
+	}
+
+	// Don't just remember — hand actionable items to the act-on-pending loop,
+	// which completes what it safely can and flags real decisions. Discovery
+	// (here) is decoupled from execution (that loop) via a persisted queue.
+	if len(todos) > 0 {
+		if err := enqueuePending(todos); err != nil {
+			k.Logf("memory-bootstrap: enqueue pending failed: %v", err)
+		} else if err := k.RunLoop("act-on-pending"); err != nil {
+			k.Logf("memory-bootstrap: could not trigger act-on-pending (will run on its schedule): %v", err)
+		}
 	}
 
 	if chatsDone > 0 {
 		_ = k.Notify("🧠 Memory bootstrap progress",
-			fmt.Sprintf("Learned %d facts from %d chats this pass; %d chats remaining (continues automatically).",
-				totalFacts, chatsDone, len(remaining)))
+			fmt.Sprintf("Learned %d facts from %d chats this pass (%d actionable items queued); %d chats remaining (continues automatically).",
+				totalFacts, chatsDone, len(todos), len(remaining)))
 	}
 	return nil
 }
 
 // scanChatBatch delegates one batch of chats to the Claude harness, which reads
-// each conversation via the wacli CLI and distills durable facts.
-func scanChatBatch(ctx context.Context, k loopkit.Kit, wacli string, batch []bootstrapChat) ([]string, error) {
+// each conversation via the wacli CLI and distills durable facts plus any
+// still-actionable pending items (TODOs).
+func scanChatBatch(ctx context.Context, k loopkit.Kit, wacli string, batch []bootstrapChat) (facts, todos []string, err error) {
 	var list strings.Builder
 	for _, c := range batch {
 		kind := "direct chat"
@@ -145,27 +159,33 @@ func scanChatBatch(ctx context.Context, k loopkit.Kit, wacli string, batch []boo
 		"For EACH chat:\n" +
 		fmt.Sprintf("1. Run: %s messages --chat \"<jid>\" --limit %d   (messages come oldest-first; is_from_me=true means the operator wrote it)\n", wacli, bootstrapMsgsPerChat) +
 		"2. If it's clearly a promotional/community/broadcast feed the operator doesn't really participate in, skip it entirely.\n" +
-		"3. Otherwise distill DURABLE facts a personal assistant should remember: who the person/group is to the operator (relationship, role, company), ongoing projects and deals, commitments and deadlines (with concrete dates), decisions made, preferences, and important life/work facts. Each fact must be ONE standalone sentence with names/dates spelled out (it will be read with no other context). Never output raw chit-chat, greetings, or message dumps. At most 25 facts per chat; fewer is better than padding.\n\n" +
-		"Output format: one fact per line, each line starting exactly with \"FACT: \". No other text before, between, or after."
+		"3. Otherwise distill DURABLE facts a personal assistant should remember: who the person/group is to the operator (relationship, role, company), ongoing projects and deals, commitments and deadlines (with concrete dates), decisions made, preferences, and important life/work facts. Each fact must be ONE standalone sentence with names/dates spelled out (it will be read with no other context). Never output raw chit-chat, greetings, or message dumps. At most 25 facts per chat; fewer is better than padding.\n" +
+		"4. Additionally, if the chat shows something STILL PENDING that an assistant could complete or must surface — an unfulfilled promise by the operator, an unanswered direct request to them, an agreed meeting/deadline that may not be scheduled yet — output it as a TODO line with the chat name, jid, and concrete details/dates. Only genuinely open, recent items; not stale or already-resolved ones.\n\n" +
+		"Output format, no other text:\n" +
+		"FACT: <one standalone fact>\n" +
+		"TODO: <chat name> | <jid> | <what is pending, with dates>"
 
 	out, err := k.Harness(ctx, prompt)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if looksLikeError(out) {
-		return nil, fmt.Errorf("harness returned an error/refusal: %.120s", out)
+		return nil, nil, fmt.Errorf("harness returned an error/refusal: %.120s", out)
 	}
 
-	var facts []string
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if f, ok := strings.CutPrefix(line, "FACT:"); ok {
 			if f = strings.TrimSpace(f); len(f) > 10 {
 				facts = append(facts, f)
 			}
+		} else if t, ok := strings.CutPrefix(line, "TODO:"); ok {
+			if t = strings.TrimSpace(t); len(t) > 10 {
+				todos = append(todos, t)
+			}
 		}
 	}
-	return facts, nil
+	return facts, todos, nil
 }
 
 // fetchBootstrapCandidates lists chats worth scanning: unlocked, active within

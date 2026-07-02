@@ -55,4 +55,8 @@ type Kit interface {
 
 	// Logf writes a line to KARMAX's logs, prefixed with the loop's name.
 	Logf(format string, args ...any)
+
+	// RunLoop triggers another registered loop by name (manual trigger). Lets a
+	// loop hand work to a dedicated loop rather than doing it inline.
+	RunLoop(name string) error
 }
