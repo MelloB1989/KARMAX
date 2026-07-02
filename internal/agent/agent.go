@@ -673,18 +673,10 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			return nil
 		}
 
-		// OPERATOR COMMAND: triage actionable tasks. SIMPLE ones (a reminder, a
-		// note, a quick send/read — single tool calls the agent owns) are handled
-		// by the agent itself below, with a post-turn fallback if it fails to
-		// act. COMPLEX work pre-delegates straight to claude_code (the mini
-		// model fabricates "done" on anything multi-step).
-		if karmaxChannelID != "" && isActionableTask(userMsg, "") && !isClarifyingQuestion(userMsg) && !isSimpleTask(userMsg) {
-			a.log.Info("pre-delegating actionable chat task to claude_code",
-				zap.String("channel", karmaxChannelID))
-			a.delegateChatTask(karmaxChannelID, chatID, userMsg)
-			a.ingestInteractionMemory(a.ctx, evt, userMsg, "[delegated to claude_code]")
-			return nil
-		}
+		// OPERATOR COMMAND: flows to the model below. KARMAX itself decides how to
+		// handle it — its own tools for things it can do directly, or
+		// claude_code.call when IT judges the task complex/multi-step. No
+		// hardcoded routing: the intelligence is the model's, not a keyword list.
 	}
 
 	recentMem, _ := a.memory.Recent(20)
@@ -735,33 +727,21 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			}))
 		}
 
-		// Fallback delivery: for an incoming chat message, if the agent produced
-		// a reply but never sent it via comms.send, deliver its final response to
-		// the originating chat so the user always gets an answer instead of a
-		// silent drop. (The small orchestration model doesn't always remember to
-		// call comms.send; without this, its reply is logged and thrown away.)
-		// Post-turn safety net. Complex tasks were pre-delegated and never reach
-		// here; SIMPLE tasks were given to the mini model — verify it actually
-		// acted (called a tool). If it only talked, delegate for real. Otherwise
-		// deliver an unsent conversational reply so the user isn't ghosted.
+		// Delivery plumbing (not routing): if the model produced a reply but
+		// didn't send it via comms.send, deliver its final response to the
+		// originating chat so the operator isn't ghosted. KARMAX decided what to
+		// do during the turn (its own tools and/or claude_code.call); this only
+		// ensures its answer reaches the chat.
 		if evt.Kind == bus.EventCommsMessage && a.commsSend != nil && !sentViaComms {
 			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
 			target, _ := evt.Payload["channel_id"].(string)
-			userMsg, _ := evt.Payload["content"].(string)
 			reply := strings.TrimSpace(response)
-			switch {
-			case karmaxChannelID == "":
-				// no channel to reply on
-			case len(toolCalls) == 0 && isActionableTask(userMsg, reply) && !isClarifyingQuestion(reply):
-				a.log.Info("simple task not acted on by model — delegating to claude_code",
-					zap.String("channel", karmaxChannelID))
-				a.delegateChatTask(karmaxChannelID, target, userMsg)
-			case reply != "":
+			if karmaxChannelID != "" && reply != "" {
 				if err := a.commsSend(karmaxChannelID, target, reply); err != nil {
 					a.log.Warn("fallback auto-reply failed",
 						zap.String("channel", karmaxChannelID), zap.Error(err))
 				} else {
-					a.log.Info("delivered fallback auto-reply (model did not call comms.send)",
+					a.log.Info("delivered reply (model did not call comms.send)",
 						zap.String("channel", karmaxChannelID), zap.Int("len", len(reply)))
 				}
 			}
@@ -811,53 +791,6 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Legacy fallback: this path is only used if initModels() failed
 	return a.handleEventLegacy(evt, userPrompt)
-}
-
-// delegateChatTask hands an actionable task the mini orchestration model didn't
-// actually execute to claude_code, which reliably does the work (including
-// running the gws CLI). It acks immediately, runs the delegation in the
-// background, and reports the real result — so the operator sees work actually
-// happen instead of a fabricated "done".
-func (a *Agent) delegateChatTask(channelID, target, task string) {
-	task = strings.TrimSpace(task)
-	if task == "" || a.commsSend == nil {
-		return
-	}
-	if err := a.commsSend(channelID, target, "⏳ On it — working on that now, I'll report back shortly."); err != nil {
-		a.log.Warn("delegation ack send failed", zap.Error(err))
-	}
-	a.log.Info("delegating chat task to claude_code",
-		zap.String("channel", channelID), zap.String("task", truncateForLog(task, 120)))
-
-	go func() {
-		cc := &builtin.ClaudeCodeTool{Store: a.store, AgentID: a.def.ID}
-		prompt := "The operator sent this request over WhatsApp:\n\n" + task + "\n\n" +
-			"Actually perform this task now on their machine — do NOT just describe it. Useful local CLIs available in the shell:\n" +
-			"- `gws` — Google Workspace (calendar, gmail, drive, docs, sheets). Run `gws --help` (and e.g. `gws calendar --help`) to discover exact commands.\n" +
-			"- standard shell, file, and web tools.\n" +
-			"Complete the task end to end. Then, as your FINAL line, output ONE concise WhatsApp-friendly sentence stating exactly what you did (with key details like date/time), or why you couldn't."
-		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "working_dir": "/home/mellob"})
-		var msg string
-		summary := claudeResultSummary(res)
-		switch {
-		case err != nil:
-			msg = "⚠️ I tried but the task failed: " + err.Error()
-		case res.IsError:
-			msg = "⚠️ I tried but couldn't complete that task."
-		case looksLikeHarnessError(summary):
-			msg = "⚠️ Couldn't complete that right now (" + truncateForLog(summary, 120) + ") — I'll need you to nudge me again."
-		default:
-			if summary == "" {
-				summary = "task processed (no summary returned)."
-			}
-			msg = "✅ " + summary
-		}
-		if serr := a.commsSend(channelID, target, msg); serr != nil {
-			a.log.Warn("delegation result send failed", zap.Error(serr))
-		} else {
-			a.log.Info("delegated task result sent", zap.String("channel", channelID))
-		}
-	}()
 }
 
 // delegateProxyTask runs proactive-assistant handling for a message from a
@@ -972,69 +905,6 @@ func claudeResultSummary(res tools.ToolResult) string {
 	return text
 }
 
-// isActionableTask reports whether an incoming message is a task the agent
-// should DO (vs chit-chat / a question). It fires on imperative requests in the
-// user's message, or on completion/action claims in the model's reply — which,
-// with no tool call, signal a fabricated "done".
-func isActionableTask(userMsg, reply string) bool {
-	u := strings.ToLower(userMsg)
-	for _, kw := range []string{
-		"do it", "set up", "setup", "schedule", "reschedule", "cancel", "book ",
-		"add to", "add a", "add it", "create", "send ", "send a", "email ",
-		"message ", "remind", "reminder", "draft", "look up", "find out",
-		"research", "build ", "fix ", "update the", "make a", "put it on", "on my calendar",
-	} {
-		if strings.Contains(u, kw) {
-			return true
-		}
-	}
-	r := strings.ToLower(reply)
-	for _, kw := range []string{
-		"done", "i added", "i've added", "i have added", "added the", "i created",
-		"i've created", "created the", "i sent", "i've sent", "sent the",
-		"i scheduled", "i've scheduled", "scheduled the", "i set up", "i've set up",
-		"set it up", "i booked", "booked the", "i updated", "updated the",
-		"i emailed", "i've drafted", "i drafted",
-	} {
-		if strings.Contains(r, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-// isClarifyingQuestion reports whether a reply is primarily a question asking
-// the operator for more info — deliver it rather than delegating.
-func isClarifyingQuestion(reply string) bool {
-	return strings.HasSuffix(strings.TrimSpace(reply), "?")
-}
-
-// isSimpleTask reports whether an actionable request is a SIMPLE, single-step
-// action the agent can do itself with its own tools (reminder, note/remember,
-// quick read, a dictated message) — not worth a claude_code delegation.
-func isSimpleTask(userMsg string) bool {
-	m := strings.ToLower(userMsg)
-	for _, kw := range []string{
-		"remind me", "set a reminder", "add a reminder",
-		"remember that", "remember this", "note that", "note this", "make a note",
-		"forget that", "forget this",
-		"read my whatsapp", "check my whatsapp", "check whatsapp",
-		"what's on my calendar", "whats on my calendar",
-		"monitor ", "stop watching", "keep an eye on",
-	} {
-		if strings.Contains(m, kw) {
-			return true
-		}
-	}
-	// "send/tell/reply to X saying/that ..." — a dictated message is one
-	// comms.send call. (Without a dictation verb it may need composing/context,
-	// which is better delegated.)
-	if (strings.Contains(m, "send ") || strings.Contains(m, "tell ") || strings.Contains(m, "reply ") || strings.Contains(m, "message ")) &&
-		(strings.Contains(m, " saying") || strings.Contains(m, " that ") || strings.Contains(m, ": ")) {
-		return true
-	}
-	return false
-}
 
 // Chat processes a single synchronous user message through the agent's main
 // model and returns the reply. It refreshes long-term memory on every message
