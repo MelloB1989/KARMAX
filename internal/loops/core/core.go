@@ -65,7 +65,10 @@ func looksLikeError(s string) bool {
 		strings.HasPrefix(low, "execution error") ||
 		strings.Contains(low, "safeguards flagged") ||
 		strings.Contains(low, "i can't help") ||
-		strings.Contains(low, "i cannot help")
+		strings.Contains(low, "i cannot help") ||
+		strings.Contains(low, "session limit") ||
+		strings.Contains(low, "usage limit") ||
+		strings.Contains(low, "rate limit")
 }
 
 // runDailyBriefing has the agent COMPILE the briefing text, then delivers it
