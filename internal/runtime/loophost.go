@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
@@ -189,12 +190,13 @@ func (rt *KarmaxRuntime) runLoopkitLoop(parent context.Context, l loopkit.Loop, 
 	}
 	wacliPath := rt.cfg.ColdScan.WacliPath
 	if wacliPath == "" {
-		wacliPath = "/home/mellob/code/wacli/wacli"
+		wacliPath = hostpaths.Wacli()
 	}
 
 	k := &loopKit{
 		loopName:  l.Name,
 		agentID:   agentID,
+		namespace: ns,
 		rt:        rt,
 		mem:       rt.memory.For(agentID, ns),
 		wacliPath: wacliPath,
@@ -212,6 +214,7 @@ func (rt *KarmaxRuntime) runLoopkitLoop(parent context.Context, l loopkit.Loop, 
 type loopKit struct {
 	loopName  string
 	agentID   string
+	namespace string
 	rt        *KarmaxRuntime
 	mem       *memory.Manager
 	wacliPath string
@@ -229,7 +232,7 @@ func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
 }
 
 func (k *loopKit) Harness(ctx context.Context, prompt string) (string, error) {
-	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID}
+	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID, Namespace: k.namespace}
 	// Loop work is one-off: no follow-up value in keeping the session around.
 	res, err := tool.Execute(ctx, map[string]any{"prompt": prompt, "ephemeral": true})
 	if err != nil {
@@ -296,7 +299,11 @@ func (k *loopKit) SendWhatsApp(_ context.Context, target, content string) error 
 	if strings.TrimSpace(target) == "" {
 		return fmt.Errorf("empty WhatsApp target")
 	}
-	return k.rt.comms.Send("whatsapp-main", target, content)
+	channelID, ok := k.rt.comms.FindChannelIDByType("whatsapp")
+	if !ok {
+		return fmt.Errorf("no whatsapp channel registered")
+	}
+	return k.rt.comms.Send(channelID, target, content)
 }
 
 func (k *loopKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error) {

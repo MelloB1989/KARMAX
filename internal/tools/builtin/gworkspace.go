@@ -8,14 +8,17 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/tools"
 )
 
 const (
-	defaultGWSPath = "/home/mellob/.hermes/node/bin/gws"
 	maxOutputLen   = 10000
 	gwsTimeoutSecs = 60
 )
+
+// defaultGWSPath resolves the gws binary when no explicit path was configured.
+func defaultGWSPath() string { return hostpaths.GWS() }
 
 type GoogleWorkspaceTool struct {
 	GWSPath string
@@ -25,7 +28,7 @@ func (t *GoogleWorkspaceTool) path() string {
 	if t.GWSPath != "" {
 		return t.GWSPath
 	}
-	return defaultGWSPath
+	return defaultGWSPath()
 }
 
 func (t *GoogleWorkspaceTool) Manifest() tools.ToolManifest {

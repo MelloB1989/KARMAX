@@ -98,9 +98,6 @@ func PushAppNotification(s *store.Store, agentID, kind, title, body string) {
 	if s == nil || strings.TrimSpace(body) == "" {
 		return
 	}
-	if agentID == "" {
-		agentID = "nexus"
-	}
 	id := uuid.New().String()
 	if err := s.CreateNotification(store.StoredNotification{
 		ID:      id,

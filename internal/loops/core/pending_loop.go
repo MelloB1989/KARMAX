@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 )
 
@@ -49,7 +50,11 @@ func runActOnPending(ctx context.Context, k loopkit.Kit) error {
 
 	wacli := strings.TrimSpace(k.Config("wacli"))
 	if wacli == "" {
-		wacli = defaultWacliBin
+		wacli = hostpaths.Wacli()
+	}
+	gws := strings.TrimSpace(k.Config("gws"))
+	if gws == "" {
+		gws = hostpaths.GWS()
 	}
 
 	monitored, err := monitoredChats(ctx, k)
@@ -63,7 +68,7 @@ func runActOnPending(ctx context.Context, k loopkit.Kit) error {
 
 	prompt := "You are the operator's proactive assistant. These PENDING items were surfaced from their WhatsApp:\n\n- " +
 		strings.Join(items, "\n- ") + "\n\n" +
-		"Tools on this machine: the wacli CLI at " + wacli + " (WhatsApp: `messages --chat <jid> --limit N`, `send --to <jid> --text \"...\"`) and the gws CLI at /home/mellob/.hermes/node/bin/gws (Google Workspace: calendar, gmail, tasks — run `gws calendar --help` etc. to discover syntax).\n\n" +
+		"Tools on this machine: the wacli CLI at " + wacli + " (WhatsApp: `messages --chat <jid> --limit N`, `send --to <jid> --text \"...\"`) and the gws CLI at " + gws + " (Google Workspace: calendar, gmail, tasks — run `gws calendar --help` etc. to discover syntax).\n\n" +
 		"For EACH item:\n" +
 		"1. Verify it is STILL open (re-read the chat if needed); many are old — anything already resolved, expired, or stale gets SKIP.\n" +
 		"2. If you can COMPLETE it without messaging anyone (e.g. create a calendar event for an already-agreed meeting, add a task): DO IT NOW via gws.\n" +

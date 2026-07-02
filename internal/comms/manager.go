@@ -286,6 +286,38 @@ func (m *Manager) Send(channelID, target, content string) error {
 	return nil
 }
 
+// DefaultChannelID picks the channel to use when a caller doesn't specify one:
+// the sole channel if only one is registered, otherwise the first WhatsApp
+// channel, otherwise any.
+func (m *Manager) DefaultChannelID() (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.channels) == 0 {
+		return "", false
+	}
+	var any string
+	for id, entry := range m.channels {
+		if entry.channel.Type() == "whatsapp" {
+			return id, true
+		}
+		any = id
+	}
+	return any, true
+}
+
+// FindChannelIDByType returns the ID of the first registered channel of the
+// given type (e.g. "whatsapp"), so callers never hardcode channel IDs.
+func (m *Manager) FindChannelIDByType(channelType string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for id, entry := range m.channels {
+		if entry.channel.Type() == channelType {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // List returns all registered channels.
 func (m *Manager) List() []Channel {
 	m.mu.RLock()

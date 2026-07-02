@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 )
 
@@ -21,7 +22,6 @@ import (
 // asked for, quick acks, calendar) are done immediately; real decisions are
 // flagged for approval. First run looks back 24h so pending asks are handled.
 const (
-	gchatDefaultGws  = "/home/mellob/.hermes/node/bin/gws"
 	gchatMaxSpaces   = 5 // spaces handled per tick
 	gchatFirstRunAge = 24 * time.Hour
 )
@@ -52,7 +52,7 @@ func runGchatWatch(ctx context.Context, k loopkit.Kit) error {
 
 	gws := strings.TrimSpace(k.Config("gws"))
 	if gws == "" {
-		gws = gchatDefaultGws
+		gws = hostpaths.GWS()
 	}
 
 	statePath, err := gchatStatePath()

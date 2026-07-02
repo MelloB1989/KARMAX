@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
@@ -77,6 +79,8 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("GET /api/device/actions", srv.auth(srv.handleDeviceActions))
 	mux.HandleFunc("POST /api/device/actions/{id}/complete", srv.auth(srv.handleCompleteDeviceAction))
 	mux.HandleFunc("GET /api/integrations", srv.auth(srv.handleIntegrations))
+	mux.HandleFunc("GET /api/tools", srv.auth(srv.handleListTools))
+	mux.HandleFunc("POST /api/tools/{name}", srv.auth(srv.handleCallTool))
 
 	srv.httpSrv = &http.Server{
 		Addr:              addr,
@@ -682,7 +686,7 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 	}
 	if waConfigured {
 		if waPath == "" {
-			waPath = "/home/mellob/code/wacli/wacli"
+			waPath = hostpaths.Wacli()
 		}
 		status, detail := "disconnected", "wacli not responding"
 		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
@@ -789,13 +793,85 @@ func firstLine(s string) string {
 }
 
 func lookGWS() string {
-	if _, err := os.Stat("/home/mellob/.local/bin/gws"); err == nil {
-		return "/home/mellob/.local/bin/gws"
+	p := hostpaths.GWS()
+	// hostpaths falls back to the bare command name; only report it as
+	// available if it actually resolves to something runnable.
+	if p == "gws" {
+		if _, err := exec.LookPath(p); err != nil {
+			return ""
+		}
 	}
-	if p, err := exec.LookPath("gws"); err == nil {
-		return p
+	if _, err := os.Stat(p); err != nil {
+		if _, lerr := exec.LookPath(p); lerr != nil {
+			return ""
+		}
 	}
-	return ""
+	return p
+}
+
+// handleListTools returns the manifest of every tool the (default or named)
+// agent's model runs with — the full harness toolset, including agent-scoped
+// memory/profile tools and MCP tools.
+func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
+	ag := s.resolveAgent(r.URL.Query().Get("agent"))
+	if ag == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no agent available"})
+		return
+	}
+	manifests := ag.ToolManifests()
+	out := make([]map[string]any, 0, len(manifests))
+	for _, m := range manifests {
+		var params any
+		_ = json.Unmarshal(m.Parameters, &params)
+		out = append(out, map[string]any{
+			"name":        m.Name,
+			"description": m.Description,
+			"parameters":  params,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent": ag.Def().ID, "tools": out})
+}
+
+// handleCallTool executes one of the agent's tools by name with a JSON input
+// body — the exact call the harness model would make. This is what gives the
+// karmax CLI (and delegated coding harnesses) full parity with the harness.
+func (s *Server) handleCallTool(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	ag := s.resolveAgent(r.URL.Query().Get("agent"))
+	if ag == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no agent available"})
+		return
+	}
+
+	input := map[string]any{}
+	if r.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
+			return
+		}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := json.Unmarshal(body, &input); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "input must be a JSON object: " + err.Error()})
+				return
+			}
+		}
+	}
+
+	// Tool runs can be slow (coding harness delegation) — allow a generous window.
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Minute)
+	defer cancel()
+
+	res, err := ag.ExecuteTool(ctx, name, input)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	if res.IsError {
+		writeJSON(w, http.StatusOK, map[string]any{"tool": name, "ok": false, "error": res.Error})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tool": name, "ok": true, "output": res.Output})
 }
 
 func (s *Server) defaultAgent() *agent.Agent {

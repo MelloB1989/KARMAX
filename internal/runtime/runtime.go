@@ -17,6 +17,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/comms/discord"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
@@ -95,9 +96,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	commsMgr := comms.NewManager(b, s, log)
 
 	// Capture WhatsApp settings so the whatsapp.read tool can reuse them.
-	waCLIPath := "/home/mellob/code/wacli/wacli"
+	waCLIPath := hostpaths.Wacli()
 	waTarget := ""
-	waAgentID := "nexus"
+	// Default agent for channel-originated notifications: the first configured
+	// agent (channels can override via agent_id).
+	waAgentID := ""
+	if len(cfg.Agents) > 0 {
+		waAgentID = cfg.Agents[0].ID
+	}
 
 	// WhatsApp is event-based: wacli pushes message events to KARMAX's webhook
 	// endpoint (/comms/whatsapp, mounted below). KARMAX does NOT register or
@@ -122,7 +128,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		case "whatsapp":
 			wacliPath := chCfg.Settings["wacli_path"]
 			if wacliPath == "" {
-				wacliPath = "/home/mellob/code/wacli/wacli"
+				wacliPath = hostpaths.Wacli()
 			}
 			targetChat := chCfg.Settings["target_chat"]
 			waCLIPath = wacliPath
@@ -171,9 +177,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Register new builtin tools
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
-	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send})
-	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: "/home/mellob/.hermes/node/bin/gws"})
-	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: "/home/mellob/.hermes/node/bin/gws"})
+	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send, DefaultChannelID: commsMgr.DefaultChannelID})
+	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: hostpaths.GWS()})
+	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: hostpaths.GWS()})
 	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
 	toolReg.Register(&builtin.WacliTool{WacliPath: waCLIPath})
 	if cfg.Webhooks.Enabled {
@@ -194,6 +200,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.CalendarAddTool{Store: s})
 	toolReg.Register(&builtin.ReminderAddTool{Store: s})
 	toolReg.Register(&builtin.ContactAddTool{Store: s})
+
+	// The scheduler (and its tool) must exist BEFORE agents resolve their tool
+	// lists — registering scheduler.add afterwards silently dropped it from
+	// every agent's toolset.
+	sched := scheduler.New(s, b, log)
+	toolReg.Register(&builtin.SchedulerTool{Scheduler: sched, AgentID: ""})
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 
@@ -259,11 +271,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		a.SetCommsChannels(channelInfos)
 	}
 
-	sched := scheduler.New(s, b, log)
-
-	// Register scheduler tool (needs scheduler instance)
-	toolReg.Register(&builtin.SchedulerTool{Scheduler: sched, AgentID: ""})
-
 	whAddr := fmt.Sprintf("%s:%d", cfg.Webhooks.Host, cfg.Webhooks.Port)
 	wh := webhook.New(whAddr, b, s, log)
 
@@ -290,8 +297,31 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		apiSrv = api.New(apiAddr, cfg.API.Port, os.Getenv("KARMAX_API_TOKEN"), agentReg, s, sched, memFactory, cfg, log)
 	}
 
-	// Wire bus events to agent inboxes (webhooks, scheduled jobs, user-defined, and comms messages)
-	sub, _ := b.Subscribe(bus.EventWebhookFired, bus.EventScheduledJob, bus.EventUserDefined, bus.EventCommsMessage)
+	// Wire bus events to agent inboxes (webhooks, scheduled jobs, user-defined,
+	// and comms messages). Webhook routes may remap their event to a custom
+	// bus_event kind, and agents may declare extra event kinds in
+	// triggers.events — subscribe to those too, or they are published and then
+	// silently dropped.
+	routedKinds := []bus.EventKind{bus.EventWebhookFired, bus.EventScheduledJob, bus.EventUserDefined, bus.EventCommsMessage}
+	seenKinds := map[bus.EventKind]bool{}
+	for _, k := range routedKinds {
+		seenKinds[k] = true
+	}
+	for _, route := range cfg.Webhooks.Routes {
+		if k := bus.EventKind(route.BusEvent); route.BusEvent != "" && !seenKinds[k] {
+			seenKinds[k] = true
+			routedKinds = append(routedKinds, k)
+		}
+	}
+	for _, agentCfg := range cfg.Agents {
+		for _, ev := range agentCfg.Triggers.Events {
+			if k := bus.EventKind(ev); ev != "" && !seenKinds[k] {
+				seenKinds[k] = true
+				routedKinds = append(routedKinds, k)
+			}
+		}
+	}
+	sub, _ := b.Subscribe(routedKinds...)
 	go func() {
 		for evt := range sub.Ch {
 			if evt.AgentID != "" {

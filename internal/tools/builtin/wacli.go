@@ -61,7 +61,7 @@ func (t *WacliTool) Execute(ctx context.Context, input map[string]any) (tools.To
 
 	wacli := t.WacliPath
 	if wacli == "" {
-		wacli = defaultWacliPath
+		wacli = defaultWacliPath()
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()

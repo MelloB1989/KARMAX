@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 )
 
@@ -23,8 +24,6 @@ const (
 	bootstrapMaxBatches  = 8   // batches per loop tick (32 chats/tick)
 	bootstrapActiveDays  = 120 // only scan chats active in this window
 	bootstrapMsgsPerChat = 250
-	bootstrapWacliAPI    = "http://127.0.0.1:8765"
-	defaultWacliBin      = "/home/mellob/code/wacli/wacli"
 )
 
 // bootstrapMu prevents a manual trigger overlapping the scheduled tick.
@@ -87,7 +86,7 @@ func runMemoryBootstrap(ctx context.Context, k loopkit.Kit) error {
 
 	wacli := strings.TrimSpace(k.Config("wacli"))
 	if wacli == "" {
-		wacli = defaultWacliBin
+		wacli = hostpaths.Wacli()
 	}
 
 	totalFacts, chatsDone := 0, 0
@@ -191,7 +190,7 @@ func scanChatBatch(ctx context.Context, k loopkit.Kit, wacli string, batch []boo
 // fetchBootstrapCandidates lists chats worth scanning: unlocked, active within
 // the window, not newsletters/broadcasts, and not the operator's own chats.
 func fetchBootstrapCandidates(ctx context.Context, k loopkit.Kit) ([]bootstrapChat, error) {
-	body, status, err := k.HTTP(ctx, "GET", bootstrapWacliAPI+"/chats?limit=1000", nil, "")
+	body, status, err := k.HTTP(ctx, "GET", hostpaths.WacliAPIURL()+"/chats?limit=1000", nil, "")
 	if err != nil {
 		return nil, err
 	}

@@ -37,12 +37,26 @@ func apiToken() string {
 	return strings.TrimSpace(os.Getenv("KARMAX_API_TOKEN"))
 }
 
-func apiGET(path string) (map[string]any, error)  { return apiDo(http.MethodGet, path) }
-func apiPOST(path string) (map[string]any, error) { return apiDo(http.MethodPost, path) }
+func apiGET(path string) (map[string]any, error)  { return apiDo(http.MethodGet, path, nil, 0) }
+func apiPOST(path string) (map[string]any, error) { return apiDo(http.MethodPost, path, nil, 0) }
 
-func apiDo(method, path string) (map[string]any, error) {
+// apiPOSTJSON posts a JSON body. Used by commands that can run long (tool
+// calls, agent chat) — pass a timeout to override the 20s default.
+func apiPOSTJSON(path string, body any, timeout time.Duration) (map[string]any, error) {
+	return apiDo(http.MethodPost, path, body, timeout)
+}
+
+func apiDo(method, path string, body any, timeout time.Duration) (map[string]any, error) {
 	base := apiBaseURL()
-	req, err := http.NewRequest(method, base+path, nil)
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequest(method, base+path, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -50,16 +64,22 @@ func apiDo(method, path string) (map[string]any, error) {
 		req.Header.Set("Authorization", "Bearer "+t)
 	}
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("KARMAX API unreachable at %s — is it running? (start it with `karmax start`)", base)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	var out map[string]any
-	_ = json.Unmarshal(body, &out)
+	_ = json.Unmarshal(respBody, &out)
 	if resp.StatusCode >= 300 {
 		if msg, ok := out["error"].(string); ok && msg != "" {
 			return out, fmt.Errorf("%s", msg)

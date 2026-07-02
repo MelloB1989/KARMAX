@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -297,12 +298,9 @@ func fileExists(p string) bool {
 }
 
 func wacliConnected() bool {
-	bin := "wacli"
-	if !commandOnPath(bin) {
-		bin = "/home/mellob/code/wacli/wacli"
-		if !fileExists(bin) {
-			return false
-		}
+	bin := hostpaths.Wacli()
+	if !commandOnPath(bin) && !fileExists(bin) {
+		return false
 	}
 	out, _ := exec.Command(bin, "status").Output()
 	return strings.Contains(string(out), "connected: true")

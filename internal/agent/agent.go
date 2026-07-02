@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -40,6 +41,11 @@ type Agent struct {
 	mainSession  *MainModelSession
 	memoryModel  *MemoryModel
 	summaryModel *SummaryModel
+
+	// allTools is the complete, agent-bound toolset the main model runs with
+	// (built-in + agent-scoped memory/profile tools + MCP). Kept so the API/CLI
+	// can list and invoke exactly what the harness itself has.
+	allTools []tools.Tool
 
 	// Communication send function (injected to avoid circular imports)
 	commsSend func(channelID, target, content string) error
@@ -266,6 +272,9 @@ func (a *Agent) initModels() error {
 		return fmt.Errorf("init main model session: %w", err)
 	}
 	a.mainSession = mainSession
+	a.mu.Lock()
+	a.allTools = allTools
+	a.mu.Unlock()
 
 	// Initialize summary model with same fallback models
 	a.summaryModel = NewSummaryModel(SummaryModelConfig{
@@ -295,6 +304,11 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 	for _, t := range in {
 		switch tt := t.(type) {
 		case *builtin.ClaudeCodeTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			cp.Namespace = a.def.Memory.Namespace
+			out = append(out, &cp)
+		case *builtin.SchedulerTool:
 			cp := *tt
 			cp.AgentID = a.def.ID
 			out = append(out, &cp)
@@ -839,7 +853,8 @@ func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg str
 		who = chatID
 	}
 	go func() {
-		cc := &builtin.ClaudeCodeTool{Store: a.store, AgentID: a.def.ID}
+		cc := &builtin.ClaudeCodeTool{Store: a.store, AgentID: a.def.ID, Namespace: a.def.Memory.Namespace}
+		wacli := hostpaths.Wacli()
 
 		operator := "the operator"
 		if len(a.operatorChats) > 0 {
@@ -851,11 +866,11 @@ func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg str
 		}
 
 		context := "A monitored 1:1 chat just messaged " + operator + "."
-		policy := "   - If a reply/action is ROUTINE and you're confident how the operator would respond (acknowledgements, simple scheduling, sharing already-known info, confirming availability), DO IT NOW: send with `/home/mellob/code/wacli/wacli send --to " + chatID + " --text \"...\"` in the operator's natural human voice (concise; never say you're an AI/assistant). Use the `gws` CLI for calendar/email if clearly asked.\n" +
+		policy := "   - If a reply/action is ROUTINE and you're confident how the operator would respond (acknowledgements, simple scheduling, sharing already-known info, confirming availability), DO IT NOW: send with `" + wacli + " send --to " + chatID + " --text \"...\"` in the operator's natural human voice (concise; never say you're an AI/assistant). Use the `gws` CLI for calendar/email if clearly asked.\n" +
 			"   - If it involves a real DECISION, a commitment, money, or anything sensitive/ambiguous, or you're not confident → DO NOT send anything; flag it.\n"
 		if isGroup {
 			context = "A monitored GROUP chat just had a new message. " + operator + " is a member."
-			policy = "   - This is a GROUP. Only SEND a reply if the operator is directly addressed — @-mentioned, or asked a question they clearly must answer. Reply via `/home/mellob/code/wacli/wacli send --to " + chatID + " --text \"...\"` in the operator's casual voice, and only for genuinely routine/known answers.\n" +
+			policy = "   - This is a GROUP. Only SEND a reply if the operator is directly addressed — @-mentioned, or asked a question they clearly must answer. Reply via `" + wacli + " send --to " + chatID + " --text \"...\"` in the operator's casual voice, and only for genuinely routine/known answers.\n" +
 				"   - Do NOT reply to general group discussion or messages meant for other members.\n" +
 				"   - If the message is a meaningful update on an active project/deal/commitment (e.g. a client saying they'll get back, a deadline, a decision) but needs no reply, treat it as APPROVE so the operator sees it — do not silently skip important client/deal activity.\n" +
 				"   - Only truly irrelevant chatter is SKIP.\n"
@@ -866,13 +881,13 @@ func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg str
 			"Chat id: " + chatID + "\n" +
 			"Latest message: " + incomingMsg + "\n\n" +
 			"Steps:\n" +
-			"1. Read recent context: run `/home/mellob/code/wacli/wacli messages --chat " + chatID + " --limit 15` (newest last). If it's already handled/answered and nothing new is needed, do nothing.\n" +
+			"1. Read recent context: run `" + wacli + " messages --chat " + chatID + " --limit 15` (newest last). If it's already handled/answered and nothing new is needed, do nothing.\n" +
 			"2. Decide on the operator's behalf:\n" + policy +
 			"3. Output EXACTLY one line, beginning with one of:\n" +
 			"   ACTED: <one line on what you sent/did>\n" +
 			"   APPROVE: <what it is + your suggested reply/action, for the operator>\n" +
 			"   SKIP: <why nothing was needed>"
-		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "working_dir": "/home/mellob", "ephemeral": true})
+		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "ephemeral": true})
 		if err != nil || res.IsError {
 			// Never fail silently: the operator must know a monitored message
 			// went unhandled (especially while they sleep).
@@ -1023,6 +1038,42 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 	a.persistSnapshot()
 
 	return response, nil
+}
+
+// ToolManifests returns the manifest of every tool the agent's main model has —
+// built-ins, agent-scoped (memory.*, profile.update, comms.escalate), and MCP.
+// This is the parity surface exposed over the API/CLI.
+func (a *Agent) ToolManifests() []tools.ToolManifest {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]tools.ToolManifest, 0, len(a.allTools))
+	for _, t := range a.allTools {
+		out = append(out, t.Manifest())
+	}
+	return out
+}
+
+// ExecuteTool invokes one of the agent's tools by name (dotted or canonical
+// form) with the given input — the same call the main model would make. Used by
+// the HTTP API so the CLI (and delegated harnesses shelling out to it) can do
+// anything the harness itself can.
+func (a *Agent) ExecuteTool(ctx context.Context, name string, input map[string]any) (tools.ToolResult, error) {
+	a.mu.RLock()
+	toolset := a.allTools
+	a.mu.RUnlock()
+
+	want := tools.CanonicalName(name)
+	for _, t := range toolset {
+		if tools.CanonicalName(t.Manifest().Name) == want {
+			a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
+				"tool":   t.Manifest().Name,
+				"input":  input,
+				"source": "api",
+			}))
+			return t.Execute(ctx, input)
+		}
+	}
+	return tools.ToolResult{}, fmt.Errorf("unknown tool: %s", name)
 }
 
 func (a *Agent) buildProactiveMemoryContext(ctx context.Context, evt bus.Event, userPrompt string) string {

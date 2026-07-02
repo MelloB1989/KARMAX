@@ -51,9 +51,11 @@ func (t *SchedulerTool) Execute(ctx context.Context, input map[string]any) (tool
 		payload = map[string]any{"task": name}
 	}
 
+	// AgentID is bound per-agent (bindAgentTools). An unbound instance would
+	// schedule jobs that fire to a nonexistent agent and vanish, so refuse.
 	agentID := t.AgentID
 	if agentID == "" {
-		agentID = "karmax-agent"
+		return tools.ToolResult{IsError: true, Error: "scheduler tool is not bound to an agent"}, nil
 	}
 
 	job := scheduler.ScheduledJob{

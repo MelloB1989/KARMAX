@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 )
 
@@ -47,7 +48,7 @@ func runChatSweep(ctx context.Context, k loopkit.Kit) error {
 
 	wacli := strings.TrimSpace(k.Config("wacli"))
 	if wacli == "" {
-		wacli = defaultWacliBin
+		wacli = hostpaths.Wacli()
 	}
 
 	var list strings.Builder
@@ -100,7 +101,7 @@ func runChatSweep(ctx context.Context, k loopkit.Kit) error {
 // monitoredChats returns the chats KARMAX watches (from the wacli webhook
 // scope), excluding the operator's own command chats.
 func monitoredChats(ctx context.Context, k loopkit.Kit) ([]string, error) {
-	body, status, err := k.HTTP(ctx, "GET", bootstrapWacliAPI+"/webhooks", nil, "")
+	body, status, err := k.HTTP(ctx, "GET", hostpaths.WacliAPIURL()+"/webhooks", nil, "")
 	if err != nil {
 		return nil, err
 	}

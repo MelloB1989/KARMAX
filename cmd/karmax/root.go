@@ -38,6 +38,9 @@ func newRootCmd() *cobra.Command {
 		newMCPCmd(),
 		newConfigCmd(),
 		newLoopsCmd(),
+		newAskCmd(),
+		newNotifyCmd(),
+		newSendCmd(),
 	)
 	return root
 }

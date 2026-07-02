@@ -58,6 +58,22 @@ bunx expo start --dev-client
 ```
 The app auto-detects the daemon over mDNS / your network; enter the host in **Settings** if needed.
 
+## CLI = full harness parity
+Everything the orchestrator agent can do is also reachable from the `karmax` CLI (it talks to the running daemon's API), so delegated harnesses (Claude Code) and scripts have the same powers as the agent:
+
+```bash
+karmax tool list                        # every live tool (built-in + memory/profile + MCP)
+karmax tool call <name> [k=v ...]       # invoke ANY tool (or --json '{...}')
+karmax memory search "<query>"          # recall long-term memory
+karmax memory add "<fact>"              # save a durable fact
+karmax notify "<title>" "<body>"        # push to the phone app (feed + push)
+karmax send "<target>" "<message>"      # WhatsApp/Discord via the default channel
+karmax ask "<prompt>"                   # ask the orchestrator agent itself
+karmax loops list|run <name>            # inspect / trigger loops
+```
+
+Every `claude_code.call` delegation is told about this surface automatically, so executors can pull more context or report back to you mid-task.
+
 ## Models
 Set in `karmax.yaml` (`agents:`) — by default main `claude-opus-4.6`, memory/retrieval `claude-opus-4.6`, summary `claude-sonnet-4.6`, with fallbacks. Endpoints live under `ai.providers`.
 
