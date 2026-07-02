@@ -703,7 +703,13 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Use multi-model session if available; otherwise fall back to legacy
 	if a.mainSession != nil {
+		// Acknowledge slow turns: if we're still thinking after a few seconds,
+		// send a lightweight "on it" to the originating chat so the operator
+		// knows the message landed and isn't dropped (high-effort turns take a
+		// while). Cancelled the moment the turn finishes.
+		ackCancel := a.startAckWatchdog(evt)
 		response, toolCalls, err := a.mainSession.ProcessMessage(a.ctx, userPrompt)
+		ackCancel()
 		if err != nil {
 			return fmt.Errorf("main model: %w", err)
 		}
@@ -791,6 +797,35 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Legacy fallback: this path is only used if initModels() failed
 	return a.handleEventLegacy(evt, userPrompt)
+}
+
+// startAckWatchdog sends a lightweight acknowledgement to the originating chat
+// if the current turn is still running after a short delay, so the operator
+// sees the message was received even when reasoning takes a while. Returns a
+// cancel func to call when the turn completes. No-op for non-chat events.
+func (a *Agent) startAckWatchdog(evt bus.Event) func() {
+	if evt.Kind != bus.EventCommsMessage || a.commsSend == nil {
+		return func() {}
+	}
+	channelID, _ := evt.Payload["karmax_channel_id"].(string)
+	target, _ := evt.Payload["channel_id"].(string)
+	if channelID == "" {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-time.After(6 * time.Second):
+			if err := a.commsSend(channelID, target, "👀 on it…"); err != nil {
+				a.log.Warn("ack watchdog send failed", zap.Error(err))
+			} else {
+				a.log.Info("sent slow-turn ack", zap.String("channel", channelID))
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
 }
 
 // delegateProxyTask runs proactive-assistant handling for a message from a
