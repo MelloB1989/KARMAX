@@ -54,10 +54,21 @@ func newLoopsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			loops := loopkit.Registered()
-			fmt.Printf("Active loops (%d):\n", len(loops))
-			for _, l := range loops {
-				fmt.Printf("  • %-20s [%s]  %s\n", l.Name, l.Schedule.CronExpr(), l.Description)
+			// Prefer the running daemon's list — it is the truth: it includes
+			// runtime-registered loops (e.g. cold-scan) and excludes disabled
+			// ones. Fall back to this process's registry when it's down.
+			if out, err := apiGET("/api/loops"); err == nil {
+				live := asList(out["loops"])
+				fmt.Printf("Active loops (%d):\n", len(live))
+				for _, l := range live {
+					fmt.Printf("  • %-20s [%s]  %s\n", asStr(l["name"]), asStr(l["schedule"]), asStr(l["description"]))
+				}
+			} else {
+				loops := loopkit.Registered()
+				fmt.Printf("Active loops (%d) — daemon not reachable, showing this binary's registry:\n", len(loops))
+				for _, l := range loops {
+					fmt.Printf("  • %-20s [%s]  %s\n", l.Name, l.Schedule.CronExpr(), l.Description)
+				}
 			}
 			mods, _ := loopinstall.InstalledModules(root)
 			fmt.Printf("\nInstalled modules (%d):\n", len(mods))

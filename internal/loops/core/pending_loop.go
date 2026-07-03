@@ -73,11 +73,9 @@ func runActOnPending(ctx context.Context, k loopkit.Kit) error {
 		"1. Verify it is STILL open (re-read the chat if needed); many are old — anything already resolved, expired, or stale gets SKIP.\n" +
 		"2. If you can COMPLETE it without messaging anyone (e.g. create a calendar event for an already-agreed meeting, add a task): DO IT NOW via gws.\n" +
 		"3. If it needs a WhatsApp message AND the chat is in this MONITORED list: " + monitoredList + " — send it now in the operator's natural human voice (concise, never reveal you're an AI).\n" +
-		"4. Anything else still relevant (a message in a non-monitored chat, a real decision, money, sensitive): do NOT act — flag it.\n\n" +
-		"Output EXACTLY one line per item, no other text:\n" +
-		"ACTED <who/what>: <what you did>\n" +
-		"APPROVE <who/what>: <the open item + your suggested action>\n" +
-		"SKIP <who/what>: <why>"
+		"4. If it's something ONLY the operator can personally do (send a document/file you don't have, a personal/family reply, an offline task): flag it as REMIND.\n" +
+		"5. Anything else still relevant (a real decision, money, sensitive): do NOT act — flag it as APPROVE.\n\n" +
+		scanOutputSpec
 
 	out, err := k.Harness(ctx, prompt)
 	if err != nil {
@@ -89,21 +87,12 @@ func runActOnPending(ctx context.Context, k loopkit.Kit) error {
 		return fmt.Errorf("act-on-pending: harness returned error/refusal: %.120s", out)
 	}
 
-	var acted, approve []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		up := strings.ToUpper(line)
-		switch {
-		case strings.HasPrefix(up, "ACTED"):
-			acted = append(acted, strings.TrimSpace(line[5:]))
-		case strings.HasPrefix(up, "APPROVE"):
-			approve = append(approve, strings.TrimSpace(line[7:]))
-		}
-	}
-	k.Logf("act-on-pending: %d items — %d acted, %d need approval", len(items), len(acted), len(approve))
+	acted, approve, remind := parseScanOutcomes(out)
+	k.Logf("act-on-pending: %d items — %d acted, %d need approval, %d reminders", len(items), len(acted), len(approve), len(remind))
 	if len(acted) > 0 {
 		_ = k.Notify("✅ Completed from scan", "• "+strings.Join(acted, "\n• "))
 	}
 	proposeItems(k, "Flagged by the act-on-pending loop from items discovered in WhatsApp scans.", approve)
+	remindItems(k, "Flagged by the act-on-pending loop: only you can do this one.", remind)
 	return nil
 }

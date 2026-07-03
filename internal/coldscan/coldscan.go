@@ -68,33 +68,14 @@ func New(cfg Config, s *store.Store, log *zap.Logger) *Scanner {
 	return &Scanner{cfg: cfg, store: s, log: log}
 }
 
-// Start runs the periodic worker until ctx is cancelled.
-func (s *Scanner) Start(ctx context.Context) {
-	if !s.cfg.Enabled {
-		return
+// IntervalMinutes returns the configured tick interval in whole minutes (for
+// scheduling the cold-scan loop).
+func (s *Scanner) IntervalMinutes() int {
+	m := int(s.cfg.Interval / time.Minute)
+	if m < 1 {
+		m = 1
 	}
-	s.log.Info("cold-scan worker started",
-		zap.Duration("interval", s.cfg.Interval), zap.Int("per_tick", s.cfg.PerTick),
-		zap.Int("hot_days", s.cfg.HotDays))
-
-	// Small initial delay so we don't compete with startup.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(45 * time.Second):
-	}
-	s.runOnce(ctx)
-
-	t := time.NewTicker(s.cfg.Interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			s.runOnce(ctx)
-		}
-	}
+	return m
 }
 
 type chatRec struct {
@@ -115,16 +96,17 @@ type msgRec struct {
 // lookup per chat per day), keeping the worker cheap across hundreds of chats.
 const recheckInterval = 24 * time.Hour
 
-// runOnce examines chats and summarizes the "cold" ones. Hot vs cold is decided
+// Tick examines chats and summarizes the "cold" ones — one pass of the
+// pipeline, driven by the `cold-scan` loopkit loop (scheduled, manually
+// triggerable, and disableable like every other loop). Hot vs cold is decided
 // by the OPERATOR's own last message (not the chat's activity), so a group that
 // stays busy with other people but that the operator hasn't texted in for weeks
 // correctly becomes cold. Each chat is recorded (summarized | hot | skipped) so
 // subsequent ticks skip it cheaply until recheckInterval elapses.
-func (s *Scanner) runOnce(ctx context.Context) {
+func (s *Scanner) Tick(ctx context.Context) (summarizedCount, examinedCount int, err error) {
 	chats, err := s.listChats(ctx)
 	if err != nil {
-		s.log.Warn("cold-scan: list chats failed", zap.Error(err))
-		return
+		return 0, 0, fmt.Errorf("list chats: %w", err)
 	}
 	cutoff := time.Now().AddDate(0, 0, -s.cfg.HotDays)
 	// Process oldest chats first so genuinely-cold conversations (the ones the
@@ -194,9 +176,7 @@ func (s *Scanner) runOnce(ctx context.Context) {
 		s.record(c, "summarized", summary, ownCount, ownLast, len(msgs))
 		summarized++
 	}
-	if summarized > 0 || examined > 0 {
-		s.log.Info("cold-scan tick", zap.Int("summarized", summarized), zap.Int("examined", examined))
-	}
+	return summarized, examined, nil
 }
 
 // record upserts a chat's cold-scan state. LastMessageAt stores the operator's

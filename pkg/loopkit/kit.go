@@ -42,6 +42,13 @@ type Kit interface {
 	// executed as written on approval.
 	Propose(title, summary, action string) error
 
+	// Remind creates a reminder on the operator's phone (additive, no
+	// approval). Use for things ONLY the operator can personally do — send a
+	// document the assistant doesn't have, reply in a personal chat, an
+	// offline errand. due is an optional ISO-8601 datetime with timezone;
+	// notes is optional context shown with the reminder.
+	Remind(title, due, notes string) error
+
 	// SendWhatsApp sends a message through the operator's connected WhatsApp
 	// account to target (a phone number, contact name, or chat JID). Use for
 	// loops that deliver to a specific recipient rather than the app.
