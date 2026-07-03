@@ -29,7 +29,18 @@ type Kit interface {
 
 	// Notify sends a notification to the operator's phone app: it is saved to
 	// the in-app feed AND delivered as a push (so it survives a missed push).
+	// Notifications are informational only — for anything that needs the
+	// operator's DECISION, use Propose instead.
 	Notify(title, body string) error
+
+	// Propose creates a pending approval in the operator's approvals inbox
+	// (with a push). The operator can approve — which hands `action` to the
+	// agent to EXECUTE — or reject it. Use this, never Notify, when a loop
+	// surfaces something requiring a decision (a suggested reply, a
+	// commitment, money, anything sensitive). `action` must be concrete and
+	// self-contained (include the draft text and the target), since it is
+	// executed as written on approval.
+	Propose(title, summary, action string) error
 
 	// SendWhatsApp sends a message through the operator's connected WhatsApp
 	// account to target (a phone number, contact name, or chat JID). Use for

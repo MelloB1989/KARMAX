@@ -104,8 +104,6 @@ func runActOnPending(ctx context.Context, k loopkit.Kit) error {
 	if len(acted) > 0 {
 		_ = k.Notify("✅ Completed from scan", "• "+strings.Join(acted, "\n• "))
 	}
-	if len(approve) > 0 {
-		_ = k.Notify("🤔 Needs your decision (from scan)", "• "+strings.Join(approve, "\n• "))
-	}
+	proposeItems(k, "Flagged by the act-on-pending loop from items discovered in WhatsApp scans.", approve)
 	return nil
 }

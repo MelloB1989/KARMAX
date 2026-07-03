@@ -96,6 +96,35 @@ func runDailyBriefing(ctx context.Context, k loopkit.Kit) error {
 	return nil
 }
 
+// proposeItems files one pending APPROVAL per APPROVE item a loop surfaced
+// ("<who/what>: <details + suggested action>"), so decisions land in the
+// actionable approvals inbox (approve → the agent executes) instead of the
+// notification feed. Items whose proposal can't be written fall back to a
+// notification so nothing is silently lost.
+func proposeItems(k loopkit.Kit, source string, items []string) {
+	var failed []string
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		title := item
+		if i := strings.Index(item, ":"); i > 0 && i <= 80 {
+			title = strings.TrimSpace(item[:i])
+		}
+		if len(title) > 80 {
+			title = title[:80] + "…"
+		}
+		if err := k.Propose("Decision — "+title, source, item); err != nil {
+			k.Logf("propose failed for %q: %v (falling back to notification)", title, err)
+			failed = append(failed, item)
+		}
+	}
+	if len(failed) > 0 {
+		_ = k.Notify("🤔 Needs your decision", "• "+strings.Join(failed, "\n• "))
+	}
+}
+
 // agentTask returns a Run that delegates a fixed prompt to the main agent
 // (which has the tools — whatsapp.read, memory.ingest, profile.update, etc.).
 func agentTask(prompt string) func(context.Context, loopkit.Kit) error {

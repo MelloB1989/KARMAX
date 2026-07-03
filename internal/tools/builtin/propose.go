@@ -48,31 +48,45 @@ func (t *ProposeTool) Execute(ctx context.Context, input map[string]any) (tools.
 	kind, _ := input["kind"].(string)
 	urgency, _ := input["urgency"].(string)
 
-	id := uuid.New().String()
-	if err := t.Store.CreateProposal(store.StoredProposal{
-		ID:             id,
-		AgentID:        t.AgentID,
-		Kind:           kind,
-		Title:          title,
-		Summary:        summary,
-		ProposedAction: action,
-		Status:         "pending",
-	}); err != nil {
+	id, err := CreateProposal(t.Store, t.AgentID, kind, title, summary, action, urgency)
+	if err != nil {
 		return tools.ErrorResult(fmt.Errorf("create proposal: %w", err)), nil
 	}
-
-	priority := "high"
-	if urgency == "low" {
-		priority = "default"
-	}
-	_, _, _ = SendExpoPush(t.Store, "Approval needed", title, priority, map[string]any{
-		"type":        "proposal",
-		"proposal_id": id,
-	})
 
 	return tools.SuccessResult(map[string]any{
 		"status":      "pending_approval",
 		"proposal_id": id,
 		"message":     "Proposed to the operator for approval. Wait for their decision before acting.",
 	}), nil
+}
+
+// CreateProposal writes a pending approval to the store and pushes an
+// "Approval needed" notification to the phone. It is the single entry point
+// for EVERYTHING that needs the operator's decision — the propose tool, the
+// proactive WhatsApp proxy, and loops — so decisions always land in the
+// approvals inbox (actionable: approve → execute), never as plain
+// notifications.
+func CreateProposal(s *store.Store, agentID, kind, title, summary, action, urgency string) (string, error) {
+	id := uuid.New().String()
+	if err := s.CreateProposal(store.StoredProposal{
+		ID:             id,
+		AgentID:        agentID,
+		Kind:           kind,
+		Title:          title,
+		Summary:        summary,
+		ProposedAction: action,
+		Status:         "pending",
+	}); err != nil {
+		return "", err
+	}
+
+	priority := "high"
+	if urgency == "low" {
+		priority = "default"
+	}
+	_, _, _ = SendExpoPush(s, "Approval needed", title, priority, map[string]any{
+		"type":        "proposal",
+		"proposal_id": id,
+	})
+	return id, nil
 }
