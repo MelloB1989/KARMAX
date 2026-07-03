@@ -50,6 +50,17 @@ func (f *ManagerFactory) StopAll() {
 	}
 }
 
+// Managers returns every live manager (one per namespace), for maintenance.
+func (f *ManagerFactory) Managers() []*Manager {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	out := make([]*Manager, 0, len(f.managers))
+	for _, m := range f.managers {
+		out = append(out, m)
+	}
+	return out
+}
+
 func (f *ManagerFactory) List() []string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
