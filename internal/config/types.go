@@ -16,8 +16,9 @@ type KarmaxConfig struct {
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 }
 
-// ColdScanConfig controls the background "cold" memory worker that summarizes
-// older WhatsApp chats into chat_summaries for the retrieval sub-agent.
+// ColdScanConfig is DEPRECATED and ignored: cold-scan is now a marketplace
+// loop (karmax loops install cold-scan), configured via KARMAX_LOOP_COLD_SCAN_*
+// env keys. The struct remains only so older karmax.yaml files still parse.
 type ColdScanConfig struct {
 	Enabled          bool    `yaml:"enabled"`
 	IntervalMinutes  int     `yaml:"interval_minutes"`    // default 20
