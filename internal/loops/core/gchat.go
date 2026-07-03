@@ -112,12 +112,10 @@ func runGchatWatch(ctx context.Context, k loopkit.Kit) error {
 		"For EACH space:\n" +
 		"1. Read the recent messages: `" + gws + " chat spaces messages list --parent <space id> --page-size 15` (discover exact flags with --help if needed). Only consider messages newer than the given 'since' time, and ignore messages the operator themself sent (check senders; the operator is the authenticated account — their own asks to others are not for you).\n" +
 		"2. If someone asked the operator to do something ROUTINE that you can complete on this machine — e.g. close or merge a specific PR (`gh pr close`/`gh pr merge` in the right repo), share a link/file they already have, a quick factual answer, scheduling via `gws calendar` — DO IT NOW, then reply briefly in the space via `" + gws + " chat +send --help` (discover syntax) in the operator's casual human voice (never reveal you're an AI).\n" +
-		"3. If it's a real DECISION, production-destructive (force-push, deleting repos/branches others use), money, or ambiguous — do NOT act; flag it.\n" +
-		"4. Social chatter with no ask → skip.\n\n" +
-		"Output EXACTLY one line per space, no other text:\n" +
-		"ACTED <space name>: <what you did>\n" +
-		"APPROVE <space name>: <the ask + your suggested action>\n" +
-		"SKIP <space name>: <why>"
+		"3. If it's a real DECISION, production-destructive (force-push, deleting repos/branches others use), money, or ambiguous — do NOT act; flag it as APPROVE.\n" +
+		"4. If it's something ONLY the operator can personally do (attend something, provide a file/credential you don't have): flag it as REMIND.\n" +
+		"5. Social chatter with no ask → skip.\n\n" +
+		scanOutputSpec
 
 	out, err := k.Harness(ctx, prompt)
 	if err != nil {
@@ -133,22 +131,13 @@ func runGchatWatch(ctx context.Context, k loopkit.Kit) error {
 	}
 	saveGchatState(statePath, state)
 
-	var acted, approve []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		up := strings.ToUpper(line)
-		switch {
-		case strings.HasPrefix(up, "ACTED"):
-			acted = append(acted, strings.TrimSpace(line[5:]))
-		case strings.HasPrefix(up, "APPROVE"):
-			approve = append(approve, strings.TrimSpace(line[7:]))
-		}
-	}
-	k.Logf("gchat-watch: %d spaces — %d acted, %d need approval", len(work), len(acted), len(approve))
+	acted, approve, remind := parseScanOutcomes(out)
+	k.Logf("gchat-watch: %d spaces — %d acted, %d need approval, %d reminders", len(work), len(acted), len(approve), len(remind))
 	if len(acted) > 0 {
 		_ = k.Notify("✅ Handled on Google Chat", "• "+strings.Join(acted, "\n• "))
 	}
 	proposeItems(k, "Flagged by the gchat-watch loop from Google Chat activity.", approve)
+	remindItems(k, "Flagged by the gchat-watch loop: only you can do this one.", remind)
 	return nil
 }
 

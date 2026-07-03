@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,7 +44,6 @@ type KarmaxRuntime struct {
 	webhooks  *webhook.WebhookServer
 	comms     *comms.Manager
 	api       *api.Server
-	cold      *coldscan.Scanner
 
 	// loopkit runtime state (set by startLoopkitLoops)
 	loopkitLoops     map[string]loopkit.Loop
@@ -367,6 +367,27 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	}
 	coldScanner := coldscan.New(coldCfg, s, log)
 
+	// The cold-memory pipeline is a regular loopkit loop — scheduled from the
+	// cold_scan config, manually triggerable, and disableable via `karmax
+	// loops` — not a hardcoded background goroutine.
+	if coldCfg.Enabled {
+		loopkit.Register(loopkit.Loop{
+			Name:        "cold-scan",
+			Description: "Summarizes older ('cold') WhatsApp chats into per-chat memory for the retrieval sub-agent (cheaper summary model; interval/limits from the cold_scan config).",
+			Schedule:    loopkit.Every(fmt.Sprintf("%dm", coldScanner.IntervalMinutes())),
+			Run: func(ctx context.Context, k loopkit.Kit) error {
+				summarized, examined, err := coldScanner.Tick(ctx)
+				if err != nil {
+					return fmt.Errorf("cold-scan: %w", err)
+				}
+				if summarized > 0 || examined > 0 {
+					k.Logf("cold-scan: summarized %d chats (examined %d)", summarized, examined)
+				}
+				return nil
+			},
+		})
+	}
+
 	return &KarmaxRuntime{
 		cfg:       cfg,
 		log:       log,
@@ -380,7 +401,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		webhooks:  wh,
 		comms:     commsMgr,
 		api:       apiSrv,
-		cold:      coldScanner,
 	}, nil
 }
 
@@ -407,8 +427,6 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		rt.log.Error("agent start error", zap.Error(err))
 		rt.publishCritical("", "agent start error", map[string]any{"error": err.Error()})
 	}
-
-	go rt.cold.Start(ctx)
 
 	// Start health checks for all agents
 	for _, a := range rt.agents.List() {
@@ -467,9 +485,23 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// disabled, so stale entries don't reload and fire as duplicates.
 	rt.pruneStaleLoopJobs()
 
-	// Let the API run any loop on demand (manual trigger).
+	// Let the API run any loop on demand (manual trigger) and report the live
+	// loop list (the daemon's truth — includes runtime-registered loops).
 	if rt.api != nil {
 		rt.api.SetRunLoop(rt.RunLoopByName)
+		rt.api.SetListLoops(func() []api.LoopInfo {
+			out := make([]api.LoopInfo, 0, len(rt.loopkitLoops))
+			for _, l := range rt.loopkitLoops {
+				out = append(out, api.LoopInfo{
+					Name:        l.Name,
+					Description: l.Description,
+					Schedule:    l.Schedule.CronExpr(),
+					Webhook:     l.Webhook,
+				})
+			}
+			sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+			return out
+		})
 	}
 
 	var wg sync.WaitGroup

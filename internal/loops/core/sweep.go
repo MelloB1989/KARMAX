@@ -62,11 +62,9 @@ func runChatSweep(ctx context.Context, k loopkit.Kit) error {
 		fmt.Sprintf("1. Run: %s messages --chat \"<jid>\" --limit 20   (oldest-first; is_from_me=true is the operator)\n", wacli) +
 		"2. Determine whether something is pending on the OPERATOR'S side: an unanswered question to them, something they promised and haven't delivered, a deadline near, a follow-up they owe. Already-resolved threads or ones simply awaiting the OTHER person are NOT pending.\n" +
 		"3. If pending and ROUTINE (acknowledgement, confirming availability, a simple follow-up nudge, sharing already-known info) and you're confident how the operator would respond: act NOW — send with `" + wacli + " send --to \"<jid>\" --text \"...\"` in the operator's natural, human voice (concise; never reveal you're an AI).\n" +
-		"4. If it's a real DECISION, commitment, money, or anything sensitive/ambiguous: do NOT send — flag it.\n\n" +
-		"Output EXACTLY one line per chat, no other text:\n" +
-		"ACTED <chat name>: <what you sent/did>\n" +
-		"APPROVE <chat name>: <the pending item + your suggested reply>\n" +
-		"SKIP <chat name>: <why nothing is needed>"
+		"4. If it's a real DECISION, commitment, money, or anything sensitive/ambiguous: do NOT send — flag it as APPROVE.\n" +
+		"5. If the pending item is something ONLY the operator can personally do (send a document/file you don't have, a personal/family reply, an offline task): flag it as REMIND.\n\n" +
+		scanOutputSpec
 
 	out, err := k.Harness(ctx, prompt)
 	if err != nil {
@@ -76,23 +74,14 @@ func runChatSweep(ctx context.Context, k loopkit.Kit) error {
 		return fmt.Errorf("chat-sweep: harness returned error/refusal: %.120s", out)
 	}
 
-	var acted, approve []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		up := strings.ToUpper(line)
-		switch {
-		case strings.HasPrefix(up, "ACTED"):
-			acted = append(acted, strings.TrimSpace(line[5:]))
-		case strings.HasPrefix(up, "APPROVE"):
-			approve = append(approve, strings.TrimSpace(line[7:]))
-		}
-	}
-	k.Logf("chat-sweep: %d chats reviewed — %d acted, %d need approval", len(chats), len(acted), len(approve))
+	acted, approve, remind := parseScanOutcomes(out)
+	k.Logf("chat-sweep: %d chats reviewed — %d acted, %d need approval, %d reminders", len(chats), len(acted), len(approve), len(remind))
 
 	if len(acted) > 0 {
 		_ = k.Notify("✅ Handled while sweeping", "• "+strings.Join(acted, "\n• "))
 	}
 	proposeItems(k, "Flagged by the chat-sweep loop while reviewing monitored WhatsApp chats.", approve)
+	remindItems(k, "Flagged by the chat-sweep loop: only you can do this one.", remind)
 	return nil
 }
 

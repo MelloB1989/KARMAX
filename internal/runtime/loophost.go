@@ -300,6 +300,28 @@ func (k *loopKit) Propose(title, summary, action string) error {
 	return err
 }
 
+func (k *loopKit) Remind(title, due, notes string) error {
+	if strings.TrimSpace(title) == "" {
+		return fmt.Errorf("remind: title is required")
+	}
+	tool := &builtin.ReminderAddTool{Store: k.rt.store, AgentID: k.agentID}
+	input := map[string]any{"title": title}
+	if strings.TrimSpace(due) != "" {
+		input["due"] = due
+	}
+	if strings.TrimSpace(notes) != "" {
+		input["notes"] = notes
+	}
+	res, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return fmt.Errorf("remind: %s", res.Error)
+	}
+	return nil
+}
+
 func (k *loopKit) SendWhatsApp(_ context.Context, target, content string) error {
 	if k.rt.comms == nil {
 		return fmt.Errorf("comms manager unavailable")

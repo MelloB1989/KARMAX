@@ -886,6 +886,7 @@ func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg str
 			"3. Output EXACTLY one line, beginning with one of:\n" +
 			"   ACTED: <one line on what you sent/did>\n" +
 			"   APPROVE: <what it is + your suggested reply/action, for the operator>\n" +
+			"   REMIND: <something ONLY the operator can personally do — send a document/file you don't have, a personal reply, an offline task> | due: <ISO-8601 with timezone; omit '| due:' if no concrete deadline>\n" +
 			"   SKIP: <why nothing was needed>"
 		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "ephemeral": true})
 		if err != nil || res.IsError {
@@ -918,6 +919,31 @@ func (a *Agent) reportProxyOutcome(who, outcome string) {
 	switch {
 	case strings.HasPrefix(upper, "SKIP"):
 		a.log.Info("proxy: nothing needed", zap.String("chat", who))
+	case strings.HasPrefix(upper, "REMIND"):
+		// Only the operator can do this one — put it on their phone reminders
+		// (additive, no approval) instead of a fire-and-forget notification.
+		detail := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(outcome[len("REMIND"):]), ":"))
+		if detail == "" {
+			detail = outcome
+		}
+		due := ""
+		if head, tail, ok := strings.Cut(detail, "| due:"); ok {
+			detail = strings.TrimSpace(head)
+			due = strings.TrimSpace(tail)
+		}
+		title := detail
+		if len(title) > 100 {
+			title = title[:100] + "…"
+		}
+		tool := &builtin.ReminderAddTool{Store: a.store, AgentID: a.def.ID}
+		input := map[string]any{"title": title, "notes": "From " + who + " (flagged by the WhatsApp assistant): only you can do this one."}
+		if due != "" {
+			input["due"] = due
+		}
+		if res, err := tool.Execute(a.ctx, input); err != nil || res.IsError {
+			a.log.Warn("proxy: reminder create failed, falling back to notification", zap.Error(err))
+			builtin.PushAppNotification(a.store, a.def.ID, "alert", "⏰ You need to do this — "+who, detail)
+		}
 	case strings.HasPrefix(upper, "APPROVE"):
 		// A real decision goes to the APPROVALS inbox (actionable: approve →
 		// execute), not the notification feed. Fall back to a notification only

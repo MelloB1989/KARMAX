@@ -125,6 +125,60 @@ func proposeItems(k loopkit.Kit, source string, items []string) {
 	}
 }
 
+// scanOutputSpec is the shared output grammar scan loops ask the harness for.
+// Three actionable categories, each handled deterministically by the loop:
+// ACTED → informational notification, APPROVE → approvals inbox proposal,
+// REMIND → phone reminder created automatically.
+const scanOutputSpec = "Output EXACTLY one line per item, no other text:\n" +
+	"ACTED <who/what>: <what you sent/did>\n" +
+	"APPROVE <who/what>: <the open item + your suggested reply/action, for the operator to approve>\n" +
+	"REMIND <who/what>: <something ONLY the operator can personally do — send a document/file you don't have, reply in a personal chat, an offline task> | due: <ISO-8601 datetime with timezone; omit '| due:' entirely if there is no concrete deadline>\n" +
+	"SKIP <who/what>: <why nothing is needed>"
+
+// parseScanOutcomes splits harness scan output into the standard categories
+// (SKIP lines are dropped).
+func parseScanOutcomes(out string) (acted, approve, remind []string) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		up := strings.ToUpper(line)
+		switch {
+		case strings.HasPrefix(up, "ACTED"):
+			acted = append(acted, strings.TrimSpace(line[len("ACTED"):]))
+		case strings.HasPrefix(up, "APPROVE"):
+			approve = append(approve, strings.TrimSpace(line[len("APPROVE"):]))
+		case strings.HasPrefix(up, "REMIND"):
+			remind = append(remind, strings.TrimSpace(line[len("REMIND"):]))
+		}
+	}
+	return acted, approve, remind
+}
+
+// remindItems creates one phone reminder per REMIND item a loop surfaced
+// ("<who/what>: <what the operator must do> | due: <ISO>"). Reminders are
+// additive and need no approval; a failed create falls back to a notification
+// so the item is never lost.
+func remindItems(k loopkit.Kit, source string, items []string) {
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		due := ""
+		if head, tail, ok := strings.Cut(item, "| due:"); ok {
+			item = strings.TrimSpace(head)
+			due = strings.TrimSpace(tail)
+		}
+		title := item
+		if len(title) > 100 {
+			title = title[:100] + "…"
+		}
+		if err := k.Remind(title, due, source); err != nil {
+			k.Logf("remind failed for %q: %v (falling back to notification)", title, err)
+			_ = k.Notify("⏰ You need to do this yourself", item)
+		}
+	}
+}
+
 // agentTask returns a Run that delegates a fixed prompt to the main agent
 // (which has the tools — whatsapp.read, memory.ingest, profile.update, etc.).
 func agentTask(prompt string) func(context.Context, loopkit.Kit) error {
