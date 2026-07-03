@@ -53,6 +53,33 @@ provider credentials in `~/.karmax/.env` and review `~/.karmax/karmax.yaml`.
 > native CGO builds per OS — Linux amd64/arm64, a macOS universal binary, and
 > Windows amd64. Cut one by pushing a `v*` tag.
 
+### Code signing (optional)
+
+Builds are unsigned until you add the signing secrets, at which point the
+pipeline codesigns + notarizes automatically (no workflow edits). Add these in
+**Settings ▸ Secrets and variables ▸ Actions**:
+
+**macOS** (Developer ID + notarization — needs a paid Apple Developer account):
+| Secret | What it is |
+| --- | --- |
+| `MACOS_CERTIFICATE` | base64 of your *Developer ID Application* `.p12` |
+| `MACOS_CERTIFICATE_PWD` | the `.p12` export password |
+| `MACOS_SIGN_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
+| `MACOS_NOTARY_KEY` | base64 of the App Store Connect API key `.p8` |
+| `MACOS_NOTARY_KEY_ID` | the API key ID |
+| `MACOS_NOTARY_ISSUER_ID` | the API key issuer UUID |
+
+**Windows** (Authenticode — any OV/EV code-signing `.pfx`):
+| Secret | What it is |
+| --- | --- |
+| `WINDOWS_CERTIFICATE` | base64 of your code-signing `.pfx` |
+| `WINDOWS_CERTIFICATE_PWD` | the `.pfx` password |
+
+`base64 -w0 cert.p12` (Linux) or `base64 -i cert.p12` (macOS) produces the value.
+A bare CLI binary can't be *stapled*, so macOS notarization is verified online
+on first run; the macOS installer also clears the Gatekeeper quarantine, so it
+runs cleanly either way.
+
 ## Setup (from source)
 
 ### Prerequisites
