@@ -46,10 +46,11 @@ type Server struct {
 
 // LoopInfo describes one active loop for GET /api/loops.
 type LoopInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Schedule    string `json:"schedule"`
-	Webhook     string `json:"webhook,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Schedule    string   `json:"schedule"`
+	Webhook     string   `json:"webhook,omitempty"`
+	Events      []string `json:"events,omitempty"`
 }
 
 // SetRunLoop wires the manual loop-run callback (POST /api/loops/{name}/run).

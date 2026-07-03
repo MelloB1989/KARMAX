@@ -446,6 +446,7 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 					Description: l.Description,
 					Schedule:    l.Schedule.CronExpr(),
 					Webhook:     l.Webhook,
+					Events:      l.Events,
 				})
 			}
 			sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

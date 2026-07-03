@@ -47,6 +47,7 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 
 	rt.loopkitLoops = make(map[string]loopkit.Loop, len(loops))
 	rt.loopWebhooks = map[string]string{}
+	loopEvents := map[bus.EventKind][]string{} // event kind -> loop names
 	for _, l := range loops {
 		if yamlNames[l.Name] {
 			rt.log.Warn("loopkit loop name clashes with a yaml loop; skipping", zap.String("loop", l.Name))
@@ -85,6 +86,16 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 			}
 		}
 
+		// Event trigger → the loop fires on matching internal bus events
+		// (event-driven, no polling).
+		for _, ev := range l.Events {
+			if ev = strings.TrimSpace(ev); ev != "" {
+				kind := bus.EventKind(ev)
+				loopEvents[kind] = append(loopEvents[kind], l.Name)
+				triggers = append(triggers, "event("+ev+")")
+			}
+		}
+
 		rt.log.Info("registered loopkit loop", zap.String("loop", l.Name), zap.Strings("triggers", triggers))
 	}
 	if len(rt.loopkitLoops) == 0 {
@@ -115,6 +126,37 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 			}
 		}
 	}()
+
+	// Bus-event fires (only subscribe to the kinds some loop listens on).
+	if len(loopEvents) > 0 {
+		kinds := make([]bus.EventKind, 0, len(loopEvents))
+		for k := range loopEvents {
+			kinds = append(kinds, k)
+		}
+		subEvt, cancelEvt := rt.bus.Subscribe(kinds...)
+		go func() {
+			defer cancelEvt()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case evt, ok := <-subEvt.Ch:
+					if !ok {
+						return
+					}
+					payload := map[string]any{"event_kind": string(evt.Kind)}
+					for pk, pv := range evt.Payload {
+						payload[pk] = pv
+					}
+					for _, name := range loopEvents[evt.Kind] {
+						if l, found := rt.loopkitLoops[name]; found {
+							go rt.runLoopkitLoop(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: payload})
+						}
+					}
+				}
+			}
+		}()
+	}
 
 	// Webhook fires (only subscribe if some loop listens on a route).
 	if len(rt.loopWebhooks) > 0 {
