@@ -23,5 +23,6 @@ import (
 	_ "github.com/MelloB1989/karmax-loops/loops/memory-bootstrap"
 	_ "github.com/MelloB1989/karmax-loops/loops/gchat-watch"
 	_ "github.com/MelloB1989/karmax-loops/loops/cold-scan"
+	_ "github.com/MelloB1989/karmax-loops/loops/wa-monitor"
 	// karmax:loops:end
 )

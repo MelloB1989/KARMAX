@@ -89,6 +89,21 @@ func apiDo(method, path string, body any, timeout time.Duration) (map[string]any
 	return out, nil
 }
 
+// asStrList coerces a JSON field to a slice of strings.
+func asStrList(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // asList coerces a JSON field to a slice of objects.
 func asList(v any) []map[string]any {
 	arr, ok := v.([]any)
