@@ -15,6 +15,7 @@
       "infoPlist": {
         "NSCalendarsUsageDescription": "KARMAX adds your events and meetings to your calendar.",
         "NSRemindersFullAccessUsageDescription": "KARMAX sets reminders for you.",
+        "NSPhotoLibraryUsageDescription": "KARMAX uses the photo library only to let you copy and paste images through the clipboard.",
         "NSLocalNetworkUsageDescription": "KARMAX connects to your KARMAX daemon on your local network or Tailscale.",
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
