@@ -36,11 +36,20 @@
 //		})
 //	}
 //
-// # Installing a loop
+// # Installing and publishing loops
 //
-// KARMAX is statically compiled, so an installed loop is a Go module blank-
-// imported into the binary (its init() registers the loop). The `karmax loops`
-// TUI automates this: it runs `go get`, adds the import, rebuilds, and restarts.
+// KARMAX is statically compiled, so an installed loop is a Go package blank-
+// imported into the binary (its init() registers the loop). The loops
+// MARKETPLACE automates the whole lifecycle:
+//
+//	karmax loops new <name>       // scaffold boilerplate + manifest
+//	karmax loops publish <dir>    // validate + submit to the public registry
+//	karmax loops browse           // discover published loops
+//	karmax loops install <name>   // go get + import + rebuild + restart
+//	karmax loops remove <name>
+//
+// The registry is a public GitHub repo (default MelloB1989/karmax-loops, override
+// with $KARMAX_LOOPS_REGISTRY) rendered at https://mellob1989.github.io/karmax-loops/.
 package loopkit
 
 import (

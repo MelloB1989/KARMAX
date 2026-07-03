@@ -133,12 +133,30 @@ func InstalledModules(root string) ([]string, error) {
 
 // Install fetches a loop module, blank-imports it, and rebuilds KARMAX.
 func Install(root, module string) (string, error) {
+	return InstallWithPackage(root, module, module)
+}
+
+// karmaxModule is KARMAX's own module path; packages inside it (e.g. loops
+// hosted in this repo) are imported without a go get.
+const karmaxModule = "github.com/MelloB1989/karmax"
+
+// InstallWithPackage fetches module and blank-imports pkg (the loop's import
+// path, which may be a subpackage of module — e.g. a loop hosted in the
+// marketplace registry monorepo). It then rebuilds KARMAX.
+func InstallWithPackage(root, module, pkg string) (string, error) {
 	module = strings.TrimSpace(module)
-	if module == "" {
+	pkg = strings.TrimSpace(pkg)
+	if pkg == "" {
+		pkg = module
+	}
+	if module == "" || pkg == "" {
 		return "", fmt.Errorf("empty module path")
 	}
-	if strings.Contains(module, " ") {
-		return "", fmt.Errorf("invalid module path %q", module)
+	if strings.Contains(module, " ") || strings.Contains(pkg, " ") {
+		return "", fmt.Errorf("invalid module/package path %q %q", module, pkg)
+	}
+	if pkg != module && !strings.HasPrefix(pkg, module+"/") {
+		return "", fmt.Errorf("package %q is not inside module %q", pkg, module)
 	}
 	var log strings.Builder
 	goBin := GoBin()
@@ -151,10 +169,13 @@ func Install(root, module string) (string, error) {
 		}
 		return nil
 	}
-	if err := step("go get", goBin, "get", module); err != nil {
-		return log.String(), err
+	// A loop living inside KARMAX's own module needs no fetch.
+	if module != karmaxModule {
+		if err := step("go get", goBin, "get", module); err != nil {
+			return log.String(), err
+		}
 	}
-	if err := addImport(root, module); err != nil {
+	if err := addImport(root, pkg); err != nil {
 		return log.String(), err
 	}
 	if err := step("go mod tidy", goBin, "mod", "tidy"); err != nil {
@@ -162,7 +183,7 @@ func Install(root, module string) (string, error) {
 	}
 	if err := rebuild(root, &log); err != nil {
 		// roll back the import so a broken module doesn't wedge future builds
-		_ = removeImport(root, module)
+		_ = removeImport(root, pkg)
 		_, _ = run(root, "go", "mod", "tidy")
 		return log.String(), err
 	}

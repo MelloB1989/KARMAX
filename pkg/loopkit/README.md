@@ -66,10 +66,20 @@ Schedules: `loopkit.Cron("0 */15 * * * *")` (cron **with seconds**) or
 Loops depend **only** on this interface — never on KARMAX internals — so they
 stay decoupled and compile against just this package.
 
-## Publish
+## Publish to the marketplace
 
-Push your module to a public repo (e.g. `github.com/you/karmax-hn-digest`).
-That's it — there's no central registry to submit to.
+```bash
+karmax loops new my-loop       # scaffold: loop.go + loop.json manifest + README
+# implement Run(), fill in the description, then:
+karmax loops publish my-loop   # validates + compiles, then submits to the registry
+```
+
+The registry is a public GitHub repo (`$KARMAX_LOOPS_REGISTRY`, default
+`MelloB1989/karmax-loops`) rendered as a website at
+https://mellob1989.github.io/karmax-loops/. Your loop's code can live in the
+registry itself (default — no repo of your own needed) or in your own module
+(`karmax loops new my-loop --module github.com/you/karmax-my-loop`, then only
+the manifest is submitted). Consumers run `karmax loops install my-loop`.
 
 ## Install (for KARMAX operators)
 
