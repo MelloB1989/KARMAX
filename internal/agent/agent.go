@@ -919,7 +919,18 @@ func (a *Agent) reportProxyOutcome(who, outcome string) {
 	case strings.HasPrefix(upper, "SKIP"):
 		a.log.Info("proxy: nothing needed", zap.String("chat", who))
 	case strings.HasPrefix(upper, "APPROVE"):
-		builtin.PushAppNotification(a.store, a.def.ID, "alert", "🤔 Needs your decision — "+who, outcome)
+		// A real decision goes to the APPROVALS inbox (actionable: approve →
+		// execute), not the notification feed. Fall back to a notification only
+		// if the proposal can't be written, so it is never silently lost.
+		detail := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(outcome[len("APPROVE"):]), ":"))
+		if detail == "" {
+			detail = outcome
+		}
+		if _, err := builtin.CreateProposal(a.store, a.def.ID, "message",
+			"Decision — "+who, "The proactive WhatsApp assistant flagged this while handling a monitored chat.", detail, "normal"); err != nil {
+			a.log.Warn("proxy: proposal create failed, falling back to notification", zap.Error(err))
+			builtin.PushAppNotification(a.store, a.def.ID, "alert", "🤔 Needs your decision — "+who, outcome)
+		}
 	default: // ACTED or freeform
 		builtin.PushAppNotification(a.store, a.def.ID, "update", "✅ Handled — "+who, outcome)
 	}

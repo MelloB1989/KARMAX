@@ -292,6 +292,14 @@ func (k *loopKit) Notify(title, body string) error {
 	return nil
 }
 
+func (k *loopKit) Propose(title, summary, action string) error {
+	if strings.TrimSpace(title) == "" || strings.TrimSpace(action) == "" {
+		return fmt.Errorf("propose: title and action are required")
+	}
+	_, err := builtin.CreateProposal(k.rt.store, k.agentID, "task", title, summary, action, "normal")
+	return err
+}
+
 func (k *loopKit) SendWhatsApp(_ context.Context, target, content string) error {
 	if k.rt.comms == nil {
 		return fmt.Errorf("comms manager unavailable")

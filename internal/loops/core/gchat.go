@@ -148,9 +148,7 @@ func runGchatWatch(ctx context.Context, k loopkit.Kit) error {
 	if len(acted) > 0 {
 		_ = k.Notify("✅ Handled on Google Chat", "• "+strings.Join(acted, "\n• "))
 	}
-	if len(approve) > 0 {
-		_ = k.Notify("🤔 Needs your decision (Google Chat)", "• "+strings.Join(approve, "\n• "))
-	}
+	proposeItems(k, "Flagged by the gchat-watch loop from Google Chat activity.", approve)
 	return nil
 }
 

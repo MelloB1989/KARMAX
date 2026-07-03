@@ -55,7 +55,8 @@ Schedules: `loopkit.Cron("0 */15 * * * *")` (cron **with seconds**) or
 | `Harness(ctx, prompt)` | Run directly through the Claude Code CLI (web/file/shell) — great for web research, independent of the main model's rate limits. |
 | `Remember(fact)` | Store a durable fact in long-term memory. |
 | `Recall(query, limit)` | Semantic search over memory. |
-| `Notify(title, body)` | Push to the phone app (saved to the in-app feed **and** delivered as a push). |
+| `Notify(title, body)` | Push to the phone app (saved to the in-app feed **and** delivered as a push). Informational only. |
+| `Propose(title, summary, action)` | File a pending APPROVAL in the operator's approvals inbox (with a push). Use for anything needing a decision — on approval, `action` is handed to the agent to execute as written. |
 | `ReadWhatsApp(ctx, chat, limit)` | Recent WhatsApp messages (by chat name/JID, or "" for latest). |
 | `HTTP(ctx, method, url, headers, body)` | Make an HTTP request. |
 | `Config(key)` | Install-time value from `KARMAX_LOOP_<NAME>_<KEY>` env. |

@@ -92,9 +92,7 @@ func runChatSweep(ctx context.Context, k loopkit.Kit) error {
 	if len(acted) > 0 {
 		_ = k.Notify("✅ Handled while sweeping", "• "+strings.Join(acted, "\n• "))
 	}
-	if len(approve) > 0 {
-		_ = k.Notify("🤔 Needs your decision", "• "+strings.Join(approve, "\n• "))
-	}
+	proposeItems(k, "Flagged by the chat-sweep loop while reviewing monitored WhatsApp chats.", approve)
 	return nil
 }
 
