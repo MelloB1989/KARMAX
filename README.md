@@ -28,7 +28,32 @@ The core loop: **Sense → Propose → Approve → Act → Remember.**
 - **Loops** (`loops:` in `karmax.yaml`) — declarative scheduled prompts (tech news, hot-sync, profile refresh, daily briefing); the agent decides how to fulfil each.
 - **API** (`internal/api`) — bearer-auth HTTP API + mDNS discovery for the app.
 
-## Setup
+## Install (prebuilt)
+
+Each tagged release ships installers that drop the `karmax` binary and register
+a background service that starts on login and **restarts aggressively** if it
+ever stops — systemd (`Restart=always` + linger) on Linux, launchd `KeepAlive`
+on macOS, a hidden supervised Scheduled Task on Windows.
+
+**Linux / macOS**
+```bash
+curl -fsSL https://github.com/MelloB1989/KARMAX/releases/latest/download/install.sh | bash
+```
+
+**Windows** (PowerShell)
+```powershell
+irm https://github.com/MelloB1989/KARMAX/releases/latest/download/install.ps1 | iex
+```
+
+The binary lands in `~/.local/bin` (Linux/macOS) or `%LOCALAPPDATA%\KARMAX`
+(Windows); data and config live in `~/.karmax`. After installing, set your
+provider credentials in `~/.karmax/.env` and review `~/.karmax/karmax.yaml`.
+
+> Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml):
+> native CGO builds per OS — Linux amd64/arm64, a macOS universal binary, and
+> Windows amd64. Cut one by pushing a `v*` tag.
+
+## Setup (from source)
 
 ### Prerequisites
 - Go 1.22+ (CGO enabled — SQLite).

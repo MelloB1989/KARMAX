@@ -1,0 +1,160 @@
+name: release
+
+# Builds installable KARMAX binaries for Linux, macOS, and Windows and attaches
+# them (plus the curl-able bootstrap installers) to a GitHub Release.
+#
+# KARMAX needs CGO (SQLite), so every target is compiled on its native runner
+# rather than cross-compiled — the safest path for the data layer.
+#
+# Trigger: push a tag like `v0.3.0`, or run manually (Actions ▸ release ▸ Run
+# workflow) and enter the version to build a draft release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to build (e.g. v0.3.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.24.4'
+
+jobs:
+  # ---------------------------------------------------------------- Linux ----
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Install aarch64 cross toolchain
+        if: matrix.arch == 'arm64'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build
+        env:
+          CGO_ENABLED: '1'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          [ "${{ matrix.arch }}" = "arm64" ] && export CC=aarch64-linux-gnu-gcc
+          go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" -o dist/karmax ./cmd/karmax
+      - name: Package
+        run: |
+          mkdir -p out/karmax
+          cp dist/karmax           out/karmax/karmax
+          cp packaging/linux/install.sh out/karmax/install.sh
+          cp packaging/README-dist.md   out/karmax/README.md
+          chmod +x out/karmax/karmax out/karmax/install.sh
+          tar -C out -czf "karmax_linux_${{ matrix.arch }}.tar.gz" karmax
+      - uses: actions/upload-artifact@v4
+        with:
+          name: karmax_linux_${{ matrix.arch }}
+          path: karmax_linux_${{ matrix.arch }}.tar.gz
+
+  # ---------------------------------------------------------------- macOS ----
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build universal binary
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+            go build -trimpath -ldflags "$LDFLAGS" -o dist/karmax-arm64 ./cmd/karmax
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" \
+            go build -trimpath -ldflags "$LDFLAGS" -o dist/karmax-amd64 ./cmd/karmax
+          lipo -create -output dist/karmax dist/karmax-arm64 dist/karmax-amd64
+          lipo -info dist/karmax
+      - name: Package
+        run: |
+          mkdir -p out/karmax
+          cp dist/karmax           out/karmax/karmax
+          cp packaging/macos/install.sh out/karmax/install.sh
+          cp packaging/README-dist.md   out/karmax/README.md
+          chmod +x out/karmax/karmax out/karmax/install.sh
+          tar -C out -czf karmax_darwin_universal.tar.gz karmax
+      - uses: actions/upload-artifact@v4
+        with:
+          name: karmax_darwin_universal
+          path: karmax_darwin_universal.tar.gz
+
+  # -------------------------------------------------------------- Windows ----
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Ensure a C compiler (CGO)
+        shell: bash
+        run: |
+          if ! command -v gcc >/dev/null 2>&1; then
+            choco install mingw --no-progress -y
+            echo "C:/ProgramData/mingw64/mingw64/bin" >> "$GITHUB_PATH"
+            echo "C:/tools/mingw64/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Verify gcc
+        shell: bash
+        run: gcc --version
+      - name: Build
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" -o dist/karmax.exe ./cmd/karmax
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out/karmax | Out-Null
+          Copy-Item dist/karmax.exe             out/karmax/karmax.exe
+          Copy-Item packaging/windows/install.ps1 out/karmax/install.ps1
+          Copy-Item packaging/README-dist.md      out/karmax/README.md
+          Compress-Archive -Path out/karmax -DestinationPath karmax_windows_amd64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: karmax_windows_amd64
+          path: karmax_windows_amd64.zip
+
+  # -------------------------------------------------------------- Release ----
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
+          cp packaging/bootstrap/install.sh  release/install.sh
+          cp packaging/bootstrap/install.ps1 release/install.ps1
+          ( cd release && sha256sum ./* > checksums.txt )
+          ls -la release
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: KARMAX ${{ github.event.inputs.version || github.ref_name }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          generate_release_notes: true
+          files: release/*
