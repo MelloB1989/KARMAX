@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
-	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -665,7 +664,6 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	if evt.Kind == bus.EventCommsMessage && a.commsSend != nil {
 		userMsg, _ := evt.Payload["content"].(string)
 		chatID, _ := evt.Payload["channel_id"].(string)
-		karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
 		senderName, _ := evt.Payload["sender_name"].(string)
 		if senderName == "" {
 			senderName, _ = evt.Payload["chat_name"].(string)
@@ -673,18 +671,13 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		isGroup, _ := evt.Payload["is_group"].(bool)
 
 		if !a.isFromOperator(chatID) {
-			// PROACTIVE PROXY: a monitored chat (DM or group) had a message. Skip
-			// only trivial acks (save tokens). Groups ARE handled — just more
-			// conservatively (the proxy replies only when the operator is
-			// actually addressed, and flags important updates otherwise).
-			if karmaxChannelID == "" || isTrivialMessage(userMsg) {
-				a.ingestInteractionMemory(a.ctx, evt, userMsg, "[monitored: no action]")
-				return nil
-			}
-			a.log.Info("proactive proxy for monitored chat",
-				zap.String("chat", chatID), zap.String("from", senderName), zap.Bool("group", isGroup))
-			a.delegateProxyTask(karmaxChannelID, chatID, senderName, userMsg, isGroup)
-			a.ingestInteractionMemory(a.ctx, evt, userMsg, "[proxy handling]")
+			// MONITORED (non-operator) chat: the agent core does NOT handle it.
+			// The event-triggered wa-monitor marketplace loop subscribes to
+			// comms.message and runs the proactive proxy — event-driven, no
+			// polling, and no main-model tokens spent here.
+			a.log.Debug("monitored chat message left to event loops",
+				zap.String("chat", chatID), zap.String("from", senderName),
+				zap.Bool("group", isGroup), zap.Int("len", len(userMsg)))
 			return nil
 		}
 
@@ -842,176 +835,6 @@ func (a *Agent) startAckWatchdog(evt bus.Event) func() {
 	var once sync.Once
 	return func() { once.Do(func() { close(done) }) }
 }
-
-// delegateProxyTask runs proactive-assistant handling for a message from a
-// monitored third party: claude_code reads the chat context and either acts on
-// the operator's behalf (routine replies/scheduling) or flags a decision for the
-// operator's approval. The operator is always informed of the outcome.
-func (a *Agent) delegateProxyTask(channelID, chatID, senderName, incomingMsg string, isGroup bool) {
-	who := senderName
-	if who == "" {
-		who = chatID
-	}
-	go func() {
-		cc := &builtin.ClaudeCodeTool{Store: a.store, AgentID: a.def.ID, Namespace: a.def.Memory.Namespace}
-		wacli := hostpaths.Wacli()
-
-		operator := "the operator"
-		if len(a.operatorChats) > 0 {
-			ids := make([]string, 0, len(a.operatorChats))
-			for id := range a.operatorChats {
-				ids = append(ids, id)
-			}
-			operator = "the operator (their own numbers/JIDs: " + strings.Join(ids, ", ") + ")"
-		}
-
-		context := "A monitored 1:1 chat just messaged " + operator + "."
-		policy := "   - If a reply/action is ROUTINE and you're confident how the operator would respond (acknowledgements, simple scheduling, sharing already-known info, confirming availability), DO IT NOW: send with `" + wacli + " send --to " + chatID + " --text \"...\"` in the operator's natural human voice (concise; never say you're an AI/assistant). Use the `gws` CLI for calendar/email if clearly asked.\n" +
-			"   - If it involves a real DECISION, a commitment, money, or anything sensitive/ambiguous, or you're not confident → DO NOT send anything; flag it.\n"
-		if isGroup {
-			context = "A monitored GROUP chat just had a new message. " + operator + " is a member."
-			policy = "   - This is a GROUP. Only SEND a reply if the operator is directly addressed — @-mentioned, or asked a question they clearly must answer. Reply via `" + wacli + " send --to " + chatID + " --text \"...\"` in the operator's casual voice, and only for genuinely routine/known answers.\n" +
-				"   - Do NOT reply to general group discussion or messages meant for other members.\n" +
-				"   - If the message is a meaningful update on an active project/deal/commitment (e.g. a client saying they'll get back, a deadline, a decision) but needs no reply, treat it as APPROVE so the operator sees it — do not silently skip important client/deal activity.\n" +
-				"   - Only truly irrelevant chatter is SKIP.\n"
-		}
-
-		prompt := "You are the proactive WhatsApp assistant managing the operator's WhatsApp account via the wacli CLI. " + context + "\n\n" +
-			"Chat: " + who + "\n" +
-			"Chat id: " + chatID + "\n" +
-			"Latest message: " + incomingMsg + "\n\n" +
-			"Steps:\n" +
-			"1. Read recent context: run `" + wacli + " messages --chat " + chatID + " --limit 15` (newest last). If it's already handled/answered and nothing new is needed, do nothing.\n" +
-			"2. Decide on the operator's behalf:\n" + policy +
-			"3. Output EXACTLY one line, beginning with one of:\n" +
-			"   ACTED: <one line on what you sent/did>\n" +
-			"   APPROVE: <what it is + your suggested reply/action, for the operator>\n" +
-			"   REMIND: <something ONLY the operator can personally do — send a document/file you don't have, a personal reply, an offline task> | due: <ISO-8601 with timezone; omit '| due:' if no concrete deadline>\n" +
-			"   SKIP: <why nothing was needed>"
-		res, err := cc.Execute(a.ctx, map[string]any{"prompt": prompt, "ephemeral": true})
-		if err != nil || res.IsError {
-			// Never fail silently: the operator must know a monitored message
-			// went unhandled (especially while they sleep).
-			a.log.Warn("proxy delegation failed", zap.String("chat", chatID), zap.Error(err))
-			builtin.PushAppNotification(a.store, a.def.ID, "alert",
-				"⚠️ Couldn't handle — "+who,
-				"A monitored message needs you (assistant failed): "+truncateForLog(incomingMsg, 200))
-			return
-		}
-		a.reportProxyOutcome(who, claudeResultSummary(res))
-	}()
-}
-
-// reportProxyOutcome tells the operator what the proactive assistant did or what
-// it needs a decision on. SKIP outcomes are silent (nothing worth surfacing).
-func (a *Agent) reportProxyOutcome(who, outcome string) {
-	outcome = strings.TrimSpace(outcome)
-	if outcome == "" {
-		return
-	}
-	if looksLikeHarnessError(outcome) {
-		// e.g. "You've hit your session limit" — a failure, not a result.
-		builtin.PushAppNotification(a.store, a.def.ID, "alert",
-			"⚠️ Couldn't handle — "+who, "Assistant unavailable ("+truncateForLog(outcome, 120)+"); the message is unhandled.")
-		return
-	}
-	upper := strings.ToUpper(outcome)
-	switch {
-	case strings.HasPrefix(upper, "SKIP"):
-		a.log.Info("proxy: nothing needed", zap.String("chat", who))
-	case strings.HasPrefix(upper, "REMIND"):
-		// Only the operator can do this one — put it on their phone reminders
-		// (additive, no approval) instead of a fire-and-forget notification.
-		detail := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(outcome[len("REMIND"):]), ":"))
-		if detail == "" {
-			detail = outcome
-		}
-		due := ""
-		if head, tail, ok := strings.Cut(detail, "| due:"); ok {
-			detail = strings.TrimSpace(head)
-			due = strings.TrimSpace(tail)
-		}
-		title := detail
-		if len(title) > 100 {
-			title = title[:100] + "…"
-		}
-		tool := &builtin.ReminderAddTool{Store: a.store, AgentID: a.def.ID}
-		input := map[string]any{"title": title, "notes": "From " + who + " (flagged by the WhatsApp assistant): only you can do this one."}
-		if due != "" {
-			input["due"] = due
-		}
-		if res, err := tool.Execute(a.ctx, input); err != nil || res.IsError {
-			a.log.Warn("proxy: reminder create failed, falling back to notification", zap.Error(err))
-			builtin.PushAppNotification(a.store, a.def.ID, "alert", "⏰ You need to do this — "+who, detail)
-		}
-	case strings.HasPrefix(upper, "APPROVE"):
-		// A real decision goes to the APPROVALS inbox (actionable: approve →
-		// execute), not the notification feed. Fall back to a notification only
-		// if the proposal can't be written, so it is never silently lost.
-		detail := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(outcome[len("APPROVE"):]), ":"))
-		if detail == "" {
-			detail = outcome
-		}
-		if _, err := builtin.CreateProposal(a.store, a.def.ID, "message",
-			"Decision — "+who, "The proactive WhatsApp assistant flagged this while handling a monitored chat.", detail, "normal"); err != nil {
-			a.log.Warn("proxy: proposal create failed, falling back to notification", zap.Error(err))
-			builtin.PushAppNotification(a.store, a.def.ID, "alert", "🤔 Needs your decision — "+who, outcome)
-		}
-	default: // ACTED or freeform
-		builtin.PushAppNotification(a.store, a.def.ID, "update", "✅ Handled — "+who, outcome)
-	}
-}
-
-// looksLikeHarnessError detects harness output that is an error/limit message
-// rather than a real result (the CLI prints these to stdout with exit 0).
-func looksLikeHarnessError(s string) bool {
-	low := strings.ToLower(strings.TrimSpace(s))
-	return strings.HasPrefix(low, "api error") ||
-		strings.HasPrefix(low, "error:") ||
-		strings.Contains(low, "session limit") ||
-		strings.Contains(low, "usage limit") ||
-		strings.Contains(low, "rate limit") ||
-		strings.Contains(low, "safeguards flagged")
-}
-
-// isTrivialMessage reports whether an incoming message is too trivial to warrant
-// spinning up the proactive assistant (acks, emoji, one-word replies).
-func isTrivialMessage(s string) bool {
-	t := strings.TrimSpace(s)
-	if t == "" || len([]rune(t)) <= 3 {
-		return true
-	}
-	switch strings.ToLower(t) {
-	case "ok", "okay", "okk", "thanks", "thank you", "thx", "ty", "cool", "nice",
-		"great", "done", "haha", "lol", "yep", "nope", "sure", "fine", "hmm", "hmmm":
-		return true
-	}
-	return false
-}
-
-// claudeResultSummary extracts a concise user-facing summary from a claude_code
-// tool result — its final non-empty output line (claude_code is instructed to
-// end with a one-sentence summary), truncated for WhatsApp.
-func claudeResultSummary(res tools.ToolResult) string {
-	out, _ := res.Output.(map[string]any)
-	text, _ := out["output"].(string)
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	lines := strings.Split(text, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if s := strings.TrimSpace(lines[i]); s != "" {
-			text = s
-			break
-		}
-	}
-	if len(text) > 600 {
-		text = text[:600] + "…"
-	}
-	return text
-}
-
 
 // Chat processes a single synchronous user message through the agent's main
 // model and returns the reply. It refreshes long-term memory on every message

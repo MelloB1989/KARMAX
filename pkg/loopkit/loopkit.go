@@ -101,6 +101,13 @@ type Loop struct {
 	// webhook route receives a request. The request body/headers are available
 	// via Kit.Trigger().Payload. Optional.
 	Webhook string
+	// Events, when set, fires the loop on matching internal bus events —
+	// making the loop EVENT-DRIVEN instead of polling. The event's payload is
+	// available via Kit.Trigger().Payload (plus "event_kind"). The most useful
+	// kind is "comms.message": every incoming chat message (WhatsApp etc.)
+	// delivered to KARMAX, with content/channel_id/sender_name/is_group keys.
+	// Optional.
+	Events []string
 	// Run does the work. It receives a per-run context (honor cancellation/
 	// timeout) and the Kit capability API. Return an error to log a failed run.
 	Run func(ctx context.Context, k Kit) error
@@ -110,6 +117,7 @@ type Loop struct {
 const (
 	TriggerSchedule = "schedule"
 	TriggerWebhook  = "webhook"
+	TriggerEvent    = "event"
 	TriggerManual   = "manual"
 )
 
