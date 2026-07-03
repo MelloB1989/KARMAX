@@ -1,6 +1,23 @@
 package loopkit
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// ChatSummaryRecord is the durable per-chat "cold memory" summary that powers
+// the memory retrieval sub-agent. The cold-scan loop is the main writer.
+type ChatSummaryRecord struct {
+	ChatJID         string
+	ChatName        string
+	IsGroup         bool
+	Summary         string
+	MessageCount    int
+	OwnMessageCount int
+	LastMessageAt   time.Time
+	SummarizedAt    time.Time
+	Status          string // pending | summarized | hot | skipped
+}
 
 // Kit is the capability surface a loop receives when it runs. KARMAX implements
 // it and passes it to Loop.Run. Loop authors depend ONLY on this interface, not
@@ -77,4 +94,21 @@ type Kit interface {
 	// RunLoop triggers another registered loop by name (manual trigger). Lets a
 	// loop hand work to a dedicated loop rather than doing it inline.
 	RunLoop(name string) error
+
+	// HostTool resolves a host-side dependency KARMAX knows about: "wacli" and
+	// "gws" return binary paths (env override → PATH → well-known locations),
+	// "karmax" the KARMAX CLI itself, and "wacli-api" the local wacli HTTP API
+	// base URL. Returns the bare name when it cannot resolve further.
+	HostTool(name string) string
+
+	// Summarize runs a prompt through the agent's cheap SUMMARY model (not the
+	// main model) — use it for bulk distillation that shouldn't burn the main
+	// model's budget. No tools, no memory: prompt in, text out.
+	Summarize(ctx context.Context, prompt string) (string, error)
+
+	// ChatSummary returns the stored cold-memory summary for a chat JID (nil if
+	// none); SaveChatSummary creates/updates one. These records feed the memory
+	// retrieval sub-agent's per-chat context.
+	ChatSummary(jid string) (*ChatSummaryRecord, error)
+	SaveChatSummary(rec ChatSummaryRecord) error
 }

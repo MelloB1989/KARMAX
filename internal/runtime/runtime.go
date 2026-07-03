@@ -8,12 +8,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/bus"
-	"github.com/MelloB1989/karmax/internal/coldscan"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/comms/discord"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
@@ -26,7 +24,6 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/webhook"
-	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
@@ -339,54 +336,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			s.AppendEvent(evt.ID, string(evt.Kind), evt.AgentID, evt.Payload, evt.Meta)
 		}
 	}()
-
-	// Cold-memory background worker: summarizes older WhatsApp chats into
-	// chat_summaries for the retrieval sub-agent (uses the cheaper summary model).
-	coldCfg := coldscan.Config{
-		Enabled:          cfg.ColdScan.Enabled,
-		Interval:         time.Duration(cfg.ColdScan.IntervalMinutes) * time.Minute,
-		PerTick:          cfg.ColdScan.PerTick,
-		HotDays:          cfg.ColdScan.HotDays,
-		MinGroupOwn:      cfg.ColdScan.MinGroupOwn,
-		MinGroupOwnRatio: cfg.ColdScan.MinGroupOwnRatio,
-		WacliPath:        cfg.ColdScan.WacliPath,
-	}
-	if len(cfg.Agents) > 0 {
-		a := cfg.Agents[0]
-		coldCfg.Provider = a.SummaryModel.Provider
-		if coldCfg.Provider == "" {
-			coldCfg.Provider = a.Provider
-		}
-		coldCfg.Model = a.SummaryModel.Model
-		if coldCfg.Model == "" {
-			coldCfg.Model = a.Model
-		}
-		for _, fb := range a.FallbackModels {
-			coldCfg.Fallbacks = append(coldCfg.Fallbacks, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
-		}
-	}
-	coldScanner := coldscan.New(coldCfg, s, log)
-
-	// The cold-memory pipeline is a regular loopkit loop — scheduled from the
-	// cold_scan config, manually triggerable, and disableable via `karmax
-	// loops` — not a hardcoded background goroutine.
-	if coldCfg.Enabled {
-		loopkit.Register(loopkit.Loop{
-			Name:        "cold-scan",
-			Description: "Summarizes older ('cold') WhatsApp chats into per-chat memory for the retrieval sub-agent (cheaper summary model; interval/limits from the cold_scan config).",
-			Schedule:    loopkit.Every(fmt.Sprintf("%dm", coldScanner.IntervalMinutes())),
-			Run: func(ctx context.Context, k loopkit.Kit) error {
-				summarized, examined, err := coldScanner.Tick(ctx)
-				if err != nil {
-					return fmt.Errorf("cold-scan: %w", err)
-				}
-				if summarized > 0 || examined > 0 {
-					k.Logf("cold-scan: summarized %d chats (examined %d)", summarized, examined)
-				}
-				return nil
-			},
-		})
-	}
 
 	return &KarmaxRuntime{
 		cfg:       cfg,

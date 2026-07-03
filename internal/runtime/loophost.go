@@ -15,9 +15,11 @@ import (
 	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
+	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/webhook"
+	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
@@ -188,10 +190,7 @@ func (rt *KarmaxRuntime) runLoopkitLoop(parent context.Context, l loopkit.Loop, 
 	if len(rt.cfg.Agents) > 0 && rt.cfg.Agents[0].Memory.Namespace != "" {
 		ns = rt.cfg.Agents[0].Memory.Namespace
 	}
-	wacliPath := rt.cfg.ColdScan.WacliPath
-	if wacliPath == "" {
-		wacliPath = hostpaths.Wacli()
-	}
+	wacliPath := hostpaths.Wacli()
 
 	k := &loopKit{
 		loopName:  l.Name,
@@ -374,6 +373,75 @@ func (k *loopKit) HTTP(ctx context.Context, method, url string, headers map[stri
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // 8MB safety cap
 	return string(b), resp.StatusCode, nil
+}
+
+func (k *loopKit) HostTool(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "wacli":
+		if k.wacliPath != "" {
+			return k.wacliPath
+		}
+		return hostpaths.Wacli()
+	case "gws":
+		return hostpaths.GWS()
+	case "karmax":
+		return hostpaths.KarmaxBin()
+	case "wacli-api":
+		return hostpaths.WacliAPIURL()
+	default:
+		return name
+	}
+}
+
+// Summarize runs a prompt through the first agent's summary model (falling
+// back to its main model config), with the agent's fallback chain.
+func (k *loopKit) Summarize(ctx context.Context, prompt string) (string, error) {
+	if len(k.rt.cfg.Agents) == 0 {
+		return "", fmt.Errorf("no agent configured")
+	}
+	a := k.rt.cfg.Agents[0]
+	provider, model := a.SummaryModel.Provider, a.SummaryModel.Model
+	if provider == "" {
+		provider = a.Provider
+	}
+	if model == "" {
+		model = a.Model
+	}
+	var fallbacks []karmahelper.FallbackModel
+	for _, fb := range a.FallbackModels {
+		fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
+	}
+	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Provider:       provider,
+		Model:          model,
+		MaxTokens:      1200,
+		FallbackModels: fallbacks,
+	}, nil)
+	resp, _, _, err := sess.Chat(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(karmahelper.CleanContent(resp)), nil
+}
+
+func (k *loopKit) ChatSummary(jid string) (*loopkit.ChatSummaryRecord, error) {
+	cs, err := k.rt.store.GetChatSummary(jid)
+	if err != nil || cs == nil {
+		return nil, err
+	}
+	return &loopkit.ChatSummaryRecord{
+		ChatJID: cs.ChatJID, ChatName: cs.ChatName, IsGroup: cs.IsGroup,
+		Summary: cs.Summary, MessageCount: cs.MessageCount, OwnMessageCount: cs.OwnMessageCount,
+		LastMessageAt: cs.LastMessageAt, SummarizedAt: cs.SummarizedAt, Status: cs.Status,
+	}, nil
+}
+
+func (k *loopKit) SaveChatSummary(rec loopkit.ChatSummaryRecord) error {
+	return k.rt.store.UpsertChatSummary(store.ChatSummary{
+		ChatJID: rec.ChatJID, ChatName: rec.ChatName, IsGroup: rec.IsGroup,
+		Summary: rec.Summary, MessageCount: rec.MessageCount, OwnMessageCount: rec.OwnMessageCount,
+		LastMessageAt: rec.LastMessageAt, SummarizedAt: rec.SummarizedAt, Status: rec.Status,
+	})
 }
 
 // Config reads an install-time value from the environment, namespaced per loop:
