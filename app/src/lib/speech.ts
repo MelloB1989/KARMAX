@@ -1,8 +1,34 @@
+import {
+  AVAudioSessionCategory,
+  AVAudioSessionMode,
+  ExpoSpeechRecognitionModule,
+} from 'expo-speech-recognition';
 import * as SecureStore from 'expo-secure-store';
 import * as Speech from 'expo-speech';
+import { Platform } from 'react-native';
 import { create } from 'zustand';
 
 const AUTOSPEAK_KEY = 'karmax.autoSpeak';
+
+// primeAudioForPlayback fixes quiet / inaudible TTS on iOS. Two things make
+// expo-speech play too softly: (1) the default audio session routes through the
+// quiet earpiece receiver and obeys the mute switch, and (2) after dictation,
+// expo-speech-recognition leaves the shared session in a `record` category.
+// Switching to the `playback` category routes TTS to the loud bottom speaker
+// and plays even when the ringer is on silent. No-op off iOS (and harmless if
+// the native module isn't in the current build).
+function primeAudioForPlayback(): void {
+  if (Platform.OS !== 'ios') return;
+  try {
+    ExpoSpeechRecognitionModule.setCategoryIOS({
+      category: AVAudioSessionCategory.playback,
+      categoryOptions: [],
+      mode: AVAudioSessionMode.spokenAudio,
+    });
+  } catch {
+    // native module unavailable (web / older build) — ignore
+  }
+}
 
 // speakable strips markdown so the TTS engine reads clean prose instead of
 // symbols ("#", "*", backticks, link syntax, code fences).
@@ -48,11 +74,20 @@ export const useSpeech = create<SpeechState>((set, get) => ({
     const body = speakable(text);
     if (!body) return;
     Speech.stop();
+    // Route to the loud speaker at full volume before speaking (see above).
+    primeAudioForPlayback();
     set({ speakingId: id });
     const clear = () => {
       if (get().speakingId === id) set({ speakingId: null });
     };
-    Speech.speak(body, { rate: 1.0, pitch: 1.0, onDone: clear, onStopped: clear, onError: clear });
+    Speech.speak(body, {
+      rate: 1.0,
+      pitch: 1.0,
+      volume: 1.0,
+      onDone: clear,
+      onStopped: clear,
+      onError: clear,
+    });
   },
 
   stop: () => {
