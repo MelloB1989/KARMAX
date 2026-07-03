@@ -47,7 +47,6 @@ func NewManager(agentID, namespace, baseDir string, db *store.Store, log *zap.Lo
 
 	m.loadTree()
 	go m.reindexWorker()
-	go m.maintenanceWorker()
 
 	return m
 }
@@ -312,28 +311,6 @@ func (m *Manager) reindexWorker() {
 			m.rebuildTree()
 			m.dirty = false
 			m.mu.Unlock()
-		}
-	}
-}
-
-// maintenanceWorker runs the memory's forgetting curve on a slow cadence: it
-// drops expired memories and, when a namespace grows past its capacity cap,
-// forgets the least-valuable non-pinned entries.
-func (m *Manager) maintenanceWorker() {
-	// Run once shortly after boot, then hourly.
-	first := time.NewTimer(2 * time.Minute)
-	defer first.Stop()
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-m.stopCh:
-			return
-		case <-first.C:
-			m.Maintain()
-		case <-ticker.C:
-			m.Maintain()
 		}
 	}
 }

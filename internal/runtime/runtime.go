@@ -206,6 +206,26 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 
+	// Memory upkeep (the forgetting curve: TTL pruning + capacity cap) is a
+	// regular loop — visible, disableable, and manually triggerable — not a
+	// hidden goroutine. It needs the memory managers, so the runtime registers
+	// it here rather than the marketplace hosting it.
+	loopkit.Register(loopkit.Loop{
+		Name:        "memory-maintenance",
+		Description: "Hourly forgetting pass over every memory namespace: prunes TTL-expired facts and enforces the capacity cap (least-valuable, non-pinned entries go first).",
+		Schedule:    loopkit.Every("1h"),
+		Run: func(ctx context.Context, k loopkit.Kit) error {
+			removed := 0
+			for _, m := range memFactory.Managers() {
+				removed += m.Maintain()
+			}
+			if removed > 0 {
+				k.Logf("memory-maintenance: forgot %d entries", removed)
+			}
+			return nil
+		},
+	})
+
 	agentReg := agent.NewRegistry(b, s, log)
 
 	for _, agentCfg := range cfg.Agents {

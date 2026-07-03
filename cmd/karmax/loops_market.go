@@ -48,6 +48,8 @@ type loopManifest struct {
 	Repo        string           `json:"repo,omitempty"`    // human URL to the code
 	Tags        []string         `json:"tags,omitempty"`
 	Schedule    string           `json:"schedule,omitempty"` // informational: cron/interval the loop registers
+	Events      []string         `json:"events,omitempty"`   // informational: bus events the loop fires on
+	WebhookPath string           `json:"webhook,omitempty"`  // informational: webhook route the loop fires on
 	Config      []loopConfigItem `json:"config,omitempty"`   // install-time env keys (KARMAX_LOOP_<NAME>_<KEY>)
 }
 
@@ -204,6 +206,12 @@ func newLoopsInfoCmd() *cobra.Command {
 			fmt.Printf("%s v%s — by %s\n\n%s\n\n", m.Name, m.Version, m.Author, m.Description)
 			if m.Schedule != "" {
 				fmt.Printf("schedule: %s\n", m.Schedule)
+			}
+			if len(m.Events) > 0 {
+				fmt.Printf("events:   %s\n", strings.Join(m.Events, ", "))
+			}
+			if m.WebhookPath != "" {
+				fmt.Printf("webhook:  %s\n", m.WebhookPath)
 			}
 			if len(m.Tags) > 0 {
 				fmt.Printf("tags:     %s\n", strings.Join(m.Tags, ", "))
