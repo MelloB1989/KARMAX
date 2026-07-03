@@ -69,7 +69,23 @@ func newLoopsCmd() *cobra.Command {
 				live := asList(out["loops"])
 				fmt.Printf("Active loops (%d):\n", len(live))
 				for _, l := range live {
-					fmt.Printf("  • %-20s [%s]  %s\n", asStr(l["name"]), asStr(l["schedule"]), asStr(l["description"]))
+					trig := asStr(l["schedule"])
+					if evs := asStrList(l["events"]); len(evs) > 0 {
+						if trig != "" {
+							trig += " + "
+						}
+						trig += "event:" + strings.Join(evs, ",")
+					}
+					if wh := asStr(l["webhook"]); wh != "" {
+						if trig != "" {
+							trig += " + "
+						}
+						trig += "webhook:" + wh
+					}
+					if trig == "" {
+						trig = "manual"
+					}
+					fmt.Printf("  • %-20s [%s]  %s\n", asStr(l["name"]), trig, asStr(l["description"]))
 				}
 			} else {
 				loops := loopkit.Registered()
