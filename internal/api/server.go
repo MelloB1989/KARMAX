@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -917,23 +916,14 @@ func (s *Server) resolveAgent(id string) *agent.Agent {
 	return s.defaultAgent()
 }
 
-// localAddresses returns the http base URLs for every non-loopback IPv4 the
-// host has, so a connected client can learn all the ways to reach KARMAX
-// (LAN + Tailscale) after first contact.
+// localAddresses returns the http base URLs a client can use to reach KARMAX
+// after first contact: the stable mDNS name plus the host's real LAN IPv4s
+// (physical WiFi/Ethernet — docker/bridge/VPN interfaces are excluded, since a
+// phone on the same WiFi can't reach those and would just waste probes on them).
 func localAddresses(port int) []string {
-	var out []string
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return out
-	}
-	for _, a := range addrs {
-		ipnet, ok := a.(*net.IPNet)
-		if !ok || ipnet.IP.IsLoopback() {
-			continue
-		}
-		if ip4 := ipnet.IP.To4(); ip4 != nil {
-			out = append(out, fmt.Sprintf("http://%s:%d", ip4.String(), port))
-		}
+	out := []string{fmt.Sprintf("http://%s.local:%d", mdnsHost(), port)}
+	for _, ip := range localIPv4s() {
+		out = append(out, fmt.Sprintf("http://%s:%d", ip, port))
 	}
 	return out
 }
