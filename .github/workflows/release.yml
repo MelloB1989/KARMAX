@@ -79,6 +79,11 @@ jobs:
             go build -trimpath -ldflags "$LDFLAGS" -o dist/karmax-amd64 ./cmd/karmax
           lipo -create -output dist/karmax dist/karmax-arm64 dist/karmax-amd64
           lipo -info dist/karmax
+          # Ad-hoc sign the fat binary: lipo can invalidate the per-slice
+          # signatures Go applies, which makes Apple Silicon refuse to run it.
+          # The Developer ID step below replaces this with a real signature when
+          # the signing secrets are present.
+          codesign --force --sign - dist/karmax
       # Signing + notarization run only when the certificate secrets exist, so
       # the build still produces (unsigned) binaries before you add them.
       - name: Detect signing secrets

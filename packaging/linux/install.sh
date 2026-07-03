@@ -14,13 +14,18 @@
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_SRC="$SELF_DIR/karmax"
 PREFIX="${KARMAX_PREFIX:-$HOME/.local/bin}"
 DATA_DIR="${KARMAX_DATA_DIR:-$HOME/.karmax}"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT="$UNIT_DIR/karmax.service"
 
-[ -f "$BIN_SRC" ] || { echo "error: karmax binary not found next to this script ($BIN_SRC)" >&2; exit 1; }
+# Locate the karmax binary: next to this script (release archive), at the repo
+# root when run from a source checkout after `make build`, or in the cwd.
+BIN_SRC=""
+for c in "$SELF_DIR/karmax" "$SELF_DIR/../../karmax" "$PWD/karmax"; do
+	if [ -f "$c" ]; then BIN_SRC="$(cd "$(dirname "$c")" && pwd)/$(basename "$c")"; break; fi
+done
+[ -n "$BIN_SRC" ] || { echo "error: karmax binary not found — build it with 'make build' or run from the release archive" >&2; exit 1; }
 command -v systemctl >/dev/null 2>&1 || { echo "error: systemd (systemctl) is required" >&2; exit 1; }
 
 echo "==> installing karmax -> $PREFIX/karmax"
