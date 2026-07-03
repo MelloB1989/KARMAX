@@ -6,6 +6,8 @@ cloud.google.com/go/compute/metadata v0.6.0 h1:A6hENjEsCDtC1k8byVsgwvVcioamEHvZ4
 cloud.google.com/go/compute/metadata v0.6.0/go.mod h1:FjyFAW1MW0C203CEOMDTu3Dk1FlqW3Rga40jzHL4hfg=
 github.com/MelloB1989/karma v1.19.1 h1:RC6lVi1GTSOxM5c7r9RgOcH4vcwjbnryH4CpSLHDrBE=
 github.com/MelloB1989/karma v1.19.1/go.mod h1:5Cc2pBaDGwc2JYFe+Ze9LADFGCSY5Z4INDnKGyET2+E=
+github.com/MelloB1989/karmax-loops v0.0.0-20260703125630-6d2a8130789f h1:EX6QN74JMq0goNQeb5XYhv08BJ3oR1RQGUDNONs4AHs=
+github.com/MelloB1989/karmax-loops v0.0.0-20260703125630-6d2a8130789f/go.mod h1:57nj+qvkXbDLLHGz0scZ1Sk9G/xozvXDmNhz9rhxzqo=
 github.com/anthropics/anthropic-sdk-go v1.4.0 h1:fU1jKxYbQdQDiEXCxeW5XZRIOwKevn/PMg8Ay1nnUx0=
 github.com/anthropics/anthropic-sdk-go v1.4.0/go.mod h1:AapDW22irxK2PSumZiQXYUFvsdQgkwIWlpESweWZI/c=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
