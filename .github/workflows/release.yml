@@ -79,6 +79,42 @@ jobs:
             go build -trimpath -ldflags "$LDFLAGS" -o dist/karmax-amd64 ./cmd/karmax
           lipo -create -output dist/karmax dist/karmax-arm64 dist/karmax-amd64
           lipo -info dist/karmax
+      # Signing + notarization run only when the certificate secrets exist, so
+      # the build still produces (unsigned) binaries before you add them.
+      - name: Detect signing secrets
+        id: sign
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+        run: |
+          if [ -n "$CERT" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; else echo "enabled=false (no MACOS_CERTIFICATE — shipping unsigned)"; echo "enabled=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Codesign & notarize (Developer ID)
+        if: steps.sign.outputs.enabled == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/karmax.keychain-db"
+          KPWD="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KPWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KPWD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KPWD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" dist/karmax
+          codesign --verify --strict --verbose=2 dist/karmax
+          echo "$MACOS_NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k dist/karmax "$RUNNER_TEMP/karmax.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/karmax.zip" \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$MACOS_NOTARY_KEY_ID" --issuer "$MACOS_NOTARY_ISSUER_ID" --wait
+          # A bare CLI binary can't be stapled (only .app/.pkg/.dmg); notarization
+          # is registered with Apple and Gatekeeper verifies online on first run.
       - name: Package
         run: |
           mkdir -p out/karmax
@@ -120,6 +156,30 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" -o dist/karmax.exe ./cmd/karmax
+      # Authenticode signing runs only when the cert secret exists (else unsigned).
+      - name: Detect signing secret
+        id: sign
+        shell: bash
+        env:
+          CERT: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          if [ -n "$CERT" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; else echo "enabled=false (no WINDOWS_CERTIFICATE — shipping unsigned)"; echo "enabled=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Code sign (Authenticode)
+        if: steps.sign.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PWD: ${{ secrets.WINDOWS_CERTIFICATE_PWD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' |
+            Sort-Object FullName | Select-Object -Last 1
+          if (-not $signtool) { throw 'signtool.exe not found in the Windows SDK' }
+          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PWD `
+            /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist/karmax.exe
+          & $signtool.FullName verify /pa dist/karmax.exe
+          Remove-Item $pfx -Force
       - name: Package
         shell: pwsh
         run: |
