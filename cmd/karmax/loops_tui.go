@@ -32,6 +32,14 @@ func newLoopsCmd() *cobra.Command {
 			return err
 		},
 	}
+	cmd.AddCommand(
+		newLoopsNewCmd(),
+		newLoopsBrowseCmd(),
+		newLoopsInfoCmd(),
+		newLoopsInstallCmd(),
+		newLoopsRemoveCmd(),
+		newLoopsPublishCmd(),
+	)
 	cmd.AddCommand(&cobra.Command{
 		Use:   "run <name>",
 		Short: "Run a loop now (manual trigger)",
