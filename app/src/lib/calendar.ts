@@ -30,7 +30,7 @@ async function defaultEventCalendarId(): Promise<string | null> {
 }
 
 export async function createCalendarEvent(spec: CalendarEventSpec): Promise<string> {
-  const { status } = await Calendar.requestCalendarPermissionsAsync();
+  const { status } = await Calendar.requestCalendarPermissions();
   if (status !== 'granted') throw new Error('calendar permission denied');
 
   const calId = await defaultEventCalendarId();
@@ -55,7 +55,7 @@ export async function createCalendarEvent(spec: CalendarEventSpec): Promise<stri
 export async function createReminder(spec: ReminderSpec): Promise<string> {
   if (Platform.OS !== 'ios') throw new Error('reminders are iOS-only');
 
-  const { status } = await Calendar.requestRemindersPermissionsAsync();
+  const { status } = await Calendar.requestRemindersPermissions();
   if (status !== 'granted') throw new Error('reminders permission denied');
 
   const cals = await Calendar.getCalendarsAsync(Calendar.EntityTypes.REMINDER);
