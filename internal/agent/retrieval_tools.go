@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"time"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -57,9 +58,33 @@ func (t *memSearchTool) Execute(_ context.Context, in map[string]any) (tools.Too
 	}
 	var sb strings.Builder
 	for _, r := range res {
-		sb.WriteString(fmt.Sprintf("- (%.0f%%) %s\n", r.Score*100, oneLine(r.Entry.Content, 260)))
+		sb.WriteString(fmt.Sprintf("- [stored %s] (%.0f%%) %s\n", humanAge(r.Entry.CreatedAt), r.Score*100, oneLine(r.Entry.Content, 260)))
 	}
 	return tools.SuccessResult(sb.String()), nil
+}
+
+// humanAge renders how long ago t was, so the agent can reason about staleness
+// (a "deadline Friday" stored 3 weeks ago is almost certainly resolved/missed).
+func humanAge(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	d := time.Since(t)
+	switch {
+	case d < 36*time.Hour:
+		if d < 18*time.Hour {
+			return "today"
+		}
+		return "yesterday"
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+	case d < 60*24*time.Hour:
+		return fmt.Sprintf("%d weeks ago", int(d.Hours()/(24*7)))
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%d months ago", int(d.Hours()/(24*30)))
+	default:
+		return fmt.Sprintf("%d+ months ago", int(d.Hours()/(24*30)))
+	}
 }
 
 // memRecentTool — the freshest memory entries (latest hot context).
@@ -83,7 +108,7 @@ func (t *memRecentTool) Execute(_ context.Context, in map[string]any) (tools.Too
 	}
 	var sb strings.Builder
 	for _, e := range entries {
-		sb.WriteString(fmt.Sprintf("- [%s] %s\n", e.CreatedAt.Format("2006-01-02"), oneLine(e.Content, 240)))
+		sb.WriteString(fmt.Sprintf("- [stored %s] %s\n", humanAge(e.CreatedAt), oneLine(e.Content, 240)))
 	}
 	return tools.SuccessResult(sb.String()), nil
 }

@@ -238,6 +238,15 @@ func (a *Agent) initModels() error {
 		AgentID:   a.def.ID,
 	})
 
+	// Add review.resolve so the operator can answer staleness check-ins from any
+	// channel (the open questions are injected into context below).
+	allTools = append(allTools, &builtin.ReviewResolveTool{
+		Store:     a.store,
+		MemoryMgr: a.memory,
+		AgentID:   a.def.ID,
+		Namespace: namespace,
+	})
+
 	// Apply the configured capacity cap for the forgetting curve.
 	if a.memory != nil && a.def.Memory.MaxEntries > 0 {
 		a.memory.SetMaxEntries(a.def.Memory.MaxEntries)
@@ -446,6 +455,29 @@ func (a *Agent) buildProfileContext() string {
 }
 
 // buildSessionContext queries coding sessions and formats them as context.
+// buildReviewContext surfaces the OPEN staleness check-ins so that when the
+// operator replies (in WhatsApp, the app, anywhere), the agent recognizes their
+// answer resolves one of these and calls review.resolve. This is what makes
+// "reply anywhere → it dismisses" work with no special routing.
+func (a *Agent) buildReviewContext() string {
+	ns := a.def.Memory.Namespace
+	if ns == "" {
+		ns = a.def.ID
+	}
+	reviews, err := a.store.ListOpenReviews(ns, 8)
+	if err != nil || len(reviews) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Open review questions (staleness check-ins awaiting the operator's answer)\n\n")
+	sb.WriteString("You asked the operator these 'is it still relevant?' questions. If their message answers one, call `review.resolve` with the matching id and what the answer means (kept/updated/forgotten/done/dropped). Do NOT re-ask; do not treat these as new tasks.\n\n")
+	for _, r := range reviews {
+		sb.WriteString(fmt.Sprintf("- id=%s :: %s\n", r.ID, truncateStr(r.Question, 200)))
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
 func (a *Agent) buildSessionContext() string {
 	sessions, err := a.store.ListCodingSessions(a.def.ID)
 	if err != nil {
@@ -702,7 +734,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := a.buildProfileContext() + sessionCtx + commsCtx + retrievedCtx
+	dynamicCtx := a.buildProfileContext() + a.buildReviewContext() + sessionCtx + commsCtx + retrievedCtx
 	if dynamicCtx != "" && a.mainSession != nil {
 		a.mainSession.SetContext(dynamicCtx)
 	} else if dynamicCtx != "" {
@@ -861,7 +893,7 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 
 	// Inject the same dynamic context the event loop uses: active coding
 	// sessions, available comms channels, and retrieved long-term memory.
-	dynamicCtx := a.buildProfileContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
+	dynamicCtx := a.buildProfileContext() + a.buildReviewContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
 	if strings.TrimSpace(dynamicCtx) != "" {
 		session.SetContext(dynamicCtx)
 	}
@@ -966,7 +998,11 @@ func (a *Agent) buildProactiveMemoryContext(ctx context.Context, evt bus.Event, 
 		return ""
 	}
 
-	return "## Retrieved Memory Context\n\n" + results + "\n\n"
+	return "## Retrieved Memory Context\n\n" +
+		"_Each fact is tagged with when it was stored. Treat OLD time-sensitive facts as possibly stale — " +
+		"a deadline, a \"will get back by Friday\", or a \"temporary\" plan from weeks ago is likely already resolved, missed, or changed. " +
+		"Verify before acting on a stale fact; don't present it as current._\n\n" +
+		results + "\n\n"
 }
 
 func shouldRetrieveMemory(evt bus.Event, userPrompt string) bool {
