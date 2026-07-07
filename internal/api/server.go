@@ -75,6 +75,8 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("POST /api/proposals/{id}/decision", srv.auth(srv.handleProposalDecision))
 	mux.HandleFunc("GET /api/notifications", srv.auth(srv.handleNotifications))
 	mux.HandleFunc("POST /api/notifications/read-all", srv.auth(srv.handleReadAllNotifications))
+	mux.HandleFunc("GET /api/reviews", srv.auth(srv.handleListReviews))
+	mux.HandleFunc("POST /api/reviews/{id}/answer", srv.auth(srv.handleAnswerReview))
 	mux.HandleFunc("POST /api/notifications/{id}/read", srv.auth(srv.handleReadNotification))
 	mux.HandleFunc("GET /api/activity", srv.auth(srv.handleActivity))
 	mux.HandleFunc("POST /api/jobs/{id}/run", srv.auth(srv.handleRunJob))
@@ -540,6 +542,72 @@ func (s *Server) defaultNamespace() string {
 		ns = ag.Def().ID
 	}
 	return ns
+}
+
+// handleListReviews returns the open staleness check-ins for the app's review
+// inbox. Answering one (here or via WhatsApp) closes it everywhere.
+func (s *Server) handleListReviews(w http.ResponseWriter, r *http.Request) {
+	ns := s.defaultNamespace()
+	reviews, err := s.store.ListOpenReviews(ns, 50)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	out := make([]map[string]any, 0, len(reviews))
+	for _, rv := range reviews {
+		var opts []string
+		_ = json.Unmarshal([]byte(rv.Options), &opts)
+		out = append(out, map[string]any{
+			"id": rv.ID, "kind": rv.TargetKind, "question": rv.Question,
+			"options": opts, "created_at": rv.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reviews": out})
+}
+
+// handleAnswerReview resolves a review from the app: records the answer, closes
+// it, and applies the consequence to the underlying memory (keep/update/forget).
+func (s *Server) handleAnswerReview(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Answer     string `json:"answer"`
+		Resolution string `json:"resolution"` // kept | updated | forgotten | done | dropped
+		NewContent string `json:"new_content"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	rv, err := s.store.GetReview(id)
+	if err != nil || rv == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "review not found"})
+		return
+	}
+	if rv.Status != "open" {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "already_resolved"})
+		return
+	}
+	status := "resolved"
+	if req.Resolution == "dropped" || req.Resolution == "forgotten" {
+		status = "dismissed"
+	}
+	if err := s.store.ResolveReview(id, status, req.Answer, req.Resolution); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	// Apply to memory (reminders just close).
+	if rv.TargetKind == "memory" && rv.TargetID != "" {
+		switch req.Resolution {
+		case "forgotten", "done", "dropped":
+			_ = s.store.DeleteMemoryEntry(rv.TargetID)
+		case "updated":
+			if strings.TrimSpace(req.NewContent) != "" {
+				_ = s.store.DeleteMemoryEntry(rv.TargetID)
+				if mgr := s.memManager(); mgr != nil {
+					_ = mgr.Write(memory.MemoryEntry{Role: "assistant", Content: strings.TrimSpace(req.NewContent), Tags: []string{"reviewed"}})
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "resolution": req.Resolution})
 }
 
 func (s *Server) memManager() *memory.Manager {

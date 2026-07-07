@@ -255,6 +255,27 @@ var migrations = []string{
 	`ALTER TABLE memory_entries ADD COLUMN expires_at DATETIME`,
 	`CREATE INDEX IF NOT EXISTS idx_mem_ns_importance ON memory_entries(namespace, importance)`,
 	`CREATE INDEX IF NOT EXISTS idx_mem_expires ON memory_entries(expires_at)`,
+
+	// reviews: open "is this still relevant?" clarification questions the agent
+	// asks about STALE memory/reminders/commitments. Latched by target so an
+	// item is never re-asked once answered; resolvable from app OR WhatsApp.
+	`CREATE TABLE IF NOT EXISTS reviews (
+		id           TEXT PRIMARY KEY,
+		namespace    TEXT NOT NULL,
+		target_kind  TEXT NOT NULL,          -- memory | reminder | commitment | task
+		target_id    TEXT NOT NULL DEFAULT '',
+		dedup_key    TEXT NOT NULL,          -- stable key so the same item is asked once
+		question     TEXT NOT NULL,
+		options      TEXT NOT NULL DEFAULT '[]',
+		context      TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT 'open',  -- open | resolved | dismissed
+		answer       TEXT NOT NULL DEFAULT '',
+		resolution   TEXT NOT NULL DEFAULT '',       -- kept | updated | forgotten | done | dropped
+		created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
+		resolved_at  DATETIME
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(namespace, status)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_dedup ON reviews(namespace, dedup_key)`,
 }
 
 func (s *Store) migrate() error {

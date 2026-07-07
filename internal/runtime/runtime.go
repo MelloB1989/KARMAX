@@ -19,11 +19,13 @@ import (
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memory"
+	"github.com/MelloB1989/karmax/internal/review"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/webhook"
+	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
@@ -225,6 +227,42 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			return nil
 		},
 	})
+
+	// Staleness review: the "is this still relevant?" check-ins that keep memory
+	// current. Aggressive cadence, but capped + latched so it never spams. Needs
+	// the store + the agent's model + the WhatsApp channel, so it's a runtime
+	// loop like memory-maintenance.
+	if len(cfg.Agents) > 0 {
+		a0 := cfg.Agents[0]
+		ns := a0.Memory.Namespace
+		if ns == "" {
+			ns = a0.ID
+		}
+		var fbs []karmahelper.FallbackModel
+		for _, fb := range a0.FallbackModels {
+			fbs = append(fbs, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
+		}
+		provider, model := a0.SummaryModel.Provider, a0.SummaryModel.Model
+		if provider == "" {
+			provider = a0.Provider
+		}
+		if model == "" {
+			model = a0.Model
+		}
+		waChannelID, _ := commsMgr.FindChannelIDByType("whatsapp")
+		reviewer := review.New(review.Config{
+			Namespace: ns, AgentID: waAgentID, Provider: provider, Model: model, Fallbacks: fbs,
+			WAChannelID: waChannelID, WATarget: waTarget, SendFunc: commsMgr.Send,
+		}, s, log)
+		loopkit.Register(loopkit.Loop{
+			Name:        "memory-review",
+			Description: "Finds stale, time-sensitive memories & reminders and asks the operator (app + WhatsApp) if each is still relevant — once per item, capped so it never spams.",
+			Schedule:    loopkit.Every("90m"),
+			Run: func(ctx context.Context, k loopkit.Kit) error {
+				return reviewer.Tick(ctx)
+			},
+		})
+	}
 
 	agentReg := agent.NewRegistry(b, s, log)
 
