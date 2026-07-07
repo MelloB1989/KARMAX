@@ -459,6 +459,41 @@ func (a *Agent) buildProfileContext() string {
 // operator replies (in WhatsApp, the app, anywhere), the agent recognizes their
 // answer resolves one of these and calls review.resolve. This is what makes
 // "reply anywhere → it dismisses" work with no special routing.
+// claimsCompletedAction detects a reply that asserts it DID something concrete
+// (past-tense action verbs) — the shape of a fabricated "done". Deliberately
+// narrow: it must look like a completion claim, not a plan ("I'll…") or a
+// question. Paired with a zero-tool-call turn, this flags fabrication.
+func claimsCompletedAction(s string) bool {
+	l := strings.ToLower(s)
+	// A plan/ask is fine — only completion claims are suspect.
+	for _, verb := range []string{
+		"i've ", "i have ", "i sent", "i've sent", "sent to", "i removed", "i've removed",
+		"i deleted", "i scheduled", "i've scheduled", "i added", "i've added", "i set ",
+		"i've set", "i created", "i've created", "i resolved", "i've resolved", "i updated",
+		"i've updated", "i reminded", "i forgot that", "done —", "done.", "done!", "已",
+		"i closed", "i've closed", "i replied", "i've replied", "i messaged", "i booked",
+	} {
+		if strings.Contains(l, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildTimeContext tells the agent what "now" is, so it can reason about ages,
+// deadlines, and staleness instead of guessing or web-searching for the date.
+// This is the anchor that makes "[stored 3 weeks ago]" and "deadline Friday"
+// meaningful.
+func (a *Agent) buildTimeContext() string {
+	now := time.Now()
+	return fmt.Sprintf("## Current date & time (your anchor for all time reasoning)\n\n"+
+		"Right now it is **%s** (%s). Whenever memory, a message, or a task references a date or a relative time "+
+		"(\"Friday\", \"tonight\", \"next week\", \"3 weeks ago\"), resolve it against THIS current moment. "+
+		"A deadline or plan whose date is already in the past is almost certainly done, missed, or no longer relevant — "+
+		"don't treat it as upcoming.\n\n",
+		now.Format("Monday, 2 January 2006, 3:04 PM"), now.Format("2006-01-02 MST"))
+}
+
 func (a *Agent) buildReviewContext() string {
 	ns := a.def.Memory.Namespace
 	if ns == "" {
@@ -734,7 +769,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := a.buildProfileContext() + a.buildReviewContext() + sessionCtx + commsCtx + retrievedCtx
+	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + sessionCtx + commsCtx + retrievedCtx
 	if dynamicCtx != "" && a.mainSession != nil {
 		a.mainSession.SetContext(dynamicCtx)
 	} else if dynamicCtx != "" {
@@ -748,12 +783,33 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// knows the message landed and isn't dropped (high-effort turns take a
 		// while). Cancelled the moment the turn finishes.
 		ackCancel := a.startAckWatchdog(evt)
-		response, toolCalls, err := a.mainSession.ProcessMessage(a.ctx, userPrompt)
+		// Bound the model call: a hung/slow provider must never wedge the single
+		// inbox worker forever (that silently deafens the whole agent). On
+		// timeout the turn fails and the loop moves on to the next message.
+		turnCtx, turnCancel := context.WithTimeout(a.ctx, 3*time.Minute)
+		response, toolCalls, err := a.mainSession.ProcessMessage(turnCtx, userPrompt)
+		turnCancel()
 		ackCancel()
 		if err != nil {
 			return fmt.Errorf("main model: %w", err)
 		}
 		response = cleanOutboundResponse(response)
+
+		// Act-evidence guard: weak models fabricate "done" — they claim they
+		// sent/removed/scheduled something while calling zero tools. If the reply
+		// asserts a completed action but nothing actually ran this turn, re-prompt
+		// ONCE to force a real tool call (or an honest "here's what's blocking").
+		if len(toolCalls) == 0 && claimsCompletedAction(response) {
+			a.log.Warn("act-evidence: reply claims action with no tool call; re-prompting", zap.String("agent", a.def.ID))
+			nudge := "SYSTEM: You just claimed to have done something (sent/removed/scheduled/resolved/etc.) but you called NO tool this turn — so nothing actually happened. Do NOT claim completion you didn't perform. Either call the correct tool NOW to actually do it, or reply plainly stating what is blocking you. This is your one correction."
+			rctx, rcancel := context.WithTimeout(a.ctx, 3*time.Minute)
+			resp2, tc2, err2 := a.mainSession.ProcessMessage(rctx, nudge)
+			rcancel()
+			if err2 == nil && strings.TrimSpace(resp2) != "" {
+				response = cleanOutboundResponse(resp2)
+				toolCalls = tc2
+			}
+		}
 
 		// Log response length for diagnostics
 		a.log.Debug("LLM response received",
@@ -893,7 +949,7 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 
 	// Inject the same dynamic context the event loop uses: active coding
 	// sessions, available comms channels, and retrieved long-term memory.
-	dynamicCtx := a.buildProfileContext() + a.buildReviewContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
+	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
 	if strings.TrimSpace(dynamicCtx) != "" {
 		session.SetContext(dynamicCtx)
 	}
@@ -903,6 +959,17 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 		return "", fmt.Errorf("chat: %w", err)
 	}
 	response = cleanOutboundResponse(response)
+
+	// Act-evidence guard (same as the event path): re-prompt once if the reply
+	// claims a completed action but no tool actually ran.
+	if len(toolCalls) == 0 && claimsCompletedAction(response) {
+		a.log.Warn("act-evidence(chat): reply claims action with no tool call; re-prompting")
+		nudge := "SYSTEM: You just claimed to have done something but called NO tool this turn — nothing actually happened. Call the correct tool NOW to actually do it, or reply plainly stating what is blocking. This is your one correction."
+		if resp2, tc2, err2 := session.ProcessMessage(ctx, nudge); err2 == nil && strings.TrimSpace(resp2) != "" {
+			response = cleanOutboundResponse(resp2)
+			toolCalls = tc2
+		}
+	}
 
 	for _, tc := range toolCalls {
 		a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
