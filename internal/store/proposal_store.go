@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"database/sql"
 	"time"
 )
@@ -24,6 +25,20 @@ type StoredProposal struct {
 const proposalCols = `id, agent_id, COALESCE(kind,''), title, COALESCE(summary,''), ` +
 	`COALESCE(context,''), COALESCE(proposed_action,''), status, COALESCE(decision_note,''), ` +
 	`COALESCE(result,''), created_at, decided_at`
+
+// HasSimilarProposal reports whether a near-identical proposal already exists:
+// still pending with the same title, OR any with the same title created within
+// `within`. This stops the proxy/scan loops from flooding the inbox with
+// duplicate "Decision — <same person>" approvals on every re-scan.
+func (s *Store) HasSimilarProposal(title string, within time.Duration) (bool, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM proposals
+		 WHERE title = ? AND (status = 'pending' OR created_at >= datetime('now', ?))`,
+		title, fmt.Sprintf("-%d seconds", int(within.Seconds())),
+	).Scan(&n)
+	return n > 0, err
+}
 
 func (s *Store) CreateProposal(p StoredProposal) error {
 	if p.Status == "" {

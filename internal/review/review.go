@@ -32,11 +32,11 @@ import (
 // maxOpenReviews caps concurrent unanswered check-ins. Aggressive cadence means
 // we notice staleness fast — not that we pile on. The operator answering frees
 // slots for the next batch.
-const maxOpenReviews = 4
+const maxOpenReviews = 8
 
 // staleAfter is the age past which a time-sensitive fact is a candidate for a
 // "still relevant?" check-in.
-const staleAfter = 10 * 24 * time.Hour
+const staleAfter = 4 * 24 * time.Hour
 
 // Config carries what the reviewer needs; the runtime builds it from the agent.
 type Config struct {
