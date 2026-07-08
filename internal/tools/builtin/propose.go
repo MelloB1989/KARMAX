@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -67,6 +68,12 @@ func (t *ProposeTool) Execute(ctx context.Context, input map[string]any) (tools.
 // approvals inbox (actionable: approve → execute), never as plain
 // notifications.
 func CreateProposal(s *store.Store, agentID, kind, title, summary, action, urgency string) (string, error) {
+	// Dedup: if the same decision is already pending (or was raised in the last
+	// 12h), don't create another. The proxy/scan loops re-flag the same items on
+	// every run; without this the approvals inbox floods with duplicates.
+	if dup, _ := s.HasSimilarProposal(title, 12*time.Hour); dup {
+		return "", nil
+	}
 	id := uuid.New().String()
 	if err := s.CreateProposal(store.StoredProposal{
 		ID:             id,

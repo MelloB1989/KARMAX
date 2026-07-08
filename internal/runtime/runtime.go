@@ -258,7 +258,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		loopkit.Register(loopkit.Loop{
 			Name:        "memory-review",
 			Description: "Finds stale, time-sensitive memories & reminders and asks the operator (app + WhatsApp) if each is still relevant — once per item, capped so it never spams.",
-			Schedule:    loopkit.Every("90m"),
+			Schedule:    loopkit.Every("45m"),
 			Run: func(ctx context.Context, k loopkit.Kit) error {
 				return reviewer.Tick(ctx)
 			},
