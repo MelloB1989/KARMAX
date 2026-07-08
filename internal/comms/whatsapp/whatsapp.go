@@ -183,8 +183,21 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 		chatJID = strings.TrimSpace(msg.ChatJID)
 	}
 	body := strings.TrimSpace(msg.Content)
+	// Media (image/PDF/Excel/doc/video/voice) arrives with an empty text body.
+	// Instead of dropping it, attach a marker so the agent knows a file came in
+	// and can call whatsapp.view_media to actually see/read it. Any caption on
+	// the media is preserved alongside the marker.
+	if mediaLabel := whatsappMediaLabel(msg.MessageType); mediaLabel != "" {
+		marker := fmt.Sprintf("[received a %s — to see/read it, call whatsapp.view_media with chat=%q and message_id=%q]",
+			mediaLabel, chatJID, msg.ID)
+		if body == "" {
+			body = marker
+		} else {
+			body = body + "\n" + marker
+		}
+	}
 	if body == "" {
-		return // media / non-text / empty — nothing to act on
+		return // truly empty / non-actionable (reaction, protocol message)
 	}
 
 	// No chat filtering here: which chats reach us is decided entirely by the
@@ -398,4 +411,23 @@ func splitContent(s string, maxLen int) []string {
 		s = s[end:]
 	}
 	return chunks
+}
+
+// whatsappMediaLabel maps a wacli message_type to a human media label, or ""
+// for non-media (text, reactions, unknown/protocol messages).
+func whatsappMediaLabel(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "image":
+		return "image"
+	case "document":
+		return "document/file (PDF, Excel, doc, etc.)"
+	case "video":
+		return "video"
+	case "audio", "ptt":
+		return "voice note/audio"
+	case "sticker":
+		return "sticker"
+	default:
+		return ""
+	}
 }

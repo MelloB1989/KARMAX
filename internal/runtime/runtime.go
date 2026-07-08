@@ -182,6 +182,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: hostpaths.GWS()})
 	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
 	toolReg.Register(&builtin.WacliTool{WacliPath: waCLIPath})
+	toolReg.Register(&builtin.WhatsAppSendMediaTool{WacliPath: waCLIPath})
+	toolReg.Register(&builtin.WhatsAppViewMediaTool{WacliPath: waCLIPath, Store: s, AgentID: waAgentID})
 	if cfg.Webhooks.Enabled {
 		toolReg.Register(&builtin.WhatsAppMonitorTool{
 			WacliPath:  waCLIPath,
