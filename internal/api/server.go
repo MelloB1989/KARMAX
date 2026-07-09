@@ -109,6 +109,7 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 
 func (s *Server) Start(ctx context.Context) error {
 	s.mdns = advertiseMDNS(s.port, s.log)
+	s.startGraphMaintainer(ctx)
 
 	go func() {
 		<-ctx.Done()

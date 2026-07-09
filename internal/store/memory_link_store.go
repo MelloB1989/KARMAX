@@ -1,5 +1,7 @@
 package store
 
+import "time"
+
 // MemoryLink is an LLM-generated relationship between two memory entries.
 type MemoryLink struct {
 	FromID   string `json:"from"`
@@ -54,4 +56,25 @@ func (s *Store) ListMemoryLinks() ([]MemoryLink, error) {
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+// OldestMemoryLinkAge returns how long ago the current link set was built
+// (based on the newest created_at — links are written as one atomic batch, so
+// every row shares a timestamp). Returns -1 if there are no links. Used by the
+// graph maintainer to detect a stale/frozen graph.
+func (s *Store) OldestMemoryLinkAge() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var ts string
+	err := s.db.QueryRow(`SELECT MAX(created_at) FROM memory_links`).Scan(&ts)
+	if err != nil || ts == "" {
+		return -1
+	}
+	// SQLite datetime('now') format, stored as UTC.
+	t, perr := time.Parse("2006-01-02 15:04:05", ts)
+	if perr != nil {
+		return -1
+	}
+	return time.Since(t.UTC())
 }
