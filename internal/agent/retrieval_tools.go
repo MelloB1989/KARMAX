@@ -27,6 +27,13 @@ func intOr(v any, def int) int {
 	return def
 }
 
+func strOr(v any, def string) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return def
+}
+
 func oneLine(s string, max int) string {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	if len(s) > max {
@@ -145,6 +152,77 @@ func (t *pageIndexTool) Execute(_ context.Context, in map[string]any) (tools.Too
 		sb.WriteString(fmt.Sprintf("- %s: %s\n", n.Title, oneLine(s, 220)))
 	}
 	return tools.SuccessResult(sb.String()), nil
+}
+
+// treeNavigateTool implements PageIndex-style TREE TRAVERSAL: the retrieval
+// sub-agent walks the memory tree one level at a time (root → category → memory
+// leaf), reading summaries at each level and drilling into the relevant branch,
+// instead of relying only on flat keyword search. This is precise when the
+// topic maps to a category (project/relationship/task/decision/…).
+type treeNavigateTool struct {
+	store     *store.Store
+	namespace string
+}
+
+func (t *treeNavigateTool) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{
+		Name: "tree_navigate",
+		Description: "Traverse the memory TREE one level at a time to reach a specific memory. " +
+			"Call with node_id empty or 'root' to see the top-level categories (with how many memories each holds). " +
+			"Call with a category node_id (e.g. 'cat:project') to list the memories under it. " +
+			"Call with a memory node_id to read that memory in full. " +
+			"Prefer this to drill down by topic/category; use mem_search for keyword lookups.",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string","description":"Node to open: empty/'root' for top categories; 'cat:<category>' for that category's memories; a memory id to read it fully."}}}`),
+	}
+}
+
+func (t *treeNavigateTool) Execute(_ context.Context, in map[string]any) (tools.ToolResult, error) {
+	nodeID := strings.TrimSpace(strOr(in["node_id"], ""))
+
+	// Root: list the top-level categories.
+	if nodeID == "" || strings.EqualFold(nodeID, "root") {
+		cats, err := t.store.PageIndexChildren(t.namespace, "root")
+		if err != nil {
+			return tools.ErrorResult(err), nil
+		}
+		if len(cats) == 0 {
+			return tools.SuccessResult("the memory tree is empty"), nil
+		}
+		var sb strings.Builder
+		sb.WriteString("Memory tree — top-level categories. Open one with tree_navigate(node_id=…):\n")
+		for _, c := range cats {
+			sb.WriteString(fmt.Sprintf("- [%s] %s\n", c.NodeID, c.Title))
+		}
+		return tools.SuccessResult(sb.String()), nil
+	}
+
+	// Non-root: does it have children? If so it's an internal (category) node.
+	children, err := t.store.PageIndexChildren(t.namespace, nodeID)
+	if err != nil {
+		return tools.ErrorResult(err), nil
+	}
+	if len(children) > 0 {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Memories under %s. Open one with tree_navigate(node_id=<id>):\n", nodeID))
+		for _, c := range children {
+			sb.WriteString(fmt.Sprintf("- [%s] %s\n", c.NodeID, oneLine(c.Title, 90)))
+		}
+		return tools.SuccessResult(sb.String()), nil
+	}
+
+	// Leaf (or unknown): return the node's full content.
+	node, found, err := t.store.GetPageIndexNode(t.namespace, nodeID)
+	if err != nil {
+		return tools.ErrorResult(err), nil
+	}
+	if !found {
+		return tools.SuccessResult(fmt.Sprintf("no tree node with id %q (call tree_navigate with no node_id to start from the categories)", nodeID)), nil
+	}
+	content := node.SearchText
+	if strings.TrimSpace(content) == "" {
+		content = node.Summary
+	}
+	return tools.SuccessResult(fmt.Sprintf("%s\n\n%s", node.Title, strings.TrimSpace(content))), nil
 }
 
 // chatSummaryTool — search the cold per-chat background summaries.

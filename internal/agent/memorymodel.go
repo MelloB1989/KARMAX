@@ -41,12 +41,13 @@ Tools:
 - profile_read: the authoritative ABOUT_ME profile (identity, projects, people, goals). Read it first when identity/relationships matter.
 - mem_search: ranked search over long-term memory (already weights importance, recency, pinned, and how often a fact has been recalled). Run SEVERAL focused queries with different keywords — don't rely on one.
 - mem_recent: the freshest "hot" memory (what's going on right now).
-- tree_search: the structured page-index of memory by category.
+- tree_navigate: WALK the memory tree by topic. Start at the categories (no node_id), drill into the relevant one (e.g. 'cat:project', 'cat:relationship'), then open a specific memory to read it in full. Best when the question maps to a category — you see the shape of what's stored and pick precisely, instead of guessing keywords.
+- tree_search: keyword lookup over the same page-index tree (use when you don't know which category to open).
 - chat_summaries: background ("cold") summaries of older conversations.
 - whatsapp.read: LIVE WhatsApp — pull the actual recent messages of a chat. Use ONLY when stored memory is insufficient or you must verify the latest state, since it is slower.
 
 Method:
-1. Run multiple queries and cross-check sources; prefer specific, high-importance facts over vague ones.
+1. Run multiple queries and cross-check sources; prefer specific, high-importance facts over vague ones. When the topic maps to a category, tree_navigate down to it; otherwise mem_search with several keyword variations.
 2. Connect the dots — surface related people, projects, commitments, deadlines, and preferences that bear on the question, not just literal matches.
 3. Flag anything time-sensitive (a promise made, a deadline, something pending) even if not explicitly asked.
 4. Resolve conflicts in favour of the profile and the most recent/important entries; note when a fact looks stale or contradicted.
@@ -70,6 +71,7 @@ func (mm *MemoryModel) retrievalTools() []tools.Tool {
 		&profileReadTool{mem: mm.memMgr},
 		&memSearchTool{mem: mm.memMgr},
 		&memRecentTool{mem: mm.memMgr},
+		&treeNavigateTool{store: mm.store, namespace: mm.namespace},
 		&pageIndexTool{store: mm.store, namespace: mm.namespace},
 		&chatSummaryTool{store: mm.store},
 		&builtin.WhatsAppReadTool{WacliPath: mm.cfg.WacliPath, Store: mm.store},
