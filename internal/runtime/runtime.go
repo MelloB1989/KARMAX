@@ -19,6 +19,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/mcp"
+	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/review"
 	"github.com/MelloB1989/karmax/internal/scheduler"
@@ -263,6 +264,37 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			Schedule:    loopkit.Every("45m"),
 			Run: func(ctx context.Context, k loopkit.Kit) error {
 				return reviewer.Tick(ctx)
+			},
+		})
+
+		// Memory consolidation: an LLM merges duplicate / near-duplicate /
+		// superseded entries within a category into one canonical fact. This is
+		// the "keep memory clean as it grows" pass — stronger than the
+		// write-time Jaccard dedup. Uses the memory model (strong reasoning);
+		// one category per tick so each run stays cheap.
+		mergeProvider, mergeModel := a0.MemoryModel.Provider, a0.MemoryModel.Model
+		if mergeProvider == "" {
+			mergeProvider = a0.Provider
+		}
+		if mergeModel == "" {
+			mergeModel = a0.Model
+		}
+		merger := memmerge.New(memmerge.Config{
+			Namespace: ns, Provider: mergeProvider, Model: mergeModel, Fallbacks: fbs,
+		}, s, memFactory.For(a0.ID, ns), log)
+		loopkit.Register(loopkit.Loop{
+			Name:        "memory-merge",
+			Description: "Every few hours an LLM consolidates duplicate / near-duplicate / superseded memories in the largest category into a single canonical fact, keeping memory clean as it grows.",
+			Schedule:    loopkit.Every("3h"),
+			Run: func(ctx context.Context, k loopkit.Kit) error {
+				n, err := merger.Tick(ctx)
+				if err != nil {
+					return err
+				}
+				if n > 0 {
+					k.Logf("memory-merge: consolidated %d entries", n)
+				}
+				return nil
 			},
 		})
 
