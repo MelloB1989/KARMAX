@@ -287,6 +287,47 @@ type PageIndexNode struct {
 	RawJSON    string `json:"raw_json,omitempty"`
 }
 
+// PageIndexChildren returns the direct children of a tree node (parent_id =
+// parentID), ordered by title. Used for LLM tree traversal: pass "root" for
+// the top-level categories, "cat:<category>" for a category's memory leaves.
+func (s *Store) PageIndexChildren(namespace, parentID string) ([]PageIndexNode, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`SELECT id, namespace, node_id, parent_id, path, title, summary, search_text, raw_json FROM pageindex_nodes WHERE namespace = ? AND parent_id = ? ORDER BY title`,
+		namespace, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var nodes []PageIndexNode
+	for rows.Next() {
+		var n PageIndexNode
+		if err := rows.Scan(&n.ID, &n.Namespace, &n.NodeID, &n.ParentID, &n.Path, &n.Title, &n.Summary, &n.SearchText, &n.RawJSON); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
+// GetPageIndexNode fetches a single tree node by its node_id. found=false when
+// there is no such node.
+func (s *Store) GetPageIndexNode(namespace, nodeID string) (node PageIndexNode, found bool, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	row := s.db.QueryRow(`SELECT id, namespace, node_id, parent_id, path, title, summary, search_text, raw_json FROM pageindex_nodes WHERE namespace = ? AND node_id = ? LIMIT 1`,
+		namespace, nodeID)
+	if err := row.Scan(&node.ID, &node.Namespace, &node.NodeID, &node.ParentID, &node.Path, &node.Title, &node.Summary, &node.SearchText, &node.RawJSON); err != nil {
+		if err == sql.ErrNoRows {
+			return PageIndexNode{}, false, nil
+		}
+		return PageIndexNode{}, false, err
+	}
+	return node, true, nil
+}
+
 // Webhook event persistence
 
 type StoredWebhookEvent struct {

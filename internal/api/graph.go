@@ -17,10 +17,15 @@ import (
 // person, part of a project, cause/effect, dependencies, …). Stored in
 // memory_links and rendered as a graph in the app's 3D memory view.
 
-// graphNodeLimit caps how many (most-recent) memory entries the 3D graph shows
-// and links over. Not 55 — that hardcoded cap is what made the app read
-// "55 memories" forever; keep it generous so the graph tracks the real memory.
-const graphNodeLimit = 160
+// graphNodeLimit caps how many (most-recent) memory entries the 3D graph
+// renders as NODES. Kept high so the graph tracks the real, growing memory —
+// the old hardcoded 55 (then 160) made the count look permanently frozen.
+const graphNodeLimit = 1200
+
+// graphLinkLimit caps how many entries are fed to the LLM link generator. The
+// relationship prompt has to stay a sane size, so links are computed over the
+// most-recent graphLinkLimit entries even when more nodes are shown.
+const graphLinkLimit = 160
 
 const graphLinkPrompt = `You map relationships between an operator's memory entries. You are given entries (id + content). Output the meaningful relationships between them.
 
@@ -181,7 +186,7 @@ func (s *Server) handleMemoryGraph(w http.ResponseWriter, r *http.Request) {
 	if len(links) == 0 {
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer cancel()
-		if gen := s.generateGraphLinks(ctx, entries); len(gen) > 0 {
+		if gen := s.generateGraphLinks(ctx, linkEntries(entries)); len(gen) > 0 {
 			_ = s.store.ReplaceMemoryLinks(gen)
 			links = gen
 		}
@@ -189,7 +194,26 @@ func (s *Server) handleMemoryGraph(w http.ResponseWriter, r *http.Request) {
 	if links == nil {
 		links = []store.MemoryLink{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": s.graphNodes(entries), "links": links})
+	total, _ := s.store.CountMemoryEntries(ns)
+	nodes := s.graphNodes(entries)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"nodes": nodes,
+		"links": links,
+		// The true memory size, so the app shows real growth even though the
+		// graph renders at most graphNodeLimit nodes.
+		"total":  total,
+		"shown":  len(nodes),
+		"capped": total > len(nodes),
+	})
+}
+
+// linkEntries returns the slice of entries used for link generation: the most
+// recent graphLinkLimit (ListMemoryEntries is ordered newest-first).
+func linkEntries(entries []store.StoredMemoryEntry) []store.StoredMemoryEntry {
+	if len(entries) > graphLinkLimit {
+		return entries[:graphLinkLimit]
+	}
+	return entries
 }
 
 func (s *Server) handleRebuildGraph(w http.ResponseWriter, r *http.Request) {
@@ -201,7 +225,8 @@ func (s *Server) handleRebuildGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
 	defer cancel()
-	links := s.generateGraphLinks(ctx, entries)
+	total, _ := s.store.CountMemoryEntries(ns)
+	links := s.generateGraphLinks(ctx, linkEntries(entries))
 	if links == nil {
 		// Generation failed (model/harness hiccup) — DON'T wipe the existing
 		// graph. Return what's currently stored so the app keeps its links.
@@ -209,14 +234,14 @@ func (s *Server) handleRebuildGraph(w http.ResponseWriter, r *http.Request) {
 		if existing == nil {
 			existing = []store.MemoryLink{}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"nodes": s.graphNodes(entries), "links": existing, "note": "link generation unavailable; kept existing links"})
+		writeJSON(w, http.StatusOK, map[string]any{"nodes": s.graphNodes(entries), "links": existing, "total": total, "note": "link generation unavailable; kept existing links"})
 		return
 	}
 	if err := s.store.ReplaceMemoryLinks(links); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": s.graphNodes(entries), "links": links})
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": s.graphNodes(entries), "links": links, "total": total})
 }
 
 // startGraphMaintainer keeps memory_links fresh. The links used to be generated
@@ -240,7 +265,7 @@ func (s *Server) startGraphMaintainer(ctx context.Context) {
 		}
 		rctx, cancel := context.WithTimeout(ctx, 150*time.Second)
 		defer cancel()
-		links := s.generateGraphLinks(rctx, entries)
+		links := s.generateGraphLinks(rctx, linkEntries(entries))
 		if links == nil {
 			// model hiccup — don't wipe the existing graph
 			return
