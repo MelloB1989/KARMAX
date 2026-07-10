@@ -68,6 +68,23 @@ func (t *ProposeTool) Execute(ctx context.Context, input map[string]any) (tools.
 // approvals inbox (actionable: approve → execute), never as plain
 // notifications.
 func CreateProposal(s *store.Store, agentID, kind, title, summary, action, urgency string) (string, error) {
+	// Drop empty decisions. The scan loops (chat-sweep/wa-monitor/gchat-watch)
+	// sometimes get a placeholder APPROVE line from the harness ("APPROVE: none",
+	// "APPROVE (none)", "APPROVE — none") that really means "nothing to approve".
+	// Those produced blank "Decision — (none)" approvals. If neither the title
+	// (minus the "Decision — " prefix) nor the action carries real content,
+	// there's nothing to decide — skip it.
+	titleTail := title
+	for _, p := range []string{"Decision — ", "Decision —", "Decision - ", "Decision – ", "Decision: "} {
+		if strings.HasPrefix(titleTail, p) {
+			titleTail = titleTail[len(p):]
+			break
+		}
+	}
+	if meaningfulText(titleTail) == "" && meaningfulText(action) == "" {
+		return "", nil
+	}
+
 	// Dedup: if the same decision is already pending (or was raised in the last
 	// 12h), don't create another. The proxy/scan loops re-flag the same items on
 	// every run; without this the approvals inbox floods with duplicates.
@@ -96,4 +113,21 @@ func CreateProposal(s *store.Store, agentID, kind, title, summary, action, urgen
 		"proposal_id": id,
 	})
 	return id, nil
+}
+
+// meaningfulText returns the input with leading/trailing separator noise and
+// wrapping punctuation stripped, or "" if what remains is empty or a
+// placeholder ("none", "n/a", "nothing needed", …). Used to detect empty
+// approvals that carry no real decision.
+func meaningfulText(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, " \t:—–-()[]{}\"'.")
+	s = strings.TrimSpace(s)
+	switch strings.ToLower(s) {
+	case "", "none", "n/a", "na", "nil", "null", "nothing",
+		"nothing needed", "no action", "no action needed",
+		"none needed", "nothing to do", "no reply needed", "skip":
+		return ""
+	}
+	return s
 }
