@@ -314,8 +314,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			Run: func(ctx context.Context, k loopkit.Kit) error {
 				pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				defer cancel()
+				// MaxTokens must be generous enough for a THINKING model to finish:
+				// claude-sonnet-4.6/opus emit internal thinking first, so a tiny
+				// budget (8) is consumed before any text and the call fails with a
+				// misleading "context deadline exceeded" — making the monitor cry
+				// wolf even when the brain is perfectly healthy. 256 completes the
+				// "OK" reply reliably (verified: 8 & 64 fail, 256 works).
 				sess := karmahelper.NewSession(karmahelper.SessionConfig{
-					Provider: mainProvider, Model: mainModel, MaxTokens: 8, FallbackModels: fbs,
+					Provider: mainProvider, Model: mainModel, MaxTokens: 256, FallbackModels: fbs,
 				}, nil)
 				resp, _, _, perr := sess.Chat(pctx, "Reply with the single word OK.")
 				healthy := perr == nil && strings.TrimSpace(resp) != ""
