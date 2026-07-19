@@ -226,6 +226,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.CalendarAddTool{Store: s})
 	toolReg.Register(&builtin.ReminderAddTool{Store: s})
 	toolReg.Register(&builtin.ContactAddTool{Store: s})
+	toolReg.Register(&builtin.ContactUpdateTool{Store: s})
 
 	// The scheduler (and its tool) must exist BEFORE agents resolve their tool
 	// lists — registering scheduler.add afterwards silently dropped it from
