@@ -14,7 +14,11 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSCalendarsUsageDescription": "KARMAX adds your events and meetings to your calendar.",
+        "NSCalendarsFullAccessUsageDescription": "KARMAX adds your events and meetings to your calendar.",
+        "NSCalendarsWriteOnlyAccessUsageDescription": "KARMAX adds your events and meetings to your calendar.",
+        "NSRemindersUsageDescription": "KARMAX sets reminders for you.",
         "NSRemindersFullAccessUsageDescription": "KARMAX sets reminders for you.",
+        "NSContactsUsageDescription": "KARMAX saves and updates contacts (e.g. naming a WhatsApp number) and resolves numbers to names.",
         "NSPhotoLibraryUsageDescription": "KARMAX uses the photo library only to let you copy and paste images through the clipboard.",
         "NSLocalNetworkUsageDescription": "KARMAX connects to your KARMAX daemon on your local network or Tailscale.",
         "ITSAppUsesNonExemptEncryption": false,

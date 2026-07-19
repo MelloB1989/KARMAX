@@ -153,3 +153,47 @@ func (t *ContactAddTool) Execute(ctx context.Context, input map[string]any) (too
 		"message": "Contact queued to save on the operator's phone.",
 	}), nil
 }
+
+// ContactUpdateTool renames an existing phone contact by number (upsert: if the
+// number isn't saved yet, it's created). Useful for putting a name to a raw
+// WhatsApp number or correcting a saved name. Additive/low-risk — no approval.
+type ContactUpdateTool struct {
+	Store   *store.Store
+	AgentID string
+}
+
+func (t *ContactUpdateTool) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{
+		Name:        "contact.update",
+		Description: "Set or update the saved NAME for a phone number in the operator's phone contacts (via the KARMAX app). Use to name a raw WhatsApp number or fix a wrong name — if the number isn't saved yet it's created, otherwise its name is updated. Direct, low-risk — no approval needed.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"name": {"type": "string", "description": "The name to set for this number."},
+				"phone": {"type": "string", "description": "Phone number, ideally with country code."}
+			},
+			"required": ["name", "phone"]
+		}`),
+	}
+}
+
+func (t *ContactUpdateTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
+	name, _ := input["name"].(string)
+	phone, _ := input["phone"].(string)
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(phone) == "" {
+		return tools.ErrorResult(fmt.Errorf("name and phone are required")), nil
+	}
+	payload, _ := json.Marshal(map[string]any{"name": name, "phone": phone})
+	id := uuid.New().String()
+	if err := t.Store.CreateDeviceAction(store.StoredDeviceAction{
+		ID: id, AgentID: t.AgentID, Kind: "update_contact", Payload: string(payload),
+	}); err != nil {
+		return tools.ErrorResult(fmt.Errorf("queue contact update: %w", err)), nil
+	}
+	_, _, _ = SendExpoPush(t.Store, "👤 contact updated", name, "default", map[string]any{"type": "device_action"})
+
+	return tools.SuccessResult(map[string]any{
+		"status": "queued", "kind": "update_contact", "id": id,
+		"message": "Contact name queued to update on the operator's phone.",
+	}), nil
+}
