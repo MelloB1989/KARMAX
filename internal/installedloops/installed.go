@@ -19,8 +19,6 @@ import (
 	_ "github.com/MelloB1989/karmax-loops/loops/profile-refresh"
 	_ "github.com/MelloB1989/karmax-loops/loops/tech-news"
 	_ "github.com/MelloB1989/karmax-loops/loops/chat-sweep"
-	_ "github.com/MelloB1989/karmax-loops/loops/act-on-pending"
-	_ "github.com/MelloB1989/karmax-loops/loops/memory-bootstrap"
 	_ "github.com/MelloB1989/karmax-loops/loops/gchat-watch"
 	_ "github.com/MelloB1989/karmax-loops/loops/cold-scan"
 	_ "github.com/MelloB1989/karmax-loops/loops/wa-monitor"
