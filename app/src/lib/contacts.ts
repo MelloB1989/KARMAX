@@ -73,8 +73,11 @@ export async function upsertContactName(name: string, phone: string): Promise<st
   const lastName = parts.join(' ');
 
   if (match?.id) {
-    // updateContactAsync needs the id on the payload; keep the existing number.
-    const updated = { ...match, name, firstName, lastName } as unknown as Contacts.Contact;
+    // updateContactAsync wants the full existing contact (it carries the id)
+    // with the fields to change overridden; keep the existing phone numbers.
+    const updated = { ...match, name, firstName, lastName } as unknown as Parameters<
+      typeof Contacts.updateContactAsync
+    >[0];
     await Contacts.updateContactAsync(updated);
     return match.id;
   }
