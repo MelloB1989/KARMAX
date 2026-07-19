@@ -185,12 +185,35 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.WacliTool{WacliPath: waCLIPath})
 	toolReg.Register(&builtin.WhatsAppSendMediaTool{WacliPath: waCLIPath})
 	toolReg.Register(&builtin.WhatsAppViewMediaTool{WacliPath: waCLIPath, Store: s, AgentID: waAgentID})
+	var waMonitorTool *builtin.WhatsAppMonitorTool
 	if cfg.Webhooks.Enabled {
-		toolReg.Register(&builtin.WhatsAppMonitorTool{
+		waMonitorTool = &builtin.WhatsAppMonitorTool{
 			WacliPath:  waCLIPath,
 			WebhookURL: fmt.Sprintf("http://127.0.0.1:%d/comms/whatsapp", cfg.Webhooks.Port),
 			Secret:     waWebhookSecret,
 			Protected:  operatorChats,
+		}
+		toolReg.Register(waMonitorTool)
+
+		// Webhook health: enforce the single-secured-webhook invariant on a timer
+		// AND at startup. A stray/secret-less webhook (e.g. added out-of-band via
+		// the raw wacli tool) 401s on every delivery, silently dropping that
+		// contact's messages — this collapses the set back to one secured webhook.
+		loopkit.Register(loopkit.Loop{
+			Name:        "webhook-health",
+			Description: "Every 15m verifies the wacli→KARMAX webhook is a single webhook carrying the HMAC secret; reconciles stray/secret-less webhooks so no contact's messages are silently dropped (401).",
+			Schedule:    loopkit.Every("15m"),
+			Run: func(ctx context.Context, k loopkit.Kit) error {
+				changed, n, err := waMonitorTool.Reconcile(ctx)
+				if err != nil {
+					k.Logf("webhook-health: reconcile failed: %v", err)
+					return nil
+				}
+				if changed {
+					k.Logf("webhook-health: reconciled %d fragmented/insecure webhook(s) into one secured webhook", n)
+				}
+				return nil
+			},
 		})
 	}
 	// Only expose notify.push (ntfy) to the agent when a topic is actually
