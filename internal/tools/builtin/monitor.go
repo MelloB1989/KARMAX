@@ -52,13 +52,24 @@ func (t *WhatsAppMonitorTool) Execute(ctx context.Context, input map[string]any)
 		wacli = defaultWacliPath()
 	}
 
-	id, chats, err := t.currentWebhook(ctx, wacli)
+	ids, chats, secured, err := t.currentWebhook(ctx, wacli)
 	if err != nil {
 		return tools.ErrorResult(err), nil
 	}
 
 	switch action {
 	case "list":
+		// If the webhook set is fragmented or any part is missing the HMAC
+		// secret (a stray webhook added out-of-band → 401s that silently drop
+		// that contact's messages), reconcile to a single secured webhook now.
+		if (len(ids) > 1 || !secured) && len(chats) > 0 {
+			if err := t.applyWebhook(ctx, wacli, ids, chats); err == nil {
+				return tools.SuccessResult(map[string]any{
+					"monitored_chats": chats,
+					"reconciled":      fmt.Sprintf("collapsed %d webhook(s) into one secured webhook", len(ids)),
+				}), nil
+			}
+		}
 		return tools.SuccessResult(map[string]any{"monitored_chats": chats}), nil
 
 	case "add", "remove":
@@ -98,7 +109,7 @@ func (t *WhatsAppMonitorTool) Execute(ctx context.Context, input map[string]any)
 			chats = kept
 		}
 
-		if err := t.applyWebhook(ctx, wacli, id, chats); err != nil {
+		if err := t.applyWebhook(ctx, wacli, ids, chats); err != nil {
 			return tools.ErrorResult(err), nil
 		}
 		verb := "Now monitoring"
@@ -115,31 +126,79 @@ func (t *WhatsAppMonitorTool) Execute(ctx context.Context, input map[string]any)
 	}
 }
 
-// currentWebhook finds the wacli webhook pointing at KARMAX and returns its id
-// and chat list. id 0 means no webhook exists yet.
-func (t *WhatsAppMonitorTool) currentWebhook(ctx context.Context, wacli string) (int64, []string, error) {
+// Reconcile enforces the single-secured-webhook invariant without the agent
+// having to call the tool: if the KARMAX webhook set is fragmented (more than
+// one) or any part is missing the HMAC secret, it collapses them into one
+// secured webhook. Returns (changed, count-of-webhooks-before, error). A no-op
+// when already healthy. Safe to call on a timer / at startup.
+func (t *WhatsAppMonitorTool) Reconcile(ctx context.Context) (bool, int, error) {
+	wacli := t.WacliPath
+	if wacli == "" {
+		wacli = defaultWacliPath()
+	}
+	ids, chats, secured, err := t.currentWebhook(ctx, wacli)
+	if err != nil {
+		return false, 0, err
+	}
+	if len(chats) == 0 {
+		return false, len(ids), nil // nothing to protect; don't create an empty webhook
+	}
+	if len(ids) <= 1 && secured {
+		return false, len(ids), nil // already healthy
+	}
+	if err := t.applyWebhook(ctx, wacli, ids, chats); err != nil {
+		return false, len(ids), err
+	}
+	return true, len(ids), nil
+}
+
+// currentWebhook finds ALL wacli webhooks pointing at KARMAX and returns their
+// ids, the union of their monitored chats (deduped), and whether EVERY matching
+// webhook carries the HMAC secret. Returning all ids (not just the first) is
+// what lets add/remove/list collapse a fragmented or secret-less webhook set
+// back into one correct webhook — otherwise a stray webhook added out-of-band
+// keeps 401'ing and its contact's messages silently vanish.
+func (t *WhatsAppMonitorTool) currentWebhook(ctx context.Context, wacli string) (ids []int64, chats []string, secured bool, err error) {
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, wacli, "webhooks", "list").CombinedOutput()
-	if err != nil {
-		return 0, nil, fmt.Errorf("wacli webhooks list: %v: %s", err, strings.TrimSpace(string(out)))
+	out, cmdErr := exec.CommandContext(cctx, wacli, "webhooks", "list").CombinedOutput()
+	if cmdErr != nil {
+		return nil, nil, false, fmt.Errorf("wacli webhooks list: %v: %s", cmdErr, strings.TrimSpace(string(out)))
 	}
 	var resp struct {
 		Webhooks []struct {
 			ID       int64    `json:"id"`
 			URL      string   `json:"url"`
 			ChatJIDs []string `json:"chat_jids"`
+			Secret   string   `json:"secret"`
 		} `json:"webhooks"`
 	}
 	if err := json.Unmarshal(out, &resp); err != nil {
-		return 0, nil, fmt.Errorf("parse webhooks list: %w", err)
+		return nil, nil, false, fmt.Errorf("parse webhooks list: %w", err)
 	}
+	seen := map[string]bool{}
+	secured = true
 	for _, wh := range resp.Webhooks {
-		if wh.URL == t.WebhookURL {
-			return wh.ID, wh.ChatJIDs, nil
+		if wh.URL != t.WebhookURL {
+			continue
+		}
+		ids = append(ids, wh.ID)
+		if t.Secret != "" && wh.Secret != t.Secret {
+			secured = false
+		}
+		for _, c := range wh.ChatJIDs {
+			key := normalizeMonitorID(c)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			chats = append(chats, c)
 		}
 	}
-	return 0, nil, nil
+	if len(ids) == 0 {
+		secured = false
+	}
+	return ids, chats, secured, nil
 }
 
 // resolveChat resolves a name/phone/JID reference to a concrete chat JID.
@@ -165,16 +224,21 @@ func (t *WhatsAppMonitorTool) resolveChat(ctx context.Context, wacli, ref string
 	return "", "", fmt.Errorf("could not resolve chat %q", ref)
 }
 
-// applyWebhook rewrites the KARMAX webhook with the new chat list (wacli has no
-// update op, so remove + re-add with the same URL/secret).
-func (t *WhatsAppMonitorTool) applyWebhook(ctx context.Context, wacli string, id int64, chats []string) error {
+// applyWebhook rewrites the KARMAX webhook set into ONE webhook with the given
+// chat list (wacli has no update op, so remove-all + re-add). Passing every
+// matching id — not just one — collapses any fragmentation and guarantees the
+// single survivor carries the HMAC secret.
+func (t *WhatsAppMonitorTool) applyWebhook(ctx context.Context, wacli string, ids []int64, chats []string) error {
 	if len(chats) == 0 {
 		return fmt.Errorf("refusing to apply an empty monitored-chat list")
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	if id != 0 {
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
 		if out, err := exec.CommandContext(cctx, wacli, "webhooks", "remove", fmt.Sprintf("%d", id)).CombinedOutput(); err != nil {
 			return fmt.Errorf("remove webhook %d: %v: %s", id, err, strings.TrimSpace(string(out)))
 		}
