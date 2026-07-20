@@ -60,6 +60,12 @@ type wacliMessage struct {
 	Timestamp   time.Time `json:"timestamp"`
 	IsFromMe    bool      `json:"is_from_me"`
 	MessageType string    `json:"message_type"`
+	// MentionsMe: this message @-mentions the KARMAX/bot account. QuotedIsFromMe:
+	// it's a reply to a message KARMAX sent. wacli computes both from its own
+	// identity (generic — no configured numbers), letting the proxy know KARMAX
+	// is being directly addressed even without an explicit @-mention.
+	MentionsMe     bool `json:"mentions_me"`
+	QuotedIsFromMe bool `json:"quoted_is_from_me"`
 }
 
 // WhatsAppChannel implements comms.Channel for WhatsApp via the local wacli
@@ -231,12 +237,14 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 		Content:     body,
 		Direction:   comms.Inbound,
 		Metadata: map[string]any{
-			"wacli_message_id": msg.ID,
-			"chat_jid":         chatJID,
-			"event":            env.Event,
-			"source":           env.Payload.Source,
-			"is_group":         env.Payload.Chat.IsGroup,
-			"chat_name":        env.Payload.Chat.Name,
+			"wacli_message_id":  msg.ID,
+			"chat_jid":          chatJID,
+			"event":             env.Event,
+			"source":            env.Payload.Source,
+			"is_group":          env.Payload.Chat.IsGroup,
+			"chat_name":         env.Payload.Chat.Name,
+			"mentions_me":       msg.MentionsMe,
+			"quoted_is_from_me": msg.QuotedIsFromMe,
 		},
 		Timestamp: ts,
 	}
