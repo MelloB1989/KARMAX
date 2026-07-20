@@ -230,10 +230,14 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 			m.lastIncomingTargets[agentID][ch.ID()] = msg.ChannelID
 			m.mu.Unlock()
 
-			// Surface a couple of metadata fields the agent uses for proactive
-			// routing (group vs 1:1, chat display name).
+			// Surface metadata fields the proactive proxy uses for routing: group
+			// vs 1:1, chat display name, and whether the bot is being directly
+			// addressed (@-mentioned or replied-to) — the latter computed
+			// generically by wacli from its own identity.
 			isGroup, _ := msg.Metadata["is_group"].(bool)
 			chatName, _ := msg.Metadata["chat_name"].(string)
+			mentionsMe, _ := msg.Metadata["mentions_me"].(bool)
+			quotedIsFromMe, _ := msg.Metadata["quoted_is_from_me"].(bool)
 
 			// Publish to event bus.
 			m.bus.Publish(bus.NewEvent(EventCommsMessage, agentID, map[string]any{
@@ -249,6 +253,8 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 				"timestamp":         msg.Timestamp,
 				"is_group":          isGroup,
 				"chat_name":         chatName,
+				"mentions_me":       mentionsMe,
+				"quoted_is_from_me": quotedIsFromMe,
 			}))
 		}
 	}
