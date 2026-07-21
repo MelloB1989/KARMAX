@@ -14,13 +14,13 @@ package installedloops
 
 import (
 	// karmax:loops:begin
+	_ "github.com/MelloB1989/karmax-loops/loops/chat-sweep"
+	_ "github.com/MelloB1989/karmax-loops/loops/cold-scan"
 	_ "github.com/MelloB1989/karmax-loops/loops/daily-briefing"
+	_ "github.com/MelloB1989/karmax-loops/loops/gchat-watch"
 	_ "github.com/MelloB1989/karmax-loops/loops/hot-sync"
 	_ "github.com/MelloB1989/karmax-loops/loops/profile-refresh"
 	_ "github.com/MelloB1989/karmax-loops/loops/tech-news"
-	_ "github.com/MelloB1989/karmax-loops/loops/chat-sweep"
-	_ "github.com/MelloB1989/karmax-loops/loops/gchat-watch"
-	_ "github.com/MelloB1989/karmax-loops/loops/cold-scan"
 	_ "github.com/MelloB1989/karmax-loops/loops/wa-monitor"
 	// karmax:loops:end
 )

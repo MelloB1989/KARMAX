@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
-	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"

@@ -21,8 +21,8 @@ func defaultWacliPath() string { return hostpaths.Wacli() }
 // WhatsAppReadTool reads recent WhatsApp messages via the local wacli binary,
 // giving the agent real-time awareness of the operator's conversations.
 type WhatsAppReadTool struct {
-	WacliPath   string // path to the wacli binary
-	DefaultChat string // chat used when none is specified
+	WacliPath   string       // path to the wacli binary
+	DefaultChat string       // chat used when none is specified
 	Store       *store.Store // optional: resolves WhatsApp numbers -> saved contact names
 }
 
