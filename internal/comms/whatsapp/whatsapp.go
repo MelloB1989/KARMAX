@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	sendTimeout      = 30 * time.Second
-	statusTimeout    = 10 * time.Second
-	wacliCmdTimeout  = 15 * time.Second
+	sendTimeout     = 30 * time.Second
+	statusTimeout   = 10 * time.Second
+	wacliCmdTimeout = 15 * time.Second
 )
 
 // wacliWebhookEnvelope is the JSON body wacli POSTs to our webhook endpoint.
