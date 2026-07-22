@@ -4,7 +4,7 @@ go 1.24.4
 
 require (
 	github.com/MelloB1989/karma v1.19.1
-	github.com/MelloB1989/karmax-loops v0.0.0-20260722090817-0fb5bce437be
+	github.com/MelloB1989/karmax-loops v0.0.0-20260722122528-567fec58d534
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
