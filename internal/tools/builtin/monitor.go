@@ -248,6 +248,12 @@ func (t *WhatsAppMonitorTool) applyWebhook(ctx context.Context, wacli string, id
 		"--url", t.WebhookURL,
 		"--events", "incoming_message,outgoing_message",
 		"--scope", "selected_chats",
+		// Keep receiving @-mentions from chats OUTSIDE this scope — the
+		// wa-monitor loop decides what to do with them (reply when genuinely
+		// addressed, ignore "@all" blasts in untracked groups). Without this,
+		// every monitor add/remove would silently rebuild the webhook without
+		// mention delivery and quietly kill that behaviour.
+		"--include-mentions",
 	}
 	for _, c := range chats {
 		args = append(args, "--chat", c)
