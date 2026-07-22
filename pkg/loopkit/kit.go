@@ -106,6 +106,13 @@ type Kit interface {
 	// model's budget. No tools, no memory: prompt in, text out.
 	Summarize(ctx context.Context, prompt string) (string, error)
 
+	// Gateway is a single call to the agent's MAIN model through the karma
+	// gateway — no tools, no agent loop, no coding harness: prompt in, text out.
+	// This is the CHEAP, FAST path a loop should try FIRST. Reach for Harness
+	// (which spawns a full Claude Code run) only when the work genuinely needs
+	// tools, the shell, or research the gateway can't do on its own.
+	Gateway(ctx context.Context, prompt string) (string, error)
+
 	// ChatSummary returns the stored cold-memory summary for a chat JID (nil if
 	// none); SaveChatSummary creates/updates one. These records feed the memory
 	// retrieval sub-agent's per-chat context.
