@@ -437,6 +437,30 @@ func (k *loopKit) HostTool(name string) string {
 
 // Summarize runs a prompt through the first agent's summary model (falling
 // back to its main model config), with the agent's fallback chain.
+// Gateway runs one prompt against the agent's MAIN model (no tools) — the cheap
+// path loops should try before escalating to the Claude Code harness.
+func (k *loopKit) Gateway(ctx context.Context, prompt string) (string, error) {
+	if len(k.rt.cfg.Agents) == 0 {
+		return "", fmt.Errorf("no agent configured")
+	}
+	a := k.rt.cfg.Agents[0]
+	var fallbacks []karmahelper.FallbackModel
+	for _, fb := range a.FallbackModels {
+		fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
+	}
+	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Provider:       a.Provider,
+		Model:          a.Model,
+		MaxTokens:      2000,
+		FallbackModels: fallbacks,
+	}, nil)
+	resp, _, _, err := sess.Chat(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(karmahelper.CleanContent(resp)), nil
+}
+
 func (k *loopKit) Summarize(ctx context.Context, prompt string) (string, error) {
 	if len(k.rt.cfg.Agents) == 0 {
 		return "", fmt.Errorf("no agent configured")
