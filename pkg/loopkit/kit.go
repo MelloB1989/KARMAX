@@ -2,6 +2,7 @@ package loopkit
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -106,12 +107,19 @@ type Kit interface {
 	// model's budget. No tools, no memory: prompt in, text out.
 	Summarize(ctx context.Context, prompt string) (string, error)
 
-	// Gateway is a single call to the agent's MAIN model through the karma
-	// gateway — no tools, no agent loop, no coding harness: prompt in, text out.
-	// This is the CHEAP, FAST path a loop should try FIRST. Reach for Harness
-	// (which spawns a full Claude Code run) only when the work genuinely needs
-	// tools, the shell, or research the gateway can't do on its own.
-	Gateway(ctx context.Context, prompt string) (string, error)
+	// Gateway runs a prompt against the agent's MAIN model through the karma
+	// gateway: cheap and fast (no agent loop, no Claude Code run). This is the
+	// path a loop should try FIRST.
+	//
+	// A loop may pass TEMPORARY TOOLS that exist only for this call — that is
+	// how a loop adds capability without bloating KARMAX's core toolset. The
+	// wa-monitor loop, for instance, lends the gateway a single `wacli` tool so
+	// it can look up another chat mid-conversation. Tools are scoped to this
+	// call: they vanish when it returns and are invisible to the main agent.
+	//
+	// Escalate to Harness only when the work needs the shell, files, or research
+	// no lent tool can cover.
+	Gateway(ctx context.Context, prompt string, tools ...Tool) (string, error)
 
 	// ChatSummary returns the stored cold-memory summary for a chat JID (nil if
 	// none); SaveChatSummary creates/updates one. These records feed the memory
@@ -135,6 +143,21 @@ type Kit interface {
 	ShortAll(group string) ([]ShortMemory, error)
 	ShortForget(group, key string) error
 	ShortClear(group string) error
+}
+
+// Tool is a capability a loop lends to the model for the duration of one
+// Gateway call. Loops own these, so KARMAX's core toolset stays small while
+// individual loops can be arbitrarily capable.
+//
+// Schema is a JSON-Schema object describing Run's arguments (same shape the
+// model sees). Run receives the decoded arguments and returns the text handed
+// back to the model; returning an error surfaces it to the model as a failure
+// so it can adapt rather than crashing the run.
+type Tool struct {
+	Name        string
+	Description string
+	Schema      json.RawMessage
+	Run         func(ctx context.Context, args map[string]any) (string, error)
 }
 
 // ShortMemory is one short-term KV entry.
