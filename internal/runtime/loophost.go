@@ -519,3 +519,64 @@ func envSanitize(s string) string {
 	}
 	return b.String()
 }
+
+// --- Short-term memory (scratch KV) -----------------------------------------
+//
+// Backed by the kv_memory table: durable across restarts, expiring via TTL, and
+// partitioned into groups the calling loop names. The engine handles expiry;
+// callers just set and read.
+
+func (k *loopKit) ShortSet(group, key, value string, ttl time.Duration) error {
+	if k.rt.store == nil {
+		return fmt.Errorf("store unavailable")
+	}
+	return k.rt.store.KVSet(k.shortGroup(group), key, value, ttl)
+}
+
+func (k *loopKit) ShortGet(group, key string) (string, bool, error) {
+	if k.rt.store == nil {
+		return "", false, fmt.Errorf("store unavailable")
+	}
+	return k.rt.store.KVGet(k.shortGroup(group), key)
+}
+
+func (k *loopKit) ShortAll(group string) ([]loopkit.ShortMemory, error) {
+	if k.rt.store == nil {
+		return nil, fmt.Errorf("store unavailable")
+	}
+	entries, err := k.rt.store.KVList(k.shortGroup(group))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]loopkit.ShortMemory, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, loopkit.ShortMemory{
+			Key: e.Key, Value: e.Value, ExpiresAt: e.ExpiresAt, UpdatedAt: e.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (k *loopKit) ShortForget(group, key string) error {
+	if k.rt.store == nil {
+		return fmt.Errorf("store unavailable")
+	}
+	return k.rt.store.KVDelete(k.shortGroup(group), key)
+}
+
+func (k *loopKit) ShortClear(group string) error {
+	if k.rt.store == nil {
+		return fmt.Errorf("store unavailable")
+	}
+	return k.rt.store.KVClearGroup(k.shortGroup(group))
+}
+
+// shortGroup namespaces a loop's group by the loop name, so two loops can pick
+// the same group string without colliding.
+func (k *loopKit) shortGroup(group string) string {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		group = "default"
+	}
+	return k.loopName + ":" + group
+}

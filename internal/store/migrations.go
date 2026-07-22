@@ -276,6 +276,22 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(namespace, status)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_dedup ON reviews(namespace, dedup_key)`,
+
+	// 019_kv_memory — short-term scratch memory for loops. Namespaced by
+	// "group" (a loop picks its own, e.g. one per chat), key/value chosen by the
+	// caller, with an optional TTL. Durable (survives restarts) but expiring, so
+	// it complements long-term memory_entries rather than replacing it.
+	`CREATE TABLE IF NOT EXISTS kv_memory (
+		grp        TEXT NOT NULL,
+		key        TEXT NOT NULL,
+		value      TEXT NOT NULL,
+		expires_at DATETIME,
+		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (grp, key)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_kv_memory_grp ON kv_memory(grp)`,
+	`CREATE INDEX IF NOT EXISTS idx_kv_memory_expires ON kv_memory(expires_at)`,
 }
 
 func (s *Store) migrate() error {

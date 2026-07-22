@@ -111,4 +111,29 @@ type Kit interface {
 	// retrieval sub-agent's per-chat context.
 	ChatSummary(jid string) (*ChatSummaryRecord, error)
 	SaveChatSummary(rec ChatSummaryRecord) error
+
+	// --- Short-term memory (scratch KV) --------------------------------------
+	//
+	// Durable but EXPIRING key/value state, partitioned into groups the loop
+	// names itself (wa-monitor uses one group per chat). Use it for the working
+	// context long-term memory shouldn't hold: what you just told someone, a
+	// "stop replying to X" instruction, the topic in play. The engine owns TTL
+	// and expiry — expired entries simply stop being returned.
+	//
+	// ShortSet stores a value; ttl <= 0 means it never expires.
+	// ShortGet returns (value, found). ShortAll returns every live entry in the
+	// group, freshest first — handy to render straight into a prompt.
+	ShortSet(group, key, value string, ttl time.Duration) error
+	ShortGet(group, key string) (string, bool, error)
+	ShortAll(group string) ([]ShortMemory, error)
+	ShortForget(group, key string) error
+	ShortClear(group string) error
+}
+
+// ShortMemory is one short-term KV entry.
+type ShortMemory struct {
+	Key       string     `json:"key"`
+	Value     string     `json:"value"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
