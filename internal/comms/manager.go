@@ -238,6 +238,7 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 			chatName, _ := msg.Metadata["chat_name"].(string)
 			mentionsMe, _ := msg.Metadata["mentions_me"].(bool)
 			quotedIsFromMe, _ := msg.Metadata["quoted_is_from_me"].(bool)
+			mentionCount, _ := msg.Metadata["mention_count"].(int)
 
 			// Publish to event bus.
 			m.bus.Publish(bus.NewEvent(EventCommsMessage, agentID, map[string]any{
@@ -255,6 +256,7 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 				"chat_name":         chatName,
 				"mentions_me":       mentionsMe,
 				"quoted_is_from_me": quotedIsFromMe,
+				"mention_count":     mentionCount,
 			}))
 		}
 	}
