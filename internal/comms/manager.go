@@ -239,6 +239,7 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 			mentionsMe, _ := msg.Metadata["mentions_me"].(bool)
 			quotedIsFromMe, _ := msg.Metadata["quoted_is_from_me"].(bool)
 			mentionCount, _ := msg.Metadata["mention_count"].(int)
+			wacliMessageID, _ := msg.Metadata["wacli_message_id"].(string)
 
 			// Publish to event bus.
 			m.bus.Publish(bus.NewEvent(EventCommsMessage, agentID, map[string]any{
@@ -257,6 +258,9 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 				"mentions_me":       mentionsMe,
 				"quoted_is_from_me": quotedIsFromMe,
 				"mention_count":     mentionCount,
+				// The originating WhatsApp message id, so a loop can reply
+				// quoting the exact message that triggered it.
+				"wacli_message_id": wacliMessageID,
 			}))
 		}
 	}

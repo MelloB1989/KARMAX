@@ -240,6 +240,24 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// regular loop — visible, disableable, and manually triggerable — not a
 	// hidden goroutine. It needs the memory managers, so the runtime registers
 	// it here rather than the marketplace hosting it.
+	// Short-term memory upkeep: drop KV entries whose TTL has passed. Reads
+	// already hide expired rows, so this only keeps the table from growing.
+	loopkit.Register(loopkit.Loop{
+		Name:        "shortmem-sweep",
+		Description: "Hourly sweep of expired short-term (KV) memories written by loops — the scratch store's garbage collector.",
+		Schedule:    loopkit.Every("1h"),
+		Run: func(ctx context.Context, k loopkit.Kit) error {
+			n, err := s.KVPurgeExpired()
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				k.Logf("shortmem-sweep: purged %d expired short-term memories", n)
+			}
+			return nil
+		},
+	})
+
 	loopkit.Register(loopkit.Loop{
 		Name:        "memory-maintenance",
 		Description: "Hourly forgetting pass over every memory namespace: prunes TTL-expired facts and enforces the capacity cap (least-valuable, non-pinned entries go first).",
