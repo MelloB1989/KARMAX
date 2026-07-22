@@ -437,9 +437,42 @@ func (k *loopKit) HostTool(name string) string {
 
 // Summarize runs a prompt through the first agent's summary model (falling
 // back to its main model config), with the agent's fallback chain.
-// Gateway runs one prompt against the agent's MAIN model (no tools) — the cheap
-// path loops should try before escalating to the Claude Code harness.
-func (k *loopKit) Gateway(ctx context.Context, prompt string) (string, error) {
+// loopToolAdapter exposes a loop-provided loopkit.Tool through KARMAX's tools.Tool
+// interface, so a loop can lend the gateway model a capability for exactly one
+// call without that tool ever being registered in the core toolset.
+type loopToolAdapter struct {
+	loopName string
+	tool     loopkit.Tool
+}
+
+func (a *loopToolAdapter) Manifest() tools.ToolManifest {
+	schema := a.tool.Schema
+	if len(schema) == 0 {
+		schema = json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	return tools.ToolManifest{
+		Name:        a.tool.Name,
+		Description: a.tool.Description,
+		Parameters:  schema,
+	}
+}
+
+func (a *loopToolAdapter) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
+	if a.tool.Run == nil {
+		return tools.ErrorResult(fmt.Errorf("tool %q has no implementation", a.tool.Name)), nil
+	}
+	out, err := a.tool.Run(ctx, input)
+	if err != nil {
+		// Surface the failure TO THE MODEL so it can adapt, rather than aborting.
+		return tools.ErrorResult(err), nil
+	}
+	return tools.SuccessResult(out), nil
+}
+
+// Gateway runs one prompt against the agent's MAIN model — the cheap path loops
+// should try before escalating to the Claude Code harness. Any tools the loop
+// passes live only for this call.
+func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.Tool) (string, error) {
 	if len(k.rt.cfg.Agents) == 0 {
 		return "", fmt.Errorf("no agent configured")
 	}
@@ -448,12 +481,23 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string) (string, error) {
 	for _, fb := range a.FallbackModels {
 		fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
 	}
+	var lentTools []tools.Tool
+	for _, t := range lent {
+		if strings.TrimSpace(t.Name) == "" {
+			continue
+		}
+		lentTools = append(lentTools, &loopToolAdapter{loopName: k.loopName, tool: t})
+	}
+	if len(lentTools) > 0 {
+		k.rt.log.Debug("loop lent tools to the gateway",
+			zap.String("loop", k.loopName), zap.Int("tools", len(lentTools)))
+	}
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
 		Provider:       a.Provider,
 		Model:          a.Model,
 		MaxTokens:      2000,
 		FallbackModels: fallbacks,
-	}, nil)
+	}, lentTools)
 	resp, _, _, err := sess.Chat(ctx, prompt)
 	if err != nil {
 		return "", err
