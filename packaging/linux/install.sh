@@ -17,6 +17,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${KARMAX_PREFIX:-$HOME/.local/bin}"
 DATA_DIR="${KARMAX_DATA_DIR:-$HOME/.karmax}"
 UNIT_DIR="$HOME/.config/systemd/user"
+CONF_DIR="$HOME/.config/karmax"
 UNIT="$UNIT_DIR/karmax.service"
 
 # Locate the karmax binary: next to this script (release archive), at the repo
@@ -53,6 +54,9 @@ WorkingDirectory=$DATA_DIR
 ExecStart=$PREFIX/karmax start
 Restart=always
 RestartSec=2
+# Persist app stdout+stderr to a flat, greppable log file (rotated below).
+StandardOutput=append:$DATA_DIR/karmax.log
+StandardError=append:$DATA_DIR/karmax.log
 # KARMAX spawns claude/codex/wacli/gws; give them a sensible PATH.
 Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:$HOME/.hermes/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -60,7 +64,52 @@ Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:$HOME/.hermes/node/bin:/usr/loc
 WantedBy=default.target
 EOF
 
+# --- log rotation -----------------------------------------------------------
+# The unit above appends to a flat file, which (unlike the journal) never trims
+# itself. Install a logrotate config + a daily user timer so it can't fill the
+# disk. copytruncate is REQUIRED: systemd holds the append fd open, so renaming
+# the file would leave the daemon writing into the rotated copy.
+if command -v logrotate >/dev/null 2>&1; then
+	echo "==> installing log rotation"
+	mkdir -p "$CONF_DIR"
+	cat > "$CONF_DIR/logrotate.conf" <<EOF
+$DATA_DIR/karmax.log $DATA_DIR/wacli.log {
+    daily
+    rotate 7
+    size 20M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}
+EOF
+	cat > "$UNIT_DIR/karmax-logrotate.service" <<EOF
+[Unit]
+Description=Rotate KARMAX (and wacli) flat logs
+
+[Service]
+Type=oneshot
+ExecStart=$(command -v logrotate) --state $DATA_DIR/logrotate.state $CONF_DIR/logrotate.conf
+EOF
+	cat > "$UNIT_DIR/karmax-logrotate.timer" <<EOF
+[Unit]
+Description=Daily rotation of KARMAX logs
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target
+EOF
+else
+	echo "==> logrotate not found; skipping log rotation (${DATA_DIR}/karmax.log will grow unbounded)"
+fi
+
 systemctl --user daemon-reload
+[ -f "$UNIT_DIR/karmax-logrotate.timer" ] && systemctl --user enable --now karmax-logrotate.timer >/dev/null 2>&1 || true
 # Keep the service alive across logout / reboot (aggressive, always-on).
 loginctl enable-linger "$USER" >/dev/null 2>&1 || true
 systemctl --user enable --now karmax.service
@@ -69,7 +118,7 @@ echo
 echo "karmax is installed and running."
 systemctl --user --no-pager status karmax.service 2>/dev/null | head -n 6 || true
 echo
-echo "  logs:    journalctl --user -u karmax.service -f"
+echo "  logs:    tail -f $DATA_DIR/karmax.log   (or: journalctl --user -u karmax.service -f)"
 echo "  stop:    systemctl --user stop karmax.service"
 echo "  disable: systemctl --user disable --now karmax.service"
 case ":$PATH:" in
