@@ -66,6 +66,9 @@ type wacliMessage struct {
 	// is being directly addressed even without an explicit @-mention.
 	MentionsMe     bool `json:"mentions_me"`
 	QuotedIsFromMe bool `json:"quoted_is_from_me"`
+	// MentionCount = how many JIDs the message @-mentioned, so the proxy loop
+	// can tell a direct mention from an "@all"-style blast.
+	MentionCount int `json:"mention_count"`
 }
 
 // WhatsAppChannel implements comms.Channel for WhatsApp via the local wacli
@@ -245,6 +248,7 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 			"chat_name":         env.Payload.Chat.Name,
 			"mentions_me":       msg.MentionsMe,
 			"quoted_is_from_me": msg.QuotedIsFromMe,
+			"mention_count":     msg.MentionCount,
 		},
 		Timestamp: ts,
 	}
