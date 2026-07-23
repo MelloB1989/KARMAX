@@ -44,6 +44,8 @@ github.com/MelloB1989/karmax-loops v0.0.0-20260722122528-567fec58d534 h1:zWXHHTU
 github.com/MelloB1989/karmax-loops v0.0.0-20260722122528-567fec58d534/go.mod h1:zjKfl0D9oVoHEXulA1z9c7fVbchNuDEV3neVhqfxo2E=
 github.com/MelloB1989/karmax-loops v0.0.0-20260723070216-fcd71bcbd7ec h1:9UxOzCePGRGu0qm4AXVI8x0GQU7207VO9NxwXLM2VGQ=
 github.com/MelloB1989/karmax-loops v0.0.0-20260723070216-fcd71bcbd7ec/go.mod h1:zjKfl0D9oVoHEXulA1z9c7fVbchNuDEV3neVhqfxo2E=
+github.com/MelloB1989/karmax-loops v0.0.0-20260723071200-71340872cec7 h1:0AC6fb22N8Or0QRx5Sa7jStk2IS6zeO163fsTvmCkJM=
+github.com/MelloB1989/karmax-loops v0.0.0-20260723071200-71340872cec7/go.mod h1:zjKfl0D9oVoHEXulA1z9c7fVbchNuDEV3neVhqfxo2E=
 github.com/anthropics/anthropic-sdk-go v1.4.0 h1:fU1jKxYbQdQDiEXCxeW5XZRIOwKevn/PMg8Ay1nnUx0=
 github.com/anthropics/anthropic-sdk-go v1.4.0/go.mod h1:AapDW22irxK2PSumZiQXYUFvsdQgkwIWlpESweWZI/c=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
