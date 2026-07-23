@@ -214,14 +214,16 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 	// the event.
 	switch env.Event {
 	case "incoming_message":
-		// A message from the other party — always route.
+		// A message from the OTHER party — the only thing we ever respond to.
 	case "outgoing_message":
-		// The operator's OWN message (e.g. their self-chat, or a phone that is
-		// the wacli account). Skip our own sends (source "wacli_api") so we never
-		// answer ourselves.
-		if env.Payload.Source == "wacli_api" {
-			return
-		}
+		// This is a message the OPERATOR'S OWN account sent — either KARMAX
+		// itself via the API (source "wacli_api") OR the operator typing from
+		// their phone/WhatsApp Web (source "whatsapp_event"). We must NEVER treat
+		// either as something to answer: replying to KARMAX's own send loops, and
+		// replying to the operator's own message means KARMAX "self-replies" in
+		// front of the recipient. So outgoing messages are NEVER routed as
+		// inbound — they're only useful as context, which is read separately.
+		return
 	default:
 		return
 	}
