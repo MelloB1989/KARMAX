@@ -1315,6 +1315,31 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 		return prompt
 	}
 
+	// A WhatsApp/comms message from the OPERATOR: render it as a plain
+	// instruction, not a raw event JSON dump. Making the model parse JSON to
+	// find the actual message is what made it mistake real messages for an
+	// "empty trigger" and reply "nothing to act on".
+	if evt.Kind == "comms.message" && evt.Payload != nil {
+		content, _ := evt.Payload["content"].(string)
+		chatID, _ := evt.Payload["channel_id"].(string)
+		who, _ := evt.Payload["sender_name"].(string)
+		if who == "" {
+			who, _ = evt.Payload["chat_name"].(string)
+		}
+		if who == "" {
+			who = chatID
+		}
+		if strings.TrimSpace(content) != "" {
+			prompt += fmt.Sprintf("The operator just messaged you on WhatsApp (chat %q, id: %s):\n\n\"%s\"\n\n",
+				who, chatID, strings.TrimSpace(content))
+			prompt += "This is a direct instruction from the operator. ACT on it now:\n" +
+				"- If it asks you to DO something (send a message, set a reminder/event, look something up, fetch data), use your tools to actually do it, then reply confirming what you did.\n" +
+				"- Reply IN THIS CHAT (it goes back automatically, or use comms.send to the chat id above).\n" +
+				"- If you genuinely can't (missing info, a tool refused), say so plainly and ask for the one thing you need. NEVER reply \"nothing to act on\", \"empty trigger\", or a vague \"on it\" — that is a failure.\n"
+			return prompt
+		}
+	}
+
 	if evt.Payload != nil {
 		payloadJSON, _ := json.MarshalIndent(evt.Payload, "", "  ")
 		prompt += fmt.Sprintf("Event: %s\nAgent: %s\n\n```json\n%s\n```\n", evt.Kind, evt.AgentID, string(payloadJSON))
