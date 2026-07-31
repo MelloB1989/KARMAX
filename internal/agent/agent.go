@@ -480,6 +480,36 @@ func claimsCompletedAction(s string) bool {
 	return false
 }
 
+// looksPassiveStall detects a reply that PROMISES action or defers instead of
+// doing anything — "on it", "standing by", "will do", "let me check". When the
+// operator gave an instruction and the model calls no tool AND stalls like
+// this, nothing actually happens: it's the "I asked it to do X and it did
+// nothing" failure. The guard re-prompts it to either act or state the blocker.
+func looksPassiveStall(s string) bool {
+	l := strings.ToLower(strings.TrimSpace(s))
+	if l == "" {
+		return true // an empty reply to a request is the worst stall of all
+	}
+	// Short replies that are pure acknowledgement / future-promise with no
+	// substance. Length-bounded so a real brief answer ("Sure, 3pm works") is
+	// left alone.
+	if len([]rune(l)) > 160 {
+		return false
+	}
+	for _, p := range []string{
+		"standing by", "on it", "onit", "working on it", "will do", "will get",
+		"will send", "will check", "let me check", "let me look", "give me a",
+		"i'll handle", "i'll take care", "i'll get", "i'll send", "i'll do",
+		"i'll look", "i'll check", "getting that", "one sec", "hold on", "noted",
+		"👀",
+	} {
+		if strings.Contains(l, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildTimeContext tells the agent what "now" is, so it can reason about ages,
 // deadlines, and staleness instead of guessing or web-searching for the date.
 // This is the anchor that makes "[stored 3 weeks ago]" and "deadline Friday"
@@ -799,9 +829,13 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// sent/removed/scheduled something while calling zero tools. If the reply
 		// asserts a completed action but nothing actually ran this turn, re-prompt
 		// ONCE to force a real tool call (or an honest "here's what's blocking").
-		if len(toolCalls) == 0 && claimsCompletedAction(response) {
-			a.log.Warn("act-evidence: reply claims action with no tool call; re-prompting", zap.String("agent", a.def.ID))
-			nudge := "SYSTEM: You just claimed to have done something (sent/removed/scheduled/resolved/etc.) but you called NO tool this turn — so nothing actually happened. Do NOT claim completion you didn't perform. Either call the correct tool NOW to actually do it, or reply plainly stating what is blocking you. This is your one correction."
+		if len(toolCalls) == 0 && (claimsCompletedAction(response) || looksPassiveStall(response)) {
+			a.log.Warn("act-evidence: reply asserts/defers action with no tool call; re-prompting",
+				zap.String("agent", a.def.ID), zap.String("reply", truncateStr(response, 80)))
+			nudge := "SYSTEM: Your last reply either claimed to do something or promised to (\"on it\", \"standing by\", \"I'll send it\", etc.) but you called NO tool — so NOTHING actually happened. This is unacceptable: the operator gave you an instruction and you did nothing. Right now, do ONE of exactly these:\n" +
+				"1. ACTUALLY DO IT — call the correct tool this turn (comms.send / reminder.add / scheduler.add / claude_code.call / etc.). Delegate to claude_code if it needs the shell, files, or research.\n" +
+				"2. If you literally CANNOT (you're missing information — e.g. you don't have the credentials/file/detail it needs), say so plainly in ONE sentence and ask the one specific thing you need. Never a vague \"standing by\".\n" +
+				"Do not just acknowledge again. Act or state the blocker."
 			rctx, rcancel := context.WithTimeout(a.ctx, 3*time.Minute)
 			resp2, tc2, err2 := a.mainSession.ProcessMessage(rctx, nudge)
 			rcancel()
