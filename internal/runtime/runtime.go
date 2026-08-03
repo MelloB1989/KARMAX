@@ -15,6 +15,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/comms/discord"
+	"github.com/MelloB1989/karmax/internal/comms/slack"
 	"github.com/MelloB1989/karmax/internal/comms/telegram"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
@@ -27,6 +28,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
+	"github.com/MelloB1989/karmax/internal/tracker"
 	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
@@ -131,6 +133,26 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			// Long-polling: no public URL or tunnel needed, so it works on the
 			// same self-hosted boxes as the rest of KARMAX.
 			ch := telegram.New(chCfg.ID, chCfg.Token, log)
+			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
+				DND: dndEnabled(chCfg.Settings),
+			}); err != nil {
+				log.Error("failed to register comms channel",
+					zap.String("id", chCfg.ID),
+					zap.Error(err),
+				)
+			}
+		case "slack":
+			// Socket Mode: Slack dials out from us, so like Telegram this needs no
+			// public URL. Two tokens — xapp- opens the socket, xoxb- posts messages.
+			appToken := chCfg.Settings["app_token"]
+			if appToken == "" {
+				appToken = os.Getenv("SLACK_APP_TOKEN")
+			}
+			botToken := chCfg.Token
+			if botToken == "" {
+				botToken = os.Getenv("SLACK_BOT_TOKEN")
+			}
+			ch := slack.New(chCfg.ID, appToken, botToken, log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
 			}); err != nil {
@@ -475,6 +497,32 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Mount the WhatsApp event endpoint that wacli pushes message events to.
 	if waChannel != nil {
 		wh.AddHandler("/comms/whatsapp", waChannel.HandleWebhook)
+	}
+
+	// Issue trackers and code hosts are event sources, not conversations: each
+	// delivery becomes one normalised tracker.event on the bus for loops to judge.
+	// A platform is only mounted when its secret is set, so an unconfigured
+	// endpoint doesn't sit there accepting anonymous POSTs.
+	for _, t := range []struct {
+		src    tracker.Source
+		path   string
+		secret string
+	}{
+		{tracker.GitHub, "/hooks/github", os.Getenv("GITHUB_WEBHOOK_SECRET")},
+		{tracker.Jira, "/hooks/jira", os.Getenv("JIRA_WEBHOOK_TOKEN")},
+		{tracker.YouTrack, "/hooks/youtrack", os.Getenv("YOUTRACK_WEBHOOK_TOKEN")},
+	} {
+		if t.secret == "" {
+			continue
+		}
+		h := tracker.New(tracker.Config{
+			Source:  t.src,
+			Secret:  t.secret,
+			AgentID: waAgentID,
+		}, b, log)
+		wh.AddHandler(t.path, h.ServeHTTP)
+		log.Info("tracker webhook mounted",
+			zap.String("source", string(t.src)), zap.String("path", t.path))
 	}
 
 	for _, route := range cfg.Webhooks.Routes {
