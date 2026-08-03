@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,11 @@ func applyDefaults(cfg *KarmaxConfig) {
 	if cfg.Karmax.Version == "" {
 		cfg.Karmax.Version = "1"
 	}
+	// KARMAX_DATA_DIR wins over the file so several tenants can share one
+	// binary and one OS user, each with its own state directory.
+	if d := strings.TrimSpace(os.Getenv("KARMAX_DATA_DIR")); d != "" {
+		cfg.Karmax.DataDir = d
+	}
 	if cfg.Karmax.DataDir == "" {
 		home, _ := os.UserHomeDir()
 		cfg.Karmax.DataDir = home + "/.karmax"
@@ -56,6 +62,18 @@ func applyDefaults(cfg *KarmaxConfig) {
 	}
 	if cfg.Karmax.LogFormat == "" {
 		cfg.Karmax.LogFormat = "pretty"
+	}
+	// Per-tenant port overrides: every instance on a host must bind its own
+	// API and webhook ports.
+	if v := strings.TrimSpace(os.Getenv("KARMAX_API_PORT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.API.Port = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("KARMAX_WEBHOOK_PORT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Webhooks.Port = n
+		}
 	}
 	if cfg.Webhooks.Port == 0 {
 		cfg.Webhooks.Port = 9090

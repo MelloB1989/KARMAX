@@ -1,0 +1,22 @@
+[Unit]
+Description=KARMAX daemon for tenant %i
+Documentation=https://github.com/MelloB1989/KARMAX
+After=network-online.target wacli@%i.service
+Wants=network-online.target wacli@%i.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Per-tenant ports, data dir and secrets. Written by `karmax-tenant create`.
+EnvironmentFile=%h/.config/karmax/tenants/%i.env
+WorkingDirectory=%h/.karmax/tenants/%i
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/${WACLI_PORT}) 2>/dev/null && exit 0; sleep 1; done; exit 0'
+ExecStart=%h/.local/bin/karmax start
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/.karmax/tenants/%i/karmax.log
+StandardError=append:%h/.karmax/tenants/%i/karmax.log
+Environment=PATH=%h/.local/bin:%h/.bun/bin:%h/.hermes/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=default.target

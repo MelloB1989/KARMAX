@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# karmax-tenant — run one KARMAX instance per user on a single host.
+#
+#   karmax-tenant create <name>     provision a tenant (dirs, ports, units)
+#   karmax-tenant login  <name>     link their WhatsApp + Google accounts
+#   karmax-tenant start  <name>     start (or restart) their daemons
+#   karmax-tenant stop   <name>
+#   karmax-tenant list              show every tenant, its ports and status
+#   karmax-tenant logs   <name>     tail their KARMAX log
+#   karmax-tenant remove <name>     stop and delete a tenant (asks first)
+#
+# Every tenant gets its own data dir, WhatsApp session, Google credentials and
+# port block, wired together by one env file that the systemd template units
+# read. Nothing is shared between tenants except the host itself.
+#
+# ISOLATION NOTE: all tenants run as the SAME OS user, so separation is by
+# convention (directories + 0700 perms), not enforced by the kernel. A process
+# running as this user can read every tenant's data. For untrusted tenants,
+# give each one its own OS user and run these same units under that account.
+set -euo pipefail
+
+PREFIX="${KARMAX_PREFIX:-$HOME/.local/bin}"
+CONF_DIR="$HOME/.config/karmax/tenants"
+KARMAX_ROOT="$HOME/.karmax/tenants"
+WACLI_ROOT="$HOME/.wacli/tenants"
+GWS_ROOT="$HOME/.config/gws/tenants"
+UNIT_DIR="$HOME/.config/systemd/user"
+
+# Port blocks. Tenant N gets a contiguous, predictable range.
+API_BASE=9200      # KARMAX HTTP API
+HOOK_BASE=9300     # KARMAX webhook receiver
+WACLI_BASE=8800    # wacli local API
+
+c_ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
+c_warn() { printf '\033[33m%s\033[0m\n' "$*"; }
+c_err()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+die()    { c_err "error: $*"; exit 1; }
+
+valid_name() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,30}$ ]] || die "invalid name '$1' (use a-z, 0-9, - and _)"
+}
+
+env_file() { echo "$CONF_DIR/$1.env"; }
+
+# Lowest free index, so removing a tenant frees its ports for reuse.
+next_index() {
+  local i=0
+  while [ -f "$CONF_DIR/.index-$i" ]; do i=$((i + 1)); done
+  echo "$i"
+}
+
+cmd_create() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: karmax-tenant create <name>"
+  valid_name "$name"
+  [ -f "$(env_file "$name")" ] && die "tenant '$name' already exists"
+
+  command -v systemctl >/dev/null || die "systemd is required"
+  [ -x "$PREFIX/karmax" ] || die "karmax binary not found at $PREFIX/karmax"
+  [ -x "$PREFIX/wacli" ]  || die "wacli binary not found at $PREFIX/wacli"
+
+  local idx api hook wacli_port
+  idx=$(next_index)
+  api=$((API_BASE + idx))
+  hook=$((HOOK_BASE + idx))
+  wacli_port=$((WACLI_BASE + idx))
+
+  mkdir -p "$CONF_DIR" "$KARMAX_ROOT/$name" "$WACLI_ROOT/$name" "$GWS_ROOT/$name" "$UNIT_DIR"
+  chmod 700 "$KARMAX_ROOT/$name" "$WACLI_ROOT/$name" "$GWS_ROOT/$name"
+  touch "$CONF_DIR/.index-$idx"
+
+  # Per-tenant secrets — never shared between tenants.
+  local api_token hook_secret
+  api_token=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
+  hook_secret=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+
+  cat > "$(env_file "$name")" <<EOF
+# KARMAX tenant: $name (index $idx) — generated $(date -Iseconds)
+TENANT=$name
+TENANT_INDEX=$idx
+
+# --- ports (unique per tenant) ---
+KARMAX_API_PORT=$api
+KARMAX_WEBHOOK_PORT=$hook
+WACLI_PORT=$wacli_port
+
+# --- state (each tenant owns its own) ---
+KARMAX_DATA_DIR=$KARMAX_ROOT/$name
+WACLI_HOME=$WACLI_ROOT/$name
+WACLI_HTTP_ADDR=127.0.0.1:$wacli_port
+KARMAX_WACLI_API_URL=http://127.0.0.1:$wacli_port
+KARMAX_WACLI_PATH=$PREFIX/wacli
+KARMAX_BIN=$PREFIX/karmax
+
+# --- google (per-tenant credentials; file keyring so tenants don't collide
+#     in the shared OS keyring) ---
+GOOGLE_WORKSPACE_CLI_CONFIG_DIR=$GWS_ROOT/$name
+GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file
+
+# --- secrets (unique per tenant) ---
+KARMAX_API_TOKEN=$api_token
+WHATSAPP_WEBHOOK_SECRET=$hook_secret
+
+# --- model gateway (shared by default; override per tenant if needed) ---
+ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-http://localhost:9000}
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+EOF
+  chmod 600 "$(env_file "$name")"
+
+  # Install the template units once.
+  local src; src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for u in karmax@.service wacli@.service; do
+    [ -f "$src/$u" ] && install -m 0644 "$src/$u" "$UNIT_DIR/$u"
+  done
+  systemctl --user daemon-reload
+  loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+
+  # Seed a config for this tenant if the binary can.
+  if [ ! -f "$KARMAX_ROOT/$name/karmax.yaml" ]; then
+    ( set -a; . "$(env_file "$name")"; set +a; "$PREFIX/karmax" init >/dev/null 2>&1 ) || true
+  fi
+
+  c_ok "tenant '$name' created (index $idx)"
+  printf "  karmax api   127.0.0.1:%s\n  webhook      127.0.0.1:%s\n  wacli        127.0.0.1:%s\n" "$api" "$hook" "$wacli_port"
+  printf "  data         %s\n  env          %s\n\n" "$KARMAX_ROOT/$name" "$(env_file "$name")"
+  c_warn "next: karmax-tenant login $name   (link WhatsApp + Google)"
+}
+
+cmd_login() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: karmax-tenant login <name>"
+  local ef; ef="$(env_file "$name")"; [ -f "$ef" ] || die "no such tenant '$name'"
+  set -a; . "$ef"; set +a
+
+  echo "== WhatsApp =="
+  echo "Scan the QR below from the tenant's phone (WhatsApp > Linked devices)."
+  "$PREFIX/wacli" login || c_warn "wacli login did not complete"
+
+  echo
+  echo "== Google Workspace =="
+  if command -v gws >/dev/null 2>&1; then
+    echo "Opens a browser; sign in as the tenant, not yourself."
+    gws auth login || c_warn "gws auth did not complete (you can run it later)"
+  else
+    c_warn "gws not on PATH — skipping Google setup"
+  fi
+
+  echo
+  c_ok "credentials stored under this tenant only"
+  c_warn "now run: karmax-tenant start $name"
+}
+
+cmd_start() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: karmax-tenant start <name>"
+  [ -f "$(env_file "$name")" ] || die "no such tenant '$name'"
+  systemctl --user enable --now "wacli@$name.service" "karmax@$name.service" 2>&1 | grep -v '^Created symlink' || true
+  systemctl --user restart "wacli@$name.service"
+  sleep 3
+  systemctl --user restart "karmax@$name.service"
+  sleep 2
+  cmd_list "$name"
+}
+
+cmd_stop() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: karmax-tenant stop <name>"
+  systemctl --user stop "karmax@$name.service" "wacli@$name.service" 2>/dev/null || true
+  c_ok "stopped '$name'"
+}
+
+cmd_list() {
+  local only="${1:-}"
+  [ -d "$CONF_DIR" ] || { echo "no tenants yet"; return; }
+  printf "%-14s %-7s %-7s %-7s %-10s %-10s\n" TENANT API HOOK WACLI KARMAX WACLI-SVC
+  for ef in "$CONF_DIR"/*.env; do
+    [ -e "$ef" ] || continue
+    local n; n="$(basename "$ef" .env)"
+    [ -n "$only" ] && [ "$n" != "$only" ] && continue
+    ( . "$ef"
+      printf "%-14s %-7s %-7s %-7s %-10s %-10s\n" "$n" "$KARMAX_API_PORT" "$KARMAX_WEBHOOK_PORT" "$WACLI_PORT" \
+        "$(systemctl --user is-active "karmax@$n.service" 2>/dev/null)" \
+        "$(systemctl --user is-active "wacli@$n.service" 2>/dev/null)"
+    )
+  done
+}
+
+cmd_logs() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: karmax-tenant logs <name>"
+  tail -f "$KARMAX_ROOT/$name/karmax.log"
+}
+
+cmd_remove() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: karmax-tenant remove <name>"
+  local ef; ef="$(env_file "$name")"; [ -f "$ef" ] || die "no such tenant '$name'"
+  c_warn "This deletes '$name': WhatsApp session, memory, Google credentials — everything."
+  read -r -p "Type the tenant name to confirm: " confirm
+  [ "$confirm" = "$name" ] || die "aborted"
+  local idx; idx="$( . "$ef"; echo "$TENANT_INDEX" )"
+  systemctl --user disable --now "karmax@$name.service" "wacli@$name.service" >/dev/null 2>&1 || true
+  rm -rf "$KARMAX_ROOT/$name" "$WACLI_ROOT/$name" "$GWS_ROOT/$name" "$ef" "$CONF_DIR/.index-$idx"
+  systemctl --user daemon-reload
+  c_ok "removed '$name' (index $idx freed)"
+}
+
+case "${1:-}" in
+  create) shift; cmd_create "$@" ;;
+  login)  shift; cmd_login  "$@" ;;
+  start)  shift; cmd_start  "$@" ;;
+  stop)   shift; cmd_stop   "$@" ;;
+  list)   shift; cmd_list   "$@" ;;
+  logs)   shift; cmd_logs   "$@" ;;
+  remove) shift; cmd_remove "$@" ;;
+  *) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+esac
