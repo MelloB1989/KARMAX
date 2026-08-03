@@ -7,6 +7,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "github.com/MelloB1989/karmax/internal/installedloops" // third-party loopkit loops (managed by `karmax loops`)
 	"github.com/joho/godotenv"
@@ -36,6 +37,13 @@ func findConfig() string {
 		return cfgPath
 	}
 	candidates := []string{"karmax.yaml", "karmax.yml"}
+	// A tenant's config lives in its own data dir, so look there before ~/.karmax.
+	if d := strings.TrimSpace(os.Getenv("KARMAX_DATA_DIR")); d != "" {
+		candidates = append(candidates,
+			filepath.Join(d, "karmax.yaml"),
+			filepath.Join(d, "karmax.yml"),
+		)
+	}
 	if home, _ := os.UserHomeDir(); home != "" {
 		candidates = append(candidates,
 			filepath.Join(home, ".karmax", "karmax.yaml"),

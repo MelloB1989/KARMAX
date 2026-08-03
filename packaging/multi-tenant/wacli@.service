@@ -1,0 +1,21 @@
+[Unit]
+Description=wacli WhatsApp daemon for tenant %i
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/karmax/tenants/%i.env
+WorkingDirectory=%h/.wacli/tenants/%i
+ExecStart=%h/.local/bin/wacli daemon
+# DND is wacli's outbound switch and does not persist across restarts.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do %h/.local/bin/wacli dnd on >/dev/null 2>&1 && exit 0; sleep 1; done; exit 0'
+Restart=always
+RestartSec=3
+StandardOutput=append:%h/.wacli/tenants/%i/wacli.log
+StandardError=append:%h/.wacli/tenants/%i/wacli.log
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
