@@ -15,6 +15,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/comms/discord"
+	"github.com/MelloB1989/karmax/internal/comms/telegram"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
@@ -118,6 +119,18 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		switch chCfg.Type {
 		case "discord":
 			ch := discord.New(chCfg.ID, chCfg.Token, log)
+			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
+				DND: dndEnabled(chCfg.Settings),
+			}); err != nil {
+				log.Error("failed to register comms channel",
+					zap.String("id", chCfg.ID),
+					zap.Error(err),
+				)
+			}
+		case "telegram":
+			// Long-polling: no public URL or tunnel needed, so it works on the
+			// same self-hosted boxes as the rest of KARMAX.
+			ch := telegram.New(chCfg.ID, chCfg.Token, log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
 			}); err != nil {
