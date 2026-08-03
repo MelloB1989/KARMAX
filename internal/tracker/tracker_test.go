@@ -1,12 +1,17 @@
 package tracker
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/MelloB1989/karmax/internal/bus"
+	"go.uber.org/zap"
 )
 
 func TestParseGitHubIssue(t *testing.T) {
@@ -113,6 +118,59 @@ func TestGitHubSignatureRequired(t *testing.T) {
 	r.Header.Del("X-Hub-Signature-256")
 	if h.authorized(r, body) {
 		t.Fatal("unsigned delivery was accepted")
+	}
+}
+
+// End-to-end: a signed delivery must reach the bus as one usable event, and an
+// unsigned one must not.
+func TestServeHTTPPublishesToBus(t *testing.T) {
+	b := bus.New(zap.NewNop())
+	sub, cancel := b.Subscribe(EventKind)
+	defer cancel()
+
+	h := New(Config{Source: GitHub, Secret: "s3cret", AgentID: "nexus"}, b, zap.NewNop())
+
+	body := []byte(`{"action":"opened","repository":{"full_name":"MelloB1989/karmax"},
+	                 "sender":{"login":"MelloB1989"},
+	                 "issue":{"number":7,"title":"tracker events","html_url":"https://x/7"}}`)
+	mac := hmac.New(sha256.New, []byte("s3cret"))
+	mac.Write(body)
+
+	req := httptest.NewRequest("POST", "/hooks/github", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "issues")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	select {
+	case evt := <-sub.Ch:
+		if evt.AgentID != "nexus" {
+			t.Errorf("event addressed to %q, want nexus", evt.AgentID)
+		}
+		summary, _ := evt.Payload["summary"].(string)
+		if !strings.Contains(summary, "#7") {
+			t.Errorf("summary missing the issue ref: %q", summary)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event published")
+	}
+
+	// Now an unsigned delivery: rejected, and nothing on the bus.
+	bad := httptest.NewRequest("POST", "/hooks/github", bytes.NewReader(body))
+	bad.Header.Set("X-GitHub-Event", "issues")
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, bad)
+
+	if w2.Code != 401 {
+		t.Fatalf("unsigned delivery should be 401, got %d", w2.Code)
+	}
+	select {
+	case evt := <-sub.Ch:
+		t.Fatalf("unsigned delivery reached the bus: %+v", evt.Payload)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
