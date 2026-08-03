@@ -28,14 +28,44 @@ func TestBuildPromptFromEvent_CommsMessage(t *testing.T) {
 	if !strings.Contains(prompt, "## Current Task") {
 		t.Error("prompt should contain '## Current Task' section")
 	}
-	if !strings.Contains(prompt, "comms.message") {
-		t.Error("prompt should contain event kind 'comms.message'")
-	}
+	// A message is rendered as plain instruction text, NOT an event JSON dump —
+	// making the model dig the message out of JSON is what produced the
+	// "empty trigger / nothing to act on" replies.
 	if !strings.Contains(prompt, "Hello KARMAX") {
 		t.Error("prompt should contain the message content from payload")
 	}
-	if !strings.Contains(prompt, "discord-main") {
-		t.Error("prompt should contain karmax_channel_id")
+	if !strings.Contains(prompt, "12345") {
+		t.Error("prompt should contain the chat id so the agent can reply to it")
+	}
+	if strings.Contains(prompt, "```json") {
+		t.Error("comms messages must not be rendered as raw JSON")
+	}
+}
+
+func TestBuildPromptFromEvent_TrackerEvent(t *testing.T) {
+	evt := bus.Event{
+		ID:      "test-evt-3",
+		Kind:    "tracker.event",
+		AgentID: "agent-main",
+		Payload: map[string]any{
+			"summary":  "github · MelloB1989/karmax: #42 opened — wacli drops messages",
+			"url":      "https://github.com/MelloB1989/karmax/issues/42",
+			"assignee": "nikhil",
+			"body":     "Sometimes the webhook never fires.",
+		},
+	}
+
+	prompt := buildPromptFromEvent(evt, nil)
+
+	if !strings.Contains(prompt, "#42 opened") || !strings.Contains(prompt, "nikhil") {
+		t.Errorf("prompt should summarise the tracker event, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "```json") {
+		t.Error("tracker events must not be rendered as raw JSON")
+	}
+	// Silence must be the stated default, or every webhook becomes a notification.
+	if !strings.Contains(prompt, "Do not send a message") {
+		t.Error("prompt should tell the agent that no action is the usual outcome")
 	}
 }
 

@@ -1340,6 +1340,28 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 		}
 	}
 
+	// Tracker deliveries (GitHub/Jira/YouTrack) get the same plain-text treatment
+	// as comms messages — but with the opposite default. A webhook firing is not
+	// a request for attention, so silence is the correct outcome for most of them.
+	if evt.Kind == "tracker.event" && evt.Payload != nil {
+		str := func(k string) string { s, _ := evt.Payload[k].(string); return s }
+		prompt += "A tracker event just fired:\n\n" + str("summary") + "\n"
+		if u := str("url"); u != "" {
+			prompt += "Link: " + u + "\n"
+		}
+		if a := str("assignee"); a != "" {
+			prompt += "Assigned to: " + a + "\n"
+		}
+		if b := strings.TrimSpace(str("body")); b != "" {
+			prompt += "\n> " + strings.ReplaceAll(b, "\n", "\n> ") + "\n"
+		}
+		prompt += "\nDecide whether this deserves the operator's attention.\n" +
+			"- Most tracker events do NOT. Routine opens, closes and comments should be remembered, not announced.\n" +
+			"- Notify only if it blocks the operator, is assigned to them, breaks a build on a branch they own, or someone is waiting on their answer.\n" +
+			"- If it needs no action, record it and stop. Do not send a message.\n"
+		return prompt
+	}
+
 	if evt.Payload != nil {
 		payloadJSON, _ := json.MarshalIndent(evt.Payload, "", "  ")
 		prompt += fmt.Sprintf("Event: %s\nAgent: %s\n\n```json\n%s\n```\n", evt.Kind, evt.AgentID, string(payloadJSON))

@@ -1,0 +1,127 @@
+package tracker
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestParseGitHubIssue(t *testing.T) {
+	body := []byte(`{
+		"action": "opened",
+		"repository": {"full_name": "MelloB1989/karmax"},
+		"sender": {"login": "MelloB1989"},
+		"issue": {
+			"number": 42,
+			"title": "wacli drops messages",
+			"html_url": "https://github.com/MelloB1989/karmax/issues/42",
+			"body": "Sometimes the webhook never fires.",
+			"assignee": {"login": "nikhil"}
+		}
+	}`)
+	n := parseGitHub("issues", body)
+	if n == nil {
+		t.Fatal("expected an event, got nil")
+	}
+	if n.Ref != "#42" || n.Action != "opened" || n.Assignee != "nikhil" {
+		t.Fatalf("bad parse: %+v", n)
+	}
+	if !strings.Contains(n.summary(), "wacli drops messages") {
+		t.Fatalf("summary missing title: %q", n.summary())
+	}
+}
+
+func TestParseGitHubIgnoresNoise(t *testing.T) {
+	// Green builds and unhandled event types must not wake anyone up.
+	if n := parseGitHub("workflow_run", []byte(`{"workflow_run":{"name":"ci","conclusion":"success"}}`)); n != nil {
+		t.Fatalf("successful build should be ignored, got %+v", n)
+	}
+	if n := parseGitHub("star", []byte(`{"action":"created"}`)); n != nil {
+		t.Fatalf("star should be ignored, got %+v", n)
+	}
+	// A failure is the case worth surfacing.
+	n := parseGitHub("workflow_run", []byte(`{"workflow_run":{"name":"ci","conclusion":"failure"}}`))
+	if n == nil || n.Action != "failure" {
+		t.Fatalf("failed build should be reported, got %+v", n)
+	}
+}
+
+func TestParseJiraComment(t *testing.T) {
+	body := []byte(`{
+		"webhookEvent": "comment_created",
+		"user": {"displayName": "Siva"},
+		"issue": {
+			"key": "CX-17",
+			"self": "https://campx.atlassian.net/rest/api/2/issue/10001",
+			"fields": {
+				"summary": "VAPT report format",
+				"project": {"key": "CX"},
+				"status": {"name": "In Progress"}
+			}
+		},
+		"comment": {"body": "Can we get this by Friday?", "author": {"displayName": "Srikanth"}}
+	}`)
+	n := parseJira(body)
+	if n == nil {
+		t.Fatal("expected an event, got nil")
+	}
+	if n.Kind != "comment" || n.Actor != "Srikanth" || n.Ref != "CX-17" {
+		t.Fatalf("bad parse: %+v", n)
+	}
+	// The REST self link is useless to a human; it must become a browse link.
+	if n.URL != "https://campx.atlassian.net/browse/CX-17" {
+		t.Fatalf("bad browse url: %q", n.URL)
+	}
+}
+
+func TestParseYouTrack(t *testing.T) {
+	n := parseYouTrack([]byte(`{
+		"issue": {"idReadable":"KAR-3","summary":"Add Slack","url":"https://yt/issue/KAR-3",
+		          "project":{"shortName":"KAR"},"reporter":{"fullName":"Nikhil"}},
+		"action": "updated"
+	}`))
+	if n == nil || n.Ref != "KAR-3" || n.Project != "KAR" {
+		t.Fatalf("bad parse: %+v", n)
+	}
+	if parseYouTrack([]byte(`{"foo":1}`)) != nil {
+		t.Fatal("payload with no issue should be dropped")
+	}
+}
+
+func TestGitHubSignatureRequired(t *testing.T) {
+	h := &Handler{cfg: Config{Source: GitHub, Secret: "s3cret"}}
+	body := []byte(`{"action":"opened"}`)
+
+	mac := hmac.New(sha256.New, []byte("s3cret"))
+	mac.Write(body)
+	good := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	r := httptest.NewRequest("POST", "/hooks/github", nil)
+	r.Header.Set("X-Hub-Signature-256", good)
+	if !h.authorized(r, body) {
+		t.Fatal("valid signature was rejected")
+	}
+
+	r.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
+	if h.authorized(r, body) {
+		t.Fatal("forged signature was accepted")
+	}
+
+	r.Header.Del("X-Hub-Signature-256")
+	if h.authorized(r, body) {
+		t.Fatal("unsigned delivery was accepted")
+	}
+}
+
+func TestSharedTokenAuth(t *testing.T) {
+	h := &Handler{cfg: Config{Source: Jira, Secret: "tok"}}
+	if !h.authorized(httptest.NewRequest("POST", "/hooks/jira?token=tok", nil), nil) {
+		t.Fatal("correct token rejected")
+	}
+	if h.authorized(httptest.NewRequest("POST", "/hooks/jira?token=nope", nil), nil) {
+		t.Fatal("wrong token accepted")
+	}
+}
