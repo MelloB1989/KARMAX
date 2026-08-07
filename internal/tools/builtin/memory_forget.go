@@ -40,8 +40,11 @@ func (t *MemoryForgetTool) Execute(ctx context.Context, input map[string]any) (t
 	id = strings.TrimSpace(id)
 	query = strings.TrimSpace(query)
 
+	// Through the manager, not the store: a memory lives in the local cache and
+	// in GitLoom, and deleting from one leaves the other to return it at the
+	// next query.
 	if id != "" {
-		if err := t.Store.DeleteMemoryEntry(id); err != nil {
+		if err := t.MemoryMgr.Forget(id); err != nil {
 			return tools.ErrorResult(fmt.Errorf("delete memory %s: %w", id, err)), nil
 		}
 		return tools.SuccessResult(fmt.Sprintf("Forgot memory %s.", id)), nil
@@ -56,7 +59,9 @@ func (t *MemoryForgetTool) Execute(ctx context.Context, input map[string]any) (t
 		return tools.ErrorResult(fmt.Errorf("search: %w", err)), nil
 	}
 
-	// Only real entries carry a deletable id; skip pageindex nodes (role "memory").
+	// Pageindex nodes (role "memory") are a derived index with no deletable
+	// identity. Local rows and GitLoom hits both have one — a row id and a repo
+	// path respectively, and Forget takes either.
 	var top *memory.SearchResult
 	var others []string
 	for i := range results {
@@ -74,7 +79,7 @@ func (t *MemoryForgetTool) Execute(ctx context.Context, input map[string]any) (t
 	if top == nil {
 		return tools.SuccessResult("No matching memory found to forget."), nil
 	}
-	if err := t.Store.DeleteMemoryEntry(top.Entry.ID); err != nil {
+	if err := t.MemoryMgr.Forget(top.Entry.ID); err != nil {
 		return tools.ErrorResult(fmt.Errorf("delete memory %s: %w", top.Entry.ID, err)), nil
 	}
 	msg := fmt.Sprintf("Forgot: %q (id %s).", truncateStr(stripTagPrefix(top.Entry.Content), 100), top.Entry.ID)

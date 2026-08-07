@@ -271,6 +271,18 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 
+	// Long-term memory moves to GitLoom Cloud when a key is configured. Without
+	// one KARMAX stays entirely local, which is the self-hosted default and
+	// what an open-source user gets with no account.
+	//
+	// Even with GitLoom on, SQLite keeps every write: it is demoted from source
+	// of truth to a write-through cache that answers when the network cannot.
+	if glCfg, ok := memory.GitLoomConfigFromEnv(defaultNamespace(cfg)); ok {
+		memFactory.UseGitLoom(glCfg)
+	} else {
+		log.Info("memory: GitLoom not configured; long-term memory is local SQLite only")
+	}
+
 	// Memory upkeep (the forgetting curve: TTL pruning + capacity cap) is a
 	// regular loop — visible, disableable, and manually triggerable — not a
 	// hidden goroutine. It needs the memory managers, so the runtime registers
@@ -945,4 +957,16 @@ func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {
 	}
 
 	return def
+}
+
+// defaultNamespace is the memory namespace the first agent uses, which is what
+// a GitLoom namespace defaults to when none is configured explicitly.
+func defaultNamespace(cfg *config.KarmaxConfig) string {
+	if len(cfg.Agents) == 0 {
+		return "karmax"
+	}
+	if ns := cfg.Agents[0].Memory.Namespace; ns != "" {
+		return ns
+	}
+	return cfg.Agents[0].ID
 }
