@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -29,6 +30,47 @@ type Manager struct {
 	maxEntries int
 	mu         sync.Mutex
 	stopCh     chan struct{}
+
+	// remote is the GitLoom memory layer when one is configured. Nil means the
+	// local SQLite store is the whole memory — the self-hosted default, and
+	// what everything below falls back to when the network is unavailable.
+	remote *gitloomBackend
+}
+
+// UseGitLoom points this namespace's long-term memory at GitLoom Cloud.
+//
+// Local SQLite keeps taking every write. It stops being the source of truth and
+// becomes a write-through cache: still complete, but only read when GitLoom
+// cannot be reached. That is what lets a daemon on home internet depend on a
+// hosted memory without risking amnesia.
+func (m *Manager) UseGitLoom(cfg GitLoomConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.remote != nil {
+		m.remote.stop()
+	}
+	if cfg.Namespace == "" {
+		cfg.Namespace = m.namespace
+	}
+	m.remote = newGitLoomBackend(cfg, m.db, m.log)
+	m.log.Info("memory: long-term layer is GitLoom Cloud",
+		zap.String("namespace", cfg.Namespace),
+		zap.String("local_role", "write-through cache and offline fallback"))
+}
+
+// RemoteStatus reports whether the remote memory layer is configured and
+// reachable, plus how many writes are still undelivered. Nothing else can tell
+// the operator that memories are piling up locally.
+func (m *Manager) RemoteStatus() (configured, healthy bool, pending int, lastErr string) {
+	m.mu.Lock()
+	r := m.remote
+	m.mu.Unlock()
+	if r == nil {
+		return false, false, 0, ""
+	}
+	healthy, lastErr = r.status()
+	pending, _ = m.db.CountOutbox(r.cfg.Namespace)
+	return true, healthy, pending, lastErr
 }
 
 func NewManager(agentID, namespace, baseDir string, db *store.Store, log *zap.Logger) *Manager {
@@ -125,6 +167,20 @@ func (m *Manager) Write(entry MemoryEntry) error {
 		return fmt.Errorf("insert memory entry: %w", err)
 	}
 
+	// The remote layer is fed through the outbox, never inline: the caller is
+	// on the path of a message someone is waiting on, and a slow network must
+	// not become a slow reply. The memory is already durable in SQLite above,
+	// so a failure here delays delivery rather than losing anything.
+	if m.remote != nil {
+		path := PathFor(entry, nil)
+		if err := m.remote.enqueue(entry, path, nil); err != nil {
+			m.log.Warn("memory: could not queue for GitLoom; it stays local only",
+				zap.String("id", entry.ID), zap.Error(err))
+		} else if err := m.db.SetGitloomPath(entry.ID, path); err != nil {
+			m.log.Warn("memory: could not record the GitLoom path", zap.Error(err))
+		}
+	}
+
 	m.dirty = true
 	return nil
 }
@@ -185,6 +241,45 @@ func (m *Manager) Search(query string, topK int) ([]SearchResult, error) {
 	}
 
 	return results, nil
+}
+
+// Forget removes a memory from every layer that holds it.
+//
+// The handle is either a local row id or a GitLoom path, because retrieval
+// returns both and the caller should not have to know which it got. Deleting
+// from one store and not the other is how a "forgotten" fact comes back at the
+// next query, so this is the only correct way to remove one.
+func (m *Manager) Forget(handle string) error {
+	m.mu.Lock()
+	remote := m.remote
+	m.mu.Unlock()
+
+	if strings.HasSuffix(handle, ".md") {
+		if remote == nil {
+			return fmt.Errorf("memory: %q is a GitLoom path but GitLoom is not configured", handle)
+		}
+		if err := remote.enqueueForget("", handle); err != nil {
+			return err
+		}
+		// Best-effort locally: the row may not exist (the memory could predate
+		// the local cache), and the remote deletion is the one that matters.
+		_ = m.db.DeleteMemoryEntriesByGitloomPath(handle)
+		return nil
+	}
+
+	// A local id: find where it was filed remotely before deleting the row that
+	// records it, or the remote copy is orphaned and outlives the deletion.
+	if remote != nil {
+		if paths, err := m.db.GitloomPaths([]string{handle}); err == nil {
+			if p := paths[handle]; p != "" {
+				if err := remote.enqueueForget(handle, p); err != nil {
+					m.log.Warn("memory: could not queue the GitLoom deletion",
+						zap.String("path", p), zap.Error(err))
+				}
+			}
+		}
+	}
+	return m.db.DeleteMemoryEntry(handle)
 }
 
 func (m *Manager) Recent(n int) ([]MemoryEntry, error) {
@@ -259,6 +354,15 @@ func countTreeNodes(node *TreeNode) int {
 
 func (m *Manager) Stop() {
 	close(m.stopCh)
+	// Draining the outbox on the way out is what makes a restart cheap: without
+	// it, everything written in the last flush interval waits for the next boot.
+	m.mu.Lock()
+	r := m.remote
+	m.remote = nil
+	m.mu.Unlock()
+	if r != nil {
+		r.stop()
+	}
 }
 
 func (m *Manager) appendToMarkdown(entry MemoryEntry) error {
@@ -549,6 +653,23 @@ func (m *Manager) SearchSemantic(query string, topK int) ([]SearchResult, error)
 
 	if topK <= 0 {
 		topK = 10
+	}
+
+	// GitLoom answers when it can. Its retrieval is BM25 over the body plus an
+	// embedded arm over the cues, fused — against the keyword LIKE scan below,
+	// which cannot match a question that shares no words with the memory.
+	//
+	// A failure falls through rather than propagating: degraded recall beats a
+	// daemon that has forgotten who it works for.
+	if m.remote != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), m.remote.cfg.Timeout)
+		results, err := m.remote.search(ctx, query, topK)
+		cancel()
+		if err == nil {
+			return results, nil
+		}
+		m.log.Warn("memory: GitLoom retrieval failed; using the local cache",
+			zap.String("query", truncate(query, 80)), zap.Error(err))
 	}
 
 	keywords := extractKeywords(query)

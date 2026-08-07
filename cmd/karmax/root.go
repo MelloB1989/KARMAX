@@ -34,6 +34,7 @@ func newRootCmd() *cobra.Command {
 		newSchedulerCmd(),
 		newWebhookCmd(),
 		newMemoryCmd(),
+		migrateCmd(),
 		newToolCmd(),
 		newMCPCmd(),
 		newConfigCmd(),

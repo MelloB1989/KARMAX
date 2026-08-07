@@ -4,6 +4,11 @@ import (
 	"time"
 )
 
+// RoleGitLoom marks a search result that came from the GitLoom memory layer
+// rather than the local store. Its ID is a repo path, not a row id — which is
+// still a valid handle for Forget, so a caller can act on it either way.
+const RoleGitLoom = "gitloom"
+
 type MemoryEntry struct {
 	ID          string     `json:"id"`
 	AgentID     string     `json:"agent_id"`
