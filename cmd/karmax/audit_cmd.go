@@ -47,6 +47,7 @@ func auditCmd() *cobra.Command {
 		dryRun      bool
 		staleDays   int
 		verbose     bool
+		paths       []string
 	)
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -59,7 +60,7 @@ func auditCmd() *cobra.Command {
 			return runAudit(c.Context(), auditOptions{
 				Namespace: namespace, Topics: topics, Limit: limit,
 				Concurrency: concurrency, DryRun: dryRun,
-				StaleDays: staleDays, Verbose: verbose,
+				StaleDays: staleDays, Verbose: verbose, Paths: paths,
 			})
 		},
 	}
@@ -72,6 +73,8 @@ func auditCmd() *cobra.Command {
 	f.BoolVar(&dryRun, "dry-run", false, "show verdicts without writing anything")
 	f.IntVar(&staleDays, "stale-days", 14, "only audit memories not updated in this many days")
 	f.BoolVar(&verbose, "verbose", false, "print the questions, evidence and reasoning")
+	f.StringSliceVar(&paths, "path", nil,
+		"audit only these exact memory paths (repeatable); ignores --topic and --stale-days")
 	return cmd
 }
 
@@ -83,6 +86,9 @@ type auditOptions struct {
 	DryRun      bool
 	StaleDays   int
 	Verbose     bool
+	// Paths targets specific memories, which is how a failed one is retried
+	// without paying to re-audit the eighty that succeeded.
+	Paths []string
 }
 
 // --- the three model calls -------------------------------------------------
@@ -155,6 +161,33 @@ func decodeJSON(reply string, into any) error {
 	return json.Unmarshal([]byte(s[start:end+1]), into)
 }
 
+// askJSON asks, and asks again when the answer is not JSON.
+//
+// Models answer structured requests in prose often enough that it has to be
+// handled rather than logged: 2 of 86 memories failed the first audit run that
+// way, and one of them was a perfectly good "this memory is accurate" verdict
+// thrown away over its formatting. The retry shows the model its own
+// unparseable reply, which is a far stronger correction than repeating the
+// original instruction.
+func askJSON(ctx context.Context, prompt string, into any) error {
+	reply, err := ask(ctx, prompt)
+	if err != nil {
+		return err
+	}
+	if err := decodeJSON(reply, into); err == nil {
+		return nil
+	}
+	retry := prompt + "\n\n---\nYour previous reply could not be parsed:\n\n" +
+		truncQ(reply, 600) +
+		"\n\nReply again with ONLY the JSON object described above. " +
+		"No prose before or after it, no markdown fence, no explanation."
+	reply2, err := ask(ctx, retry)
+	if err != nil {
+		return err
+	}
+	return decodeJSON(reply2, into)
+}
+
 func planFor(ctx context.Context, path, content string) (*auditPlan, error) {
 	prompt := fmt.Sprintf(`You are auditing one memory from a personal assistant's long-term store.
 Your job is NOT to decide whether it is true. Your job is to say what evidence would
@@ -178,12 +211,8 @@ Reply with ONLY this JSON, at most 3 checks:
  "checks":[{"claim":"<the specific claim>","query":"<keywords>","chat_ref":"<person or empty>"}]}`,
 		path, truncQ(content, 3000))
 
-	reply, err := ask(ctx, prompt)
-	if err != nil {
-		return nil, err
-	}
 	var p auditPlan
-	if err := decodeJSON(reply, &p); err != nil {
+	if err := askJSON(ctx, prompt, &p); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -215,12 +244,8 @@ Reply with ONLY this JSON:
  "replacement":"<full corrected memory, or empty>","confidence":0.0-1.0}`,
 		time.Now().Format("2006-01-02"), path, truncQ(content, 4000), truncQ(evidence, 6000))
 
-	reply, err := ask(ctx, prompt)
-	if err != nil {
-		return nil, err
-	}
 	var v verdict
-	if err := decodeJSON(reply, &v); err != nil {
+	if err := askJSON(ctx, prompt, &v); err != nil {
 		return nil, err
 	}
 	return &v, nil
@@ -351,7 +376,13 @@ func runAudit(ctx context.Context, o auditOptions) error {
 	// Enumerate candidates from the tree rather than from retrieval: an audit
 	// has to see every memory, including the ones no query would surface.
 	var candidates []string
+	if len(o.Paths) > 0 {
+		candidates = append(candidates, o.Paths...)
+	}
 	for _, topic := range o.Topics {
+		if len(o.Paths) > 0 {
+			break
+		}
 		tr, err := client.Tree(ctx, &gitloom.TreeOptions{Namespace: ns, Path: topic, Depth: 2})
 		if err != nil {
 			fmt.Printf("could not read %s: %v\n", topic, err)
@@ -389,7 +420,10 @@ func runAudit(ctx context.Context, o auditOptions) error {
 		if asOf.IsZero() {
 			asOf = parseWhen(m.Updated)
 		}
-		if !asOf.IsZero() && asOf.After(cutoff) {
+		// An explicitly named path is audited whatever its age: the caller
+		// asked for that memory, not for whatever the freshness heuristic
+		// would have chosen.
+		if len(o.Paths) == 0 && !asOf.IsZero() && asOf.After(cutoff) {
 			continue // too recent for anything to have gone stale
 		}
 		jobs = append(jobs, job{path: p, content: m.Content, updated: asOf})
