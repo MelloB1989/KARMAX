@@ -75,6 +75,7 @@ func migrateCmd() *cobra.Command {
 	}
 	verify.Flags().StringVar(&namespace, "namespace", "", "GitLoom namespace")
 	cmd.AddCommand(compareCmd())
+	cmd.AddCommand(auditCmd())
 	cmd.AddCommand(verify)
 
 	return cmd
