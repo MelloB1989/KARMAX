@@ -36,14 +36,22 @@ func findConfig() string {
 	if cfgPath != "" {
 		return cfgPath
 	}
-	candidates := []string{"karmax.yaml", "karmax.yml"}
-	// A tenant's config lives in its own data dir, so look there before ~/.karmax.
+	var candidates []string
+	// An explicit KARMAX_DATA_DIR wins over the working directory.
+	//
+	// It used to lose, and the consequence was severe: a second instance
+	// started from the repo checkout silently loaded the FIRST instance's
+	// karmax.yaml — same ports, same agent, and the operator's real WhatsApp
+	// channel. Two instances then shared one identity while believing they
+	// were separate. Setting a data dir means "this is my instance"; nothing
+	// ambient should be able to override it.
 	if d := strings.TrimSpace(os.Getenv("KARMAX_DATA_DIR")); d != "" {
 		candidates = append(candidates,
 			filepath.Join(d, "karmax.yaml"),
 			filepath.Join(d, "karmax.yml"),
 		)
 	}
+	candidates = append(candidates, "karmax.yaml", "karmax.yml")
 	if home, _ := os.UserHomeDir(); home != "" {
 		candidates = append(candidates,
 			filepath.Join(home, ".karmax", "karmax.yaml"),

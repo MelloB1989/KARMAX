@@ -567,9 +567,20 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			}, s, log)
 			wh.AddHandler("/mesh", meshNode.Handler().ServeHTTP)
 			wh.AddHandler("/mesh/hello", meshNode.Handler().ServeHTTP)
-			log.Info("mesh: this instance is reachable",
-				zap.String("endpoint", ep),
-				zap.String("fingerprint", meshID.Fingerprint()))
+			// The mesh is served BY the webhook server, so it is only actually
+			// reachable when that server runs. Saying "reachable" regardless
+			// would be a lie the operator only discovers when a peer cannot
+			// connect and nothing in the log admits why.
+			if cfg.Webhooks.Enabled {
+				log.Info("mesh: this instance is reachable",
+					zap.String("endpoint", ep),
+					zap.String("fingerprint", meshID.Fingerprint()))
+			} else {
+				log.Warn("mesh: configured but NOT reachable — webhooks are disabled, "+
+					"and the mesh is served on the webhook port",
+					zap.String("endpoint", ep),
+					zap.String("fingerprint", meshID.Fingerprint()))
+			}
 		}
 	}
 
