@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
@@ -65,13 +67,100 @@ func newStartCmd() *cobra.Command {
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show agent status (requires a running instance)",
+		Short: "Show what every loop has actually been doing",
 		Args:  cobra.NoArgs,
-		Run: func(_ *cobra.Command, _ []string) {
-			fmt.Println("Agent Status")
-			fmt.Println("(Note: full status requires a running karmax instance)")
-			fmt.Println("Run 'karmax start', then use the phone app or the API on :9091.")
+		RunE: func(_ *cobra.Command, _ []string) error {
+			res, err := apiGET("/api/loops/health")
+			if err != nil {
+				return fmt.Errorf("could not reach the daemon: %w\n"+
+					"is it running? `systemctl --user status karmax`", err)
+			}
+			loops := asList(res["loops"])
+			if len(loops) == 0 {
+				fmt.Println("no loops registered")
+				return nil
+			}
+
+			// Worst first — the server already sorts dark and failing to the
+			// top, and a status page whose first line is fine is a status page
+			// nobody finishes reading.
+			fmt.Printf("%-20s %-9s %-16s %-8s %s\n", "LOOP", "STATE", "LAST SUCCESS", "FAILS", "NOTE")
+			fmt.Println(strings.Repeat("─", 88))
+			problems := 0
+			for _, l := range loops {
+				name := asStr(l["name"])
+				state := "ok"
+				switch {
+				case boolOf(l["dark"]):
+					state = "DARK"
+					problems++
+				case numOf(l["consecutive_failures"]) > 0:
+					state = "failing"
+					problems++
+				case boolOf(l["running"]):
+					state = "running"
+				}
+				note := ""
+				if r := asStr(l["retry_at"]); r != "" {
+					note = "retry " + humanTime(r)
+				}
+				if e := asStr(l["last_error"]); e != "" && note == "" {
+					note = truncQ(oneLineStr(e), 40)
+				}
+				fmt.Printf("%-20s %-9s %-16s %-8d %s\n",
+					truncQ(name, 20), state, humanTime(asStr(l["last_success"])),
+					numOf(l["consecutive_failures"]), note)
+			}
+			fmt.Println()
+			if problems == 0 {
+				fmt.Printf("%d loops, all healthy\n", len(loops))
+			} else {
+				fmt.Printf("%d of %d loops need attention\n", problems, len(loops))
+			}
+			return nil
 		},
+	}
+}
+
+func boolOf(v any) bool { b, _ := v.(bool); return b }
+
+func numOf(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
+}
+
+// humanTime renders a timestamp as an age, because "3d ago" is the thing being
+// judged and an RFC3339 string makes the reader do the subtraction.
+func humanTime(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "never"
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	d := time.Since(t)
+	if d < 0 {
+		return "in " + shortDur(-d)
+	}
+	return shortDur(d) + " ago"
+}
+
+func shortDur(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 }
 

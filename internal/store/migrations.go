@@ -316,6 +316,41 @@ var migrations = []string{
 	// relationship link can name a path rather than a local row id.
 	`ALTER TABLE memory_entries ADD COLUMN gitloom_path TEXT NOT NULL DEFAULT ''`,
 	`CREATE INDEX IF NOT EXISTS idx_mem_gitloom_path ON memory_entries(gitloom_path)`,
+
+	// 021_loop_runs — durable loop execution.
+	//
+	// A loop run used to be a goroutine and a log line. When it failed the work
+	// was gone, and the only trace was a WARN: 141 failures over three days,
+	// all the same dead gateway, none retried and none visible while the daemon
+	// reported itself healthy. A run is now a row that outlives the process.
+	`CREATE TABLE IF NOT EXISTS loop_runs (
+		id           TEXT PRIMARY KEY,
+		loop         TEXT NOT NULL,
+		trigger_kind TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT 'running',  -- running | ok | failed | dead
+		attempt      INTEGER NOT NULL DEFAULT 1,
+		started_at   DATETIME NOT NULL,
+		finished_at  DATETIME,
+		duration_ms  INTEGER,
+		error        TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_loop_runs_loop ON loop_runs(loop, started_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_loop_runs_status ON loop_runs(status, started_at DESC)`,
+
+	// One row per loop: the lease that makes runs single-flight, and the
+	// counters that let `karmax status` say a loop has gone dark.
+	`CREATE TABLE IF NOT EXISTS loop_state (
+		loop            TEXT PRIMARY KEY,
+		lease_until     DATETIME,
+		lease_owner     TEXT NOT NULL DEFAULT '',
+		last_success_at DATETIME,
+		last_failure_at DATETIME,
+		consec_fails    INTEGER NOT NULL DEFAULT 0,
+		next_retry_at   DATETIME,
+		retry_attempt   INTEGER NOT NULL DEFAULT 0,
+		last_error      TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_loop_state_retry ON loop_state(next_retry_at)`,
 }
 
 func (s *Store) migrate() error {

@@ -120,7 +120,7 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 				}
 				if name, _ := inner["loopkit"].(string); name != "" {
 					if l, found := rt.loopkitLoops[name]; found {
-						go rt.runLoopkitLoop(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerSchedule})
+						go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerSchedule}, 1)
 					}
 				}
 			}
@@ -150,7 +150,7 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 					}
 					for _, name := range loopEvents[evt.Kind] {
 						if l, found := rt.loopkitLoops[name]; found {
-							go rt.runLoopkitLoop(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: payload})
+							go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: payload}, 1)
 						}
 					}
 				}
@@ -174,7 +174,7 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 					route, _ := evt.Payload["route"].(string)
 					if name, ok := rt.loopWebhooks[route]; ok {
 						if l, found := rt.loopkitLoops[name]; found {
-							go rt.runLoopkitLoop(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerWebhook, Payload: evt.Payload})
+							go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerWebhook, Payload: evt.Payload}, 1)
 						}
 					}
 				}
@@ -190,7 +190,7 @@ func (rt *KarmaxRuntime) RunLoopByName(name string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	go rt.runLoopkitLoop(context.Background(), l, loopkit.Trigger{Kind: loopkit.TriggerManual})
+	go rt.runLoopDurable(context.Background(), l, loopkit.Trigger{Kind: loopkit.TriggerManual}, 1)
 	return true, nil
 }
 
@@ -223,34 +223,6 @@ func (rt *KarmaxRuntime) pruneStaleLoopJobs() {
 	}
 }
 
-func (rt *KarmaxRuntime) runLoopkitLoop(parent context.Context, l loopkit.Loop, trigger loopkit.Trigger) {
-	ctx, cancel := context.WithTimeout(parent, 12*time.Minute)
-	defer cancel()
-
-	agentID := rt.loopDefaultAgent
-	ns := agentID
-	if len(rt.cfg.Agents) > 0 && rt.cfg.Agents[0].Memory.Namespace != "" {
-		ns = rt.cfg.Agents[0].Memory.Namespace
-	}
-	wacliPath := hostpaths.Wacli()
-
-	k := &loopKit{
-		loopName:  l.Name,
-		agentID:   agentID,
-		namespace: ns,
-		rt:        rt,
-		mem:       rt.memory.For(agentID, ns),
-		wacliPath: wacliPath,
-		trigger:   trigger,
-	}
-	rt.log.Info("running loopkit loop", zap.String("loop", l.Name), zap.String("trigger", trigger.Kind))
-	if err := l.Run(ctx, k); err != nil {
-		rt.log.Warn("loopkit loop failed", zap.String("loop", l.Name), zap.Error(err))
-		return
-	}
-	rt.log.Info("loopkit loop done", zap.String("loop", l.Name))
-}
-
 // loopKit implements loopkit.Kit, exposing KARMAX capabilities to authored loops.
 type loopKit struct {
 	loopName  string
@@ -269,7 +241,49 @@ func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
 	if !ok || ag == nil {
 		return "", fmt.Errorf("agent %q unavailable", k.agentID)
 	}
-	return ag.Chat(ctx, prompt)
+	out, err := ag.Chat(ctx, prompt)
+	if err == nil {
+		return out, nil
+	}
+	// Every configured "fallback model" is reached through the same
+	// ANTHROPIC_BASE_URL, so when that one process is down they all fail
+	// together and the chain provides no redundancy at all — 141 loop failures
+	// over three days were one dead gateway wearing a fallback chain's costume.
+	//
+	// The harness is a genuinely different path: a separate binary with its own
+	// auth that does not touch the gateway. Only transport failures fall
+	// through; a refusal or a bad prompt would fail identically on both and
+	// retrying it just costs twice.
+	if !isTransportFailure(err) {
+		return "", err
+	}
+	k.Logf("model gateway unreachable (%v); falling back to the harness", err)
+	out, herr := k.Harness(ctx, prompt)
+	if herr != nil {
+		// Report the original failure: the gateway being down is the cause,
+		// and the harness error is a symptom of the workaround.
+		return "", fmt.Errorf("gateway unreachable (%w); harness fallback also failed: %v", err, herr)
+	}
+	return out, nil
+}
+
+// isTransportFailure reports whether an error means the model could not be
+// REACHED, as opposed to having been reached and having declined.
+func isTransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, sig := range []string{
+		"connection refused", "no such host", "connection reset",
+		"i/o timeout", "eof", "dial tcp", "context deadline exceeded",
+		"all models failed", "502", "503", "504",
+	} {
+		if strings.Contains(s, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 func (k *loopKit) Harness(ctx context.Context, prompt string) (string, error) {
@@ -500,6 +514,17 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 	}, lentTools)
 	resp, _, _, err := sess.Chat(ctx, prompt)
 	if err != nil {
+		// Same reasoning as Ask: the fallback models all share one base URL, so
+		// they are not redundancy. The harness is. Lent tools are the one thing
+		// that cannot cross over — the harness has its own toolset — so a call
+		// that depended on them fails rather than silently answering without
+		// the tools it was given.
+		if isTransportFailure(err) && len(lentTools) == 0 {
+			k.Logf("gateway unreachable (%v); falling back to the harness", err)
+			if out, herr := k.Harness(ctx, prompt); herr == nil {
+				return out, nil
+			}
+		}
 		return "", err
 	}
 	return strings.TrimSpace(karmahelper.CleanContent(resp)), nil
