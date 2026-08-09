@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MelloB1989/karma/ai"
@@ -133,7 +134,71 @@ func (s *Session) Chat(ctx context.Context, userMessage string) (string, []ToolC
 		log.Printf("[karmahelper] fallback model %s/%s failed: %v", fb.Provider, fb.Model, err)
 	}
 
+	// Last resort: a path that does not share the primary's transport.
+	//
+	// The fallback models above are NOT redundancy in the deployment this runs
+	// in — every one of them is reached through the same ANTHROPIC_BASE_URL, so
+	// when that one process dies they all fail together. 141 loop failures over
+	// three days were a single dead gateway wearing a fallback chain's costume.
+	//
+	// Installed by the runtime rather than built in, because this package must
+	// not know about the harness, the store, or the CLI it shells out to.
+	// Tools are the one thing that cannot cross over, so a session that lent
+	// tools fails rather than quietly answering without them.
+	if fn := transportFallback(); fn != nil && len(s.tools) == 0 && isTransportFailure(primaryErr) {
+		log.Printf("[karmahelper] every model shares a dead transport; trying the out-of-band fallback")
+		if out, ferr := fn(ctx, userMessage); ferr == nil {
+			return CleanContent(out), nil, TokenInfo{}, nil
+		} else {
+			log.Printf("[karmahelper] out-of-band fallback also failed: %v", ferr)
+		}
+	}
+
 	return "", nil, TokenInfo{}, fmt.Errorf("all models failed, primary error: %w", primaryErr)
+}
+
+// TransportFallback answers a prompt over a path independent of the configured
+// providers. Nil means there is none.
+type TransportFallback func(ctx context.Context, prompt string) (string, error)
+
+var (
+	fallbackMu sync.RWMutex
+	fallbackFn TransportFallback
+)
+
+// SetTransportFallback installs the last-resort model path for every session in
+// the process. Called once by the runtime at startup.
+func SetTransportFallback(fn TransportFallback) {
+	fallbackMu.Lock()
+	defer fallbackMu.Unlock()
+	fallbackFn = fn
+}
+
+func transportFallback() TransportFallback {
+	fallbackMu.RLock()
+	defer fallbackMu.RUnlock()
+	return fallbackFn
+}
+
+// isTransportFailure reports whether the model could not be REACHED, as opposed
+// to having been reached and having declined. Only the former is worth trying
+// on another path: a refusal or a malformed request fails identically wherever
+// it is sent.
+func isTransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, sig := range []string{
+		"connection refused", "no such host", "connection reset",
+		"i/o timeout", "dial tcp", "context deadline exceeded",
+		"502", "503", "504", "eof",
+	} {
+		if strings.Contains(s, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // processResponse extracts the AI response text, tool call records, and token

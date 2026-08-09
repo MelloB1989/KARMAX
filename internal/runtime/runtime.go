@@ -53,6 +53,11 @@ type KarmaxRuntime struct {
 	loopkitLoops     map[string]loopkit.Loop
 	loopWebhooks     map[string]string // webhook route -> loop name
 	loopDefaultAgent string
+
+	// startedAt is when this process came up. A loop that has not succeeded
+	// yet is judged against this rather than against the epoch, so a restart
+	// does not report every scheduled loop as dark.
+	startedAt time.Time
 }
 
 func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
@@ -68,6 +73,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	}
 
 	b := bus.New(log)
+	startedAt := time.Now()
 
 	// Set provider env vars from config
 	if p, ok := cfg.AI.Providers["anthropic"]; ok {
@@ -603,6 +609,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		log:       log,
 		store:     s,
 		bus:       b,
+		startedAt: startedAt,
 		memory:    memFactory,
 		tools:     toolReg,
 		mcpBridge: mcpBridge,
@@ -695,10 +702,37 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// disabled, so stale entries don't reload and fire as duplicates.
 	rt.pruneStaleLoopJobs()
 
+	// Dispatches retries for loops that failed, including ones that failed
+	// before the last restart. This is what makes a failed run survive the
+	// process rather than dying with the goroutine that logged it.
+	go rt.retryWorker(ctx)
+
+	// One out-of-band model path for EVERY karmahelper session in the process —
+	// the agent, the summariser, the memory merger, the loops. Installed here
+	// because karmahelper must not know about the harness; it only knows there
+	// is a last resort. Without this the configured "fallback models" are not
+	// redundancy at all: they share one base URL and die with one process.
+	karmahelper.SetTransportFallback(func(c context.Context, prompt string) (string, error) {
+		tool := &builtin.ClaudeCodeTool{Store: rt.store, AgentID: rt.loopDefaultAgent}
+		res, err := tool.Execute(c, map[string]any{"prompt": prompt, "ephemeral": true})
+		if err != nil {
+			return "", err
+		}
+		if res.IsError {
+			return "", fmt.Errorf("harness: %s", res.Error)
+		}
+		out := loopToolField(res, "output")
+		if strings.TrimSpace(out) == "" {
+			return "", fmt.Errorf("harness returned nothing")
+		}
+		return out, nil
+	})
+
 	// Let the API run any loop on demand (manual trigger) and report the live
 	// loop list (the daemon's truth — includes runtime-registered loops).
 	if rt.api != nil {
 		rt.api.SetRunLoop(rt.RunLoopByName)
+		rt.api.SetLoopHealth(func() (any, error) { return rt.LoopHealthReport() })
 		rt.api.SetListLoops(func() []api.LoopInfo {
 			out := make([]api.LoopInfo, 0, len(rt.loopkitLoops))
 			for _, l := range rt.loopkitLoops {

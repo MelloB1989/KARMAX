@@ -1,6 +1,7 @@
 package karmahelper
 
 import (
+	"context"
 	"testing"
 
 	"github.com/MelloB1989/karma/models"
@@ -217,3 +218,45 @@ type simpleError struct {
 func (e *simpleError) Error() string {
 	return e.msg
 }
+
+func TestTransportFallbackOnlyForUnreachableModels(t *testing.T) {
+	// Only unreachability should cross to another path. A refusal fails the
+	// same way wherever it is sent, so retrying it costs twice and answers no
+	// better.
+	unreachable := []string{
+		`Post "http://localhost:9000/v1/messages": dial tcp [::1]:9000: connect: connection refused`,
+		"context deadline exceeded",
+		"503 Service Unavailable",
+	}
+	for _, s := range unreachable {
+		if !isTransportFailure(errStr(s)) {
+			t.Errorf("should be treated as unreachable: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"invalid_request_error: max_tokens must be greater than 0",
+		"authentication_error: invalid x-api-key",
+	} {
+		if isTransportFailure(errStr(s)) {
+			t.Errorf("should NOT cross to the fallback path: %q", s)
+		}
+	}
+	if isTransportFailure(nil) {
+		t.Error("nil is not a failure")
+	}
+}
+
+func TestTransportFallbackIsInstallable(t *testing.T) {
+	t.Cleanup(func() { SetTransportFallback(nil) })
+	if transportFallback() != nil {
+		t.Fatal("expected no fallback by default")
+	}
+	SetTransportFallback(func(context.Context, string) (string, error) { return "ok", nil })
+	if transportFallback() == nil {
+		t.Error("the installed fallback was not visible to sessions")
+	}
+}
+
+type errStr string
+
+func (e errStr) Error() string { return string(e) }

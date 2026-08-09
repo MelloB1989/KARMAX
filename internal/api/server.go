@@ -28,19 +28,20 @@ const Version = "0.2.0"
 // Server is the HTTP API the KARMAX phone app talks to. It binds to 0.0.0.0 so
 // it is reachable over both the LAN and Tailscale.
 type Server struct {
-	addr      string
-	port      int
-	token     string
-	agents    *agent.Registry
-	store     *store.Store
-	scheduler *scheduler.Scheduler
-	mem       *memory.ManagerFactory
-	cfg       *config.KarmaxConfig
-	log       *zap.Logger
-	httpSrv   *http.Server
-	mdns      *mdnsAd
-	runLoop   func(name string) (bool, error) // injected: run a loopkit loop by name
-	listLoops func() []LoopInfo               // injected: the daemon's ACTIVE loops
+	addr       string
+	port       int
+	token      string
+	agents     *agent.Registry
+	store      *store.Store
+	scheduler  *scheduler.Scheduler
+	mem        *memory.ManagerFactory
+	cfg        *config.KarmaxConfig
+	log        *zap.Logger
+	httpSrv    *http.Server
+	mdns       *mdnsAd
+	runLoop    func(name string) (bool, error) // injected: run a loopkit loop by name
+	listLoops  func() []LoopInfo               // injected: the daemon's ACTIVE loops
+	loopHealth func() (any, error)             // injected: per-loop run health
 }
 
 // LoopInfo describes one active loop for GET /api/loops.
@@ -54,6 +55,12 @@ type LoopInfo struct {
 
 // SetRunLoop wires the manual loop-run callback (POST /api/loops/{name}/run).
 func (s *Server) SetRunLoop(fn func(name string) (bool, error)) { s.runLoop = fn }
+
+// SetLoopHealth wires the per-loop health report (GET /api/loops/health).
+// Separate from the loop listing because health is about RUNS — what succeeded,
+// what is failing, and what has gone quiet — which the static listing cannot
+// express.
+func (s *Server) SetLoopHealth(fn func() (any, error)) { s.loopHealth = fn }
 
 // SetListLoops wires the live loop listing (GET /api/loops). This is the
 // daemon's truth — it includes runtime-registered loops (e.g. cold-scan) and
@@ -82,6 +89,7 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("POST /api/jobs/{id}/run", srv.auth(srv.handleRunJob))
 	mux.HandleFunc("POST /api/loops/{name}/run", srv.auth(srv.handleRunLoop))
 	mux.HandleFunc("GET /api/loops", srv.auth(srv.handleListLoops))
+	mux.HandleFunc("GET /api/loops/health", srv.auth(srv.handleLoopHealth))
 	mux.HandleFunc("GET /api/memory/tree", srv.auth(srv.handleMemoryTree))
 	mux.HandleFunc("GET /api/memory/entries", srv.auth(srv.handleMemoryEntries))
 	mux.HandleFunc("GET /api/memory/cleanup/question", srv.auth(srv.handleCleanupQuestion))
@@ -1001,4 +1009,23 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// handleLoopHealth reports what each loop has actually been doing: when it last
+// succeeded, whether it is failing, and whether it has gone dark.
+//
+// This is the endpoint that would have made three days of missing memory-merge
+// runs visible on the first morning instead of the third.
+func (s *Server) handleLoopHealth(w http.ResponseWriter, r *http.Request) {
+	if s.loopHealth == nil {
+		writeJSON(w, http.StatusServiceUnavailable,
+			map[string]any{"error": "loop health is not available"})
+		return
+	}
+	report, err := s.loopHealth()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"loops": report})
 }
