@@ -32,7 +32,7 @@ func meshCmd() *cobra.Command {
 			"the connection can also send you their own key.",
 	}
 	cmd.AddCommand(meshIDCmd(), meshConnectCmd(), meshPeersCmd(),
-		meshAcceptCmd(), meshBlockCmd(), meshSendCmd(), meshBroadcastCmd(), meshInboxCmd())
+		meshAcceptCmd(), meshBlockCmd(), meshSendCmd(), meshBroadcastCmd(), meshInboxCmd(), meshOrgCmd())
 	return cmd
 }
 
@@ -378,3 +378,91 @@ func envOr(key, def string) string {
 }
 
 func osGetenv(k string) string { return os.Getenv(k) }
+
+// The org's side.
+//
+// An org reaches a member with no pairwise connection, so there is nothing to
+// "connect" to and no peer list to pick from — it addresses an endpoint and
+// proves its authority with a certificate. That only works where the member's
+// operator put this org's key in their own config, which is the check that
+// makes this a second trust root rather than a back door.
+func meshOrgCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "org",
+		Short: "Act as an organisation instance",
+		Long: "Requires KARMAX_MESH_IS_ORG=true. Members must set KARMAX_MESH_ORG_KEY\n" +
+			"to this instance's id before it can reach them — an org cannot mint\n" +
+			"authority over an instance that never opted in.",
+	}
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "key",
+		Short: "Print the org key members must trust",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			n, _, err := openMesh()
+			if err != nil {
+				return err
+			}
+			p := n.Public()
+			fmt.Printf("org          %s\n", p.Name)
+			fmt.Printf("fingerprint  %s\n\n", p.Fingerprint)
+			fmt.Println("Each member sets this in their own environment:")
+			fmt.Printf("\n  KARMAX_MESH_ORG_KEY=%s\n\n", p.ID)
+			fmt.Println("Give them the fingerprint by a route they can verify — this key is")
+			fmt.Println("what lets this instance address them without their approval.")
+			return nil
+		},
+	})
+
+	var (
+		scopes []string
+		ttl    time.Duration
+		subj   string
+	)
+	send := &cobra.Command{
+		Use:   "send <member-endpoint> <message...>",
+		Short: "Message a member directly, with no connection",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(c *cobra.Command, args []string) error {
+			n, _, err := openMesh()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+			defer cancel()
+
+			// Ask the member who it is. An org keeps no directory it would have
+			// to keep in sync; the instance itself is the authority on its keys.
+			who, err := n.Hello(ctx, args[0])
+			if err != nil {
+				return err
+			}
+			cert, err := n.IssueFor(who.ID, scopes, ttl)
+			if err != nil {
+				return err
+			}
+			err = n.SendAsOrg(ctx, store.MeshPeer{
+				ID: who.ID, Name: who.Name, BoxPub: who.BoxPub, Endpoint: args[0],
+			}, cert, mesh.KindMessage, mesh.MessageBody{
+				Subject: subj, Text: strings.Join(args[1:], " "),
+			})
+			if err != nil {
+				// The likeliest cause by far, and worth naming rather than
+				// leaving the operator to guess at a 403.
+				return fmt.Errorf("%w\n\nIf this is a refusal, check that %s has "+
+					"KARMAX_MESH_ORG_KEY set to this org's id — a member that has not "+
+					"opted in refuses org messages by design", err, who.Name)
+			}
+			fmt.Printf("delivered to %s (%s)\n", orNone(who.Name), who.Fingerprint)
+			fmt.Printf("  under a certificate valid for %s, scopes: %s\n", ttl, strings.Join(scopes, ","))
+			return nil
+		},
+	}
+	send.Flags().StringSliceVar(&scopes, "scopes", []string{mesh.ScopeMessage}, "what the certificate grants")
+	send.Flags().DurationVar(&ttl, "ttl", time.Hour, "how long the certificate stays valid")
+	send.Flags().StringVar(&subj, "subject", "", "short label")
+	cmd.AddCommand(send)
+
+	return cmd
+}

@@ -373,3 +373,30 @@ func decodeB64(s string) ([]byte, error) {
 // readRandom is crypto/rand, named so the intent is obvious at the call site:
 // a predictable nonce would make replay defence ineffective.
 func readRandom(b []byte) (int, error) { return rand.Read(b) }
+
+// Hello fetches another instance's public identity without connecting to it.
+//
+// Exported because the org path needs it: an org addresses members it has no
+// pairwise connection with, so it has to learn their keys somehow, and asking
+// them directly is better than a directory it would have to keep in sync.
+func (n *Node) Hello(ctx context.Context, endpoint string) (*PublicIdentity, error) {
+	if err := checkEndpoint(endpoint); err != nil {
+		return nil, err
+	}
+	return n.tp.hello(ctx, endpoint)
+}
+
+// IssueFor mints a membership certificate for a member instance.
+func (n *Node) IssueFor(subject string, scopes []string, ttl time.Duration) (*Certificate, error) {
+	if !n.cfg.IsOrg {
+		return nil, fmt.Errorf("mesh: this instance is not an org node (set KARMAX_MESH_IS_ORG=true)")
+	}
+	if _, err := DecodeKey(subject); err != nil {
+		return nil, fmt.Errorf("mesh: %w", err)
+	}
+	name := n.cfg.OrgName
+	if name == "" {
+		name = n.id.Name
+	}
+	return IssueCertificate(n.id, name, subject, scopes, ttl), nil
+}
