@@ -23,6 +23,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
+	"github.com/MelloB1989/karmax/internal/mesh"
 	"github.com/MelloB1989/karmax/internal/review"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -53,6 +54,10 @@ type KarmaxRuntime struct {
 	loopkitLoops     map[string]loopkit.Loop
 	loopWebhooks     map[string]string // webhook route -> loop name
 	loopDefaultAgent string
+
+	// mesh is this instance's presence among other KARMAX instances. Nil when
+	// no endpoint is configured, which is the single-instance default.
+	mesh *mesh.Node
 
 	// startedAt is when this process came up. A loop that has not succeeded
 	// yet is judged against this rather than against the epoch, so a restart
@@ -543,6 +548,31 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			zap.String("source", string(t.src)), zap.String("path", t.path))
 	}
 
+	// The mesh: other KARMAX instances, one per person plus one for the org.
+	//
+	// Only started when an endpoint is configured. Without one this instance
+	// has no address to advertise, and standing up an inbound trust surface
+	// that nobody can reach is all risk and no function.
+	var meshNode *mesh.Node
+	if ep := strings.TrimSpace(os.Getenv("KARMAX_MESH_ENDPOINT")); ep != "" {
+		meshID, err := mesh.LoadOrCreateIdentity(filepath.Join(dataDir, "mesh"), meshInstanceName(cfg))
+		if err != nil {
+			log.Error("mesh: could not load this instance's identity", zap.Error(err))
+		} else {
+			meshNode = mesh.New(meshID, mesh.Config{
+				Endpoint:   ep,
+				TrustedOrg: strings.TrimSpace(os.Getenv("KARMAX_MESH_ORG_KEY")),
+				IsOrg:      strings.EqualFold(os.Getenv("KARMAX_MESH_IS_ORG"), "true"),
+				OrgName:    strings.TrimSpace(os.Getenv("KARMAX_MESH_ORG_NAME")),
+			}, s, log)
+			wh.AddHandler("/mesh", meshNode.Handler().ServeHTTP)
+			wh.AddHandler("/mesh/hello", meshNode.Handler().ServeHTTP)
+			log.Info("mesh: this instance is reachable",
+				zap.String("endpoint", ep),
+				zap.String("fingerprint", meshID.Fingerprint()))
+		}
+	}
+
 	for _, route := range cfg.Webhooks.Routes {
 		wh.AddRoute(webhook.WebhookRoute{
 			Path:            route.Path,
@@ -609,6 +639,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		log:       log,
 		store:     s,
 		bus:       b,
+		mesh:      meshNode,
 		startedAt: startedAt,
 		memory:    memFactory,
 		tools:     toolReg,
@@ -1004,3 +1035,18 @@ func defaultNamespace(cfg *config.KarmaxConfig) string {
 	}
 	return cfg.Agents[0].ID
 }
+
+// meshInstanceName labels this instance for other nodes. A display label only —
+// every trust decision is made on the key, never on this.
+func meshInstanceName(cfg *config.KarmaxConfig) string {
+	if n := strings.TrimSpace(os.Getenv("KARMAX_MESH_NAME")); n != "" {
+		return n
+	}
+	if len(cfg.Agents) > 0 && cfg.Agents[0].ID != "" {
+		return cfg.Agents[0].ID
+	}
+	return "karmax"
+}
+
+// Mesh exposes the mesh node, nil when this instance is not on a mesh.
+func (rt *KarmaxRuntime) Mesh() *mesh.Node { return rt.mesh }

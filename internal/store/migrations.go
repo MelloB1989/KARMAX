@@ -351,6 +351,40 @@ var migrations = []string{
 		last_error      TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_loop_state_retry ON loop_state(next_retry_at)`,
+
+	// 022_mesh — other KARMAX instances, and this instance's stance toward them.
+	//
+	// This table is the access-control list. A verified signature proves who
+	// sent an envelope; `state` decides whether that sender may say anything.
+	// An instance not listed here, or listed and not accepted, is ignored —
+	// default deny, so the mesh is opt-in per peer rather than open by default.
+	`CREATE TABLE IF NOT EXISTS mesh_peers (
+		id           TEXT PRIMARY KEY,          -- Ed25519 signing key: the identity
+		name         TEXT NOT NULL DEFAULT '',  -- self-declared; display only
+		box_pub      TEXT NOT NULL DEFAULT '',
+		endpoint     TEXT NOT NULL DEFAULT '',
+		state        TEXT NOT NULL DEFAULT 'pending', -- pending|accepted|blocked|revoked
+		fingerprint  TEXT NOT NULL DEFAULT '',
+		scopes       TEXT NOT NULL DEFAULT '',  -- what an accepted peer may do
+		direction    TEXT NOT NULL DEFAULT 'in',
+		note         TEXT NOT NULL DEFAULT '',
+		created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
+		decided_at   DATETIME,
+		last_seen_at DATETIME
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_mesh_peers_state ON mesh_peers(state)`,
+
+	`CREATE TABLE IF NOT EXISTS mesh_messages (
+		id          TEXT PRIMARY KEY,
+		peer_id     TEXT NOT NULL,
+		peer_name   TEXT NOT NULL DEFAULT '',
+		kind        TEXT NOT NULL,
+		direction   TEXT NOT NULL DEFAULT 'in',
+		body        TEXT NOT NULL DEFAULT '',
+		via         TEXT NOT NULL DEFAULT '',  -- org key, when sent under a certificate
+		received_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_mesh_messages_time ON mesh_messages(received_at DESC)`,
 }
 
 func (s *Store) migrate() error {
