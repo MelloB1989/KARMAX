@@ -41,6 +41,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
+	wacli "github.com/MelloB1989/wacli/tools"
 	"go.uber.org/zap"
 )
 
@@ -278,19 +279,28 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send, DefaultChannelID: commsMgr.DefaultChannelID})
 	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: hostpaths.GWS()})
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: hostpaths.GWS()})
-	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
-	toolReg.Register(&builtin.WacliTool{WacliPath: waCLIPath})
-	// The WhatsApp integration's own surface. These used to be host functions in
-	// the WASM ABI; as tools they serve the agent and workflows alike.
-	toolReg.Register(&builtin.WhatsAppChatsTool{WacliPath: waCLIPath})
-	toolReg.Register(&builtin.WhatsAppMessagesTool{WacliPath: waCLIPath})
+	// WhatsApp comes from wacli itself.
+	//
+	// It publishes its capabilities as karma tools — 29 of them, covering
+	// messages, chats, contacts, calls, triggers, webhooks and media — so
+	// KARMAX adopts them rather than hand-writing a wrapper per API call and
+	// falling behind the moment wacli gains a feature. Four hand-written ones
+	// were deleted to make room; wacli's are a superset.
+	//
+	// They go through the same registry as everything else, so the agent gets
+	// them, a WASM workflow reaches them through the generic `tool` host
+	// function, and the Broker gates them by name — none of which needed
+	// changing, because tools were already the currency.
+	waTools := builtin.FenceUntrusted(
+		builtin.FromGoFunctionTools(wacli.All(wacli.New(hostpaths.WacliAPIURL()))),
+		"WhatsApp, written by whoever sent it")
+	for _, t := range waTools {
+		toolReg.Register(t)
+	}
+	// KARMAX's own policy on top of wacli's facts: which of the watched chats
+	// are third parties rather than the operator's own. wacli knows the
+	// webhooks; the subtraction is ours.
 	toolReg.Register(&builtin.WhatsAppMonitoredTool{})
-	toolReg.Register(&builtin.WhatsAppSendTool{
-		WacliPath: waCLIPath,
-		Send:      commsMgr.Send,
-		ChannelID: commsMgr.DefaultChannelID,
-	})
-	toolReg.Register(&builtin.WhatsAppSendMediaTool{WacliPath: waCLIPath})
 	toolReg.Register(&builtin.WhatsAppViewMediaTool{WacliPath: waCLIPath, Store: s, AgentID: waAgentID})
 	var waMonitorTool *builtin.WhatsAppMonitorTool
 	if cfg.Webhooks.Enabled {
