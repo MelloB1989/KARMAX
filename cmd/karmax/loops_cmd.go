@@ -26,7 +26,8 @@ func newLoopsCmd() *cobra.Command {
 			"  compiled-in   first-party, full authority      — shipped with KARMAX\n\n" +
 			"This command lists them and turns them on and off.",
 	}
-	cmd.AddCommand(loopsListCmd(), loopsRunCmd(), loopsDisableCmd(), loopsEnableCmd())
+	cmd.AddCommand(loopsListCmd(), loopsRunCmd(), loopsDisableCmd(), loopsEnableCmd(),
+		loopsBrowseCmd(), loopsInstallCmd())
 	return cmd
 }
 
