@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -75,11 +73,7 @@ func watch() error {
 		gws = loopwasm.HostTool("gws")
 	}
 
-	statePath, err := gchatStatePath()
-	if err != nil {
-		return err
-	}
-	state := loadGchatState(statePath)
+	state := loadGchatState()
 
 	spaces, err := listGchatSpaces()
 	if err != nil {
@@ -130,7 +124,7 @@ func watch() error {
 		}
 	}
 	if len(work) == 0 {
-		saveGchatState(statePath, state)
+		saveGchatState(state)
 		return nil
 	}
 	if len(work) > gchatMaxSpaces {
@@ -168,7 +162,7 @@ func watch() error {
 	for _, w := range work {
 		state[w.space.Name] = w.space.LastActiveTime
 	}
-	saveGchatState(statePath, state)
+	saveGchatState(state)
 
 	acted, approve, remind, inform := shared.ParseScanOutcomes(out)
 	loopwasm.Log("gchat-watch: %d spaces — %d acted, %d need approval, %d reminders, %d fyi", len(work), len(acted), len(approve), len(remind), len(inform))
@@ -214,29 +208,31 @@ func firstLine(s string) string {
 	return s
 }
 
-func gchatStatePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".karmax")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "gchat-watch.state"), nil
-}
+// State lives in short-term memory rather than ~/.karmax/gchat-watch.state.
+//
+// The sandbox has no filesystem and no $HOME, which is what this loop tripped
+// over on its first run. Short-term memory is durable in the same store as
+// everything else and the operator can actually see it, so this is the better
+// home regardless.
+const stateGroup = "gchat-watch-state"
 
-func loadGchatState(path string) map[string]string {
+func loadGchatState() map[string]string {
 	state := map[string]string{}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &state)
+	entries, err := loopwasm.ShortAll(stateGroup)
+	if err != nil {
+		return state
+	}
+	for _, e := range entries {
+		state[e.Key] = e.Value
 	}
 	return state
 }
 
-func saveGchatState(path string, state map[string]string) {
-	if data, err := json.Marshal(state); err == nil {
-		_ = os.WriteFile(path, data, 0644)
+func saveGchatState(state map[string]string) {
+	for k, v := range state {
+		// No expiry: a space's last-seen marker is only useful while the space
+		// exists, and a stale one costs a single duplicate notification.
+		_ = loopwasm.ShortSet(stateGroup, k, v, 0)
 	}
 }
 

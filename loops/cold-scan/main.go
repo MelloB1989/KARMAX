@@ -60,10 +60,9 @@ func run() {
 }
 
 func scan() error {
-	wacli := strings.TrimSpace(loopwasm.Config("wacli"))
-	if wacli == "" {
-		wacli = loopwasm.HostTool("wacli")
-	}
+	// No wacli path any more: the chat and message reads are host functions, so
+	// this loop never names the binary. The lookup survived the port as dead
+	// code and asked for a host function the manifest does not declare.
 	perTick := configInt("per_tick", 3)
 	hotDays := configInt("hot_days", 14)
 	minGroupOwn := configInt("min_group_own", 5)

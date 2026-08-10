@@ -6,8 +6,10 @@ description: >
 schedule: "0 0 */4 * * *"
 memory_mb: 48
 
-host: [log, config, hosttool, harness, notify, propose, remind, gchat_spaces]
+host: [log, config, hosttool, harness, notify, propose, remind, gchat_spaces, short_set, short_all]
 capabilities:
+  - memory:nexus
+  - memory:nexus:write
   - tool:harness
   - tool:google_workspace
   - tool:app.push

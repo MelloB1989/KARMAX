@@ -1,9 +1,12 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -233,15 +236,52 @@ func (w *wasmKit) SendWhatsApp(ctx context.Context, target, content, replyTo str
 	if err != nil {
 		return err
 	}
-	body, status, err := w.mem().HTTP(ctx, "POST", hostpaths.WacliAPIURL()+"/send",
-		map[string]string{"Content-Type": "application/json"}, string(payload))
+	_, err = hostPost(ctx, hostpaths.WacliAPIURL()+"/send", payload)
+	return err
+}
+
+// hostGet and hostPost reach KARMAX's own local services.
+//
+// Deliberately NOT the loop's HTTP path. That one runs the SSRF guard and the
+// Broker, which refuse loopback — correctly, because wacli's API can send
+// messages as the operator. Routing a host call through it made the host block
+// itself: chat-sweep's very first run failed with "monitored_chats failed"
+// because the host could not reach a service running on the same machine.
+//
+// The gate belongs on the LOOP, not on KARMAX acting for it.
+func hostGet(ctx context.Context, url string) ([]byte, error) {
+	return hostRequest(ctx, http.MethodGet, url, nil)
+}
+
+func hostPost(ctx context.Context, url string, body []byte) ([]byte, error) {
+	return hostRequest(ctx, http.MethodPost, url, body)
+}
+
+func hostRequest(ctx context.Context, method, url string, body []byte) ([]byte, error) {
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(cctx, method, url, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if status < 200 || status > 299 {
-		return fmt.Errorf("wacli send answered %d: %.160s", status, body)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
-	return nil
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, url, err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("%s answered %d: %.160s", url, resp.StatusCode, out)
+	}
+	return out, nil
 }
 
 func (w *wasmKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error) {
@@ -319,13 +359,9 @@ func (w *wasmKit) OperatorChats() []string {
 // can no longer reach localhost — that API sends messages as the operator — so
 // the host does the fetch and hands back the answer.
 func (w *wasmKit) MonitoredChats(ctx context.Context) ([]string, error) {
-	k := w.mem()
-	body, status, err := k.HTTP(ctx, "GET", hostpaths.WacliAPIURL()+"/webhooks", nil, "")
+	body, err := hostGet(ctx, hostpaths.WacliAPIURL()+"/webhooks")
 	if err != nil {
 		return nil, err
-	}
-	if status != 200 {
-		return nil, fmt.Errorf("wacli /webhooks answered %d", status)
 	}
 	var resp struct {
 		Webhooks []struct {
@@ -334,7 +370,7 @@ func (w *wasmKit) MonitoredChats(ctx context.Context) ([]string, error) {
 			Enabled  bool     `json:"enabled"`
 		} `json:"webhooks"`
 	}
-	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
 	}
 
