@@ -41,3 +41,50 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test ./...
+
+      - name: go.mod is tidy
+        run: |
+          cp go.mod go.mod.bak && cp go.sum go.sum.bak
+          go mod tidy
+          diff -u go.mod.bak go.mod && diff -u go.sum.bak go.sum \
+            || { echo "::error::run 'go mod tidy' and commit the result"; exit 1; }
+          rm go.mod.bak go.sum.bak
+
+  # KARMAX must stay installable and fully runnable with no account anywhere.
+  # That promise is what the open-source path is built on, and it is lost one
+  # convenient import at a time, so the boundary is enforced here rather than
+  # remembered.
+  #
+  # The line is between PROVIDERS and the CONTROL PLANE. Bedrock, Vertex and S3
+  # already arrive transitively through karma/ai and are fine: they sit behind
+  # the provider abstraction, and a user who configures none of them is
+  # unaffected. Billing, tenancy and deployment infrastructure are not fine —
+  # they only make sense for a hosted tier, and a core that imports them has
+  # stopped being something you can run alone.
+  boundary:
+    name: core carries no control plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # cloud/ is reserved for the hosted tier and must be its own Go module, so
+      # the core cannot reach it even by accident.
+      - name: cloud/ stays a separate module
+        run: |
+          if [ -d cloud ] && [ ! -f cloud/go.mod ]; then
+            echo "::error::cloud/ exists but is not a separate module — add cloud/go.mod"
+            exit 1
+          fi
+          if grep -rn --include='*.go' 'MelloB1989/karmax/cloud' . ; then
+            echo "::error::the core imported something under cloud/ — the hosted tier must not be reachable from the core"
+            exit 1
+          fi
+
+      - name: no billing, tenancy or deployment dependency
+        run: |
+          forbidden='aws-lambda-go|aws-cdk-go|jsii-runtime-go|stripe|service/dynamodb|cognitoidentityprovider|razorpay'
+          if grep -qE "$forbidden" go.mod; then
+            echo "::error::a control-plane dependency reached the core module — it belongs under cloud/"
+            grep -nE "$forbidden" go.mod
+            exit 1
+          fi
