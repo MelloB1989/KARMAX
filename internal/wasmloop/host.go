@@ -706,6 +706,23 @@ func (w logWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// UnknownHostFunctions reports which of a manifest's declared host functions
+// this KARMAX does not have.
+//
+// An artifact's signature proves it is intact, not that it still fits the host.
+// A loop built against an older ABI verifies, installs and runs — and is
+// refused on its first real call, which looks like a loop that decided to do
+// nothing. This is what lets that be reported instead of discovered.
+func UnknownHostFunctions(declared []string) []string {
+	var out []string
+	for _, name := range declared {
+		if _, known := hostDescriptions[name]; !known {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // toolName pulls the tool being called out of a request, so the gates can run
 // before the request reaches dispatch and the Kit.
 func toolName(req string) (string, error) {

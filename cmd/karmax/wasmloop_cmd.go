@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -96,7 +97,7 @@ func wloopKeygenCmd() *cobra.Command {
 
 func wloopSignCmd() *cobra.Command {
 	var manifestPath, modulePath, out string
-	var countersign bool
+	var countersign, unsigned bool
 	cmd := &cobra.Command{
 		Use:   "sign",
 		Short: "Package a WASM module and a manifest into a signed artifact",
@@ -110,9 +111,16 @@ func wloopSignCmd() *cobra.Command {
 			"  capabilities:\n" +
 			"    - http:hacker-news.firebaseio.com\n",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			priv, pub, err := loadPublisher()
-			if err != nil {
-				return err
+			var (
+				priv ed25519.PrivateKey
+				pub  string
+				err  error
+			)
+			if !unsigned {
+				priv, pub, err = loadPublisher()
+				if err != nil {
+					return err
+				}
 			}
 			raw, err := os.ReadFile(manifestPath)
 			if err != nil {
@@ -129,6 +137,30 @@ func wloopSignCmd() *cobra.Command {
 			m.Publisher = pub
 			if m.BuiltAt == 0 {
 				m.BuiltAt = time.Now().Unix()
+			}
+
+			// Unsigned: packaged and nothing more. The digest still binds the
+			// module to the manifest, so what an operator is shown is what they
+			// would run — there is simply no claim about who wrote it. This is
+			// the loop you are still editing, not the loop you publish.
+			if unsigned {
+				data, err := wasmloop.Pack(m, module, nil)
+				if err != nil {
+					return err
+				}
+				if out == "" {
+					out = m.Name + "-" + m.Version + ".kloop"
+				}
+				if err := os.WriteFile(out, data, 0o644); err != nil {
+					return err
+				}
+				fmt.Printf("Packed %s (%s) UNSIGNED, %d KB.\n\n", m.Name, m.Version, len(data)/1024)
+				fmt.Println("It declares:")
+				for _, line := range wasmloop.Describe(m) {
+					fmt.Println("  - " + line)
+				}
+				fmt.Printf("\nWrote %s. Install it with:\n  karmax wloop install %s --untrusted\n", out, out)
+				return nil
 			}
 
 			// Packed once to compute the digest the signature covers, then
@@ -179,27 +211,36 @@ func wloopSignCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&out, "out", "o", "", "output file")
 	cmd.Flags().BoolVar(&countersign, "countersign", false,
 		"also countersign as a registry, for loops you publish and trust yourself")
+	cmd.Flags().BoolVar(&unsigned, "unsigned", false,
+		"package without signing, for a loop you are still developing (install with --untrusted)")
 	return cmd
 }
 
 // trustFromEnv reads the shared trust configuration, with --allow-community as
 // a per-command override.
-func trustFromEnv(allowCommunity bool) wasmloop.Trust {
+func trustFromEnv(allowCommunity, untrusted bool) wasmloop.Trust {
 	t := wasmloop.LoadTrust(wasmloop.Dir())
 	if allowCommunity {
 		t.AllowCommunity = true
 	}
+	// Never persisted. This applies to the one artifact being installed right
+	// now, by an operator who is about to type its name.
+	t.AllowUntrusted = untrusted
 	return t
 }
 
 func showPreview(p *wasmloop.Preview) {
 	m := p.Manifest
 	fmt.Printf("%s %s — %s\n", m.Name, m.Version, m.Description)
-	fmt.Printf("  publisher %s\n", m.Publisher)
 	switch p.Verdict.Tier {
 	case wasmloop.TierRegistry:
+		fmt.Printf("  publisher %s\n", m.Publisher)
 		fmt.Printf("  trust     registry (countersigned by %s)\n", short(p.Verdict.Registry))
+	case wasmloop.TierUntrusted:
+		fmt.Printf("  publisher NONE — this artifact is not signed\n")
+		fmt.Printf("  trust     UNTRUSTED\n")
 	default:
+		fmt.Printf("  publisher %s\n", m.Publisher)
 		fmt.Printf("  trust     COMMUNITY — nobody has reviewed this but its author\n")
 	}
 	if m.Schedule != "" {
@@ -223,6 +264,49 @@ func showPreview(p *wasmloop.Preview) {
 	}
 }
 
+// confirmUnreviewed makes an operator state what they are installing.
+//
+// Typing the loop's name rather than "y" is the whole mechanism. "y" is what
+// people press to make a prompt go away; a name has to be read off the screen,
+// which means the list above it was on the screen while they read it.
+func confirmUnreviewed(p *wasmloop.Preview) error {
+	m := p.Manifest
+	fmt.Println()
+	fmt.Println("┌───────────────────────────────────────────────────────────────┐")
+	if p.Verdict.Tier == wasmloop.TierUntrusted {
+		fmt.Println("│  NOBODY HAS SIGNED THIS LOOP                                  │")
+	} else {
+		fmt.Println("│  NOBODY HAS REVIEWED THIS LOOP                                │")
+	}
+	fmt.Println("└───────────────────────────────────────────────────────────────┘")
+	if p.Verdict.Tier == wasmloop.TierUntrusted {
+		fmt.Println("There is no signature, so there is no claim about who wrote it —")
+		fmt.Println("only that the code matches the manifest describing it.")
+	} else {
+		fmt.Printf("Signed by %s, but no registry you trust has countersigned it.\n",
+			short(m.Publisher))
+	}
+	fmt.Println()
+	fmt.Println("It runs sandboxed and the permissions listed above are still enforced —")
+	fmt.Println("untrusted means nobody vouched for it, NOT that it may do anything.")
+	if len(m.Provides) > 0 {
+		fmt.Println()
+		fmt.Printf("It also ADDS %d tool(s) to your agent:\n", len(m.Provides))
+		for _, t := range m.Provides {
+			fmt.Printf("  - %s — %s\n", t.Name, t.Description)
+		}
+		fmt.Println("Your agent will call these, and this loop's code decides what they answer.")
+	}
+	fmt.Printf("\nType the loop's name (%s) to install it, or anything else to stop: ", m.Name)
+
+	var answer string
+	fmt.Scanln(&answer)
+	if strings.TrimSpace(answer) != m.Name {
+		return fmt.Errorf("not confirmed")
+	}
+	return nil
+}
+
 func wloopInspectCmd() *cobra.Command {
 	var allowCommunity bool
 	cmd := &cobra.Command{
@@ -234,7 +318,10 @@ func wloopInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			in := &wasmloop.Installer{Dir: wasmloop.Dir(), Trust: trustFromEnv(allowCommunity)}
+			// Inspect writes nothing, so it shows an unsigned artifact rather than
+			// refusing to describe it — reading what something wants is exactly
+			// what you do BEFORE deciding whether to trust it.
+			in := &wasmloop.Installer{Dir: wasmloop.Dir(), Trust: trustFromEnv(allowCommunity, true)}
 			p, err := in.Inspect(data)
 			if err != nil {
 				return err
@@ -249,7 +336,7 @@ func wloopInspectCmd() *cobra.Command {
 }
 
 func wloopInstallCmd() *cobra.Command {
-	var allowCommunity, yes bool
+	var allowCommunity, untrusted, yes bool
 	cmd := &cobra.Command{
 		Use:   "install <file.kloop>",
 		Short: "Verify, record and activate a loop",
@@ -267,7 +354,7 @@ func wloopInstallCmd() *cobra.Command {
 
 			in := &wasmloop.Installer{
 				Dir: wasmloop.Dir(), Broker: brokerStore{s},
-				Trust: trustFromEnv(allowCommunity), Actor: os.Getenv("USER"),
+				Trust: trustFromEnv(allowCommunity, untrusted), Actor: os.Getenv("USER"),
 			}
 			p, err := in.Inspect(data)
 			if err != nil {
@@ -275,7 +362,16 @@ func wloopInstallCmd() *cobra.Command {
 			}
 			showPreview(p)
 
-			if !yes {
+			// An unreviewed loop gets a different question, and one that cannot
+			// be answered by holding down y. --yes deliberately does not skip
+			// it: a script that installs unsigned code should have to say which
+			// unsigned code.
+			if p.Verdict.Tier != wasmloop.TierRegistry {
+				if err := confirmUnreviewed(p); err != nil {
+					fmt.Println("Nothing installed.")
+					return nil
+				}
+			} else if !yes {
 				fmt.Print("\nInstall it? [y/N] ")
 				var answer string
 				fmt.Scanln(&answer)
@@ -288,10 +384,16 @@ func wloopInstallCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("\nInstalled. Restart KARMAX to run it.\n")
+			if p.Verdict.Tier != wasmloop.TierRegistry {
+				fmt.Printf("`karmax wloop list` will keep showing %s as %s.\n",
+					p.Manifest.Name, p.Verdict.Tier)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&allowCommunity, "allow-community", false, "accept publisher-only signatures")
+	cmd.Flags().BoolVar(&untrusted, "untrusted", false,
+		"install this one artifact even though nobody has vouched for it (for loops you are developing)")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
 	return cmd
 }
@@ -318,11 +420,28 @@ func wloopListCmd() *cobra.Command {
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "NAME\tVERSION\tTRUST\tPUBLISHER\tINSTALLED\tBY")
+			unreviewed := 0
 			for _, e := range entries {
+				publisher := short(e.Publisher)
+				if publisher == "" {
+					publisher = "—"
+				}
+				if e.Tier != wasmloop.TierRegistry {
+					unreviewed++
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, e.Version, e.Tier,
-					short(e.Publisher), e.InstalledAt.Format("2006-01-02"), e.InstalledBy)
+					publisher, e.InstalledAt.Format("2006-01-02"), e.InstalledBy)
 			}
-			return w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
+			// Said again below the table. The tier is in a column somebody can
+			// stop noticing, and "nobody reviewed this" should not become
+			// wallpaper.
+			if unreviewed > 0 {
+				fmt.Printf("\n%d loop(s) above were not reviewed by any registry you trust.\n", unreviewed)
+			}
+			return nil
 		},
 	}
 }
@@ -356,7 +475,7 @@ func wloopVerifyAllCmd() *cobra.Command {
 		Long: "Checks that what is on disk is still what was approved. Run it if you suspect\n" +
 			"anything has been tampered with; KARMAX also does this on every load.",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			in := &wasmloop.Installer{Dir: wasmloop.Dir(), Trust: trustFromEnv(allowCommunity)}
+			in := &wasmloop.Installer{Dir: wasmloop.Dir(), Trust: trustFromEnv(allowCommunity, false)}
 			entries, err := in.Installed()
 			if err != nil {
 				return err
@@ -365,17 +484,34 @@ func wloopVerifyAllCmd() *cobra.Command {
 				fmt.Println("Nothing installed.")
 				return nil
 			}
-			bad := 0
+			bad, stale := 0, 0
 			for _, e := range entries {
-				if _, err := in.Load(e.Name); err != nil {
+				a, err := in.Load(e.Name)
+				if err != nil {
 					bad++
 					fmt.Printf("FAIL %s\n  %v\n", e.Name, err)
 					continue
 				}
 				fmt.Printf("ok   %s %s (%s)\n", e.Name, e.Version, e.Tier)
+
+				// A signature says the artifact is intact, not that it still
+				// fits this KARMAX. A loop built against an older host declares
+				// functions that no longer exist; it verifies, installs, runs,
+				// and is refused on its first real call — succeeding at
+				// everything except its purpose. Said here rather than
+				// discovered from an empty result at 3am.
+				if unknown := wasmloop.UnknownHostFunctions(a.Manifest.Host); len(unknown) > 0 {
+					stale++
+					fmt.Printf("     built for a different KARMAX: it declares %s, which this version does not have.\n",
+						strings.Join(unknown, ", "))
+					fmt.Printf("     Re-sign it from current source; it will run but those calls are refused.\n")
+				}
 			}
 			if bad > 0 {
 				return fmt.Errorf("%d loop(s) failed verification", bad)
+			}
+			if stale > 0 {
+				fmt.Printf("\n%d loop(s) verify but were built against a different host ABI.\n", stale)
 			}
 			return nil
 		},
