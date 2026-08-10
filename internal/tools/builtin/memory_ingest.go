@@ -91,8 +91,15 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 		searchKey = searchKey[:50]
 	}
 
-	// Search existing memory entries.
-	existingEntries, _ := t.Store.SearchMemoryEntries(namespace, searchKey, 20)
+	// Searched through the memory manager, which asks whatever store is
+	// actually holding memories.
+	//
+	// This used to query SQLite directly. Once GitLoom became the store that
+	// was a check against a table nothing is written to any more: a new memory
+	// could never dedup against another new one, while still matching a stale
+	// legacy row — so the same fact could be saved twice AND a genuinely new
+	// one silently dropped, which is both failure modes at once.
+	existingEntries := existingMemories(t.MemoryMgr, searchKey)
 	for _, e := range existingEntries {
 		sim := wordOverlap(content, e.Content)
 		if sim > 0.7 {
@@ -221,4 +228,25 @@ func truncateStr(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// existingMemories returns what the store already holds near a query.
+//
+// Through the Manager rather than the database, so it consults whatever is
+// actually holding memories — GitLoom when it is configured, SQLite when it is
+// not. A dedup check pointed at the wrong store is worse than none: it drops
+// new facts that match stale rows while letting real duplicates through.
+func existingMemories(mgr *memory.Manager, query string) []memory.MemoryEntry {
+	if mgr == nil {
+		return nil
+	}
+	results, err := mgr.Search(query, 20)
+	if err != nil {
+		return nil
+	}
+	out := make([]memory.MemoryEntry, 0, len(results))
+	for _, r := range results {
+		out = append(out, r.Entry)
+	}
+	return out
 }
