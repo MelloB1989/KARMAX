@@ -23,6 +23,7 @@ const (
 	EventCommsSent      EventKind = "comms.sent"
 	EventSystemCritical EventKind = "system.critical"
 	EventTimerFired     EventKind = "timer.fired"
+	EventDelegationDone EventKind = "delegation.completed"
 )
 
 type Event struct {

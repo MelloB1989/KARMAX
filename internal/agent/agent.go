@@ -30,11 +30,13 @@ type Agent struct {
 	memory    *memory.Manager
 	tools     []tools.Tool
 	mcpTools  []tools.Tool
-	inbox     chan bus.Event
-	ctx       context.Context
-	cancel    context.CancelFunc
-	mu        sync.RWMutex
-	paused    bool
+	// boxes routes events to one worker per conversation: ordered within a
+	// chat, concurrent across chats. See mailbox.go.
+	boxes  *mailboxes
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.RWMutex
+	paused bool
 
 	// Multi-model architecture
 	mainSession  *MainModelSession
@@ -83,7 +85,6 @@ func NewAgent(def AgentDef, b *bus.Log, s *store.Store, mem *memory.Manager, age
 		memory:   mem,
 		tools:    agentTools,
 		mcpTools: mcpTools,
-		inbox:    make(chan bus.Event, 64),
 	}
 }
 
@@ -151,6 +152,9 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	a.ctx, a.cancel = context.WithCancel(ctx)
 	a.parentCtx = ctx
+	// Built before run() so an event arriving between Start and the goroutine
+	// scheduling has somewhere to go.
+	a.boxes = newMailboxes(a.ctx, a.log, a.handleOne)
 	a.startedAt = time.Now()
 	a.status = StatusRunning
 	a.paused = false
@@ -315,6 +319,9 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			cp := *tt
 			cp.AgentID = a.def.ID
 			cp.Namespace = a.def.Memory.Namespace
+			// What makes background delegation possible: the result comes back
+			// as an event on a later turn rather than blocking this one.
+			cp.Publish = a.bus.Publish
 			out = append(out, &cp)
 		case *builtin.SchedulerTool:
 			cp := *tt
@@ -646,12 +653,16 @@ func (a *Agent) Resume() error {
 // Send hands an event to this agent's inbox. A full inbox is reported, not
 // dropped, so the event log retries rather than losing it.
 func (a *Agent) Send(e bus.Event) error {
-	select {
-	case a.inbox <- e:
-		return nil
-	default:
-		return fmt.Errorf("agent %s inbox is full", a.def.ID)
+	a.mu.RLock()
+	boxes := a.boxes
+	a.mu.RUnlock()
+	if boxes == nil {
+		return fmt.Errorf("agent %s is not running", a.def.ID)
 	}
+	if !boxes.deliver(e) {
+		return fmt.Errorf("agent %s is too far behind on %s", a.def.ID, conversationKey(e))
+	}
+	return nil
 }
 
 func (a *Agent) Snapshot() AgentSnapshot {
@@ -691,65 +702,67 @@ func (a *Agent) Def() AgentDef {
 }
 
 func (a *Agent) run() {
+	a.log.Info("agent started", zap.String("model", a.def.Model), zap.String("provider", a.def.Provider))
+	// The mailbox workers do the work; this only holds the agent's lifetime.
+	<-a.ctx.Done()
+}
+
+// handleOne processes a single event on its conversation's worker.
+//
+// The panic guard is per event rather than per agent: one bad payload used to
+// crash the single worker and deafen the agent entirely.
+func (a *Agent) handleOne(evt bus.Event) {
 	defer func() {
 		if r := recover(); r != nil {
+			a.log.Error("panic while handling an event",
+				zap.String("kind", string(evt.Kind)), zap.Any("panic", r))
 			a.mu.Lock()
-			a.status = StatusCrashed
 			a.lastErr = fmt.Errorf("panic: %v", r)
 			a.mu.Unlock()
-			a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
+			_ = a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
 				"error": fmt.Sprintf("%v", r),
 			}))
 		}
 	}()
 
-	a.log.Info("agent started", zap.String("model", a.def.Model), zap.String("provider", a.def.Provider))
-
-	for {
+	// Waited out in place rather than requeued: pushing the event to the back
+	// of a queue reorders a conversation, which is the one thing ordering here
+	// is for.
+	for a.isPaused() {
 		select {
 		case <-a.ctx.Done():
 			return
-
-		case evt, ok := <-a.inbox:
-			if !ok {
-				return
-			}
-
-			a.mu.RLock()
-			paused := a.paused
-			a.mu.RUnlock()
-
-			if paused {
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					a.inbox <- evt
-				}()
-				continue
-			}
-
-			a.mu.Lock()
-			a.lastEvent = time.Now()
-			a.mu.Unlock()
-
-			if err := a.handleEvent(evt); err != nil {
-				streak := a.recordEventError(err)
-				a.log.Error("event handling failed", zap.Error(err))
-				a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
-					"error":              err.Error(),
-					"consecutive_errors": streak,
-				}))
-				if streak >= 3 {
-					a.publishCritical("agent error streak reached restart threshold", map[string]any{
-						"error":              err.Error(),
-						"consecutive_errors": streak,
-					})
-					a.triggerCleanRestart(err)
-				}
-				continue
-			}
-			a.resetEventErrors()
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
+
+	a.mu.Lock()
+	a.lastEvent = time.Now()
+	a.mu.Unlock()
+
+	if err := a.handleEvent(evt); err != nil {
+		streak := a.recordEventError(err)
+		a.log.Error("event handling failed", zap.Error(err))
+		_ = a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
+			"error":              err.Error(),
+			"consecutive_errors": streak,
+		}))
+		if streak >= 3 {
+			a.publishCritical("agent error streak reached restart threshold", map[string]any{
+				"error":              err.Error(),
+				"consecutive_errors": streak,
+			})
+			a.triggerCleanRestart(err)
+		}
+		return
+	}
+	a.resetEventErrors()
+}
+
+func (a *Agent) isPaused() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.paused
 }
 
 func (a *Agent) handleEvent(evt bus.Event) error {
@@ -803,9 +816,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Combine dynamic context and inject into the main session
 	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + sessionCtx + commsCtx + retrievedCtx
-	if dynamicCtx != "" && a.mainSession != nil {
-		a.mainSession.SetContext(dynamicCtx)
-	} else if dynamicCtx != "" {
+	if dynamicCtx != "" && a.mainSession == nil {
 		userPrompt = dynamicCtx + userPrompt
 	}
 
@@ -820,7 +831,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// inbox worker forever (that silently deafens the whole agent). On
 		// timeout the turn fails and the loop moves on to the next message.
 		turnCtx, turnCancel := context.WithTimeout(a.ctx, 3*time.Minute)
-		response, toolCalls, err := a.mainSession.ProcessMessage(turnCtx, userPrompt)
+		response, toolCalls, err := a.mainSession.ProcessMessageWithContext(turnCtx, dynamicCtx, userPrompt)
 		turnCancel()
 		ackCancel()
 		if err != nil {
@@ -987,11 +998,8 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 	// Inject the same dynamic context the event loop uses: active coding
 	// sessions, available comms channels, and retrieved long-term memory.
 	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
-	if strings.TrimSpace(dynamicCtx) != "" {
-		session.SetContext(dynamicCtx)
-	}
 
-	response, toolCalls, err := session.ProcessMessage(ctx, text)
+	response, toolCalls, err := session.ProcessMessageWithContext(ctx, dynamicCtx, text)
 	if err != nil {
 		return "", fmt.Errorf("chat: %w", err)
 	}
@@ -1315,6 +1323,25 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 		} else {
 			prompt += p + "\n"
 		}
+		return prompt
+	}
+
+	// A background delegation finished. Rendered as the outcome it is, so the
+	// agent reports it rather than parsing event JSON to work out what happened.
+	if evt.Kind == bus.EventDelegationDone && evt.Payload != nil {
+		task, _ := evt.Payload["task"].(string)
+		status, _ := evt.Payload["status"].(string)
+		if status == "failed" {
+			reason, _ := evt.Payload["error"].(string)
+			prompt += fmt.Sprintf("A background task you delegated has FAILED.\n\nTask: %s\n\nError: %s\n\n"+
+				"Decide whether to retry it, do it another way, or tell the operator it could not be done. Do not stay silent.\n",
+				task, truncateStr(reason, 1000))
+			return prompt
+		}
+		out, _ := evt.Payload["output"].(string)
+		prompt += fmt.Sprintf("A background task you delegated has FINISHED.\n\nTask: %s\n\nResult:\n%s\n\n"+
+			"If the operator is waiting on this, tell them the outcome now. Otherwise act on the result.\n",
+			task, truncateStr(out, 4000))
 		return prompt
 	}
 

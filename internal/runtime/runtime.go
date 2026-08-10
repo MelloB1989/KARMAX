@@ -26,6 +26,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/mesh"
 	"github.com/MelloB1989/karmax/internal/review"
+	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -618,7 +619,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// bus_event kind, and agents may declare extra event kinds in
 	// triggers.events — subscribe to those too, or they are published and then
 	// silently dropped.
-	routedKinds := []bus.EventKind{bus.EventWebhookFired, bus.EventScheduledJob, bus.EventUserDefined, bus.EventCommsMessage}
+	routedKinds := []bus.EventKind{bus.EventWebhookFired, bus.EventScheduledJob, bus.EventUserDefined,
+		bus.EventCommsMessage, bus.EventDelegationDone}
 	seenKinds := map[bus.EventKind]bool{}
 	for _, k := range routedKinds {
 		seenKinds[k] = true
@@ -661,6 +663,7 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
 	rt.clock.Start(ctx)
 	rt.startAgentRouter(ctx)
+	rt.wireMesh()
 	rt.startCriticalAlertLoop(ctx)
 	rt.startDeadLetterAlerts()
 
@@ -842,6 +845,69 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 
 	wg.Wait()
 	return nil
+}
+
+// wireMesh connects peer instances to this one's agent.
+//
+// Until now the mesh recorded traffic and nothing acted on it. An ask from a
+// peer reaches the agent with the delegation provenance attached, so if the
+// agent needs another instance's help it can pass that on with SendOnBehalf
+// rather than presenting the work as its own.
+func (rt *KarmaxRuntime) wireMesh() {
+	if rt.mesh == nil {
+		return
+	}
+	rt.mesh.OnAsk(func(ctx context.Context, peer store.MeshPeer, question string, prov mesh.Provenance) (string, error) {
+		ag, ok := rt.agents.Get(rt.loopDefaultAgent)
+		if !ok || ag == nil {
+			return "", fmt.Errorf("this instance has no agent to answer with")
+		}
+		// A peer is not the operator, and neither is whoever asked the peer.
+		origin := prov.Origin()
+		source := fmt.Sprintf("the KARMAX instance %q", peer.Name)
+		if prov.Delegated() {
+			source += fmt.Sprintf(", asking on behalf of %s", short(origin))
+		}
+		prompt := fmt.Sprintf(
+			"Another KARMAX instance has asked you a question. Answer it as this operator's colleague would: "+
+				"helpfully, but disclosing only what is appropriate to share outside.\n\n%s",
+			safety.Fence(source, question))
+
+		rt.log.Info("mesh: answering a question from a peer",
+			zap.String("peer", peer.Name), zap.Int("delegation_depth", prov.Depth()))
+		return ag.Chat(ctx, prompt)
+	})
+
+	rt.mesh.OnMessage(func(peer store.MeshPeer, kind mesh.Kind, body mesh.MessageBody, prov mesh.Provenance) {
+		evt := bus.NewEvent(bus.EventUserDefined, rt.loopDefaultAgent, map[string]any{
+			"source":   "mesh",
+			"peer":     peer.Name,
+			"peer_id":  peer.ID,
+			"kind":     string(kind),
+			"subject":  body.Subject,
+			"prompt":   safety.Fence("a message from the KARMAX instance "+peer.Name, body.Text),
+			"origin":   prov.Origin(),
+			"depth":    prov.Depth(),
+			"reply_to": body.ReplyTo,
+		})
+		if err := rt.bus.Publish(evt); err != nil {
+			rt.log.Error("mesh: could not record an inbound message",
+				zap.String("peer", peer.Name), zap.Error(err))
+		}
+	})
+
+	rt.mesh.OnPeerRequest(func(peer store.MeshPeer) {
+		builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "alert",
+			fmt.Sprintf("%s wants to connect", peer.Name),
+			"Fingerprint "+peer.Fingerprint+" — verify it out of band, then `karmax mesh accept`.")
+	})
+}
+
+func short(id string) string {
+	if len(id) > 12 {
+		return id[:12] + "…"
+	}
+	return id
 }
 
 // startAgentRouter delivers routed events to agent inboxes. No agent means
