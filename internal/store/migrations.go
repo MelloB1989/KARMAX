@@ -293,27 +293,23 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_kv_memory_grp ON kv_memory(grp)`,
 	`CREATE INDEX IF NOT EXISTS idx_kv_memory_expires ON kv_memory(expires_at)`,
 
-	// 020_gitloom_outbox — memories waiting to reach GitLoom Cloud.
+	// 020_gitloom_outbox — dropped.
 	//
-	// KARMAX runs on a laptop or a Pi behind home internet, so a memory must
-	// not be lost because the network blinked while it was being written. A
-	// write lands here first and a flusher drains it; that is what makes
-	// depending on a remote memory layer safe. Rows are deleted once accepted,
-	// so this table is empty in the steady state.
-	`CREATE TABLE IF NOT EXISTS gitloom_outbox (
-		id         TEXT PRIMARY KEY,
-		namespace  TEXT NOT NULL,
-		op         TEXT NOT NULL DEFAULT 'write',  -- write | forget
-		payload    TEXT NOT NULL,                  -- one JSON gitloom.Memory, or a path
-		attempts   INTEGER NOT NULL DEFAULT 0,
-		last_error TEXT NOT NULL DEFAULT '',
-		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
-	)`,
-	`CREATE INDEX IF NOT EXISTS idx_gitloom_outbox_ns ON gitloom_outbox(namespace, created_at)`,
+	// Memories used to be written to SQLite and queued here for delivery,
+	// because GitLoom was a hosted service on the far side of home internet and
+	// a blink must not lose a memory. It runs locally as part of KARMAX now, so
+	// the queue buys nothing and the local copy it protected has become the
+	// real cost: two stores that can disagree, silently, because a memory
+	// forgotten in one and recalled from the other looks exactly like a memory
+	// that was never forgotten.
+	//
+	// GitLoom is the store. SQLite keeps everything it was always for —
+	// contacts, events, queues, timers, loop state, crash persistence.
+	`DROP TABLE IF EXISTS gitloom_outbox`,
 
-	// Where each local entry ended up in GitLoom, so an update rewrites the
-	// same file instead of creating a near-duplicate beside it, and so a
-	// relationship link can name a path rather than a local row id.
+	// Where each local entry ended up in GitLoom. Retained because
+	// memory_entries still holds history from before the move, and because an
+	// install with no GitLoom configured keeps using that table as its store.
 	`ALTER TABLE memory_entries ADD COLUMN gitloom_path TEXT NOT NULL DEFAULT ''`,
 	`CREATE INDEX IF NOT EXISTS idx_mem_gitloom_path ON memory_entries(gitloom_path)`,
 

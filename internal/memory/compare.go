@@ -9,11 +9,11 @@ import (
 
 // Comparing retrieval backends.
 //
-// Moving long-term memory to GitLoom made local a fallback, and a fallback
-// nobody measures decays into a degraded mode. That matters more than it
-// sounds: "runs fully offline, no account needed" is what the open-source path
-// is sold on, and it stops being true the day local retrieval is too weak to
-// use.
+// GitLoom is the store when it is configured. Local retrieval is no longer a
+// fallback behind it — it is the whole memory of an install that has no
+// GitLoom at all, which is the configuration "runs fully offline, no account
+// needed" describes. That claim stops being true the day local retrieval is
+// too weak to use, and a path nobody measures decays quietly.
 //
 // `karmax compare` already measures both against the operator's real corpus,
 // which is the right tool for judging a change. It needs a network, an account
