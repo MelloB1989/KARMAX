@@ -25,6 +25,11 @@ const (
 	// TierCommunity carries only a publisher signature. It runs, loudly, with
 	// reduced defaults.
 	TierCommunity Tier = "community"
+	// TierUntrusted carries no valid signature at all. Nothing is known about
+	// where it came from — only that the bytes match the manifest describing
+	// them. It exists so a developer can run what they just built without
+	// generating a key first, and it is never reached by accident.
+	TierUntrusted Tier = "untrusted"
 )
 
 // Trust is the operator's configuration for what to accept.
@@ -38,6 +43,14 @@ type Trust struct {
 	// AllowCommunity permits publisher-only artifacts. Off by default: running
 	// unreviewed code from a stranger should be a decision, not a default.
 	AllowCommunity bool
+	// AllowUntrusted accepts an artifact with no valid signature.
+	//
+	// Deliberately NOT a setting. It is set for ONE install, by an operator who
+	// typed the loop's name to confirm, and it is not written to trust.json —
+	// which is the difference between "I am running the thing I just built" and
+	// "this machine now accepts anything". The global equivalent would be a
+	// switch nobody remembers flipping.
+	AllowUntrusted bool
 }
 
 // Verdict is the result of verifying an artifact.
@@ -70,9 +83,16 @@ func Verify(a *Artifact, t Trust) (*Verdict, error) {
 		return nil, fmt.Errorf("wasmloop: the module does not match its manifest\n  manifest says %s\n  bytes are     %s", want, got)
 	}
 
-	pub, err := decodeKey(m.Publisher)
-	if err != nil {
-		return nil, fmt.Errorf("wasmloop: publisher key: %w", err)
+	// An artifact with no publisher at all is the unsigned case, decided below
+	// once we know whether the operator asked for it. Anything that DOES name a
+	// publisher must name a usable one — a malformed key is a broken artifact,
+	// not an unsigned one, and must not quietly fall through to the softer path.
+	if strings.TrimSpace(m.Publisher) != "" {
+		if _, err := decodeKey(m.Publisher); err != nil {
+			return nil, fmt.Errorf("wasmloop: publisher key: %w", err)
+		}
+	} else if len(a.Signatures) > 0 {
+		return nil, fmt.Errorf("wasmloop: the artifact carries signatures but names no publisher")
 	}
 
 	revoked := map[string]bool{}
@@ -119,16 +139,23 @@ func Verify(a *Artifact, t Trust) (*Verdict, error) {
 	}
 
 	if !havePublisher {
-		return nil, fmt.Errorf("wasmloop: the artifact is not signed by its publisher")
+		// No signature at all. The digest check above still ran, so the bytes
+		// are the bytes this manifest describes — but nothing says who wrote
+		// them, so this needs a per-install decision and never a default.
+		if !t.AllowUntrusted {
+			return nil, fmt.Errorf("wasmloop: %s is not signed by its publisher\n"+
+				"  sign it with `karmax wloop sign`, or install it unsigned with --untrusted", m.Name)
+		}
+		return &Verdict{Tier: TierUntrusted}, nil
 	}
-	_ = pub
-
 	if registryKey != "" {
 		return &Verdict{Tier: TierRegistry, Publisher: m.Publisher, Registry: registryKey}, nil
 	}
-	if !t.AllowCommunity {
+	if !t.AllowCommunity && !t.AllowUntrusted {
 		return nil, fmt.Errorf("wasmloop: %s is signed by its publisher but not countersigned by a registry this instance trusts\n"+
-			"  install it anyway with --allow-community if you know who %s is", m.Name, short(m.Publisher))
+			"  install it anyway with --untrusted if you know who %s is,\n"+
+			"  or accept every publisher-signed loop with `karmax wloop trust --allow-community`",
+			m.Name, short(m.Publisher))
 	}
 	return &Verdict{Tier: TierCommunity, Publisher: m.Publisher}, nil
 }

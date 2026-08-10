@@ -63,7 +63,11 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 		}
 
 		subject := broker.LoopSubject(e.Name)
-		rt.broker.SetTrust(subject, broker.Registry)
+		// The tier decides, rather than every loop being treated as reviewed.
+		// Neither setting can walk around a grant — both are default-deny — but
+		// a loop nobody vouched for should not be described as reviewed in the
+		// audit trail its refusals land in.
+		rt.broker.SetTrust(subject, brokerTrustFor(e.Tier))
 
 		runner, err := wasmloop.NewRunner(ctx, a, wasmloop.Options{
 			Namespace: rt.loopNamespace(),
@@ -138,6 +142,18 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 		rt.log.Info("signed loop loaded", fields...)
 	}
 	return events
+}
+
+// brokerTrustFor maps an artifact's tier to how the Broker treats it.
+//
+// Never Ungated. That tier exists for code compiled into the daemon, which
+// already holds the daemon's authority; an installed artifact never does,
+// however it was signed.
+func brokerTrustFor(tier wasmloop.Tier) broker.Trust {
+	if tier == wasmloop.TierRegistry {
+		return broker.Registry
+	}
+	return broker.Community
 }
 
 // closeWasmLoops releases the runtimes on shutdown.

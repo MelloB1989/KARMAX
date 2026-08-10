@@ -200,7 +200,23 @@ func (in *Installer) Load(name string) (*Artifact, error) {
 	if err != nil {
 		return nil, fmt.Errorf("wasmloop: %s is in the lockfile but its file is missing: %w", name, err)
 	}
-	a, v, err := VerifyBytes(data, in.Trust)
+
+	// Verified against the tier this loop was APPROVED at, not against the
+	// instance's current default. The operator already made that decision, and
+	// it is recorded here; without this an --untrusted install would succeed
+	// and then refuse to start on the next boot, which is the worst of both.
+	//
+	// This is not a hole: the digest check below pins the bytes to exactly what
+	// was approved, so the relaxation applies to that artifact and no other.
+	trust := in.Trust
+	switch entry.Tier {
+	case TierUntrusted:
+		trust.AllowUntrusted = true
+	case TierCommunity:
+		trust.AllowCommunity = true
+	}
+
+	a, v, err := VerifyBytes(data, trust)
 	if err != nil {
 		return nil, err
 	}
