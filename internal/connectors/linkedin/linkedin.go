@@ -34,16 +34,17 @@ const apiVersion = "202405"
 
 // Connector is the operator's LinkedIn account.
 type Connector struct {
-	// Forbidden is what a post may never name, supplied by the runtime from the
-	// operator's own contacts and memory.
-	Forbidden func() []string
+	// Guard is the privacy check, supplied by the runtime — which is what knows
+	// who is in this operator's life. A factory rather than a value so the name
+	// list is rebuilt as contacts and memory change.
+	Guard func() social.Guard
 	// Limit is the rate limit and kill switch. Nil disables both, which is what
 	// the login-and-health registry gets — it never posts.
 	Limit *social.Limiter
 }
 
-func New(forbidden func() []string, limit *social.Limiter) *Connector {
-	return &Connector{Forbidden: forbidden, Limit: limit}
+func New(guard func() social.Guard, limit *social.Limiter) *Connector {
+	return &Connector{Guard: guard, Limit: limit}
 }
 
 func (c *Connector) Manifest() connectorkit.Manifest {
@@ -108,10 +109,11 @@ func (c *Connector) Sources() []connectorkit.EventSource { return nil }
 func (c *Connector) post(ctx context.Context, cr connectorkit.Credentials, in map[string]any) (any, error) {
 	text, _ := in["text"].(string)
 
-	guard := social.Guard{MaxRunes: maxRunes}
-	if c.Forbidden != nil {
-		guard.Forbidden = c.Forbidden()
+	var guard social.Guard
+	if c.Guard != nil {
+		guard = c.Guard()
 	}
+	guard.MaxRunes = maxRunes
 
 	return social.Publish("linkedin", guard, c.Limit, text, func() (string, string, error) {
 		urn, err := c.memberURN(ctx, cr)

@@ -28,7 +28,7 @@ func socialCmd() *cobra.Command {
 			"anything shaped like a credential. Refused drafts are logged too.",
 		RunE: func(cmd *cobra.Command, args []string) error { return socialStatus() },
 	}
-	cmd.AddCommand(socialOffCmd(), socialOnCmd(), socialLogCmd())
+	cmd.AddCommand(socialOffCmd(), socialOnCmd(), socialDryRunCmd(), socialLogCmd())
 	return cmd
 }
 
@@ -77,6 +77,52 @@ func socialOnCmd() *cobra.Command {
 	}
 }
 
+func socialDryRunCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "dry-run [on|off]",
+		Short: "Send drafts to your WhatsApp instead of publishing them",
+		Long: "With dry run on, every post KARMAX would make is sent to you on\n" +
+			"WhatsApp and nothing reaches X or LinkedIn. Drafts the privacy guard\n" +
+			"refuses are sent too, marked as refused — the ones it stopped are the\n" +
+			"most useful thing to see.\n\n" +
+			"Run it with no argument to see the current setting.",
+		Args:      cobra.MaximumNArgs(1),
+		ValidArgs: []string{"on", "off"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := openStore()
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			if len(args) == 0 {
+				if v, found, _ := db.KVGet("social", "dry_run"); found && v != "" {
+					fmt.Printf("Dry run is ON — %s\nDrafts go to your WhatsApp; nothing is published.\n", v)
+				} else {
+					fmt.Println("Dry run is off. Posts go to X and LinkedIn for real.")
+				}
+				return nil
+			}
+
+			switch strings.ToLower(args[0]) {
+			case "on":
+				if err := db.KVSet("social", "dry_run", "switched on manually", 0); err != nil {
+					return err
+				}
+				fmt.Println("Dry run is on. Drafts will arrive on your WhatsApp; nothing will be published.")
+			case "off":
+				if err := db.KVDelete("social", "dry_run"); err != nil {
+					return err
+				}
+				fmt.Println("Dry run is off. Posts now go out for real.")
+			default:
+				return fmt.Errorf("say `on` or `off`, not %q", args[0])
+			}
+			return nil
+		},
+	}
+}
+
 func socialLogCmd() *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
@@ -119,11 +165,13 @@ func socialStatus() error {
 	defer db.Close()
 
 	if reason, found, _ := db.KVGet("social", "posting_off"); found && reason != "" {
-		fmt.Printf("Posting is OFF — %s\n\n", reason)
+		fmt.Printf("Posting is OFF — %s\n", reason)
+	} else if reason, found, _ := db.KVGet("social", "dry_run"); found && reason != "" {
+		fmt.Printf("DRY RUN — %s\nDrafts go to your WhatsApp. Nothing reaches X or LinkedIn.\n", reason)
 	} else {
 		fmt.Println("Posting is on.")
-		fmt.Println()
 	}
+	fmt.Println()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "PLATFORM\tLAST 24H\tLAST POST")

@@ -28,6 +28,15 @@ type Guard struct {
 	Forbidden []string
 	// MaxRunes bounds the post for the platform.
 	MaxRunes int
+	// Allowed are words that are never a name, whatever the address book or
+	// memory says. The operator's escape hatch.
+	//
+	// Needed because the forbidden list is built from real data and real data
+	// contains ordinary words: a contact called "Hyd T Service", a memory
+	// subject called "automation". A built-in list of exceptions can only ever
+	// contain the ones already seen, and each miss costs a refused post that
+	// should have gone out.
+	Allowed []string
 }
 
 // Refusal explains why a draft cannot be published.
@@ -140,7 +149,7 @@ func (g Guard) namesIn(text string) []string {
 			continue
 		}
 		seenName[name] = true
-		for _, cand := range append([]string{name}, nameParts(name)...) {
+		for _, cand := range append([]string{name}, g.nameParts(name)...) {
 			if !wordIn(lower, cand) || seenHit[cand] {
 				continue
 			}
@@ -160,18 +169,31 @@ func (g Guard) namesIn(text string) []string {
 // Dishwash Service" and "Ram Call Whatsapp", and matching every word of those
 // makes "service" and "call" unpublishable. A guard that refuses an honest post
 // about a reporting service gets switched off, which protects nothing.
-func nameParts(name string) []string {
+func (g Guard) nameParts(name string) []string {
 	words := strings.Fields(name)
 	if len(words) < 2 {
 		return nil
 	}
 	var out []string
 	for _, w := range words {
-		if len([]rune(w)) >= 4 && !generic[w] {
+		if len([]rune(w)) >= 4 && !g.ordinary(w) {
 			out = append(out, w)
 		}
 	}
 	return out
+}
+
+// ordinary reports whether a word names nobody.
+func (g Guard) ordinary(word string) bool {
+	if generic[word] {
+		return true
+	}
+	for _, a := range g.Allowed {
+		if strings.EqualFold(strings.TrimSpace(a), word) {
+			return true
+		}
+	}
+	return false
 }
 
 // Generic reports whether a word names nobody — a common noun that turns up in
@@ -198,6 +220,14 @@ var generic = map[string]bool{
 	"uber": true, "swiggy": true, "zomato": true, "gmail": true,
 	"india": true, "main": true, "road": true, "friend": true, "boss": true,
 	"brother": true, "sister": true, "uncle": true, "aunty": true,
+	// Memory files things under plain topic names, and these are topics
+	// somebody who builds software would obviously post about.
+	"automation": true, "harness": true, "memory": true, "gateway": true,
+	"sandbox": true, "pipeline": true, "runtime": true, "workflow": true,
+	"agent": true, "agents": true, "model": true, "models": true,
+	"security": true, "audit": true, "report": true, "reports": true,
+	"alerts": true, "alert": true, "digest": true, "briefing": true,
+	"deploy": true, "release": true, "backlog": true, "roadmap": true,
 	// Memory files itself under plain topic names, and these are topics anybody
 	// might post about.
 	"funding": true, "drive": true, "events": true, "context": true,

@@ -32,6 +32,18 @@ type Limiter struct {
 	// Disabled is the kill switch, read at post time rather than at startup so
 	// turning it off takes effect on the next post rather than the next restart.
 	Disabled func() (bool, string)
+
+	// DryRun diverts every post to the operator instead of publishing it.
+	//
+	// Here rather than in the workflow on purpose. A dry run implemented by the
+	// caller is a dry run that the next caller forgets, and the whole value of
+	// this one is being able to watch what KARMAX would have said for a week
+	// without a single word of it reaching anybody.
+	DryRun func() (bool, string)
+
+	// Preview delivers a draft to the operator. Required when DryRun is on;
+	// without it a dry run refuses rather than silently publishing.
+	Preview func(platform, text string, verdict error) error
 }
 
 // DefaultPerDay and DefaultMinGap are what an operator gets without saying
@@ -88,6 +100,14 @@ func (l *Limiter) Allow(platform string) error {
 		}
 	}
 	return nil
+}
+
+// dryRun reports whether drafts go to the operator instead of the platform.
+func (l *Limiter) dryRun() (bool, string) {
+	if l == nil || l.DryRun == nil {
+		return false, ""
+	}
+	return l.DryRun()
 }
 
 // Record writes the outcome, whatever it was.
