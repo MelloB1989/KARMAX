@@ -24,6 +24,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -368,6 +369,33 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// regular loop — visible, disableable, and manually triggerable — not a
 	// hidden goroutine. It needs the memory managers, so the runtime registers
 	// it here rather than the marketplace hosting it.
+	// Integration health, on a timer.
+	//
+	// A dead credential is otherwise found by whatever depended on it failing —
+	// an expired Google token surfaced as a loop erroring at 4am, which is both
+	// the worst time and the least informative place to learn it. Checked here
+	// so `karmax integrations` and the app can say so first.
+	integrationReg := integrations.Build(cfg, s)
+	loopkit.Register(loopkit.Loop{
+		Name: "integration-health",
+		Description: "Checks every connected integration's credentials against the provider, " +
+			"so an expired token is visible before something depends on it.",
+		Schedule: loopkit.Every("30m"),
+		Run: func(ctx context.Context, k loopkit.Kit) error {
+			var broken []string
+			for _, st := range integrationReg.CheckAll(ctx) {
+				if st.Configured && !st.Healthy {
+					broken = append(broken, st.ID+" ("+st.Error+")")
+				}
+			}
+			if len(broken) > 0 {
+				k.Logf("integration-health: %d not working — %s",
+					len(broken), strings.Join(broken, "; "))
+			}
+			return nil
+		},
+	})
+
 	// Short-term memory upkeep: drop KV entries whose TTL has passed. Reads
 	// already hide expired rows, so this only keeps the table from growing.
 	loopkit.Register(loopkit.Loop{

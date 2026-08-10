@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -68,6 +69,13 @@ func (s *Store) Credential(connector string) (*Credential, error) {
 SELECT connector, config, access_token, refresh_token, expires_at, enabled, updated_at
 FROM connector_credentials WHERE connector = ?`, connector).
 		Scan(&c.Connector, &cfg, &c.AccessToken, &c.RefreshToken, &expires, &c.Enabled, &c.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Nothing stored is the normal state of an integration nobody has
+		// logged into yet, not a failure. Returning ErrNoRows made every
+		// unconfigured integration report a database error instead of "not
+		// connected", and hid a real read failure among them.
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
