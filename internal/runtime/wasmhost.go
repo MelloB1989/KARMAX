@@ -12,8 +12,11 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/broker"
+	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/wasmloop"
+	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
@@ -25,18 +28,25 @@ import (
 // without the WASM tier knowing any of that exists — the same trick recipes
 // use.
 
-// startWasmLoops loads every verified loop from the lockfile.
-func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) {
+// startWasmLoops loads every verified loop from the lockfile and wires its
+// triggers, returning the event kinds any of them listen on.
+//
+// Wiring the triggers here is the point. Registering a loop in loopkitLoops
+// only makes `karmax loops run` able to find it by name — a scheduled loop also
+// needs a scheduler job, and a webhook loop a route. Without that they load,
+// report themselves loaded, and never fire, which reads exactly like working.
+func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][]string {
+	events := map[bus.EventKind][]string{}
 	dir := wasmloop.Dir()
 	in := &wasmloop.Installer{Dir: dir, Trust: rt.loopTrust()}
 
 	entries, err := in.Installed()
 	if err != nil {
 		rt.log.Warn("could not read the loop lockfile", zap.Error(err))
-		return
+		return events
 	}
 	if len(entries) == 0 {
-		return
+		return events
 	}
 
 	for _, e := range entries {
@@ -81,10 +91,45 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) {
 		}
 		rt.loopkitLoops[e.Name] = l
 
+		triggers := []string{"manual"}
+		if a.Manifest.Schedule != "" {
+			// The same job id shape the compiled-in loops use, so the existing
+			// scheduled-job consumer dispatches it without knowing the tier.
+			if err := rt.scheduler.AddJob(scheduler.ScheduledJob{
+				ID: "loopkit:" + e.Name, Name: "loopkit:" + e.Name,
+				Cron: a.Manifest.Schedule, AgentID: "",
+				Payload: map[string]any{"loopkit": e.Name}, Enabled: true,
+			}); err != nil {
+				rt.log.Error("a signed loop declared a schedule that is not valid",
+					zap.String("loop", e.Name), zap.String("schedule", a.Manifest.Schedule), zap.Error(err))
+			} else {
+				triggers = append(triggers, "schedule("+a.Manifest.Schedule+")")
+			}
+		}
+		if a.Manifest.Webhook != "" {
+			if err := rt.webhooks.AddRoute(webhook.WebhookRoute{
+				Path: a.Manifest.Webhook, Method: "*", AgentID: "",
+			}); err != nil {
+				rt.log.Error("could not register a signed loop's webhook",
+					zap.String("loop", e.Name), zap.String("route", a.Manifest.Webhook), zap.Error(err))
+			} else {
+				rt.loopWebhooks[a.Manifest.Webhook] = e.Name
+				triggers = append(triggers, "webhook("+a.Manifest.Webhook+")")
+			}
+		}
+		for _, ev := range a.Manifest.Events {
+			if ev = strings.TrimSpace(ev); ev != "" {
+				events[bus.EventKind(ev)] = append(events[bus.EventKind(ev)], e.Name)
+				triggers = append(triggers, "event("+ev+")")
+			}
+		}
+
 		rt.log.Info("signed loop loaded",
 			zap.String("loop", e.Name), zap.String("version", e.Version),
-			zap.String("trust", string(e.Tier)), zap.Strings("host", a.Manifest.Host))
+			zap.String("trust", string(e.Tier)), zap.Strings("triggers", triggers),
+			zap.Strings("host", a.Manifest.Host))
 	}
+	return events
 }
 
 // closeWasmLoops releases the runtimes on shutdown.
