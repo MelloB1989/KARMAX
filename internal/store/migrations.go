@@ -458,6 +458,30 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_loop_steps_age ON loop_steps(completed_at)`,
 	// The execution survives across attempts; the run id does not.
 	`ALTER TABLE loop_state ADD COLUMN execution_id TEXT NOT NULL DEFAULT ''`,
+
+	// 022_capabilities — what each subject may do, and what it has used.
+	`CREATE TABLE IF NOT EXISTS capability_grants (
+		subject    TEXT NOT NULL,
+		capability TEXT NOT NULL,
+		value      TEXT NOT NULL,
+		granted_by TEXT NOT NULL DEFAULT 'operator',
+		granted_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		expires_at DATETIME,
+		PRIMARY KEY (subject, capability, value)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_grants_subject ON capability_grants(subject, capability)`,
+
+	// Aggregated per day: a row per tool call would be a disk-fill bug.
+	`CREATE TABLE IF NOT EXISTS capability_meter (
+		subject    TEXT NOT NULL,
+		capability TEXT NOT NULL,
+		day        TEXT NOT NULL,
+		allowed    INTEGER NOT NULL DEFAULT 0,
+		refused    INTEGER NOT NULL DEFAULT 0,
+		units      INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (subject, capability, day)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_meter_day ON capability_meter(day DESC)`,
 }
 
 func (s *Store) migrate() error {

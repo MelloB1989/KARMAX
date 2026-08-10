@@ -262,6 +262,11 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			if _, err := rt.store.PruneLoopSteps(time.Now().AddDate(0, 0, -7)); err != nil {
 				rt.log.Warn("could not prune loop checkpoints", zap.Error(err))
 			}
+			// 90 days of metering: long enough to bill against, short enough
+			// not to grow forever.
+			if _, err := rt.store.PruneMeter(time.Now().AddDate(0, 0, -90)); err != nil {
+				rt.log.Warn("could not prune the capability meter", zap.Error(err))
+			}
 		case <-tick.C:
 			due, err := rt.store.DueLoopRetries(time.Now())
 			if err != nil {
