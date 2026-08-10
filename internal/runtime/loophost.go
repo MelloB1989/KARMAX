@@ -119,6 +119,25 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 			return nil
 		})
 
+	// Timer fires. A timer names the loop that set it, so it wakes that loop
+	// and no other — unlike a plain event kind, which fans out.
+	rt.bus.Consume(ctx, bus.SubLoopTimer, []bus.EventKind{bus.EventTimerFired},
+		func(_ context.Context, evt bus.Event) error {
+			name, _ := evt.Payload["loop"].(string)
+			if name == "" {
+				return nil
+			}
+			l, found := rt.loopkitLoops[name]
+			if !found {
+				// Uninstalled between arming and firing; nothing to wake.
+				return nil
+			}
+			go rt.runLoopDurable(ctx, l, loopkit.Trigger{
+				Kind: loopkit.TriggerTimer, Payload: evt.Payload,
+			}, 1)
+			return nil
+		})
+
 	// Bus-event fires (only subscribe to the kinds some loop listens on).
 	if len(loopEvents) > 0 {
 		kinds := make([]bus.EventKind, 0, len(loopEvents))
@@ -192,6 +211,12 @@ func (rt *KarmaxRuntime) pruneStaleLoopJobs() {
 				rt.log.Warn("failed to prune stale loop job", zap.String("job", j.ID), zap.Error(err))
 			} else {
 				rt.log.Info("pruned stale loop job", zap.String("job", j.ID))
+			}
+			// A loop that is gone must not still be woken by its own timers.
+			name := j.ID[strings.Index(j.ID, ":")+1:]
+			if n, err := rt.store.CancelLoopTimers(name); err == nil && n > 0 {
+				rt.log.Info("disarmed timers for a removed loop",
+					zap.String("loop", name), zap.Int64("count", n))
 			}
 		}
 	}
@@ -555,6 +580,52 @@ func (k *loopKit) SaveChatSummary(rec loopkit.ChatSummaryRecord) error {
 
 // Config reads an install-time value from the environment, namespaced per loop:
 // KARMAX_LOOP_<LOOPNAME>_<KEY> (non-alnum chars uppercased to '_').
+// timerID namespaces a loop's timer ids so two loops cannot collide on "daily".
+func (k *loopKit) timerID(id string) string {
+	return "loop:" + k.loopName + ":" + strings.TrimSpace(id)
+}
+
+func (k *loopKit) After(id string, d time.Duration, payload map[string]any) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("after: a timer needs an id")
+	}
+	if d < 0 {
+		return fmt.Errorf("after: %s is in the past", d)
+	}
+	return k.rt.clock.After(store.Timer{
+		ID:      k.timerID(id),
+		Kind:    string(bus.EventTimerFired),
+		AgentID: k.agentID,
+		Loop:    k.loopName,
+		Payload: payload,
+	}, d)
+}
+
+func (k *loopKit) CancelAfter(id string) error {
+	return k.rt.clock.Cancel(k.timerID(id))
+}
+
+func (k *loopKit) Sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	// Refused rather than silently truncated by the run timeout: a loop that
+	// asked to wait an hour and was cancelled at twelve minutes would look like
+	// it had waited, and act on it.
+	if d >= loopRunTimeout {
+		return fmt.Errorf("sleep: %s is longer than a run can live (%s) — use After for waits this long",
+			d, loopRunTimeout)
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 func (k *loopKit) Config(key string) string {
 	return os.Getenv("KARMAX_LOOP_" + envSanitize(k.loopName) + "_" + envSanitize(key))
 }

@@ -119,6 +119,8 @@ const (
 	TriggerWebhook  = "webhook"
 	TriggerEvent    = "event"
 	TriggerManual   = "manual"
+	// TriggerTimer is a durable timer this loop set with Kit.After coming due.
+	TriggerTimer = "timer"
 )
 
 // Trigger describes what caused the current run and carries any payload (e.g.

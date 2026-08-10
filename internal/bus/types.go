@@ -22,6 +22,7 @@ const (
 	EventCommsMessage   EventKind = "comms.message"
 	EventCommsSent      EventKind = "comms.sent"
 	EventSystemCritical EventKind = "system.critical"
+	EventTimerFired     EventKind = "timer.fired"
 )
 
 type Event struct {
@@ -52,6 +53,7 @@ const (
 	SubLoopSchedule = "loops.schedule"
 	SubLoopEvent    = "loops.event"
 	SubLoopWebhook  = "loops.webhook"
+	SubLoopTimer    = "loops.timer"
 	SubAgentRouter  = "agents.router"
 	SubCritical     = "alerts.critical"
 )
