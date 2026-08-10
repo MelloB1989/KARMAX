@@ -148,8 +148,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// posting rather than trusted to whatever wrote the draft.
 	forbidden := newForbiddenNames(s, log)
 	socialLimit := newSocialLimiter(s)
-	connHost.Register(xconn.New(forbidden.List, socialLimit))
-	connHost.Register(linkedinconn.New(forbidden.List, socialLimit))
+	// Unconditional: their tools exist before either account is connected, so a
+	// dry run can show what KARMAX would say without an X or LinkedIn account
+	// existing yet. Publishing for real still needs real credentials.
+	connHost.RegisterUnconditional(xconn.New(forbidden.Guard, socialLimit))
+	connHost.RegisterUnconditional(linkedinconn.New(forbidden.Guard, socialLimit))
 	startedAt := time.Now()
 
 	// Set provider env vars from config
@@ -286,6 +289,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			log.Warn("unknown comms channel type", zap.String("type", chCfg.Type))
 		}
 	}
+
+	// Now that the channel exists, the dry run has somewhere to send a draft.
+	socialLimit.Preview = socialPreview(commsMgr, waTarget, log)
 
 	// Operator identity: the operator's own chats (commands to KARMAX) vs
 	// monitored third-party chats (proactive proxy). Comma-separated

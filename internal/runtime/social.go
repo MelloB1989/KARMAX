@@ -2,12 +2,14 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/social"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -166,6 +168,20 @@ func subjectOf(path string) string {
 	return name
 }
 
+// Guard builds the privacy check from what KARMAX knows right now.
+//
+// The allow list is the operator's escape hatch, and it exists because the
+// forbidden list is built from real data: a contact called "Hyd T Service"
+// makes "service" a name, a memory subject called "automation" makes
+// "automation" one. Each of those costs a post that should have gone out, and
+// the operator can see exactly which word did it in `karmax social log`.
+func (f *forbiddenNames) Guard() social.Guard {
+	return social.Guard{
+		Forbidden: f.List(),
+		Allowed:   splitCSV(os.Getenv("KARMAX_SOCIAL_ALLOW")),
+	}
+}
+
 // socialRecorder adapts the store to what the limiter needs.
 type socialRecorder struct{ db *store.Store }
 
@@ -183,10 +199,11 @@ func (r socialRecorder) LastPostAt(platform string) (time.Time, error) {
 	return r.db.LastPostAt(platform)
 }
 
-// socialKillSwitch is the group and key the operator's off switch lives at.
+// Where the operator's switches live.
 const (
 	socialKillGroup = "social"
 	socialKillKey   = "posting_off"
+	socialDryKey    = "dry_run"
 )
 
 // newSocialLimiter builds the rate limit and the off switch.
@@ -208,6 +225,15 @@ func newSocialLimiter(db *store.Store) *social.Limiter {
 		Rec:    socialRecorder{db: db},
 		PerDay: perDay,
 		MinGap: minGap,
+		DryRun: func() (bool, string) {
+			if v := strings.ToLower(os.Getenv("KARMAX_SOCIAL_DRY_RUN")); v == "true" || v == "1" || v == "on" {
+				return true, "dry run (KARMAX_SOCIAL_DRY_RUN)"
+			}
+			if v, found, err := db.KVGet(socialKillGroup, socialDryKey); err == nil && found && v != "" {
+				return true, "dry run — " + v
+			}
+			return false, ""
+		},
 		Disabled: func() (bool, string) {
 			if v := strings.ToLower(os.Getenv("KARMAX_SOCIAL_POSTING")); v == "off" || v == "false" || v == "0" {
 				return true, "posting is switched off by KARMAX_SOCIAL_POSTING"
@@ -217,5 +243,41 @@ func newSocialLimiter(db *store.Store) *social.Limiter {
 			}
 			return false, ""
 		},
+	}
+}
+
+// socialPreview delivers a draft to the operator's own WhatsApp.
+//
+// The destination is the configured channel's target — the operator's own
+// number — resolved here rather than passed in. That is what keeps a dry run
+// from being a send capability: the loop asks to publish, the host decides that
+// today publishing means "message the operator", and at no point can the loop
+// name who receives it. daily-post still has no way to message anybody.
+func socialPreview(mgr *comms.Manager, target string, log *zap.Logger) func(string, string, error) error {
+	return func(platform, text string, verdict error) error {
+		channel, ok := mgr.FindChannelIDByType("whatsapp")
+		if !ok {
+			return fmt.Errorf("no WhatsApp channel is configured to send the draft to")
+		}
+		if strings.TrimSpace(target) == "" {
+			return fmt.Errorf("no WhatsApp target is configured (set WHATSAPP_TARGET)")
+		}
+
+		head := "✅ would post to " + platform
+		if verdict != nil {
+			head = "🚫 refused for " + platform
+		}
+		body := head + "\n\n" + text
+		if verdict != nil {
+			body += "\n\n— " + verdict.Error()
+		}
+		body += "\n\n(dry run — nothing was published. `karmax social dry-run off` to go live.)"
+
+		if err := mgr.Send(channel, target, body); err != nil {
+			return err
+		}
+		log.Info("sent a social draft to the operator",
+			zap.String("platform", platform), zap.Bool("would_publish", verdict == nil))
+		return nil
 	}
 }

@@ -25,24 +25,24 @@ const maxRunes = 280
 
 // Connector is the operator's X account.
 type Connector struct {
-	// Forbidden is what a post may never name. Supplied by the runtime from the
-	// operator's own contacts and projects, because a generic list does not know
-	// who is in somebody's life.
-	Forbidden func() []string
+	// Guard is the privacy check, supplied by the runtime — which is what knows
+	// who is in this operator's life. A factory rather than a value so the name
+	// list is rebuilt as contacts and memory change.
+	Guard func() social.Guard
 	// Limit is the rate limit and kill switch. Nil disables both, which is what
 	// the login-and-health registry gets — it never posts.
 	Limit *social.Limiter
 }
 
-func New(forbidden func() []string, limit *social.Limiter) *Connector {
-	return &Connector{Forbidden: forbidden, Limit: limit}
+func New(guard func() social.Guard, limit *social.Limiter) *Connector {
+	return &Connector{Guard: guard, Limit: limit}
 }
 
 func (c *Connector) Manifest() connectorkit.Manifest {
 	return connectorkit.Manifest{
-		ID:          "x",
-		Name:        "X",
-		Description: "Post to X as you. Every post passes the privacy guard first.",
+		ID:           "x",
+		Name:         "X",
+		Description:  "Post to X as you. Every post passes the privacy guard first.",
 		Capabilities: []string{"http:api.x.com", "http:api.twitter.com"},
 		Config: []connectorkit.ConfigField{
 			{Key: "api_key", Description: "Consumer key, from the app's Keys and tokens page", Required: true, Secret: true},
@@ -94,10 +94,11 @@ func (c *Connector) post(ctx context.Context, cr connectorkit.Credentials, in ma
 	// Checked HERE, at the last point before it becomes public, rather than
 	// wherever the draft was written. A guard at the call site is a guard that
 	// the next caller forgets.
-	guard := social.Guard{MaxRunes: maxRunes}
-	if c.Forbidden != nil {
-		guard.Forbidden = c.Forbidden()
+	var guard social.Guard
+	if c.Guard != nil {
+		guard = c.Guard()
 	}
+	guard.MaxRunes = maxRunes
 
 	return social.Publish("x", guard, c.Limit, text, func() (string, string, error) {
 		client, err := clientFor(cr)

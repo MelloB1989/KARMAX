@@ -35,6 +35,9 @@ type Host struct {
 	// refresh renews an expiring OAuth token before it is used. Nil until the
 	// runtime supplies one.
 	refresh Refresher
+
+	// unconditional are connectors whose tools exist without credentials.
+	unconditional map[string]bool
 }
 
 func NewHost(s *store.Store, b *bus.Log, brk *broker.Broker, log *zap.Logger) *Host {
@@ -107,7 +110,16 @@ func (h *Host) credentials(id string) (connectorkit.Credentials, error) {
 	if err != nil {
 		return connectorkit.Credentials{}, fmt.Errorf("connector %s is not configured: %w", id, err)
 	}
-	if !rec.Enabled {
+	// An unconditional connector may run with nothing stored. What it can
+	// actually do without credentials is its own business — it is the one that
+	// knows whether this particular call needs them.
+	if rec == nil {
+		if h.unconditional[id] {
+			return connectorkit.Credentials{}, nil
+		}
+		return connectorkit.Credentials{}, fmt.Errorf("connector %s is not configured", id)
+	}
+	if !rec.Enabled && !h.unconditional[id] {
 		return connectorkit.Credentials{}, fmt.Errorf("connector %s is configured but not enabled", id)
 	}
 	cr := connectorkit.Credentials{Config: rec.Config, AccessToken: rec.AccessToken}
@@ -117,13 +129,53 @@ func (h *Host) credentials(id string) (connectorkit.Credentials, error) {
 	return cr, nil
 }
 
+// RegisterUnconditional registers a connector whose tools exist whether or not
+// it has credentials.
+//
+// For connectors with a useful answer when unconfigured. The social ones have
+// one: with dry run on they deliver a draft to the operator and never touch the
+// platform, so requiring an X account before you can preview what KARMAX would
+// say gets it exactly backwards — previewing is what you do BEFORE connecting.
+//
+// Not a way around configuration. A real post still needs real credentials, and
+// the connector says so plainly when it lacks them.
+func (h *Host) RegisterUnconditional(c connectorkit.Connector) {
+	h.Register(c)
+	if h.unconditional == nil {
+		h.unconditional = map[string]bool{}
+	}
+	id := c.Manifest().ID
+	h.unconditional[id] = true
+	// Grants normally land when the operator enables a connector. A connector
+	// that works without being enabled has to be granted here instead, or its
+	// tools resolve and are then refused by the Broker — which reads as a bug in
+	// the sandbox rather than as a missing grant.
+	if err := h.GrantFromManifest(id); err != nil {
+		h.log.Error("could not grant an unconditional connector its own tools",
+			zap.String("connector", id), zap.Error(err))
+	}
+}
+
 // Tools adapts every enabled connector's tools into KARMAX tools.
 func (h *Host) Tools() []tools.Tool {
+	seen := map[string]bool{}
 	var out []tools.Tool
-	for _, c := range h.Enabled() {
+	add := func(c connectorkit.Connector) {
 		id := c.Manifest().ID
+		if seen[id] {
+			return
+		}
+		seen[id] = true
 		for _, t := range c.Tools() {
 			out = append(out, &connectorTool{host: h, connector: id, tool: t})
+		}
+	}
+	for _, c := range h.Enabled() {
+		add(c)
+	}
+	for id := range h.unconditional {
+		if c, ok := h.Get(id); ok {
+			add(c)
 		}
 	}
 	return out
