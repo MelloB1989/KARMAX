@@ -57,10 +57,15 @@ run at a frequency where it does not.
 
 1. Measured on amd64 with the optimising backend. arm64 has the same backend;
    exotic arches fall back to the interpreter and would need re-measuring.
-2. This spike wires `wasi_snapshot_preview1`, which the plan says the real
-   implementation must **not** do — a Go-compiled guest needs it to initialise.
-   A guest built for a default-deny host surface would be smaller and faster
-   still, so this is another way the number above is a ceiling.
+2. ~~This spike wires `wasi_snapshot_preview1`, which the plan says the real
+   implementation must **not** do.~~ **Resolved in `internal/wasmloop`.** A
+   Go-compiled guest cannot initialise without preview1, so the shipped host
+   instantiates it too — but the ambient authority comes from wazero's
+   `ModuleConfig`, not from WASI's presence. With no FS, no environment and no
+   args configured, `path_open` has nothing to open and `environ_get` returns
+   empty; sockets are not in preview1 at all. There is a guest in
+   `internal/wasmloop/testdata` that tries to escape and a test that fails on
+   the word BREACH.
 3. The 20 MB memory limit, egress allowlist, and interruption via context
    cancellation were not exercised here; they are correctness features, not
    latency ones, but they should get their own tests when built.
