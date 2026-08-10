@@ -482,6 +482,24 @@ var migrations = []string{
 		PRIMARY KEY (subject, capability, day)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_meter_day ON capability_meter(day DESC)`,
+
+	// 023_connectors — KARMAX owns integration credentials, not the connectors.
+	`CREATE TABLE IF NOT EXISTS connector_credentials (
+		connector     TEXT PRIMARY KEY,
+		config        TEXT NOT NULL DEFAULT '{}',
+		access_token  TEXT NOT NULL DEFAULT '',
+		refresh_token TEXT NOT NULL DEFAULT '',
+		expires_at    DATETIME,
+		enabled       INTEGER NOT NULL DEFAULT 0,
+		updated_at    DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE TABLE IF NOT EXISTS connector_cursors (
+		connector  TEXT NOT NULL,
+		source     TEXT NOT NULL,
+		cursor     TEXT NOT NULL DEFAULT '',
+		updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (connector, source)
+	)`,
 }
 
 func (s *Store) migrate() error {

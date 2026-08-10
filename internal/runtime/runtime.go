@@ -21,6 +21,8 @@ import (
 	"github.com/MelloB1989/karmax/internal/comms/telegram"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/connectors"
+	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memmerge"
@@ -55,6 +57,9 @@ type KarmaxRuntime struct {
 
 	// broker decides what each loop, peer and connector may do.
 	broker *broker.Broker
+
+	// connectors are the integrations the operator has enabled.
+	connectors *connectors.Host
 
 	// clock fires durable timers into the log — "continue on Thursday".
 	clock *clock.Clock
@@ -95,6 +100,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	b := bus.NewLog(s, store.DefaultWorkspace, log)
 	clk := clock.New(s, b, store.DefaultWorkspace, log)
 	brk := broker.New(s, log)
+
+	// Connectors are registered here and do nothing until the operator supplies
+	// credentials and enables them.
+	connHost := connectors.NewHost(s, b, brk, log)
+	connHost.Register(githubconn.New())
 	startedAt := time.Now()
 
 	// Set provider env vars from config
@@ -237,6 +247,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	toolReg := tools.NewRegistry()
 	registerBuiltinTools(toolReg)
+
+	// Enabled connectors contribute tools indistinguishable from the built-ins.
+	for _, t := range connHost.Tools() {
+		toolReg.Register(t)
+	}
 
 	// Register new builtin tools
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
@@ -601,6 +616,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 	}
 
+	connHost.MountWebhooks(wh.AddHandler)
+
 	for _, route := range cfg.Webhooks.Routes {
 		wh.AddRoute(webhook.WebhookRoute{
 			Path:            route.Path,
@@ -651,6 +668,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		bus:         b,
 		clock:       clk,
 		broker:      brk,
+		connectors:  connHost,
 		routedKinds: routedKinds,
 		mesh:        meshNode,
 		startedAt:   startedAt,
@@ -668,6 +686,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
 	rt.clock.Start(ctx)
+	rt.connectors.StartPollers(ctx)
 	rt.startAgentRouter(ctx)
 	rt.wireMesh()
 	rt.startCriticalAlertLoop(ctx)

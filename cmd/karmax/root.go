@@ -36,6 +36,7 @@ func newRootCmd() *cobra.Command {
 		newMemoryCmd(),
 		meshCmd(),
 		capsCmd(),
+		connectorsCmd(),
 		migrateCmd(),
 		newToolCmd(),
 		newMCPCmd(),
