@@ -115,6 +115,52 @@ var untrustedPrefixes = []string{
 	"whatsapp_search", "whatsapp_list_chats", "whatsapp_get_chat",
 	"whatsapp_message", "whatsapp_download", "whatsapp_list_contacts",
 	"whatsapp_get_contact", "whatsapp_resolve",
+	// Delivery records carry the webhook BODY, which is the incoming message
+	// itself; the log carries message previews. Both look like diagnostics and
+	// are other people's words.
+	"whatsapp_webhook_deliveries", "whatsapp_logs",
+	// Group names, topics and participant lists are written by whoever runs the
+	// group. A group subject is a free-text field somebody else controls, which
+	// makes it a place to put instructions and hope something reads them.
+	"whatsapp_list_groups", "whatsapp_group_info",
+}
+
+// ownOutputPrefixes name the tools whose output KARMAX or wacli produced.
+//
+// Listed explicitly rather than assumed, so that TestEveryWacliToolIsClassified
+// can fail when a new tool belongs to neither list. Relying on somebody
+// noticing an unguarded tool in a library upgrade is how a message reaches a
+// model as instructions.
+var ownOutputPrefixes = []string{
+	"whatsapp_send", "whatsapp_bulk_send", "whatsapp_edit", "whatsapp_delete",
+	"whatsapp_status", "whatsapp_sync", "whatsapp_set_", "whatsapp_create_",
+	"whatsapp_test_", "whatsapp_replay_", "whatsapp_list_triggers",
+	"whatsapp_list_webhooks", "whatsapp_place_call", "whatsapp_answer_call",
+	"whatsapp_end_call", "whatsapp_reject_call", "whatsapp_call_status",
+	"whatsapp_list_calls",
+	// Group ACTIONS and their confirmations are ours; the group's own text is
+	// not, and is guarded above.
+	"whatsapp_group_participants", "whatsapp_rename_group",
+	"whatsapp_group_invite_link", "whatsapp_join_group", "whatsapp_leave_group",
+	"whatsapp_check_numbers",
+}
+
+// Classify reports how a tool's output is treated, and whether anybody decided.
+//
+// Exported for the test that guards a library upgrade: an unclassified tool is
+// a decision nobody has made yet, not a safe default.
+func Classify(name string) (guarded, known bool) {
+	for _, p := range untrustedPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true, true
+		}
+	}
+	for _, p := range ownOutputPrefixes {
+		if strings.HasPrefix(name, p) {
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // GuardUntrusted marks the tools in a set whose output is other people's words.
@@ -122,13 +168,7 @@ func GuardUntrusted(in []tools.Tool, source string) []tools.Tool {
 	out := make([]tools.Tool, 0, len(in))
 	for _, t := range in {
 		name := t.Manifest().Name
-		guarded := false
-		for _, p := range untrustedPrefixes {
-			if strings.HasPrefix(name, p) {
-				guarded = true
-				break
-			}
-		}
+		guarded, _ := Classify(name)
 		if guarded {
 			out = append(out, Guarded(t, source))
 			continue
