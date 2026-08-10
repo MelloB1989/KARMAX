@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/clock"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/comms/discord"
 	"github.com/MelloB1989/karmax/internal/comms/slack"
@@ -50,6 +51,9 @@ type KarmaxRuntime struct {
 	comms     *comms.Manager
 	api       *api.Server
 
+	// clock fires durable timers into the log — "continue on Thursday".
+	clock *clock.Clock
+
 	// routedKinds are the event kinds that reach agent inboxes, computed at
 	// construction and consumed once the runtime starts.
 	routedKinds []bus.EventKind
@@ -84,6 +88,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// One workspace per daemon: multi-tenant packaging runs a separate KARMAX
 	// per person, so the partition exists in the schema rather than in config.
 	b := bus.NewLog(s, store.DefaultWorkspace, log)
+	clk := clock.New(s, b, store.DefaultWorkspace, log)
 	startedAt := time.Now()
 
 	// Set provider env vars from config
@@ -637,6 +642,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		log:         log,
 		store:       s,
 		bus:         b,
+		clock:       clk,
 		routedKinds: routedKinds,
 		mesh:        meshNode,
 		startedAt:   startedAt,
@@ -653,6 +659,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
+	rt.clock.Start(ctx)
 	rt.startAgentRouter(ctx)
 	rt.startCriticalAlertLoop(ctx)
 	rt.startDeadLetterAlerts()

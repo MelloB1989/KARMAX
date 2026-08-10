@@ -92,6 +92,31 @@ type Kit interface {
 	// Logf writes a line to KARMAX's logs, prefixed with the loop's name.
 	Logf(format string, args ...any)
 
+	// --- Durable time --------------------------------------------------------
+	//
+	// After schedules this loop to run again after d, with payload delivered as
+	// the trigger. The timer is persisted: it fires across restarts, crashes,
+	// and downtime longer than the wait itself. This is how a loop says "check
+	// back on Thursday" without a cron entry that has to re-derive where it got
+	// to.
+	//
+	// id is the caller's, scoped to this loop. Calling After again with the same
+	// id moves the deadline rather than arming a second timer, so a loop that
+	// re-arms on every run does not accumulate them.
+	After(id string, d time.Duration, payload map[string]any) error
+
+	// CancelAfter disarms a timer this loop set. Cancelling one that does not
+	// exist is not an error.
+	CancelAfter(id string) error
+
+	// Sleep waits for d and returns. It is an ordinary in-process wait, bounded
+	// by the run timeout — use it for pauses measured in seconds.
+	//
+	// For anything longer, use After: a run cannot outlive the process, so a
+	// Sleep of hours is a Sleep that a restart cancels. Sleep refuses a duration
+	// it could not honour rather than pretending.
+	Sleep(ctx context.Context, d time.Duration) error
+
 	// RunLoop triggers another registered loop by name (manual trigger). Lets a
 	// loop hand work to a dedicated loop rather than doing it inline.
 	RunLoop(name string) error

@@ -430,6 +430,21 @@ var migrations = []string{
 	 SELECT id, 'default', kind, agent_id,
 	        COALESCE(NULLIF(payload, ''), '{}'), COALESCE(NULLIF(meta, ''), '{}'), created_at
 	 FROM events ORDER BY created_at ASC`,
+
+	// 020_timers — "wait three days, then continue" as durable state.
+	`CREATE TABLE IF NOT EXISTS timers (
+		id         TEXT PRIMARY KEY,
+		workspace  TEXT NOT NULL DEFAULT 'default',
+		fire_at    DATETIME NOT NULL,
+		kind       TEXT NOT NULL,
+		agent_id   TEXT,
+		loop       TEXT,
+		payload    TEXT NOT NULL DEFAULT '{}',
+		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		fired_at   DATETIME
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_timers_due ON timers(workspace, fired_at, fire_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_timers_loop ON timers(loop, fired_at)`,
 }
 
 func (s *Store) migrate() error {

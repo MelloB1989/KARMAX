@@ -185,6 +185,10 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			} else if n > 0 {
 				rt.log.Info("pruned consumed events", zap.Int64("count", n))
 			}
+			// Only timers that already fired; an armed one is waiting, not stale.
+			if _, err := rt.store.PruneTimers(time.Now().AddDate(0, 0, -14)); err != nil {
+				rt.log.Warn("could not prune fired timers", zap.Error(err))
+			}
 		case <-tick.C:
 			due, err := rt.store.DueLoopRetries(time.Now())
 			if err != nil {
