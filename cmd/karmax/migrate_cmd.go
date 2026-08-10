@@ -505,10 +505,6 @@ func verifyMigration(ctx context.Context, namespace string) error {
 		}
 	}
 
-	pending, _ := db.CountOutbox(ns)
-	if pending > 0 {
-		fmt.Printf("\n%d writes still queued in the local outbox\n", pending)
-	}
 	return nil
 }
 
