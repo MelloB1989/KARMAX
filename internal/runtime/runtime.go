@@ -175,10 +175,24 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	waWebhookSecret := os.Getenv("WHATSAPP_WEBHOOK_SECRET")
 	var waChannel *whatsapp.WhatsAppChannel
 
+	// Channel credentials come through the integration layer, so a token can be
+	// in karmax.yaml OR obtained by `karmax login` — and the operator does not
+	// have to know which one a given channel supports.
+	integrationReg := integrations.Build(cfg, s)
+	credential := func(id, field, fallback string) string {
+		creds, _, err := integrationReg.Credentials(id)
+		if err == nil {
+			if v := strings.TrimSpace(creds.Get(field)); v != "" {
+				return v
+			}
+		}
+		return fallback
+	}
+
 	for _, chCfg := range cfg.Comms.Channels {
 		switch chCfg.Type {
 		case "discord":
-			ch := discord.New(chCfg.ID, chCfg.Token, log)
+			ch := discord.New(chCfg.ID, credential(chCfg.ID, "token", chCfg.Token), log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
 			}); err != nil {
@@ -190,7 +204,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		case "telegram":
 			// Long-polling: no public URL or tunnel needed, so it works on the
 			// same self-hosted boxes as the rest of KARMAX.
-			ch := telegram.New(chCfg.ID, chCfg.Token, log)
+			ch := telegram.New(chCfg.ID, credential(chCfg.ID, "token", chCfg.Token), log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
 			}); err != nil {
@@ -202,11 +216,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		case "slack":
 			// Socket Mode: Slack dials out from us, so like Telegram this needs no
 			// public URL. Two tokens — xapp- opens the socket, xoxb- posts messages.
-			appToken := chCfg.Settings["app_token"]
+			appToken := credential(chCfg.ID, "app_token", chCfg.Settings["app_token"])
 			if appToken == "" {
 				appToken = os.Getenv("SLACK_APP_TOKEN")
 			}
-			botToken := chCfg.Token
+			botToken := credential(chCfg.ID, "bot_token", chCfg.Token)
 			if botToken == "" {
 				botToken = os.Getenv("SLACK_BOT_TOKEN")
 			}
@@ -385,7 +399,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// an expired Google token surfaced as a loop erroring at 4am, which is both
 	// the worst time and the least informative place to learn it. Checked here
 	// so `karmax integrations` and the app can say so first.
-	integrationReg := integrations.Build(cfg, s)
 	loopkit.Register(loopkit.Loop{
 		Name: "integration-health",
 		Description: "Checks every connected integration's credentials against the provider, " +
