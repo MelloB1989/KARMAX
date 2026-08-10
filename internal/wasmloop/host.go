@@ -368,7 +368,7 @@ func (r *Runner) call(ctx context.Context, m api.Module,
 	}
 	if capFor, ok := capabilityFor[name]; ok {
 		class, value := capFor(r)
-		if err := r.grants.Tool(class + ":" + value); err != nil {
+		if err := r.grants.Check(class, value); err != nil {
 			r.log.Warn("wasm loop was refused a capability",
 				zap.String("loop", r.name), zap.String("function", name), zap.Error(err))
 			return errNotPermitted

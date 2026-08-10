@@ -204,22 +204,38 @@ func scanLogEvent(rows *sql.Rows) (LogEvent, error) {
 	return e, nil
 }
 
-// ConsumerOffset is how far a subscriber has read; zero means from the start.
-func (s *Store) ConsumerOffset(name, workspace string) (int64, error) {
+// ConsumerOffset is how far a subscriber has read, and whether it has ever run.
+//
+// The two are different and conflating them is expensive: a subscriber that has
+// never run must not be treated as one sitting at zero, or adding a subscriber
+// replays the entire history through it.
+func (s *Store) ConsumerOffset(name, workspace string) (seq int64, known bool, err error) {
 	if workspace == "" {
 		workspace = DefaultWorkspace
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var seq int64
-	err := s.db.QueryRow(
+	err = s.db.QueryRow(
 		`SELECT seq FROM event_offsets WHERE subscriber = ? AND workspace = ?`,
 		name, workspace).Scan(&seq)
 	if err == sql.ErrNoRows {
-		return 0, nil
+		return 0, false, nil
 	}
-	return seq, err
+	return seq, err == nil, err
+}
+
+// LogHead is the newest sequence number, where a fresh subscriber starts.
+func (s *Store) LogHead(workspace string) (int64, error) {
+	if workspace == "" {
+		workspace = DefaultWorkspace
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var seq sql.NullInt64
+	err := s.db.QueryRow(`SELECT MAX(seq) FROM event_log WHERE workspace = ?`, workspace).Scan(&seq)
+	return seq.Int64, err
 }
 
 // SetConsumerOffset records progress. Never moves backwards, or two workers

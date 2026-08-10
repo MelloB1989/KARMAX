@@ -117,24 +117,9 @@ func (in *Installer) Install(data []byte) (*Preview, error) {
 			return nil, err
 		}
 	}
-	// The host functions that map to a capability need it granted too, or a
-	// declared function would be refused at the first call.
-	for _, h := range a.Manifest.Host {
-		switch h {
-		case FnRecall:
-			_ = in.Broker.SaveGrant(store.Grant{Subject: subject, Capability: store.CapTool,
-				Value: "memory:*", GrantedBy: "loop-manifest"})
-		case FnRemember:
-			_ = in.Broker.SaveGrant(store.Grant{Subject: subject, Capability: store.CapTool,
-				Value: "memory:*", GrantedBy: "loop-manifest"})
-		case FnNotify:
-			_ = in.Broker.SaveGrant(store.Grant{Subject: subject, Capability: store.CapTool,
-				Value: "tool:app.push", GrantedBy: "loop-manifest"})
-		case FnAsk:
-			_ = in.Broker.SaveGrant(store.Grant{Subject: subject, Capability: store.CapTool,
-				Value: "tool:agent.ask", GrantedBy: "loop-manifest"})
-		}
-	}
+	// No auto-grants for host functions. A manifest that asks for `notify` must
+	// also ask for `tool:app.push`, so the list the operator approves is the
+	// whole list — not a visible half plus an inferred remainder.
 
 	lock, err := LoadLock(in.Dir)
 	if err != nil {

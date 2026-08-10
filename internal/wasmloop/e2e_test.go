@@ -156,8 +156,10 @@ func TestADeclaredCapabilityIsStillSubjectToTheBroker(t *testing.T) {
 
 	// And with the grant in place, the same call works — otherwise this test
 	// would pass against a broker that refuses everything.
+	// The class recall is actually checked against — memory, not tool. Granting
+	// the wrong class here is what the old code effectively did.
 	if err := brk.Grant(store.Grant{
-		Subject: broker.LoopSubject(m.Name), Capability: store.CapTool, Value: "memory:nexus",
+		Subject: broker.LoopSubject(m.Name), Capability: store.CapMemory, Value: "nexus",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -177,4 +179,57 @@ func testStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+// The bug this pins: every host-function capability was checked as if it were a
+// tool, so a loop granted "memory:nexus" was refused when it called recall —
+// the check asked for tool "memory:nexus" and the grant was memory "nexus".
+// cold-scan would have installed cleanly and then quietly done nothing.
+func TestEachHostFunctionIsCheckedAgainstItsOwnCapabilityClass(t *testing.T) {
+	db := testStore(t)
+	log := zap.NewNop()
+	brk := broker.New(db, log)
+	subject := broker.LoopSubject("classes")
+	brk.SetTrust(subject, broker.Community)
+
+	// Granted exactly what a manifest would declare.
+	for _, g := range []store.Grant{
+		{Subject: subject, Capability: store.CapMemory, Value: "nexus"},
+		{Subject: subject, Capability: store.CapMemory, Value: "nexus:write"},
+		{Subject: subject, Capability: store.CapTool, Value: "summarize"},
+		{Subject: subject, Capability: store.CapChannel, Value: "whatsapp"},
+	} {
+		if err := brk.Grant(g); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := &Runner{namespace: "nexus", grants: brk.For(subject)}
+	for _, tc := range []struct {
+		fn    string
+		allow bool
+	}{
+		{FnRecall, true},    // memory:nexus
+		{FnRemember, true},  // memory:nexus:write
+		{FnChatGet, true},   // memory:nexus
+		{FnChatSave, true},  // memory:nexus:write
+		{FnSummarize, true}, // tool:summarize
+		{FnSendWA, true},    // channel:whatsapp
+		{FnHarness, false},  // tool:harness — not granted
+		{FnNotify, false},   // tool:app.push — not granted
+		{FnAsk, false},      // tool:agent.ask — not granted
+	} {
+		capFor, ok := capabilityFor[tc.fn]
+		if !ok {
+			t.Fatalf("%s has no capability mapping", tc.fn)
+		}
+		class, value := capFor(r)
+		err := r.grants.Check(class, value)
+		if tc.allow && err != nil {
+			t.Errorf("%s (%s:%s) was refused despite being granted: %v", tc.fn, class, value, err)
+		}
+		if !tc.allow && err == nil {
+			t.Errorf("%s (%s:%s) was permitted without a grant", tc.fn, class, value)
+		}
+	}
 }
