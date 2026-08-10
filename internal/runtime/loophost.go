@@ -14,6 +14,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/memory"
+	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -414,6 +415,13 @@ func (k *loopKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (str
 }
 
 func (k *loopKit) HTTP(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, error) {
+	// Loop code is third-party and the interesting targets are local — wacli on
+	// :8765, KARMAX's own API on :9091.
+	if err := safety.CheckURL(url); err != nil {
+		k.rt.log.Warn("loop HTTP request refused",
+			zap.String("loop", k.loopName), zap.String("url", url), zap.Error(err))
+		return "", 0, err
+	}
 	if method == "" {
 		method = http.MethodGet
 	}
@@ -614,6 +622,10 @@ func (k *loopKit) Step(name string, fn func() (string, error)) (string, error) {
 func (k *loopKit) Once(name string, fn func() error) error {
 	_, err := k.Step(name, func() (string, error) { return "", fn() })
 	return err
+}
+
+func (k *loopKit) Fence(source, content string) string {
+	return safety.Fence(source, content)
 }
 
 // timerID namespaces a loop's timer ids so two loops cannot collide on "daily".

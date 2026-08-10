@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -133,6 +134,13 @@ func (m *Manager) WriteProfile(content string) error {
 }
 
 func (m *Manager) Write(entry MemoryEntry) error {
+	// The choke point for every write path, which is where this belongs:
+	// poisoned memory is recalled later as trusted context, so a crafted message
+	// that gets remembered is worth more to an attacker than one that is read.
+	if err := safety.CheckWrite(entry.Content); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
