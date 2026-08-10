@@ -14,149 +14,18 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/hostpaths"
-	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/tools"
 )
 
-// The WhatsApp integration's tool surface.
+// What is left of KARMAX's own WhatsApp tools.
 //
-// These were host functions in the WASM ABI — send_whatsapp, wa_chats,
-// wa_messages, monitored_chats — which made one communication integration part
-// of the sandbox boundary itself. Every new integration would have needed its
-// own ABI, its own SDK wrappers and its own capability mapping.
+// The reads and the send moved to wacli, which publishes them as karma tools —
+// it owns WhatsApp, so it should own the surface, and a wrapper here would fall
+// behind the moment it gained a feature.
 //
-// As tools they are reachable by the agent AND by a WASM workflow through the
-// single generic `tool` host function, gated by `tool:whatsapp.*` either way.
-// Adding the next integration now costs no ABI at all.
-
-// WhatsAppChatsTool lists the operator's chats as raw wacli JSON.
-type WhatsAppChatsTool struct {
-	WacliPath string
-}
-
-func (t *WhatsAppChatsTool) Manifest() tools.ToolManifest {
-	return tools.ToolManifest{
-		Name:        "whatsapp.chats",
-		Description: "List WhatsApp chats as raw JSON, with last-message timestamps. Use this to walk every chat; use whatsapp.read for a quick look at one.",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"limit": {"type": "integer", "description": "Max chats to return (default 1000)."}
-			}
-		}`),
-	}
-}
-
-func (t *WhatsAppChatsTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
-	limit := intArg(input["limit"], 1000)
-	if limit <= 0 || limit > 1000 {
-		limit = 1000
-	}
-	out, err := runReadTool(ctx, wacliOr(t.WacliPath), "chats", "--json", "--limit", strconv.Itoa(limit))
-	return rawResult(out, err)
-}
-
-// WhatsAppMessagesTool reads one chat's messages as raw wacli JSON.
-type WhatsAppMessagesTool struct {
-	WacliPath string
-}
-
-func (t *WhatsAppMessagesTool) Manifest() tools.ToolManifest {
-	return tools.ToolManifest{
-		Name:        "whatsapp.messages",
-		Description: "Read one WhatsApp chat's messages as raw JSON, optionally only the operator's own. Structured rather than formatted, for callers that parse it.",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"chat": {"type": "string", "description": "Chat JID, contact name, or phone number."},
-				"limit": {"type": "integer", "description": "Max messages (default 50, max 200)."},
-				"from_me_only": {"type": "boolean", "description": "Only messages the operator sent."}
-			},
-			"required": ["chat"]
-		}`),
-	}
-}
-
-func (t *WhatsAppMessagesTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
-	chat, _ := input["chat"].(string)
-	if strings.TrimSpace(chat) == "" {
-		return tools.ErrorResult(fmt.Errorf("a chat is required")), nil
-	}
-	limit := intArg(input["limit"], 50)
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	args := []string{"messages", "--chat", chat, "--limit", strconv.Itoa(limit)}
-	if b, _ := input["from_me_only"].(bool); b {
-		args = append(args, "--from-me", "yes")
-	}
-	out, err := runReadTool(ctx, wacliOr(t.WacliPath), args...)
-	// Defanged rather than fenced: this is JSON a caller unmarshals, and a
-	// fence would break the parse. Defanging still stops a message body from
-	// closing an enclosing fence once its text reaches a prompt.
-	return rawResult(safety.Defang(out), err)
-}
-
-// WhatsAppSendTool sends as the operator, threading a reply when asked.
-//
-// The reply path goes through wacli's local API rather than the CLI, because
-// only the API takes a reply target. Loops cannot reach that API themselves —
-// it sends messages as the operator, which is exactly what a sandbox exists to
-// keep out of reach — so this tool makes the call and the caller states intent.
-type WhatsAppSendTool struct {
-	WacliPath string
-	// Send is the comms manager's send path, used when no reply is threaded.
-	Send func(channelID, target, content string) error
-	// ChannelID names the WhatsApp comms channel for Send.
-	ChannelID func() (string, bool)
-}
-
-func (t *WhatsAppSendTool) Manifest() tools.ToolManifest {
-	return tools.ToolManifest{
-		Name:        "whatsapp.send",
-		Description: "Send a WhatsApp message as the operator. Set reply_to to thread it onto an existing message.",
-		Parameters: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"to": {"type": "string", "description": "Chat JID or contact to send to."},
-				"text": {"type": "string", "description": "The message to send."},
-				"reply_to": {"type": "string", "description": "Optional message ID to reply to."}
-			},
-			"required": ["to", "text"]
-		}`),
-	}
-}
-
-func (t *WhatsAppSendTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
-	to, _ := input["to"].(string)
-	text, _ := input["text"].(string)
-	if strings.TrimSpace(to) == "" || strings.TrimSpace(text) == "" {
-		return tools.ErrorResult(fmt.Errorf("to and text are both required")), nil
-	}
-	replyTo, _ := input["reply_to"].(string)
-
-	if strings.TrimSpace(replyTo) == "" && t.Send != nil {
-		channel := ""
-		if t.ChannelID != nil {
-			if id, ok := t.ChannelID(); ok {
-				channel = id
-			}
-		}
-		if err := t.Send(channel, to, text); err != nil {
-			return tools.ErrorResult(err), nil
-		}
-		return tools.SuccessResult(map[string]any{"sent": true}), nil
-	}
-
-	payload, err := json.Marshal(map[string]string{"to": to, "text": text, "reply_to": replyTo})
-	if err != nil {
-		return tools.ErrorResult(err), nil
-	}
-	if _, err := localPost(ctx, hostpaths.WacliAPIURL()+"/send", payload); err != nil {
-		return tools.ErrorResult(err), nil
-	}
-	return tools.SuccessResult(map[string]any{"sent": true, "replied_to": replyTo}), nil
-}
+// This one stays because it is not a fact about WhatsApp but a policy of
+// KARMAX's: wacli knows which chats have webhooks, and the subtraction of the
+// operator's own from that list is ours.
 
 // WhatsAppMonitoredTool reports which chats KARMAX is watching.
 type WhatsAppMonitoredTool struct{}
