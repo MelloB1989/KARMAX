@@ -256,6 +256,20 @@ func leafNodes(n *gitloom.TreeNode, acc []gitloom.TreeNode) []gitloom.TreeNode {
 	return acc
 }
 
+// body fetches a memory's text by path, for hits that arrive without one.
+//
+// Bounded and best-effort: a document that cannot be read is one hit without
+// text, not a failed search. The result is capped because a memory file
+// accumulates every fact about its subject and the caller wants an excerpt, not
+// the file.
+func (g *gitloomBackend) body(ctx context.Context, path string) string {
+	m, err := g.client.Get(ctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	if err != nil || m == nil {
+		return ""
+	}
+	return truncate(strings.TrimSpace(m.Content), 1200)
+}
+
 // search runs a retrieval against GitLoom and renders it as KARMAX results.
 func (g *gitloomBackend) search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
@@ -277,13 +291,24 @@ func (g *gitloomBackend) search(ctx context.Context, query string, topK int) ([]
 
 	out := make([]SearchResult, 0, len(res.Hits))
 	for _, h := range res.Hits {
+		// A hit with no text is a hit that answers nothing.
+		//
+		// The API scores and ranks correctly but returns an empty snippet, so
+		// the body is fetched by path. This was invisible while retrieval also
+		// had a local arm to fall back on — a fallback masking a broken primary
+		// is exactly the failure mode that made keeping two stores worse than
+		// depending on one, and removing it is what surfaced this.
+		body := strings.TrimSpace(h.Snippet)
+		if body == "" {
+			body = g.body(cctx, h.Path)
+		}
 		entry := MemoryEntry{
 			// The path IS the handle: it is what Forget takes, so a hit the
 			// agent decides is wrong can be deleted without a second lookup.
 			ID:        h.Path,
 			Namespace: g.cfg.Namespace,
 			Role:      RoleGitLoom,
-			Content:   strings.TrimSpace(h.Snippet),
+			Content:   body,
 		}
 		// Provenance carries the date the memory was actually written, which is
 		// what lets the agent reason about staleness. Without it every hit

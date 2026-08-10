@@ -648,30 +648,44 @@ func (s *Server) handleMemoryEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
+	// Asked of the memory manager, not of SQLite.
+	//
+	// This read the table directly, which was the same thing while SQLite held
+	// the memories. Once GitLoom became the store it stopped being the same
+	// thing at all: the table still holds everything written before the move
+	// and nothing since, so the app would show a snapshot frozen at the cutover
+	// and look like memory had simply stopped working.
+	mgr := s.mem.For("", ns)
 	var (
-		entries []store.StoredMemoryEntry
+		results []memory.SearchResult
+		recent  []memory.MemoryEntry
 		err     error
 	)
 	if q != "" {
-		entries, err = s.store.SearchMemoryEntries(ns, q, limit)
+		results, err = mgr.Search(q, limit)
 	} else {
-		entries, err = s.store.ListMemoryEntries(ns, limit)
+		recent, err = mgr.Recent(limit)
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	for _, r := range results {
+		recent = append(recent, r.Entry)
+	}
 
-	out := make([]map[string]any, 0, len(entries))
-	for _, e := range entries {
-		var tags []string
-		_ = json.Unmarshal([]byte(e.Tags), &tags)
+	out := make([]map[string]any, 0, len(recent))
+	for _, e := range recent {
+		created := ""
+		if !e.CreatedAt.IsZero() {
+			created = e.CreatedAt.Format(time.RFC3339)
+		}
 		out = append(out, map[string]any{
 			"id":         e.ID,
 			"role":       e.Role,
 			"content":    e.Content,
-			"tags":       tags,
-			"created_at": e.CreatedAt.Format(time.RFC3339),
+			"tags":       e.Tags,
+			"created_at": created,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"namespace": ns, "entries": out})
