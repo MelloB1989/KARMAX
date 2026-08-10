@@ -24,7 +24,9 @@ import (
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
+	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
+	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
@@ -139,6 +141,15 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// KARMAX_ENABLE_INSTAGRAM=true: it drives an unofficial API that can get the
 	// operator's personal account restricted, and that is not a default.
 	connHost.Register(instagramconn.New())
+	// The public accounts. These are the only integrations that can make
+	// something visible to strangers with nobody having read it, so both are
+	// handed the list of names a post may not contain — built from this
+	// operator's own contacts and memory, and consulted at the moment of
+	// posting rather than trusted to whatever wrote the draft.
+	forbidden := newForbiddenNames(s, log)
+	socialLimit := newSocialLimiter(s)
+	connHost.Register(xconn.New(forbidden.List, socialLimit))
+	connHost.Register(linkedinconn.New(forbidden.List, socialLimit))
 	startedAt := time.Now()
 
 	// Set provider env vars from config
@@ -193,6 +204,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// in karmax.yaml OR obtained by `karmax login` — and the operator does not
 	// have to know which one a given channel supports.
 	integrationReg := integrations.Build(cfg, s)
+	// So a browser sign-in that expires overnight renews itself rather than
+	// turning into a connector that quietly stopped working.
+	connHost.SetRefresher(integrationReg.Refresh)
 	credential := func(id, field, fallback string) string {
 		creds, _, err := integrationReg.Credentials(id)
 		if err == nil {
@@ -378,8 +392,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// every agent's toolset.
 	sched := scheduler.New(s, b, log)
 	toolReg.Register(&builtin.SchedulerTool{Scheduler: sched, AgentID: ""})
+	// What the operator has been building. KARMAX has recorded every delegated
+	// engineering task since the first one; nothing could read them back.
+	toolReg.Register(&builtin.ActivityTool{Store: s, AgentID: ""})
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
+	forbidden.attach(memFactory)
 
 	// Long-term memory IS GitLoom when a key is configured. Without one KARMAX
 	// stays entirely local, which is the self-hosted default and what an

@@ -31,6 +31,10 @@ type Host struct {
 	log    *zap.Logger
 
 	registry map[string]connectorkit.Connector
+
+	// refresh renews an expiring OAuth token before it is used. Nil until the
+	// runtime supplies one.
+	refresh Refresher
 }
 
 func NewHost(s *store.Store, b *bus.Log, brk *broker.Broker, log *zap.Logger) *Host {
@@ -76,7 +80,29 @@ func (h *Host) Enabled() []connectorkit.Connector {
 }
 
 // credentials assembles what a connector is handed at call time.
+// Refresh renews an OAuth token that is about to expire, if anything supplied
+// a way to. Set by the runtime from the integration registry.
+//
+// Without it a connector authenticated by browser sign-in works until its
+// access token expires and then simply stops, which is at its worst here: the
+// loops that use these connectors run unattended in the evening, so the failure
+// surfaces as a post that never happened rather than as an error anybody sees.
+type Refresher func(ctx context.Context, id string) error
+
+// SetRefresher supplies the token refresh. Optional; without it, tokens are
+// used exactly as stored.
+func (h *Host) SetRefresher(r Refresher) { h.refresh = r }
+
 func (h *Host) credentials(id string) (connectorkit.Credentials, error) {
+	// Before reading, not after failing. The refresh is a no-op unless this is
+	// an OAuth connector whose token is within five minutes of expiring.
+	if h.refresh != nil {
+		if err := h.refresh(context.Background(), id); err != nil {
+			h.log.Warn("could not refresh a connector's sign-in",
+				zap.String("connector", id), zap.Error(err))
+		}
+	}
+
 	rec, err := h.store.Credential(id)
 	if err != nil {
 		return connectorkit.Credentials{}, fmt.Errorf("connector %s is not configured: %w", id, err)

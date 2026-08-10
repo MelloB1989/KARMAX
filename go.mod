@@ -1,6 +1,6 @@
 module github.com/MelloB1989/karmax
 
-go 1.25.6
+go 1.26
 
 require (
 	github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d
@@ -101,12 +101,14 @@ require (
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mdp/qrterminal/v3 v3.2.1 // indirect
+	github.com/michimani/gotwi v0.18.4 // indirect
 	github.com/miekg/dns v1.1.27 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/openai/openai-go/v3 v3.15.0 // indirect
 	github.com/petermattis/goid v0.0.0-20260713124913-97594f28f5ca // indirect
+	github.com/pilinux/linkedin v0.1.3 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/dtls/v3 v3.1.2 // indirect
 	github.com/pion/logging v0.2.4 // indirect
@@ -140,6 +142,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597 // indirect
 	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect

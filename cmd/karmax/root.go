@@ -48,6 +48,7 @@ func newRootCmd() *cobra.Command {
 		newLoopsCmd(),
 		loginCmd(),
 		integrationsCmd(),
+		socialCmd(),
 		newAskCmd(),
 		newNotifyCmd(),
 		newSendCmd(),

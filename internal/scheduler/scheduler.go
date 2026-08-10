@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,25 @@ func New(s *store.Store, b *bus.Log, log *zap.Logger) *Scheduler {
 	}
 }
 
+// withSeconds accepts a five-field crontab where this scheduler wants six.
+//
+// The scheduler runs with seconds enabled, which is a superset of crontab and
+// also means every ordinary five-field schedule anybody writes is rejected. It
+// was caught by a workflow declaring "0 18-22 * * *" — valid crontab, valid in
+// KARMAX's own documentation, and silently demoted to manual-only at load. The
+// normalisation belongs here rather than in each caller, since the callers are
+// the ones that keep getting it wrong.
+func withSeconds(spec string) string {
+	spec = strings.TrimSpace(spec)
+	if strings.HasPrefix(spec, "@") {
+		return spec // @every 45m, @daily — not fields at all
+	}
+	if len(strings.Fields(spec)) == 5 {
+		return "0 " + spec
+	}
+	return spec
+}
+
 func (s *Scheduler) AddJob(j ScheduledJob) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -51,6 +71,7 @@ func (s *Scheduler) AddJob(j ScheduledJob) error {
 		s.cron.Remove(existing.entryID)
 	}
 
+	j.Cron = withSeconds(j.Cron)
 	entryID, err := s.cron.AddFunc(j.Cron, func() {
 		s.fireJob(j.ID)
 	})

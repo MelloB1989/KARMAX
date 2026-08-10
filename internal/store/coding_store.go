@@ -40,11 +40,25 @@ func (s *Store) SaveCodingSession(cs StoredCodingSession) error {
 	return nil
 }
 
+// ListCodingSessions returns one agent's sessions, or — when agentID is empty
+// — every agent's.
+//
+// The empty case is not a footgun waiting to happen: "what has been built
+// lately" is a question about the person, not about which of their agents
+// happened to run the task, and the previous behaviour of matching agent_id = ”
+// silently returned nothing at all.
 func (s *Store) ListCodingSessions(agentID string) ([]StoredCodingSession, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, tool_type, session_id, description, status, agent_id, output, created_at, updated_at FROM coding_sessions WHERE agent_id = ? ORDER BY created_at DESC`, agentID)
+	query := `SELECT id, tool_type, session_id, description, status, agent_id, output, created_at, updated_at FROM coding_sessions WHERE agent_id = ? ORDER BY created_at DESC`
+	args := []any{agentID}
+	if agentID == "" {
+		query = `SELECT id, tool_type, session_id, description, status, agent_id, output, created_at, updated_at FROM coding_sessions ORDER BY created_at DESC`
+		args = nil
+	}
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list coding sessions: %w", err)
 	}

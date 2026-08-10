@@ -62,3 +62,27 @@ func (s *Store) CountContacts() int {
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM contacts`).Scan(&n)
 	return n
 }
+
+// ContactNames returns every saved contact name.
+//
+// Used to build the list of people a public post may not name. The address book
+// is the honest source for that: it is who is actually in this person's life,
+// which no general-purpose list of names could know.
+func (s *Store) ContactNames() ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`SELECT name FROM contacts WHERE name != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
