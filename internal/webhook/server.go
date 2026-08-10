@@ -23,7 +23,7 @@ import (
 
 type WebhookServer struct {
 	router *chi.Mux
-	bus    *bus.Bus
+	bus    *bus.Log
 	routes map[string]WebhookRoute
 	store  *store.Store
 	log    *zap.Logger
@@ -32,7 +32,7 @@ type WebhookServer struct {
 	mu     sync.RWMutex
 }
 
-func New(addr string, b *bus.Bus, s *store.Store, log *zap.Logger) *WebhookServer {
+func New(addr string, b *bus.Log, s *store.Store, log *zap.Logger) *WebhookServer {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
@@ -164,7 +164,14 @@ func (s *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		evt.Kind = bus.EventKind(route.BusEvent)
 	}
 
-	s.bus.Publish(evt)
+	// Answered before the event is durable, the caller believes it was
+	// received and will not send it again — so a failed append is a 500.
+	if err := s.bus.Publish(evt); err != nil {
+		s.log.Error("webhook event could not be recorded",
+			zap.String("path", path), zap.Error(err))
+		http.Error(w, "could not record the event", http.StatusInternalServerError)
+		return
+	}
 
 	s.log.Info("webhook received", zap.String("path", path), zap.String("method", r.Method))
 

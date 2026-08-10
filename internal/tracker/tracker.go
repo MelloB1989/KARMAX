@@ -51,11 +51,11 @@ type Config struct {
 // Handler receives tracker webhooks and publishes normalised bus events.
 type Handler struct {
 	cfg Config
-	bus *bus.Bus
+	bus *bus.Log
 	log *zap.Logger
 }
 
-func New(cfg Config, b *bus.Bus, log *zap.Logger) *Handler {
+func New(cfg Config, b *bus.Log, log *zap.Logger) *Handler {
 	return &Handler{cfg: cfg, bus: b, log: log}
 }
 
@@ -133,7 +133,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		zap.String("source", n.Source), zap.String("kind", n.Kind),
 		zap.String("action", n.Action), zap.String("ref", n.Ref))
 
-	h.bus.Publish(bus.NewEvent(EventKind, h.cfg.AgentID, map[string]any{
+	if err := h.bus.Publish(bus.NewEvent(EventKind, h.cfg.AgentID, map[string]any{
 		"source":    n.Source,
 		"kind":      n.Kind,
 		"action":    n.Action,
@@ -146,7 +146,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"body":      n.Body,
 		"summary":   n.summary(),
 		"timestamp": time.Now(),
-	}))
+	})); err != nil {
+		h.log.Error("tracker event could not be recorded",
+			zap.String("source", n.Source), zap.Error(err))
+	}
 }
 
 // authorized verifies the delivery really came from the platform.

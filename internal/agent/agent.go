@@ -25,7 +25,7 @@ type Agent struct {
 	lastEvent time.Time
 	lastErr   error
 	log       *zap.Logger
-	bus       *bus.Bus
+	bus       *bus.Log
 	store     *store.Store
 	memory    *memory.Manager
 	tools     []tools.Tool
@@ -73,7 +73,7 @@ type CommsChannelInfo struct {
 	DND             bool
 }
 
-func NewAgent(def AgentDef, b *bus.Bus, s *store.Store, mem *memory.Manager, agentTools []tools.Tool, mcpTools []tools.Tool, log *zap.Logger) *Agent {
+func NewAgent(def AgentDef, b *bus.Log, s *store.Store, mem *memory.Manager, agentTools []tools.Tool, mcpTools []tools.Tool, log *zap.Logger) *Agent {
 	return &Agent{
 		def:      def,
 		status:   StatusIdle,
@@ -643,11 +643,17 @@ func (a *Agent) Resume() error {
 	return nil
 }
 
-func (a *Agent) Send(e bus.Event) {
+// Send hands an event to this agent's inbox.
+//
+// A full inbox is reported rather than dropped: the caller is the event log,
+// which will retry and then dead-letter, so a busy agent delays an event
+// instead of losing it.
+func (a *Agent) Send(e bus.Event) error {
 	select {
 	case a.inbox <- e:
+		return nil
 	default:
-		a.log.Warn("agent inbox full, dropping event", zap.String("event_kind", string(e.Kind)))
+		return fmt.Errorf("agent %s inbox is full", a.def.ID)
 	}
 }
 

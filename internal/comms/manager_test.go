@@ -70,12 +70,12 @@ func (f *fakeChannel) sentMessages() []sentMessage {
 }
 
 func TestManagerRoutesAndPersistsCleanOutbound(t *testing.T) {
-	b := bus.New(zap.NewNop())
 	s, err := store.New(filepath.Join(t.TempDir(), "karmax.db"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
 	defer s.Close()
+	b := bus.NewLog(s, store.DefaultWorkspace, zap.NewNop())
 
 	mgr := NewManager(b, s, zap.NewNop())
 	ch := newFakeChannel("discord-main", "discord")
@@ -83,8 +83,7 @@ func TestManagerRoutesAndPersistsCleanOutbound(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	sub, cancel := b.Subscribe(bus.EventCommsMessage, bus.EventCommsSent)
-	defer cancel()
+	events := consume(t, b, bus.EventCommsMessage, bus.EventCommsSent)
 
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
@@ -102,7 +101,7 @@ func TestManagerRoutesAndPersistsCleanOutbound(t *testing.T) {
 		Timestamp:   time.Now(),
 	}
 
-	inbound := waitForEvent(t, sub.Ch, bus.EventCommsMessage)
+	inbound := waitForEvent(t, events, bus.EventCommsMessage)
 	if inbound.Payload["channel_id"] != "discord-target" {
 		t.Fatalf("expected inbound target to be captured, got %+v", inbound.Payload)
 	}
@@ -119,7 +118,7 @@ func TestManagerRoutesAndPersistsCleanOutbound(t *testing.T) {
 		t.Fatalf("unexpected outbound message: %+v", sent[0])
 	}
 
-	outbound := waitForEvent(t, sub.Ch, bus.EventCommsSent)
+	outbound := waitForEvent(t, events, bus.EventCommsSent)
 	if outbound.Payload["content"] != "clean reply" {
 		t.Fatalf("outbound event should contain sanitized content, got %+v", outbound.Payload)
 	}
@@ -134,12 +133,12 @@ func TestManagerRoutesAndPersistsCleanOutbound(t *testing.T) {
 }
 
 func TestManagerDNDAlertsAlternativeChannel(t *testing.T) {
-	b := bus.New(zap.NewNop())
 	s, err := store.New(filepath.Join(t.TempDir(), "karmax.db"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
 	defer s.Close()
+	b := bus.NewLog(s, store.DefaultWorkspace, zap.NewNop())
 
 	mgr := NewManager(b, s, zap.NewNop())
 	primary := newFakeChannel("discord-main", "discord")
@@ -165,6 +164,20 @@ func TestManagerDNDAlertsAlternativeChannel(t *testing.T) {
 	if sent[0].content == "" {
 		t.Fatal("alternative alert content should not be empty")
 	}
+}
+
+// consume attaches a subscriber that forwards to a channel, so tests can assert
+// on what actually reached the log.
+func consume(t *testing.T, b *bus.Log, kinds ...bus.EventKind) <-chan bus.Event {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	out := make(chan bus.Event, 8)
+	b.Consume(ctx, "test", kinds, func(_ context.Context, e bus.Event) error {
+		out <- e
+		return nil
+	})
+	return out
 }
 
 func waitForEvent(t *testing.T, ch <-chan bus.Event, kind bus.EventKind) bus.Event {

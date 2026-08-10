@@ -2,17 +2,42 @@ package tracker
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/store"
 	"go.uber.org/zap"
 )
+
+// testLog gives a durable log backed by a throwaway database, plus a channel
+// fed by a subscriber, so a test can assert what actually reached the log.
+func testLog(t *testing.T, kinds ...bus.EventKind) (*bus.Log, <-chan bus.Event) {
+	t.Helper()
+	s, err := store.New(filepath.Join(t.TempDir(), "k.db"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	b := bus.NewLog(s, store.DefaultWorkspace, zap.NewNop())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	got := make(chan bus.Event, 8)
+	b.Consume(ctx, "test", kinds, func(_ context.Context, e bus.Event) error {
+		got <- e
+		return nil
+	})
+	return b, got
+}
 
 func TestParseGitHubIssue(t *testing.T) {
 	body := []byte(`{
@@ -124,9 +149,7 @@ func TestGitHubSignatureRequired(t *testing.T) {
 // End-to-end: a signed delivery must reach the bus as one usable event, and an
 // unsigned one must not.
 func TestServeHTTPPublishesToBus(t *testing.T) {
-	b := bus.New(zap.NewNop())
-	sub, cancel := b.Subscribe(EventKind)
-	defer cancel()
+	b, got := testLog(t, EventKind)
 
 	h := New(Config{Source: GitHub, Secret: "s3cret", AgentID: "nexus"}, b, zap.NewNop())
 
@@ -146,7 +169,7 @@ func TestServeHTTPPublishesToBus(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	select {
-	case evt := <-sub.Ch:
+	case evt := <-got:
 		if evt.AgentID != "nexus" {
 			t.Errorf("event addressed to %q, want nexus", evt.AgentID)
 		}
@@ -168,7 +191,7 @@ func TestServeHTTPPublishesToBus(t *testing.T) {
 		t.Fatalf("unsigned delivery should be 401, got %d", w2.Code)
 	}
 	select {
-	case evt := <-sub.Ch:
+	case evt := <-got:
 		t.Fatalf("unsigned delivery reached the bus: %+v", evt.Payload)
 	case <-time.After(200 * time.Millisecond):
 	}

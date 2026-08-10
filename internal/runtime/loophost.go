@@ -103,29 +103,21 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 	}
 
 	// Scheduled-job fires.
-	subSched, cancelSched := rt.bus.Subscribe(bus.EventScheduledJob)
-	go func() {
-		defer cancelSched()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case evt, ok := <-subSched.Ch:
-				if !ok {
-					return
-				}
-				inner, _ := evt.Payload["payload"].(map[string]any)
-				if inner == nil {
-					continue
-				}
-				if name, _ := inner["loopkit"].(string); name != "" {
-					if l, found := rt.loopkitLoops[name]; found {
-						go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerSchedule}, 1)
-					}
-				}
+	rt.bus.Consume(ctx, bus.SubLoopSchedule, []bus.EventKind{bus.EventScheduledJob},
+		func(_ context.Context, evt bus.Event) error {
+			inner, _ := evt.Payload["payload"].(map[string]any)
+			if inner == nil {
+				return nil
 			}
-		}
-	}()
+			name, _ := inner["loopkit"].(string)
+			if name == "" {
+				return nil
+			}
+			if l, found := rt.loopkitLoops[name]; found {
+				go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerSchedule}, 1)
+			}
+			return nil
+		})
 
 	// Bus-event fires (only subscribe to the kinds some loop listens on).
 	if len(loopEvents) > 0 {
@@ -133,53 +125,35 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 		for k := range loopEvents {
 			kinds = append(kinds, k)
 		}
-		subEvt, cancelEvt := rt.bus.Subscribe(kinds...)
-		go func() {
-			defer cancelEvt()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case evt, ok := <-subEvt.Ch:
-					if !ok {
-						return
-					}
-					payload := map[string]any{"event_kind": string(evt.Kind)}
-					for pk, pv := range evt.Payload {
-						payload[pk] = pv
-					}
-					for _, name := range loopEvents[evt.Kind] {
-						if l, found := rt.loopkitLoops[name]; found {
-							go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: payload}, 1)
-						}
+		rt.bus.Consume(ctx, bus.SubLoopEvent, kinds,
+			func(_ context.Context, evt bus.Event) error {
+				payload := map[string]any{"event_kind": string(evt.Kind)}
+				for pk, pv := range evt.Payload {
+					payload[pk] = pv
+				}
+				for _, name := range loopEvents[evt.Kind] {
+					if l, found := rt.loopkitLoops[name]; found {
+						go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: payload}, 1)
 					}
 				}
-			}
-		}()
+				return nil
+			})
 	}
 
 	// Webhook fires (only subscribe if some loop listens on a route).
 	if len(rt.loopWebhooks) > 0 {
-		subWh, cancelWh := rt.bus.Subscribe(bus.EventWebhookFired)
-		go func() {
-			defer cancelWh()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case evt, ok := <-subWh.Ch:
-					if !ok {
-						return
-					}
-					route, _ := evt.Payload["route"].(string)
-					if name, ok := rt.loopWebhooks[route]; ok {
-						if l, found := rt.loopkitLoops[name]; found {
-							go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerWebhook, Payload: evt.Payload}, 1)
-						}
-					}
+		rt.bus.Consume(ctx, bus.SubLoopWebhook, []bus.EventKind{bus.EventWebhookFired},
+			func(_ context.Context, evt bus.Event) error {
+				route, _ := evt.Payload["route"].(string)
+				name, ok := rt.loopWebhooks[route]
+				if !ok {
+					return nil
 				}
-			}
-		}()
+				if l, found := rt.loopkitLoops[name]; found {
+					go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerWebhook, Payload: evt.Payload}, 1)
+				}
+				return nil
+			})
 	}
 }
 
