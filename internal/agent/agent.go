@@ -54,6 +54,10 @@ type Agent struct {
 	// workflows exist, and the agent must not.
 	lentToolsFor func(bus.Event) []tools.Tool
 
+	// conversations archives the OPERATOR's conversations in GitLoom. Nil when
+	// GitLoom is not configured. See conversation.go.
+	conversations *Conversations
+
 	// Communication send function (injected to avoid circular imports)
 	commsSend func(channelID, target, content string) error
 	// Communication escalation function for permission requests and failures.
@@ -895,6 +899,11 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			zap.String("event_kind", string(evt.Kind)),
 		)
 
+		// Archived after the reply is settled, so what is stored is what was
+		// actually said rather than a first draft the act-evidence guard
+		// replaced.
+		a.recordConversation(a.ctx, evt, userPrompt, response)
+
 		sentViaComms := false
 		for _, tc := range toolCalls {
 			canonical := tools.CanonicalName(tc.Name)
@@ -1087,6 +1096,8 @@ func (a *Agent) ChatDetailed(ctx context.Context, text string, lent []tools.Tool
 			a.log.Warn("compaction failed during chat", zap.Error(cerr))
 		}
 	}
+
+	a.recordConversation(ctx, evt, text, response)
 
 	a.bus.Publish(bus.NewEvent(bus.EventAgentMessage, a.def.ID, map[string]any{
 		"response": response,

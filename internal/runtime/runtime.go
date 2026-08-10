@@ -342,14 +342,24 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 
-	// Long-term memory moves to GitLoom Cloud when a key is configured. Without
-	// one KARMAX stays entirely local, which is the self-hosted default and
-	// what an open-source user gets with no account.
-	//
-	// Even with GitLoom on, SQLite keeps every write: it is demoted from source
-	// of truth to a write-through cache that answers when the network cannot.
+	// Long-term memory IS GitLoom when a key is configured. Without one KARMAX
+	// stays entirely local, which is the self-hosted default and what an
+	// open-source user gets with no account.
+	var conversations *agent.Conversations
 	if glCfg, ok := memory.GitLoomConfigFromEnv(defaultNamespace(cfg)); ok {
 		memFactory.UseGitLoom(glCfg)
+		// The same store also holds the operator's conversations with KARMAX,
+		// which is what turns "what did we decide about CampX" from something
+		// the agent had to remember to write down into something it can read
+		// back from what was actually said.
+		model := ""
+		if len(cfg.Agents) > 0 {
+			model = cfg.Agents[0].Model
+		}
+		conversations = agent.NewConversations(agent.ConversationsConfig{
+			APIKey: glCfg.APIKey, BaseURL: glCfg.BaseURL,
+			Namespace: glCfg.Namespace, Model: model,
+		}, log)
 	} else {
 		log.Info("memory: GitLoom not configured; long-term memory is local SQLite only")
 	}
@@ -560,6 +570,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		a.SetCommsEscalate(commsMgr.RequestEscalation)
 
 		a.SetOperatorChats(operatorChats)
+		// Nil when GitLoom is not configured, which the agent treats as "do not
+		// archive" rather than as an error.
+		a.SetConversations(conversations)
 
 		// Inject available comms channel info into the agent for context building
 		agentChannels := commsMgr.GetChannelsForAgent(agentCfg.ID)
