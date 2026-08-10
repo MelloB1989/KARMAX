@@ -509,6 +509,21 @@ var migrations = []string{
 		updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
 		PRIMARY KEY (connector, source)
 	)`,
+
+	// Every public post, kept whether it succeeded or was refused. This is the
+	// record of what KARMAX said in the operator's name without being asked,
+	// which is worth having in full: the rate limit reads it, and so does
+	// anybody wondering what went out yesterday.
+	`CREATE TABLE IF NOT EXISTS social_posts (
+		id        INTEGER PRIMARY KEY AUTOINCREMENT,
+		platform  TEXT NOT NULL,
+		posted_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		status    TEXT NOT NULL,
+		post_id   TEXT NOT NULL DEFAULT '',
+		text      TEXT NOT NULL DEFAULT '',
+		detail    TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_social_posts_when ON social_posts(platform, posted_at DESC)`,
 }
 
 func (s *Store) migrate() error {

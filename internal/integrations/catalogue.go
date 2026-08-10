@@ -20,7 +20,9 @@ import (
 	"github.com/MelloB1989/karmax/internal/config"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
+	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
+	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -47,6 +49,11 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	}
 	reg.Register(integration.FromConnector(notionconn.New(), ""))
 	reg.Register(integration.FromConnector(instagramconn.New(), ""))
+	// The public accounts. Registered with no forbidden-names list, because this
+	// registry only ever asks them to authenticate and report health — the list
+	// is supplied by the runtime, which is where posting actually happens.
+	reg.Register(integration.FromConnector(xconn.New(nil, nil), ""))
+	reg.Register(integration.FromConnector(linkedinconn.New(nil, nil), ""))
 
 	// The token-based channels, one per configured channel so two Slack
 	// workspaces are two integrations rather than one that silently wins.

@@ -308,7 +308,13 @@ func (r *Runner) run(ctx context.Context, timeout time.Duration) error {
 		// somebody might change: no filesystem, no environment, no arguments.
 		WithStdout(logWriter{r.log, r.name, "stdout"}).
 		WithStderr(logWriter{r.log, r.name, "stderr"}).
-		WithSysNanotime()
+		// Both clocks. Nanotime alone leaves time.Now() at the epoch, so every
+		// loop that asked what day it was got 1 January 1970 — which reads as a
+		// sandbox decision and is simply a missing line. Wall-clock time is not
+		// a capability worth withholding: a loop that runs on a schedule has to
+		// know when it is.
+		WithSysNanotime().
+		WithSysWalltime()
 
 	mod, err := r.runtime.InstantiateModule(runCtx, r.compiled, cfg)
 	if err != nil {
