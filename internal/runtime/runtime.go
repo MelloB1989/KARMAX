@@ -291,7 +291,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// them, a WASM workflow reaches them through the generic `tool` host
 	// function, and the Broker gates them by name — none of which needed
 	// changing, because tools were already the currency.
-	waTools := builtin.FenceUntrusted(
+	waTools := builtin.GuardUntrusted(
 		builtin.FromGoFunctionTools(wacli.All(wacli.New(hostpaths.WacliAPIURL()))),
 		"WhatsApp, written by whoever sent it")
 	for _, t := range waTools {

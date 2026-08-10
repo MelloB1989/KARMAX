@@ -41,20 +41,19 @@ func FromGoFunctionTools(in []ai.GoFunctionTool) []tools.Tool {
 
 type goFunctionTool struct {
 	inner ai.GoFunctionTool
-	// fenceAs is the source label for tools returning other people's words. Set
-	// by Fenced; empty means the output is ours and needs no fence.
-	fenceAs string
+	// guardAs is the source label for tools returning other people's words.
+	// Empty means the output is ours and needs no guarding.
+	guardAs string
 }
 
-// Fenced marks a tool whose output is content KARMAX did not write.
+// Guarded marks a tool whose output is content KARMAX did not write.
 //
-// Applied here rather than at each call site so a tool cannot arrive unfenced
-// by being forgotten — which is the failure this exists to prevent, since the
-// library will gain tools that this repo never explicitly lists.
-func Fenced(t tools.Tool, source string) tools.Tool {
+// Applied here rather than at each call site so a tool cannot arrive unguarded
+// by being forgotten — the library will gain tools this repo never lists.
+func Guarded(t tools.Tool, source string) tools.Tool {
 	if g, ok := t.(*goFunctionTool); ok {
 		copy := *g
-		copy.fenceAs = source
+		copy.guardAs = source
 		return &copy
 	}
 	return t
@@ -89,38 +88,49 @@ func (g *goFunctionTool) Execute(ctx context.Context, input map[string]any) (too
 		// error only for a malformed request, and the model can fix that.
 		return tools.ErrorResult(err), nil
 	}
-	if g.fenceAs != "" {
-		out = safety.Fence(g.fenceAs, out)
+	if g.guardAs != "" {
+		// Defanged, not fenced.
+		//
+		// These handlers return JSON, and a caller unmarshals it — cold-scan
+		// parses a chat's messages to decide what to summarise. Wrapping that
+		// in fence markers would make it unparseable, so the guard here is the
+		// half that survives machine reading: any fence delimiters INSIDE the
+		// content are neutralised, so text that reaches a prompt later cannot
+		// close a fence somebody else opened.
+		//
+		// The fence itself belongs where the text meets a model, which for the
+		// loops is shared.ReadThread.
+		out = safety.Defang(out)
 	}
 	return tools.SuccessResult(map[string]any{"raw": out}), nil
 }
 
-// fencedPrefixes name the tools whose output contains what other people wrote.
+// untrustedPrefixes name the tools whose output is what other people wrote.
 //
 // A prefix list rather than an exact one: wacli will gain tools, and a new
-// `whatsapp_search_*` arriving unfenced because nobody updated a list here is
+// `whatsapp_search_*` arriving unguarded because nobody updated a list here is
 // exactly the mistake that would not be noticed until a message told the agent
 // to do something and it did.
-var fencedPrefixes = []string{
+var untrustedPrefixes = []string{
 	"whatsapp_search", "whatsapp_list_chats", "whatsapp_get_chat",
 	"whatsapp_message", "whatsapp_download", "whatsapp_list_contacts",
 	"whatsapp_get_contact", "whatsapp_resolve",
 }
 
-// FenceUntrusted marks the tools in a set whose output is other people's words.
-func FenceUntrusted(in []tools.Tool, source string) []tools.Tool {
+// GuardUntrusted marks the tools in a set whose output is other people's words.
+func GuardUntrusted(in []tools.Tool, source string) []tools.Tool {
 	out := make([]tools.Tool, 0, len(in))
 	for _, t := range in {
 		name := t.Manifest().Name
-		fenced := false
-		for _, p := range fencedPrefixes {
+		guarded := false
+		for _, p := range untrustedPrefixes {
 			if strings.HasPrefix(name, p) {
-				fenced = true
+				guarded = true
 				break
 			}
 		}
-		if fenced {
-			out = append(out, Fenced(t, source))
+		if guarded {
+			out = append(out, Guarded(t, source))
 			continue
 		}
 		out = append(out, t)
