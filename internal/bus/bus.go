@@ -12,31 +12,18 @@ import (
 	"go.uber.org/zap"
 )
 
-// The durable event log.
+// The durable event log. An event is on disk before any subscriber sees it, and
+// each subscriber records how far it has read, so a crash resumes rather than
+// starting blind.
 //
-// What this replaces dropped events on the floor: a subscriber that was busy
-// when something happened got a warning in the log and nothing else. Loop runs
-// were made durable, but the events that TRIGGER them were not, so the guarantee
-// stopped one layer short of where it mattered.
-//
-// Here an event is written to disk before any subscriber sees it, and each
-// subscriber records how far it has read. A crash resumes from that offset
-// rather than starting blind. Delivery is at-least-once: the offset advances
-// only after a handler returns, so a process that dies mid-handler redelivers
-// rather than losing the event. Handlers must therefore tolerate seeing the
-// same event twice, which is the honest trade — exactly-once across a process
-// boundary is not something a queue can promise.
+// Delivery is at-least-once — the offset advances only after a handler returns —
+// so handlers must tolerate seeing an event twice.
 
 const (
-	// batchSize bounds one read. Large enough that catching up after downtime
-	// is not a round trip per event, small enough that a slow handler does not
-	// hold a batch of thousands in memory.
 	batchSize = 128
-	// idlePoll is the backstop when no publish wakes a consumer — a wake-up can
-	// be missed if a publisher dies between the append and the notify.
+	// idlePoll is the backstop for a wake-up missed between append and notify.
 	idlePoll = 5 * time.Second
-	// maxAttempts before an event is dead-lettered and the subscriber moves on.
-	// Retrying forever means one poisonous event stops every event behind it.
+	// maxAttempts before dead-lettering, so one bad event cannot block the rest.
 	maxAttempts = 3
 )
 
@@ -59,15 +46,11 @@ type Log struct {
 	workspace string
 	log       *zap.Logger
 
-	// onDead is how the operator hears about an event nobody could process.
 	onDead func(store.DeadLetter)
-
-	// retryDelay is a field so tests can collapse the backoff rather than
-	// spending six real seconds proving that a dead letter happens.
+	// retryDelay is a field so tests can collapse the backoff.
 	retryDelay func(attempt int) time.Duration
 
-	// notify is closed and replaced on every publish, so consumers waiting on
-	// it wake at once instead of sitting out the poll interval.
+	// notify is closed and replaced on each publish to wake waiting consumers.
 	mu     sync.Mutex
 	notify chan struct{}
 }
@@ -92,10 +75,8 @@ func (l *Log) OnDeadLetter(fn func(store.DeadLetter)) {
 	l.onDead = fn
 }
 
-// Publish appends an event. It is durable once this returns nil.
-//
-// The error is real and worth handling: a failed append means no subscriber
-// will ever see this event, which is the failure the log exists to prevent.
+// Publish appends an event, durable once this returns nil. A failed append
+// means no subscriber will ever see it, so the error is worth handling.
 func (l *Log) Publish(e Event) error {
 	if e.ID == "" {
 		e.ID = uuid.New().String()
@@ -120,9 +101,8 @@ func (l *Log) Publish(e Event) error {
 	return nil
 }
 
-// Consume runs a durable subscriber until ctx is cancelled, resuming from where
-// this name last got to. The name is the identity of the offset, so it must be
-// stable across restarts and unique per subscriber.
+// Consume runs a durable subscriber until ctx is cancelled. The name is the
+// offset's identity: stable across restarts, unique per subscriber.
 func (l *Log) Consume(ctx context.Context, name string, kinds []EventKind, h Handler) {
 	go l.consume(ctx, name, kinds, h)
 }
@@ -135,8 +115,7 @@ func (l *Log) consume(ctx context.Context, name string, kinds []EventKind, h Han
 
 	offset, err := l.journal.ConsumerOffset(name, l.workspace)
 	if err != nil {
-		// Starting from zero would replay everything retained, which is worse
-		// than waiting for a read that works.
+		// Starting from zero would replay everything retained.
 		l.log.Error("could not read subscriber offset; not starting",
 			zap.String("subscriber", name), zap.Error(err))
 		return
@@ -145,9 +124,7 @@ func (l *Log) consume(ctx context.Context, name string, kinds []EventKind, h Han
 		zap.String("subscriber", name), zap.Int64("from_seq", offset))
 
 	for {
-		// Taken BEFORE the read: a publish landing between the read and the
-		// wait would otherwise be missed until the poll interval expired.
-		waiter := l.waiter()
+		waiter := l.waiter() // before the read, or a publish in between is missed
 
 		batch, err := l.journal.LogEventsAfter(l.workspace, offset, filter, batchSize)
 		if err != nil {
@@ -182,8 +159,8 @@ func (l *Log) consume(ctx context.Context, name string, kinds []EventKind, h Han
 	}
 }
 
-// deliver hands one event to a handler, retrying before giving up. It reports
-// false only when cancelled, which leaves the event unacked on purpose.
+// deliver retries before giving up, reporting false only when cancelled, which
+// leaves the event unacked on purpose.
 func (l *Log) deliver(ctx context.Context, name string, h Handler, rec store.LogEvent) bool {
 	e := eventFrom(rec)
 	var lastErr error
@@ -213,8 +190,6 @@ func (l *Log) deliver(ctx context.Context, name string, h Handler, rec store.Log
 		l.log.Error("could not record a dead-lettered event",
 			zap.String("subscriber", name), zap.Error(err))
 	}
-	// Loud: an event nobody could handle means something did not happen, and
-	// the whole point of the log is that this stops being silent.
 	l.log.Error("event dead-lettered; the work it would have triggered did NOT happen",
 		zap.String("subscriber", name), zap.String("kind", rec.Kind),
 		zap.String("event_id", rec.ID), zap.Error(lastErr))
@@ -228,8 +203,8 @@ func (l *Log) deliver(ctx context.Context, name string, h Handler, rec store.Log
 	return true
 }
 
-// call isolates handler panics. A subscriber that dies on one bad payload takes
-// every later event with it, so a panic is turned into a retryable error.
+// call turns a handler panic into a retryable error, so one bad payload cannot
+// take every later event with it.
 func call(ctx context.Context, h Handler, e Event) (err error) {
 	defer func() {
 		if r := recover(); r != nil {

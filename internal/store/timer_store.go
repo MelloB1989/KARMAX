@@ -8,22 +8,17 @@ import (
 	"time"
 )
 
-// Durable timers. A timer set here fires after a restart, a crash, or a week of
-// downtime — which is the difference between "wait three days, then continue"
-// and "run again on a cron and work out where you were".
+// Durable timers: they fire after a restart, a crash, or a week of downtime.
 
 // Timer is one scheduled future event.
 type Timer struct {
-	// ID is chosen by the caller so that re-arming is idempotent: setting the
-	// same id twice moves the deadline rather than firing twice.
+	// ID is the caller's, so re-arming moves the deadline rather than adding one.
 	ID        string
 	Workspace string
 	FireAt    time.Time
-	// Kind is the event kind published when it fires.
-	Kind    string
-	AgentID string
-	// Loop names the loop to re-trigger, when a loop set this timer.
-	Loop      string
+	Kind      string // event kind published when it fires
+	AgentID   string
+	Loop      string // the loop to re-trigger, when a loop set this
 	Payload   map[string]any
 	CreatedAt time.Time
 	FiredAt   *time.Time
@@ -48,8 +43,7 @@ func (s *Store) SetTimer(t Timer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// fired_at is reset on conflict: re-arming a timer that already went off is
-	// how a loop schedules the next occurrence under a stable id.
+	// fired_at resets on conflict, so a stable id can schedule the next occurrence.
 	_, err = s.db.Exec(`
 INSERT INTO timers (id, workspace, fire_at, kind, agent_id, loop, payload, created_at, fired_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
@@ -148,8 +142,8 @@ FROM timers WHERE id = ?`, id)
 	return &t, nil
 }
 
-// MarkTimerFired records that a timer went off. The fired_at guard makes a
-// second attempt a no-op, so a retry after a crash cannot double-fire.
+// MarkTimerFired records that a timer went off; the guard makes a second
+// attempt a no-op.
 func (s *Store) MarkTimerFired(id string, at time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -163,8 +157,7 @@ func (s *Store) MarkTimerFired(id string, at time.Time) (bool, error) {
 	return n > 0, nil
 }
 
-// CancelTimer disarms a timer. Cancelling one that does not exist is not an
-// error: the caller wanted it gone, and it is.
+// CancelTimer disarms a timer; cancelling an unknown one is not an error.
 func (s *Store) CancelTimer(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -172,8 +165,7 @@ func (s *Store) CancelTimer(id string) error {
 	return err
 }
 
-// CancelLoopTimers disarms every pending timer a loop set, used when the loop
-// is uninstalled or disabled so it cannot be woken by its own past.
+// CancelLoopTimers disarms a loop's pending timers, for when it is removed.
 func (s *Store) CancelLoopTimers(loop string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -184,8 +176,7 @@ func (s *Store) CancelLoopTimers(loop string) (int64, error) {
 	return res.RowsAffected()
 }
 
-// PruneTimers drops fired timers older than before. Armed ones are never
-// pruned, however old — a timer set for next year is not stale, it is waiting.
+// PruneTimers drops fired timers only: an armed one is waiting, not stale.
 func (s *Store) PruneTimers(before time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

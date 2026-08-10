@@ -194,8 +194,6 @@ func (s *Scheduler) fireJob(id string) {
 		"agent_id": j.AgentID,
 		"payload":  j.Payload,
 	})); err != nil {
-		// The schedule still advances below: a job that cannot be recorded is
-		// not a job that should fire twice as fast from then on.
 		s.log.Error("scheduled job did not fire — the event could not be recorded",
 			zap.String("job", j.Name), zap.Error(err))
 	}

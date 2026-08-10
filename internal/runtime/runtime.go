@@ -844,11 +844,8 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	return nil
 }
 
-// startAgentRouter delivers routed events to agent inboxes.
-//
-// An event for an agent that is not running, or that names no agent, has
-// nowhere to go and is not an error. A full inbox is: it gets retried and then
-// dead-lettered rather than dropped with a warning nobody reads.
+// startAgentRouter delivers routed events to agent inboxes. No agent means
+// nowhere to go, which is fine; a full inbox is retried and then dead-lettered.
 func (rt *KarmaxRuntime) startAgentRouter(ctx context.Context) {
 	rt.bus.Consume(ctx, bus.SubAgentRouter, rt.routedKinds,
 		func(_ context.Context, evt bus.Event) error {
@@ -863,10 +860,8 @@ func (rt *KarmaxRuntime) startAgentRouter(ctx context.Context) {
 		})
 }
 
-// startDeadLetterAlerts tells the operator when an event was given up on.
-//
-// A dead letter means something that should have happened did not, which is
-// the same class of failure as a dead loop run and gets the same treatment.
+// startDeadLetterAlerts: a dead letter means something that should have
+// happened did not, so it gets the same alert a dead loop run does.
 func (rt *KarmaxRuntime) startDeadLetterAlerts() {
 	rt.bus.OnDeadLetter(func(d store.DeadLetter) {
 		builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "alert",
@@ -887,8 +882,8 @@ func (rt *KarmaxRuntime) startCriticalAlertLoop(ctx context.Context) {
 				message = "KARMAX critical system event"
 			}
 			primary, _ := evt.Payload["karmax_channel_id"].(string)
-			// Returned rather than logged: a critical alert that could not be
-			// delivered is exactly what the retry and dead-letter path is for.
+			// Returned, not logged: an undelivered critical alert is what the
+			// retry and dead-letter path is for.
 			if err := rt.comms.AlertAlternative(evt.AgentID, primary, "Critical KARMAX alert: "+message); err != nil {
 				return fmt.Errorf("alternative channel alert for %s: %w", evt.AgentID, err)
 			}
