@@ -389,12 +389,45 @@ func (c *Certificate) Verify(trustedOrg, subject string) error {
 	return nil
 }
 
-// HasScope reports whether the certificate grants a capability.
+// HasScope reports whether the certificate grants a transport verb.
 func (c *Certificate) HasScope(want string) bool {
 	for _, s := range c.Scopes {
 		if s == want || s == "*" {
 			return true
 		}
+	}
+	return false
+}
+
+// Capabilities returns the scopes that are not transport verbs — "tool:x",
+// "memory:ns:write", "spend:100000" and so on.
+//
+// A certificate carries them; it does not enforce them. Transport authority
+// answers "may this instance speak to me", capability authority answers "may
+// the work it sends touch this", and the two diverge — which is why the Broker
+// is a separate mechanism that takes these as one of its inputs.
+func (c *Certificate) Capabilities() []Capability {
+	var out []Capability
+	for _, s := range c.Scopes {
+		class, value, ok := strings.Cut(s, ":")
+		if !ok || isTransportVerb(s) {
+			continue
+		}
+		out = append(out, Capability{Class: class, Value: value})
+	}
+	return out
+}
+
+// Capability is one non-transport grant carried by a certificate.
+type Capability struct {
+	Class string
+	Value string
+}
+
+func isTransportVerb(s string) bool {
+	switch s {
+	case ScopeMessage, ScopeAsk, ScopeBroadcast, "*":
+		return true
 	}
 	return false
 }

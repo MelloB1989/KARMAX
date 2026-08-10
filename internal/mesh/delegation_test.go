@@ -205,3 +205,45 @@ func TestAnEnvelopeWithNoChainSignsExactlyAsBefore(t *testing.T) {
 		t.Error("an empty chain contributed to the signed bytes")
 	}
 }
+
+func TestCertificateCapabilitiesAreSeparateFromTransportVerbs(t *testing.T) {
+	org, member := mustIdentity(t, "org"), mustIdentity(t, "member")
+	cert := IssueCertificate(org, "Vector", member.ID(), []string{
+		ScopeMessage, ScopeAsk,
+		"tool:github.issues", "memory:org-vector", "spend:100000",
+	}, time.Hour)
+
+	// Transport authority is unchanged by the extra scopes.
+	if !cert.HasScope(ScopeAsk) || cert.HasScope(ScopeBroadcast) {
+		t.Error("transport verbs were disturbed by capability scopes")
+	}
+
+	caps := cert.Capabilities()
+	if len(caps) != 3 {
+		t.Fatalf("capabilities = %+v", caps)
+	}
+	want := map[string]string{
+		"tool": "github.issues", "memory": "org-vector", "spend": "100000",
+	}
+	for _, c := range caps {
+		if want[c.Class] != c.Value {
+			t.Errorf("capability %s = %q, want %q", c.Class, c.Value, want[c.Class])
+		}
+	}
+
+	// Capability scopes are inside the signature like every other scope, so an
+	// org cannot be given more access after the fact.
+	escalated := *cert
+	escalated.Scopes = append(append([]string{}, cert.Scopes...), "tool:*")
+	if err := escalated.Verify(org.ID(), member.ID()); err == nil {
+		t.Error("capabilities were added after issuance and still verified")
+	}
+}
+
+func TestACertificateWithOnlyTransportVerbsGrantsNoCapabilities(t *testing.T) {
+	org, member := mustIdentity(t, "org"), mustIdentity(t, "member")
+	cert := IssueCertificate(org, "Vector", member.ID(), []string{ScopeMessage}, time.Hour)
+	if caps := cert.Capabilities(); len(caps) != 0 {
+		t.Errorf("a message-only certificate granted %+v", caps)
+	}
+}
