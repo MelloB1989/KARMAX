@@ -199,8 +199,28 @@ func (n *Node) Revoke(peerID string) error {
 	return n.store.SetMeshPeerState(peerID, store.PeerRevoked, nil)
 }
 
-// Send delivers a message to one connected instance.
+// Send delivers a message to one connected instance, on this instance's own
+// behalf. Nothing else asked for it, so it carries no delegation chain.
 func (n *Node) Send(ctx context.Context, peerID string, kind Kind, body MessageBody) error {
+	return n.send(ctx, peerID, kind, body, nil)
+}
+
+// SendOnBehalf delivers a message as a continuation of work this instance was
+// asked to do, naming the chain of instances the request came through.
+//
+// This is the call to reach for whenever an inbound request is the reason an
+// outbound one exists. Using plain Send there is not merely less informative —
+// it actively misleads the recipient, who will read the request as originating
+// here and apply the trust it extends to this instance to somebody else's work.
+func (n *Node) SendOnBehalf(ctx context.Context, peerID string, kind Kind, body MessageBody, on Provenance) error {
+	chain, err := on.extend(n.id, peerID)
+	if err != nil {
+		return err
+	}
+	return n.send(ctx, peerID, kind, body, chain)
+}
+
+func (n *Node) send(ctx context.Context, peerID string, kind Kind, body MessageBody, chain []Hop) error {
 	peer, err := n.store.MeshPeerByID(peerID)
 	if err != nil {
 		return err
@@ -219,14 +239,32 @@ func (n *Node) Send(ctx context.Context, peerID string, kind Kind, body MessageB
 	if err != nil {
 		return err
 	}
+	if len(chain) > 0 {
+		// Attached and then re-signed, so the chain is inside this instance's
+		// signature rather than alongside it — the same discipline SendAsOrg
+		// uses for Via and Cert, and for the same reason.
+		e.Chain = chain
+		e.Sig = base64.RawURLEncoding.EncodeToString(n.id.Sign(e.signingBytes()))
+	}
 	if err := n.tp.post(ctx, peer.Endpoint, e); err != nil {
 		return err
 	}
 	_ = n.store.RecordMeshMessage(store.MeshMessage{
 		ID: e.ID, PeerID: peer.ID, PeerName: peer.Name, Kind: string(kind),
 		Direction: "out", Body: truncate(body.Subject+" "+body.Text, 4000),
+		Origin: originOf(e),
 	})
 	return nil
+}
+
+// originOf names the instance an envelope's work traces back to, recorded only
+// when that is somebody other than this one — an origin equal to the sender is
+// not provenance, just noise in the log.
+func originOf(e *Envelope) string {
+	if len(e.Chain) == 0 {
+		return ""
+	}
+	return e.Origin()
 }
 
 // BroadcastResult reports what a fan-out achieved.

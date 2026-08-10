@@ -68,9 +68,14 @@ type Node struct {
 
 	// handlers are what the runtime does with an authorised message. Held
 	// behind a mutex because they are installed after construction.
+	//
+	// Every handler receives the Provenance alongside the peer: the peer is who
+	// spoke, the provenance is on whose behalf. A handler that delegates onward
+	// must pass it to SendOnBehalf, or the chain stops at this instance and the
+	// next one is told a request originated here when it did not.
 	mu        sync.RWMutex
-	onMessage func(peer store.MeshPeer, kind Kind, body MessageBody)
-	onAsk     func(ctx context.Context, peer store.MeshPeer, question string) (string, error)
+	onMessage func(peer store.MeshPeer, kind Kind, body MessageBody, prov Provenance)
+	onAsk     func(ctx context.Context, peer store.MeshPeer, question string, prov Provenance) (string, error)
 	onRequest func(peer store.MeshPeer)
 }
 
@@ -109,14 +114,14 @@ func (n *Node) Identity() *Identity { return n.id }
 func (n *Node) Public() PublicIdentity { return n.id.Public(n.cfg.Endpoint) }
 
 // OnMessage installs the handler for authorised messages.
-func (n *Node) OnMessage(fn func(store.MeshPeer, Kind, MessageBody)) {
+func (n *Node) OnMessage(fn func(store.MeshPeer, Kind, MessageBody, Provenance)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.onMessage = fn
 }
 
 // OnAsk installs the handler that answers questions from peers holding ScopeAsk.
-func (n *Node) OnAsk(fn func(context.Context, store.MeshPeer, string) (string, error)) {
+func (n *Node) OnAsk(fn func(context.Context, store.MeshPeer, string, Provenance) (string, error)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.onAsk = fn
@@ -155,9 +160,48 @@ func (n *Node) Receive(ctx context.Context, e *Envelope) error {
 	if err != nil {
 		return err
 	}
+	// 5. Delegation. The sender may be permitted while the work it carries is
+	//    not, and that is a separate question from either of the ones above.
+	if err := n.checkDelegation(e); err != nil {
+		return err
+	}
 
 	_ = n.store.TouchMeshPeer(peer.ID)
 	return n.dispatch(ctx, e, peer)
+}
+
+// checkDelegation decides whether this instance will do work that reached it
+// through somebody else.
+//
+// The chain has already been verified as genuine by this point; what remains is
+// whether it is welcome. The case that matters is laundering: an instance
+// blocked here asks a peer that is accepted here, and that peer delegates
+// onward. Signature valid, sender trusted, block bypassed by one hop of
+// indirection — unless the block is applied to everyone in the chain, which is
+// what this does.
+//
+// An instance this one has never heard of is NOT refused. Delegation through a
+// colleague to a stranger is the normal shape of the thing, and the sender is
+// the one vouching for them; refusing unknowns would mean the mesh only ever
+// works between instances that already know each other, which is the property
+// the mesh exists to remove.
+func (n *Node) checkDelegation(e *Envelope) error {
+	if len(e.Chain) == 0 {
+		return nil
+	}
+	for _, who := range e.participants() {
+		peer, err := n.store.MeshPeerByID(who)
+		if err != nil {
+			continue
+		}
+		if peer.State == store.PeerBlocked || peer.State == store.PeerRevoked {
+			// Uninformative on purpose, exactly as a direct refusal is: naming
+			// which instance in the chain is unwelcome tells the sender about a
+			// trust decision it has no business reading.
+			return fmt.Errorf("mesh: refusing work delegated on behalf of an instance this one does not permit")
+		}
+	}
+	return nil
 }
 
 // authorise decides whether this sender may be acted on, and returns the peer
@@ -280,7 +324,7 @@ func (n *Node) dispatch(ctx context.Context, e *Envelope, peer store.MeshPeer) e
 		fn := n.onMessage
 		n.mu.RUnlock()
 		if fn != nil {
-			fn(peer, e.Kind, body)
+			fn(peer, e.Kind, body, ProvenanceOf(e))
 		}
 		return nil
 
@@ -295,7 +339,7 @@ func (n *Node) dispatch(ctx context.Context, e *Envelope, peer store.MeshPeer) e
 		if fn == nil {
 			return fmt.Errorf("mesh: this instance cannot answer questions")
 		}
-		answer, err := fn(ctx, peer, body.Text)
+		answer, err := fn(ctx, peer, body.Text, ProvenanceOf(e))
 		if err != nil {
 			return err
 		}
@@ -384,6 +428,7 @@ func (n *Node) record(e *Envelope, peer store.MeshPeer, body MessageBody) {
 	_ = n.store.RecordMeshMessage(store.MeshMessage{
 		ID: e.ID, PeerID: peer.ID, PeerName: peer.Name, Kind: string(e.Kind),
 		Direction: "in", Body: truncate(text, 4000), Via: e.Via,
+		Origin: originOf(e),
 	})
 }
 

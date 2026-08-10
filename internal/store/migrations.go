@@ -385,6 +385,9 @@ var migrations = []string{
 		received_at DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_mesh_messages_time ON mesh_messages(received_at DESC)`,
+
+	// 018_mesh_delegation
+	`ALTER TABLE mesh_messages ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
 }
 
 func (s *Store) migrate() error {
