@@ -23,6 +23,8 @@ import (
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
+	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
+	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
@@ -124,7 +126,19 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Connectors are registered here and do nothing until the operator supplies
 	// credentials and enables them.
 	connHost := connectors.NewHost(s, b, brk, log)
-	connHost.Register(githubconn.New())
+	// One connector per GitHub account. The primary has no suffix, so a
+	// single-account install is unchanged; additional accounts are named and
+	// their tools qualified (github.issues@work), which is what lets the agent
+	// act as the right identity rather than whichever token happened to load.
+	connHost.Register(githubconn.New(""))
+	for _, account := range splitCSV(os.Getenv("KARMAX_GITHUB_ACCOUNTS")) {
+		connHost.Register(githubconn.New(account))
+	}
+	connHost.Register(notionconn.New())
+	// Registered so it can be seen and connected, but it stays off until
+	// KARMAX_ENABLE_INSTAGRAM=true: it drives an unofficial API that can get the
+	// operator's personal account restricted, and that is not a default.
+	connHost.Register(instagramconn.New())
 	startedAt := time.Now()
 
 	// Set provider env vars from config
