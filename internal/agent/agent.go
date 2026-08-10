@@ -643,11 +643,8 @@ func (a *Agent) Resume() error {
 	return nil
 }
 
-// Send hands an event to this agent's inbox.
-//
-// A full inbox is reported rather than dropped: the caller is the event log,
-// which will retry and then dead-letter, so a busy agent delays an event
-// instead of losing it.
+// Send hands an event to this agent's inbox. A full inbox is reported, not
+// dropped, so the event log retries rather than losing it.
 func (a *Agent) Send(e bus.Event) error {
 	select {
 	case a.inbox <- e:

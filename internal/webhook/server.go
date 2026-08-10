@@ -164,8 +164,7 @@ func (s *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		evt.Kind = bus.EventKind(route.BusEvent)
 	}
 
-	// Answered before the event is durable, the caller believes it was
-	// received and will not send it again — so a failed append is a 500.
+	// A 200 before the event is durable means the caller never retries.
 	if err := s.bus.Publish(evt); err != nil {
 		s.log.Error("webhook event could not be recorded",
 			zap.String("path", path), zap.Error(err))

@@ -69,10 +69,8 @@ type Node struct {
 	// handlers are what the runtime does with an authorised message. Held
 	// behind a mutex because they are installed after construction.
 	//
-	// Every handler receives the Provenance alongside the peer: the peer is who
-	// spoke, the provenance is on whose behalf. A handler that delegates onward
-	// must pass it to SendOnBehalf, or the chain stops at this instance and the
-	// next one is told a request originated here when it did not.
+	// The peer is who spoke; the Provenance is on whose behalf. A handler that
+	// delegates onward must pass it to SendOnBehalf or the chain stops here.
 	mu        sync.RWMutex
 	onMessage func(peer store.MeshPeer, kind Kind, body MessageBody, prov Provenance)
 	onAsk     func(ctx context.Context, peer store.MeshPeer, question string, prov Provenance) (string, error)
@@ -160,8 +158,7 @@ func (n *Node) Receive(ctx context.Context, e *Envelope) error {
 	if err != nil {
 		return err
 	}
-	// 5. Delegation. The sender may be permitted while the work it carries is
-	//    not, and that is a separate question from either of the ones above.
+	// 5. Delegation. The sender may be permitted while its cargo is not.
 	if err := n.checkDelegation(e); err != nil {
 		return err
 	}
@@ -170,21 +167,12 @@ func (n *Node) Receive(ctx context.Context, e *Envelope) error {
 	return n.dispatch(ctx, e, peer)
 }
 
-// checkDelegation decides whether this instance will do work that reached it
-// through somebody else.
+// checkDelegation refuses laundering: an instance blocked here asks a peer that
+// is accepted here, which delegates onward — signature valid, sender trusted,
+// block bypassed by one hop, unless it applies to everyone in the chain.
 //
-// The chain has already been verified as genuine by this point; what remains is
-// whether it is welcome. The case that matters is laundering: an instance
-// blocked here asks a peer that is accepted here, and that peer delegates
-// onward. Signature valid, sender trusted, block bypassed by one hop of
-// indirection — unless the block is applied to everyone in the chain, which is
-// what this does.
-//
-// An instance this one has never heard of is NOT refused. Delegation through a
-// colleague to a stranger is the normal shape of the thing, and the sender is
-// the one vouching for them; refusing unknowns would mean the mesh only ever
-// works between instances that already know each other, which is the property
-// the mesh exists to remove.
+// An unknown instance is NOT refused; the sender vouches for it, and delegation
+// to strangers is the shape of the thing.
 func (n *Node) checkDelegation(e *Envelope) error {
 	if len(e.Chain) == 0 {
 		return nil
@@ -195,9 +183,7 @@ func (n *Node) checkDelegation(e *Envelope) error {
 			continue
 		}
 		if peer.State == store.PeerBlocked || peer.State == store.PeerRevoked {
-			// Uninformative on purpose, exactly as a direct refusal is: naming
-			// which instance in the chain is unwelcome tells the sender about a
-			// trust decision it has no business reading.
+			// Uninformative on purpose, as a direct refusal is.
 			return fmt.Errorf("mesh: refusing work delegated on behalf of an instance this one does not permit")
 		}
 	}

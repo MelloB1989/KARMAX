@@ -8,18 +8,14 @@ import (
 	"time"
 )
 
-// The durable event log. Append-only, ordered by seq, partitioned by workspace.
-// Subscribers record how far they have read, so a restart resumes rather than
-// starting blind.
+// The durable event log: append-only, ordered by seq, partitioned by workspace.
 
-// DefaultWorkspace is the partition a single-user instance writes to. The
-// column exists now because adding a partition key to a live log later means
-// rewriting every offset, and one instance per person is only the current
-// shape, not a permanent one.
+// DefaultWorkspace is the partition a single-user instance writes to. The column
+// exists now because adding one to a live log later means rewriting every offset.
 const DefaultWorkspace = "default"
 
-// LogEvent is one appended event. Seq is assigned on append and is the only
-// ordering that matters — timestamps come from wall clocks and can go backwards.
+// LogEvent is one appended event. Seq is the only ordering that matters —
+// timestamps come from wall clocks and can go backwards.
 type LogEvent struct {
 	Seq       int64
 	ID        string
@@ -43,10 +39,8 @@ type DeadLetter struct {
 	CreatedAt  time.Time
 }
 
-// AppendLogEvent appends one event and returns its sequence number.
-//
-// A duplicate id is not an error: publishing is retried in places, and the
-// second append returning the first one's seq keeps that idempotent.
+// AppendLogEvent appends one event and returns its seq. A duplicate id returns
+// the first one's seq, which is what keeps republishing idempotent.
 func (s *Store) AppendLogEvent(e LogEvent) (int64, error) {
 	payload, err := json.Marshal(e.Payload)
 	if err != nil {
@@ -101,8 +95,7 @@ FROM event_log WHERE workspace = ? AND seq > ?`
 			args = append(args, k)
 		}
 	}
-	// Ascending: a log replayed out of order is not a log.
-	query += ` ORDER BY seq ASC LIMIT ?`
+	query += ` ORDER BY seq ASC LIMIT ?` // a log replayed out of order is not a log
 	args = append(args, limit)
 
 	s.mu.RLock()
@@ -205,16 +198,13 @@ func scanLogEvent(rows *sql.Rows) (LogEvent, error) {
 		return e, err
 	}
 	e.AgentID = agentID.String
-	// A payload that will not decode must not stop the whole read: the event
-	// still happened, and a consumer seeing it empty is better than a
-	// subscriber that cannot advance past it.
+	// A payload that will not decode must not wedge the subscriber behind it.
 	_ = json.Unmarshal([]byte(payload), &e.Payload)
 	_ = json.Unmarshal([]byte(metaJSON), &e.Meta)
 	return e, nil
 }
 
-// ConsumerOffset is how far a subscriber has read. Zero for one that has never
-// run, which means it starts from the beginning of what is retained.
+// ConsumerOffset is how far a subscriber has read; zero means from the start.
 func (s *Store) ConsumerOffset(name, workspace string) (int64, error) {
 	if workspace == "" {
 		workspace = DefaultWorkspace
@@ -232,10 +222,8 @@ func (s *Store) ConsumerOffset(name, workspace string) (int64, error) {
 	return seq, err
 }
 
-// SetConsumerOffset records that a subscriber has finished everything up to seq.
-//
-// Never moves backwards. Two workers for one subscriber name would otherwise
-// undo each other's progress and redeliver indefinitely.
+// SetConsumerOffset records progress. Never moves backwards, or two workers
+// sharing a name would undo each other and redeliver forever.
 func (s *Store) SetConsumerOffset(name, workspace string, seq int64) error {
 	if workspace == "" {
 		workspace = DefaultWorkspace
@@ -252,8 +240,7 @@ ON CONFLICT(subscriber, workspace) DO UPDATE SET
 	return err
 }
 
-// SafeSeq is the lowest offset any subscriber has reached — the point past
-// which nothing may be pruned, because somebody has not read it yet.
+// SafeSeq is the lowest offset any subscriber has reached: the prune limit.
 func (s *Store) SafeSeq(workspace string) (int64, error) {
 	if workspace == "" {
 		workspace = DefaultWorkspace
@@ -310,9 +297,8 @@ FROM event_dead_letters ORDER BY id DESC LIMIT ?`, limit)
 	return out, rows.Err()
 }
 
-// PruneEventLog drops events older than before that every subscriber has
-// already read. The second condition is the one that matters: pruning by age
-// alone would silently delete work a lagging subscriber had not done yet.
+// PruneEventLog drops events older than before that EVERY subscriber has read.
+// Pruning by age alone would delete work a lagging subscriber had not done.
 func (s *Store) PruneEventLog(workspace string, before time.Time) (int64, error) {
 	safe, err := s.SafeSeq(workspace)
 	if err != nil {

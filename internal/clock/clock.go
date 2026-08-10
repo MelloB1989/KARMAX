@@ -1,9 +1,5 @@
-// Package clock fires durable timers into the event log.
-//
-// A stateless harness cannot say "wait three days, then continue" — it exits
-// and the intention goes with it. A timer here survives a restart, a crash, or
-// a week of downtime, which is what makes "check back Thursday" a primitive
-// rather than a cron job that re-derives its own state.
+// Package clock fires durable timers into the event log, so "wait three days,
+// then continue" survives a restart instead of dying with the process.
 package clock
 
 import (
@@ -16,13 +12,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// resolution bounds how late a timer can be. Timers here measure hours and
-// days, so a few seconds of lag costs nothing and a tight tick would just wake
-// the disk for no one.
+// resolution bounds lateness. Timers here measure hours, so seconds cost
+// nothing and a tight tick would wake the disk for no one.
 const resolution = 10 * time.Second
 
-// batch caps one sweep, so a backlog after long downtime is worked through
-// rather than published in one burst.
+// batch caps one sweep, so a backlog is worked through rather than burst.
 const batch = 64
 
 type Clock struct {
@@ -70,9 +64,7 @@ func (c *Clock) Pending(limit int) ([]store.Timer, error) {
 
 func (c *Clock) Start(ctx context.Context) {
 	go func() {
-		// Immediately, not after the first tick: timers that came due while the
-		// process was down are the ones that most need firing.
-		c.sweep()
+		c.sweep() // immediately: timers due during downtime matter most
 		t := time.NewTicker(c.tick)
 		defer t.Stop()
 		for {
@@ -94,7 +86,7 @@ func (c *Clock) sweep() {
 	}
 	for _, t := range due {
 		if err := c.bus.Publish(eventFor(t)); err != nil {
-			// Left armed on purpose: the next sweep retries rather than losing it.
+			// Left armed: the next sweep retries rather than losing it.
 			c.log.Error("timer could not be published; it stays armed",
 				zap.String("timer", t.ID), zap.Error(err))
 			continue
@@ -105,11 +97,8 @@ func (c *Clock) sweep() {
 	}
 }
 
-// eventFor builds the event a timer publishes.
-//
-// The id is derived from the timer rather than random, so publishing it twice —
-// which happens when the process dies between the append and the mark — appends
-// once. That turns at-least-once delivery into exactly-once firing.
+// eventFor builds the event a timer publishes. The id is derived, not random,
+// so a republish after a crash appends once — exactly-once firing.
 func eventFor(t store.Timer) bus.Event {
 	payload := map[string]any{}
 	for k, v := range t.Payload {

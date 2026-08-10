@@ -8,37 +8,17 @@ import (
 	"time"
 )
 
-// Provenance: on whose behalf an envelope is being sent.
+// Provenance: on whose behalf an envelope is sent, not merely who sent it.
 //
-// The mesh already answered "who sent this". It did not answer "who is this
-// actually for", and the gap is a confused deputy. Peer A puts a question to
-// this instance; this instance needs help and asks peer B. B sees a request
-// from an instance it has accepted, with nothing to say A originated it — so B
-// answers A's question believing it answered ours. Every check B makes passes,
-// and B is still wrong about who it just served.
-//
-// A delegation chain closes that. Each hop is signed by the instance that made
-// it, which makes the chain APPEND-ONLY: a delegate can add its own step, but
-// it cannot rewrite an earlier one, drop an inconvenient one, or invent a hop
-// attributed to a key it does not hold, because every one of those breaks a
-// signature the recipient checks.
-//
-// What the chain is NOT: proof that A consented to being named. A hop is the
-// delegate's signed assertion about who asked it, not A's signature. Making it
-// A's signature would mean A had to anticipate the delegation before it
-// happened, which defeats the purpose. So the guarantee is precisely: each
-// claim in the chain is attributable to a specific key, and the sender's own
-// key vouches for the whole of it. That is the same trust the recipient already
-// extends to the sender by accepting it as a peer — and it is enough for the
-// three things the chain has to support: refusing cycles, bounding depth, and
-// refusing work laundered on behalf of somebody this instance has blocked.
+// Each hop is signed by the instance that made it, so the chain is append-only:
+// a delegate can add its own step but cannot rewrite, drop or forge an earlier
+// one. It does NOT prove the origin consented to being named — that would need
+// the origin to anticipate the delegation. Each claim is attributable to a key
+// and the sender vouches for the whole, which is enough to refuse cycles, bound
+// depth, and refuse work laundered for someone this instance has blocked.
 
-// maxChainHops bounds a delegation chain.
-//
-// The chain is attacker-influenced input and each hop costs a signature
-// verification, so the length is checked before any of them is verified. Eight
-// is far past any legitimate depth — work that has passed through eight
-// instances has stopped being delegation and become a routing loop.
+// maxChainHops is checked before any hop is verified, since each costs a
+// signature check and the chain is attacker-influenced.
 const maxChainHops = 8
 
 // Hop is one step of delegation: instance By acted because Asker asked it to,
@@ -58,11 +38,8 @@ func (h *Hop) signingString() string {
 		h.By, h.Asker, h.Cause, h.Kind, h.TS)
 }
 
-// canonical is the hop as the ENVELOPE's signature covers it.
-//
-// Sig is included: without it a hop's signature could be swapped for another
-// valid signature by the same key over different fields, and the envelope
-// signature would not notice.
+// canonical is the hop as the ENVELOPE's signature covers it, Sig included so
+// one valid signature cannot be swapped for another.
 func (h *Hop) canonical() string { return h.signingString() + "|sig=" + h.Sig }
 
 // verify checks one hop against the key that claims to have written it.
@@ -80,11 +57,8 @@ func (h *Hop) verify() error {
 	if !validKinds[h.Kind] {
 		return fmt.Errorf("causing envelope has unknown kind %q", h.Kind)
 	}
-	// Future-dating is refused on the same bound as an envelope. Age is
-	// deliberately NOT bounded: a durable loop may legitimately be asked
-	// something on Monday and delegate on Thursday, and that is the product,
-	// not an anomaly. Freshness of the ENVELOPE is what stops replay; a hop is
-	// history, and history is allowed to be old.
+	// Only future-dating. Age is deliberately unbounded: a loop may be asked on
+	// Monday and delegate on Thursday, and envelope freshness stops replay.
 	if time.Unix(h.TS, 0).After(time.Now().Add(clockSkew)) {
 		return fmt.Errorf("is dated in the future")
 	}
@@ -98,11 +72,8 @@ func (h *Hop) verify() error {
 	return nil
 }
 
-// verifyChain checks the delegation history carried by an envelope.
-//
-// Called from VerifySignature, so no path can authenticate an envelope without
-// also validating its chain — a chain checked only where someone remembered to
-// check it is a chain that eventually goes unchecked.
+// verifyChain checks an envelope's delegation history. Called from
+// VerifySignature so no path can authenticate without validating the chain.
 func verifyChain(e *Envelope) error {
 	if len(e.Chain) == 0 {
 		return nil
@@ -112,9 +83,7 @@ func verifyChain(e *Envelope) error {
 			len(e.Chain), maxChainHops)
 	}
 
-	// seen doubles as the cycle check. An instance that appears twice in one
-	// chain means the work has come back to somewhere it already was, and
-	// following it further is how two instances delegate to each other forever.
+	// seen doubles as the cycle check.
 	seen := make(map[string]bool, len(e.Chain)+1)
 	for i := range e.Chain {
 		h := &e.Chain[i]
@@ -124,9 +93,7 @@ func verifyChain(e *Envelope) error {
 		if i == 0 {
 			seen[h.Asker] = true
 		} else if h.Asker != e.Chain[i-1].By {
-			// Each hop must name the previous delegate as its asker. Without
-			// this, unrelated hops signed by real keys could be spliced into a
-			// chain that never happened.
+			// Otherwise real hops could be spliced into a chain that never happened.
 			return fmt.Errorf("mesh: delegation chain breaks between hop %d and %d", i-1, i)
 		}
 		if seen[h.By] {
@@ -135,14 +102,11 @@ func verifyChain(e *Envelope) error {
 		seen[h.By] = true
 	}
 
-	// The sender must be the instance that made the last hop. Otherwise any
-	// peer could attach somebody else's chain to its own envelope and inherit
-	// the authority of an origin it was never delegated by.
+	// Otherwise a peer could attach someone else's chain and inherit its origin.
 	if last := e.Chain[len(e.Chain)-1]; last.By != e.From {
 		return fmt.Errorf("mesh: the sender did not make the last delegation hop")
 	}
-	// And it must not be coming back to us. A broadcast has no single
-	// recipient, so there is nothing to compare.
+	// A broadcast has no single recipient, so there is nothing to compare.
 	if e.To != "*" && seen[e.To] {
 		return fmt.Errorf("mesh: delegation chain returns to its own recipient")
 	}
@@ -172,12 +136,8 @@ func (e *Envelope) participants() []string {
 	return out
 }
 
-// Provenance is why this instance is acting: the request that asked it to, and
-// the delegation history behind that request.
-//
-// Its fields are unexported on purpose. A Provenance can only be obtained from
-// an envelope that already verified, so a caller cannot hand-assemble one
-// claiming an origin that never asked for anything.
+// Provenance is why this instance is acting. Fields are unexported so one can
+// only come from an envelope that already verified.
 type Provenance struct {
 	chain []Hop
 	cause string
@@ -204,8 +164,8 @@ func (p Provenance) Origin() string {
 	return p.asker
 }
 
-// Asker is who put this request to this instance directly — the last hop
-// before us, which is not the origin once there is a chain.
+// Asker is who put the request to this instance directly, which is not the
+// origin once there is a chain.
 func (p Provenance) Asker() string { return p.asker }
 
 // Cause is the envelope this instance is acting on.
@@ -235,12 +195,8 @@ func (p Provenance) Participants() []string {
 // Chain returns a copy of the delegation history, for display and audit.
 func (p Provenance) Chain() []Hop { return append([]Hop(nil), p.chain...) }
 
-// extend appends this instance's own hop, signed, producing the chain an
-// outbound envelope should carry.
-//
-// The limits are enforced HERE as well as on receipt. A sender that discovers
-// its own cycle gets a usable error; one that only finds out when the far side
-// refuses gets a delivery failure and no reason.
+// extend appends this instance's signed hop. Limits are enforced here as well
+// as on receipt, so a sender gets a usable error rather than a refusal.
 func (p Provenance) extend(id *Identity, to string) ([]Hop, error) {
 	if strings.TrimSpace(p.cause) == "" || strings.TrimSpace(p.asker) == "" {
 		return nil, fmt.Errorf("mesh: this provenance names no request to act on behalf of")
