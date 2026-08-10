@@ -28,6 +28,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/mesh"
+	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/review"
 	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
@@ -67,6 +68,10 @@ type KarmaxRuntime struct {
 	// routedKinds are the event kinds that reach agent inboxes, computed at
 	// construction and consumed once the runtime starts.
 	routedKinds []bus.EventKind
+
+	// recipeLoops are the YAML recipes currently loaded from disk.
+	recipeMu    sync.RWMutex
+	recipeLoops map[string]*recipes.Recipe
 
 	// loopkit runtime state (set by startLoopkitLoops)
 	loopkitLoops     map[string]loopkit.Loop
@@ -669,6 +674,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		clock:       clk,
 		broker:      brk,
 		connectors:  connHost,
+		recipeLoops: map[string]*recipes.Recipe{},
 		routedKinds: routedKinds,
 		mesh:        meshNode,
 		startedAt:   startedAt,
@@ -687,6 +693,7 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
 	rt.clock.Start(ctx)
 	rt.connectors.StartPollers(ctx)
+	rt.startRecipes(ctx)
 	rt.startAgentRouter(ctx)
 	rt.wireMesh()
 	rt.startCriticalAlertLoop(ctx)

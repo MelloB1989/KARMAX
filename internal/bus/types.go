@@ -51,10 +51,13 @@ func NewEvent(kind EventKind, agentID string, payload map[string]any) Event {
 // rather than strings at the call site — a typo would silently create a second
 // subscriber that replays from the beginning.
 const (
-	SubLoopSchedule = "loops.schedule"
-	SubLoopEvent    = "loops.event"
-	SubLoopWebhook  = "loops.webhook"
-	SubLoopTimer    = "loops.timer"
-	SubAgentRouter  = "agents.router"
-	SubCritical     = "alerts.critical"
+	SubLoopSchedule   = "loops.schedule"
+	SubLoopEvent      = "loops.event"
+	SubLoopWebhook    = "loops.webhook"
+	SubLoopTimer      = "loops.timer"
+	SubRecipeSchedule = "recipes.schedule"
+	SubRecipeTimer    = "recipes.timer"
+	SubRecipeEvent    = "recipes.event"
+	SubAgentRouter    = "agents.router"
+	SubCritical       = "alerts.critical"
 )
