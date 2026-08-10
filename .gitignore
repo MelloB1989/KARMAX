@@ -1,4 +1,9 @@
 /karmax
+# ...and any local backup of it. /karmax is anchored, so it matched the binary
+# but not karmax.pre-wasm-backup, which is how a 50MB blob reached the remote.
+# Backups belong in ~/.karmax, not here.
+/karmax.pre-*
+/karmax.*-backup
 /nexus
 .env
 *.log
