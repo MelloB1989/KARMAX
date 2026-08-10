@@ -10,3 +10,7 @@
 .claude/
 PLAN.md
 karmax.yaml
+
+# Built WASM guest for the extension-tier spike (reproduce with the command in
+# spikes/wasm/FINDINGS.md).
+spikes/wasm/guest.wasm
