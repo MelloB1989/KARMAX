@@ -28,6 +28,7 @@ require (
 	cloud.google.com/go/auth v0.14.0 // indirect
 	cloud.google.com/go/compute/metadata v0.6.0 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/Davincible/goinsta/v3 v3.2.6 // indirect
 	github.com/MelloB1989/wacli v0.2.0 // indirect
 	github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.4.0 // indirect
@@ -64,6 +65,9 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
+	github.com/chromedp/cdproto v0.0.0-20220901095120-1a01299a2163 // indirect
+	github.com/chromedp/chromedp v0.8.5 // indirect
+	github.com/chromedp/sysutil v1.0.0 // indirect
 	github.com/clipperhouse/displaywidth v0.9.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
@@ -74,8 +78,12 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.1.0 // indirect
 	github.com/golang-jwt/jwt v3.2.2+incompatible // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/google/go-github/v66 v66.0.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
@@ -83,6 +91,8 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
+	github.com/jomei/notionapi v1.13.3 // indirect
+	github.com/josharian/intern v1.0.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/matoous/go-nanoid/v2 v2.1.0 // indirect
@@ -104,6 +114,7 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/sctp v1.9.4 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/posthog/posthog-go v1.6.3 // indirect
 	github.com/purpshell/meowcaller v0.0.0-20260726180203-6d9b7b2c1807 // indirect
 	github.com/redis/go-redis/v9 v9.7.0 // indirect

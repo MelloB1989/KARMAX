@@ -22,7 +22,7 @@ import (
 // both sides list the same set; keeping the CLI able to configure one without
 // the daemon running is worth the duplication.
 func registered() []connectorkit.Connector {
-	return []connectorkit.Connector{githubconn.New()}
+	return []connectorkit.Connector{githubconn.New("")}
 }
 
 func connectorsCmd() *cobra.Command {

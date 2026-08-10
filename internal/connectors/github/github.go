@@ -22,14 +22,40 @@ import (
 // api is a var so tests can point it at a stub. Never reassigned in production.
 var api = "https://api.github.com"
 
-type Connector struct{}
+// Connector is one GitHub account's issues, pull requests and events.
+type Connector struct {
+	// account distinguishes several logins to GitHub. Empty is the primary.
+	account string
+}
 
-func New() *Connector { return &Connector{} }
+// New builds the connector for one GitHub account.
+//
+// Several can be enabled at once — a work account and a personal one — each
+// with its own token and its own `karmax login github --account <name>`. The
+// account is part of the connector's identity rather than a field inside it, so
+// the credential store keeps them apart without knowing what an account is.
+func New(account string) *Connector { return &Connector{account: strings.TrimSpace(account)} }
+
+// name qualifies a tool with the account, for every account but the primary.
+//
+// The primary keeps the clean name so the common single-account install reads
+// as it always did, and a second account adds `github.issues@work` rather than
+// renaming what was already there.
+func (c *Connector) name(base string) string {
+	if c.account == "" {
+		return base
+	}
+	return base + "@" + c.account
+}
 
 func (c *Connector) Manifest() connectorkit.Manifest {
+	id, name := "github", "GitHub"
+	if c.account != "" {
+		id, name = "github:"+c.account, "GitHub ("+c.account+")"
+	}
 	return connectorkit.Manifest{
-		ID:          "github",
-		Name:        "GitHub",
+		ID:          id,
+		Name:        name,
 		Description: "Issues, pull requests and reviews — as tools the agent can call and as events loops can trigger on.",
 		Capabilities: []string{
 			"http:api.github.com",
@@ -65,7 +91,7 @@ func (c *Connector) Health(ctx context.Context, cr connectorkit.Credentials) err
 func (c *Connector) Tools() []connectorkit.Tool {
 	return []connectorkit.Tool{
 		{
-			Name:        "github.issues",
+			Name:        c.name("github.issues"),
 			Description: "List open issues or pull requests in a repository. Use to see what is waiting.",
 			Parameters: json.RawMessage(`{
 				"type":"object",
@@ -78,7 +104,7 @@ func (c *Connector) Tools() []connectorkit.Tool {
 			Call: listIssues,
 		},
 		{
-			Name:        "github.comment",
+			Name:        c.name("github.comment"),
 			Description: "Comment on an issue or pull request.",
 			Parameters: json.RawMessage(`{
 				"type":"object",
@@ -92,7 +118,7 @@ func (c *Connector) Tools() []connectorkit.Tool {
 			Call: comment,
 		},
 		{
-			Name:        "github.issue",
+			Name:        c.name("github.issue"),
 			Description: "Read one issue or pull request in full, including its body and comment count.",
 			Parameters: json.RawMessage(`{
 				"type":"object",

@@ -13,10 +13,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/config"
+	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
+	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
+	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -33,6 +37,16 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	// worth answering even when nothing is using it yet.
 	reg.Register(whatsApp())
 	reg.Register(googleWorkspace())
+
+	// The connectors, adapted through their own manifests — so a connector and a
+	// channel are the same kind of thing to `karmax login`, which is the point
+	// of having one registry at all.
+	reg.Register(integration.FromConnector(githubconn.New(""), ""))
+	for _, account := range splitCSV(os.Getenv("KARMAX_GITHUB_ACCOUNTS")) {
+		reg.Register(integration.FromConnector(githubconn.New(account), account))
+	}
+	reg.Register(integration.FromConnector(notionconn.New(), ""))
+	reg.Register(integration.FromConnector(instagramconn.New(), ""))
 
 	// The token-based channels, one per configured channel so two Slack
 	// workspaces are two integrations rather than one that silently wins.
@@ -228,6 +242,17 @@ func get(ctx context.Context, url string, headers map[string]string) ([]byte, er
 		return body, fmt.Errorf("%s answered %s", req.URL.Host, resp.Status)
 	}
 	return body, nil
+}
+
+// splitCSV reads a comma-separated environment list.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func firstNonEmpty(vals ...string) string {
