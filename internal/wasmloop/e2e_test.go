@@ -197,7 +197,6 @@ func TestEachHostFunctionIsCheckedAgainstItsOwnCapabilityClass(t *testing.T) {
 		{Subject: subject, Capability: store.CapMemory, Value: "nexus"},
 		{Subject: subject, Capability: store.CapMemory, Value: "nexus:write"},
 		{Subject: subject, Capability: store.CapTool, Value: "summarize"},
-		{Subject: subject, Capability: store.CapChannel, Value: "whatsapp"},
 	} {
 		if err := brk.Grant(g); err != nil {
 			t.Fatal(err)
@@ -214,7 +213,6 @@ func TestEachHostFunctionIsCheckedAgainstItsOwnCapabilityClass(t *testing.T) {
 		{FnChatGet, true},   // memory:nexus
 		{FnChatSave, true},  // memory:nexus:write
 		{FnSummarize, true}, // tool:summarize
-		{FnSendWA, true},    // channel:whatsapp
 		{FnHarness, false},  // tool:harness — not granted
 		{FnNotify, false},   // tool:app.push — not granted
 		{FnAsk, false},      // tool:agent.ask — not granted
@@ -231,5 +229,113 @@ func TestEachHostFunctionIsCheckedAgainstItsOwnCapabilityClass(t *testing.T) {
 		if !tc.allow && err == nil {
 			t.Errorf("%s (%s:%s) was permitted without a grant", tc.fn, class, value)
 		}
+	}
+}
+
+// A tool call passes TWO independent gates: the signed manifest's tool list and
+// the Broker's grant. Either one alone is not enough.
+//
+// The manifest gate is the one that is easy to lose. `tool` is a single host
+// function, so a loop that declares it can name ANY tool in the request — and
+// if only the Broker were consulted, a grant of "tool:*" (or a tool granted for
+// an unrelated reason, like tool:summarize) would hand the loop the entire
+// registry. The list the operator approved has to be enforced per call.
+func TestAToolCallPassesBothTheManifestAndTheBroker(t *testing.T) {
+	db := testStore(t)
+	brk := broker.New(db, zap.NewNop())
+	subject := broker.LoopSubject("gates")
+	brk.SetTrust(subject, broker.Community)
+
+	// Granted generously on purpose: the Broker is not the gate under test.
+	if err := brk.Grant(store.Grant{
+		Subject: subject, Capability: store.CapTool, Value: store.CapWildcard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{
+		name: "gates", namespace: "nexus", grants: brk.For(subject),
+		declared: set([]string{FnTool}),
+		tools:    set([]string{"whatsapp.read"}),
+		log:      zap.NewNop(),
+	}
+
+	if !r.tools["whatsapp.read"] {
+		t.Fatal("the declared tool is not in the manifest allowlist")
+	}
+	// Undeclared, despite tool:* — the manifest is what the operator read.
+	if r.tools["whatsapp.send"] {
+		t.Error("a tool absent from the manifest was treated as declared")
+	}
+	if err := r.grants.Tool("whatsapp.send"); err != nil {
+		t.Fatalf("the Broker refused what it was granted, so this test would "+
+			"pass even with the manifest gate removed: %v", err)
+	}
+
+	// And the reverse: declared but not granted must still be refused.
+	ungranted := broker.LoopSubject("gates-ungranted")
+	brk.SetTrust(ungranted, broker.Community)
+	r2 := &Runner{namespace: "nexus", grants: brk.For(ungranted),
+		tools: set([]string{"whatsapp.read"}), log: zap.NewNop()}
+	if err := r2.grants.Tool("whatsapp.read"); err == nil {
+		t.Error("a declared tool was permitted with no grant behind it")
+	}
+}
+
+// The manifest's tools: list is what install grants.
+//
+// Without this the whole tier is quietly dead: every re-ported loop declares
+// its integrations under tools:, install would record no tool grants at all,
+// and each loop would verify, schedule, run and then be refused by the Broker
+// on its first real call — succeeding at everything except its purpose.
+func TestInstallGrantsTheToolsTheManifestDeclares(t *testing.T) {
+	module := buildGuest(t)
+	pub, reg := newSigner(t), newSigner(t)
+
+	m := Manifest{
+		Name: "granted", Version: "1.0.0", Host: []string{FnLog, FnTool},
+		Publisher:    pub.pub,
+		Tools:        []string{"whatsapp.read", "whatsapp.send"},
+		Capabilities: []string{"memory:nexus"},
+		MemoryMB:     32,
+	}
+	in, rec := newInstaller(t, Trust{Registries: []string{reg.pub}})
+	if _, err := in.Install(packed(t, m, module, pub, reg)); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, g := range rec.grants {
+		got[g.Capability+":"+g.Value] = true
+	}
+	for _, want := range []string{"tool:whatsapp.read", "tool:whatsapp.send", "memory:nexus"} {
+		if !got[want] {
+			t.Errorf("install did not grant %s; recorded %v", want, got)
+		}
+	}
+
+	// And an upgrade that drops a tool must lose the grant, not keep it.
+	m.Version, m.Tools = "1.1.0", []string{"whatsapp.read"}
+	if _, err := in.Install(packed(t, m, module, pub, reg)); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	for _, g := range rec.grants {
+		if g.Capability == store.CapTool && g.Value == "whatsapp.send" {
+			t.Error("an upgrade that dropped whatsapp.send kept the grant for it")
+		}
+	}
+}
+
+// toolName is what decides which tool the gates are applied to, so a request it
+// misreads is a request gated as the wrong tool.
+func TestToolNameRefusesARequestThatNamesNothing(t *testing.T) {
+	for _, req := range []string{``, `{}`, `{"name":""}`, `{"name":"   "}`, `not json`} {
+		if name, err := toolName(req); err == nil {
+			t.Errorf("toolName(%q) returned %q instead of refusing", req, name)
+		}
+	}
+	name, err := toolName(`{"name":"whatsapp.read","input":{"chat":"x"}}`)
+	if err != nil || name != "whatsapp.read" {
+		t.Errorf("toolName = %q, %v; want whatsapp.read", name, err)
 	}
 }

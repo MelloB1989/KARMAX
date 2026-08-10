@@ -44,8 +44,7 @@ const (
 	FnSummarize   = "summarize"
 	FnPropose     = "propose"
 	FnRemind      = "remind"
-	FnSendWA      = "send_whatsapp"
-	FnReadWA      = "read_whatsapp"
+	FnTool        = "tool"
 	FnShortSet    = "short_set"
 	FnShortGet    = "short_get"
 	FnShortAll    = "short_all"
@@ -54,10 +53,6 @@ const (
 	FnRunLoop     = "run_loop"
 	FnShortForget = "short_forget"
 	FnOperators   = "operator_chats"
-	FnMonitored   = "monitored_chats"
-	FnWAChats     = "wa_chats"
-	FnWAMessages  = "wa_messages"
-	FnGChatSpaces = "gchat_spaces"
 )
 
 var hostDescriptions = map[string]string{
@@ -75,8 +70,7 @@ var hostDescriptions = map[string]string{
 	FnSummarize:   "summarise text with the cheap model",
 	FnPropose:     "ask for your approval before acting",
 	FnRemind:      "put reminders on your list",
-	FnSendWA:      "SEND WHATSAPP MESSAGES AS YOU",
-	FnReadWA:      "read your WhatsApp messages",
+	FnTool:        "call the tools listed above, and nothing else",
 	FnShortSet:    "keep short-term working notes",
 	FnShortGet:    "read its short-term working notes",
 	FnShortAll:    "read all its short-term working notes",
@@ -85,14 +79,13 @@ var hostDescriptions = map[string]string{
 	FnRunLoop:     "trigger your other loops",
 	FnShortForget: "clear its short-term working notes",
 	FnOperators:   "know which chats are yours rather than someone else's",
-	FnMonitored:   "know which chats KARMAX is watching",
-	FnWAChats:     "list your WhatsApp chats",
-	FnWAMessages:  "read messages from a WhatsApp chat",
-	FnGChatSpaces: "list your Google Chat spaces",
 }
 
 // capabilityFor maps a host function to the Broker capability it needs, so the
 // two cannot drift apart.
+//
+// FnTool is absent deliberately: its capability depends on WHICH tool is being
+// called, so it is checked per call in Runner.call rather than per function.
 var capabilityFor = map[string]func(*Runner) (class, value string){
 	FnRecall:      func(r *Runner) (string, string) { return "memory", r.namespace },
 	FnRemember:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
@@ -103,8 +96,6 @@ var capabilityFor = map[string]func(*Runner) (class, value string){
 	FnSummarize:   func(r *Runner) (string, string) { return "tool", "summarize" },
 	FnPropose:     func(r *Runner) (string, string) { return "tool", "propose" },
 	FnRemind:      func(r *Runner) (string, string) { return "tool", "reminder.add" },
-	FnSendWA:      func(r *Runner) (string, string) { return "channel", "whatsapp" },
-	FnReadWA:      func(r *Runner) (string, string) { return "tool", "whatsapp.read" },
 	FnShortSet:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
 	FnShortGet:    func(r *Runner) (string, string) { return "memory", r.namespace },
 	FnShortAll:    func(r *Runner) (string, string) { return "memory", r.namespace },
@@ -112,9 +103,6 @@ var capabilityFor = map[string]func(*Runner) (class, value string){
 	FnChatSave:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
 	FnRunLoop:     func(r *Runner) (string, string) { return "tool", "loop.run" },
 	FnShortForget: func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
-	FnWAChats:     func(r *Runner) (string, string) { return "tool", "whatsapp.read" },
-	FnWAMessages:  func(r *Runner) (string, string) { return "tool", "whatsapp.read" },
-	FnGChatSpaces: func(r *Runner) (string, string) { return "tool", "google_workspace" },
 }
 
 // Error codes returned to the guest. Negative so a length can be positive.
@@ -142,8 +130,9 @@ type Kit interface {
 	Summarize(ctx context.Context, prompt string) (string, error)
 	Propose(title, summary, action string) error
 	Remind(title, due, notes string) error
-	SendWhatsApp(ctx context.Context, target, content, replyTo string) error
-	ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error)
+	// Tool calls one of KARMAX's tools by name. Integrations reach a loop
+	// through here and nowhere else, so adding one costs no ABI.
+	Tool(ctx context.Context, name string, input map[string]any) (string, error)
 	ShortSet(group, key, value string, ttlSeconds int) error
 	ShortGet(group, key string) (string, bool, error)
 	ShortAll(group string) ([]ShortMemory, error)
@@ -152,10 +141,6 @@ type Kit interface {
 	RunLoop(name string) error
 	ShortForget(group, key string) error
 	OperatorChats() []string
-	MonitoredChats(ctx context.Context) ([]string, error)
-	WhatsAppChats(ctx context.Context, limit int) (string, error)
-	WhatsAppMessages(ctx context.Context, chat string, limit int, fromMeOnly bool) (string, error)
-	GoogleChatSpaces(ctx context.Context) (string, error)
 }
 
 // ShortMemory is one short-term working note.
@@ -188,7 +173,10 @@ type Runner struct {
 	log       *zap.Logger
 
 	declared map[string]bool
-	hosts    []string // http allowlist derived from capabilities
+	// tools is the manifest's tool allowlist, the first of the two gates a
+	// tool call passes. The Broker is the second.
+	tools map[string]bool
+	hosts []string // http allowlist derived from capabilities
 
 	// trigger is what started the current run, readable by the guest.
 	mu2         sync.Mutex
@@ -227,6 +215,7 @@ func NewRunner(ctx context.Context, a *Artifact, opts Options) (*Runner, error) 
 		name: a.Manifest.Name, namespace: opts.Namespace, manifest: a.Manifest,
 		kit: opts.Kit, grants: opts.Grants, log: opts.Log,
 		declared: set(a.Manifest.Host),
+		tools:    set(a.Manifest.Tools),
 	}
 	for _, c := range a.Manifest.Capabilities {
 		if host, ok := strings.CutPrefix(c, "http:"); ok {
@@ -380,6 +369,25 @@ func (r *Runner) call(ctx context.Context, m api.Module,
 		return errBadRequest
 	}
 
+	// A tool call carries its own subject, so its gates are here rather than in
+	// capabilityFor: the manifest's tool list first, then the Broker.
+	if name == FnTool {
+		tool, err := toolName(req)
+		if err != nil {
+			return errBadRequest
+		}
+		if !r.tools[tool] {
+			r.log.Warn("wasm loop called a tool it did not declare",
+				zap.String("loop", r.name), zap.String("tool", tool))
+			return errNotDeclared
+		}
+		if err := r.grants.Tool(tool); err != nil {
+			r.log.Warn("wasm loop was refused a tool",
+				zap.String("loop", r.name), zap.String("tool", tool), zap.Error(err))
+			return errNotPermitted
+		}
+	}
+
 	out, err := r.dispatch(ctx, name, req)
 	if err != nil {
 		r.log.Warn("wasm host call failed",
@@ -522,33 +530,20 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 		}
 		return nil, r.kit.Remind(in.Title, in.Due, in.Notes)
 
-	case FnSendWA:
+	case FnTool:
 		var in struct {
-			To, Text string
-			ReplyTo  string `json:"reply_to"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
 		}
 		if err := json.Unmarshal([]byte(req), &in); err != nil {
 			return nil, err
 		}
-		return nil, r.kit.SendWhatsApp(ctx, in.To, in.Text, in.ReplyTo)
-
-	case FnReadWA:
-		var in struct {
-			Chat  string `json:"chat"`
-			Limit int    `json:"limit"`
-		}
-		if err := json.Unmarshal([]byte(req), &in); err != nil {
-			return nil, err
-		}
-		text, err := r.kit.ReadWhatsApp(ctx, in.Chat, in.Limit)
-		if err != nil {
-			return nil, err
-		}
-		// Fenced here rather than in the guest: whoever wrote those messages is
-		// not the operator, and a loop author must not be able to forget.
-		return json.Marshal(map[string]any{
-			"text": safety.Fence("WhatsApp messages in "+in.Chat, text),
-		})
+		// The error travels in the payload rather than being returned, so the
+		// guest still receives the output. For an integration the output IS
+		// often the diagnosis — an auth failure's JSON is what lets a loop say
+		// "run gws auth login" instead of "it failed".
+		out, err := r.kit.Tool(ctx, in.Name, in.Input)
+		return json.Marshal(map[string]any{"output": out, "error": errText(err)})
 
 	case FnShortSet:
 		var in struct {
@@ -609,49 +604,6 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 			return nil, err
 		}
 		return nil, r.kit.ShortForget(in.Group, in.Key)
-
-	case FnMonitored:
-		// KARMAX's knowledge, not the loop's. A compiled-in loop fetched this
-		// from wacli's API on localhost — which loops are now blocked from
-		// reaching, and rightly, since that API can send messages as the
-		// operator. The host asks; the loop is told the answer.
-		chats, err := r.kit.MonitoredChats(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(map[string]any{"chats": chats})
-
-	case FnWAChats:
-		var in struct {
-			Limit int `json:"limit"`
-		}
-		_ = json.Unmarshal([]byte(req), &in)
-		out, err := r.kit.WhatsAppChats(ctx, in.Limit)
-		return json.Marshal(map[string]any{"raw": out, "error": errText(err)})
-
-	case FnWAMessages:
-		// Structured, because the loop wants data. A compiled-in loop ran
-		// `wacli messages` itself; a sandboxed one cannot exec, and having the
-		// host run a NAMED read rather than an arbitrary command is the
-		// difference between "may read your messages" and "may run anything".
-		var in struct {
-			Chat       string `json:"chat"`
-			Limit      int    `json:"limit"`
-			FromMeOnly bool   `json:"from_me_only"`
-		}
-		if err := json.Unmarshal([]byte(req), &in); err != nil {
-			return nil, err
-		}
-		out, err := r.kit.WhatsAppMessages(ctx, in.Chat, in.Limit, in.FromMeOnly)
-		return json.Marshal(map[string]any{"raw": out, "error": errText(err)})
-
-	case FnGChatSpaces:
-		// The error is carried in the payload rather than returned, so the guest
-		// still receives the output. For these tools the output is the
-		// diagnosis — an auth failure's JSON is what lets a loop say "run gws
-		// auth login" instead of "it failed".
-		out, err := r.kit.GoogleChatSpaces(ctx)
-		return json.Marshal(map[string]any{"raw": out, "error": errText(err)})
 
 	case FnOperators:
 		// Read from the host rather than the environment. A loop that needs to
@@ -747,6 +699,21 @@ func (w logWriter) Write(p []byte) (int, error) {
 			zap.String("loop", w.loop), zap.String("stream", w.stream), zap.String("message", trunc(msg, 2000)))
 	}
 	return len(p), nil
+}
+
+// toolName pulls the tool being called out of a request, so the gates can run
+// before the request reaches dispatch and the Kit.
+func toolName(req string) (string, error) {
+	var in struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(req), &in); err != nil {
+		return "", err
+	}
+	if in.Name = strings.TrimSpace(in.Name); in.Name == "" {
+		return "", fmt.Errorf("wasmloop: a tool call named no tool")
+	}
+	return in.Name, nil
 }
 
 // errText renders an error for the guest, empty when there was none.

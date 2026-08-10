@@ -91,16 +91,25 @@ func (t *GoogleWorkspaceTool) Execute(ctx context.Context, input map[string]any)
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return tools.ErrorResult(fmt.Errorf("gws exited with code %d: %s", exitErr.ExitCode(), stderr.String())), nil
-		}
-		return tools.ErrorResult(fmt.Errorf("failed to run gws: %w", err)), nil
-	}
-
 	output := stdout.String()
 	if len(output) > maxOutputLen {
 		output = output[:maxOutputLen] + "\n... [truncated]"
+	}
+	if err != nil {
+		// stdout is carried alongside the error, not discarded: gws exits 2 and
+		// prints a JSON body saying Google needs an interactive reauth. That
+		// body is the whole diagnosis — without it a caller can only report
+		// "gws failed" and the operator is left with a dead integration and no
+		// idea which command fixes it.
+		msg := fmt.Errorf("failed to run gws: %w", err)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			msg = fmt.Errorf("gws exited with code %d: %s", exitErr.ExitCode(), stderr.String())
+		}
+		return tools.ToolResult{
+			Output:  map[string]any{"output": output},
+			Error:   msg.Error(),
+			IsError: true,
+		}, nil
 	}
 
 	return tools.SuccessResult(map[string]any{

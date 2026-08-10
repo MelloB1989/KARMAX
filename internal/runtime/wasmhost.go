@@ -1,16 +1,11 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/scheduler"
+	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/wasmloop"
 	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
@@ -221,71 +217,56 @@ func (w *wasmKit) Remind(title, due, notes string) error {
 	return w.mem().Remind(title, due, notes)
 }
 
-// SendWhatsApp sends as the operator, threading a reply when asked.
+// Tool calls one of KARMAX's tools on the guest's behalf.
 //
-// The reply path goes through wacli's local API, which the loop used to call
-// itself. It cannot any more — that API sends messages as the operator, which
-// is exactly the thing a sandbox exists to keep out of reach — so the host
-// makes the call and the loop states the intent.
-func (w *wasmKit) SendWhatsApp(ctx context.Context, target, content, replyTo string) error {
-	if strings.TrimSpace(replyTo) == "" {
-		return w.mem().SendWhatsApp(ctx, target, content)
+// This is the whole of a loop's reach outside its sandbox. The gates ran before
+// this was called — the signed manifest's tool list, then the Broker — so by
+// here the only question left is whether the tool exists.
+func (w *wasmKit) Tool(ctx context.Context, name string, input map[string]any) (string, error) {
+	t, ok := w.rt.tools.Get(name)
+	if !ok {
+		return "", fmt.Errorf("no tool named %q", name)
 	}
-	payload, err := json.Marshal(map[string]string{
-		"to": target, "text": content, "reply_to": replyTo})
+	if input == nil {
+		input = map[string]any{}
+	}
+	res, err := t.Execute(ctx, input)
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, err = hostPost(ctx, hostpaths.WacliAPIURL()+"/send", payload)
-	return err
-}
-
-// hostGet and hostPost reach KARMAX's own local services.
-//
-// Deliberately NOT the loop's HTTP path. That one runs the SSRF guard and the
-// Broker, which refuse loopback — correctly, because wacli's API can send
-// messages as the operator. Routing a host call through it made the host block
-// itself: chat-sweep's very first run failed with "monitored_chats failed"
-// because the host could not reach a service running on the same machine.
-//
-// The gate belongs on the LOOP, not on KARMAX acting for it.
-func hostGet(ctx context.Context, url string) ([]byte, error) {
-	return hostRequest(ctx, http.MethodGet, url, nil)
-}
-
-func hostPost(ctx context.Context, url string, body []byte) ([]byte, error) {
-	return hostRequest(ctx, http.MethodPost, url, body)
-}
-
-func hostRequest(ctx context.Context, method, url string, body []byte) ([]byte, error) {
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(cctx, method, url, reader)
-	if err != nil {
-		return nil, err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", method, url, err)
-	}
-	defer resp.Body.Close()
-	out, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("%s answered %d: %.160s", url, resp.StatusCode, out)
+	out := renderToolOutput(res.Output)
+	if res.IsError {
+		return out, fmt.Errorf("%s", res.Error)
 	}
 	return out, nil
 }
 
-func (w *wasmKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error) {
-	return w.mem().ReadWhatsApp(ctx, chat, limit)
+// renderToolOutput flattens a tool result for a guest that wants text.
+//
+// A tool whose entire result is one string under "raw" or "output" returns that
+// string unwrapped: a loop calling whatsapp.messages wants the JSON wacli
+// printed, not that JSON nested one level deeper for it to dig out. Anything
+// else is handed over as JSON unchanged.
+func renderToolOutput(v any) string {
+	switch out := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return out
+	case map[string]any:
+		if len(out) == 1 {
+			for _, key := range []string{"raw", "output"} {
+				if s, ok := out[key].(string); ok {
+					return s
+				}
+			}
+		}
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }
 
 func (w *wasmKit) ShortSet(group, key, value string, ttlSeconds int) error {
@@ -349,99 +330,15 @@ func (w *wasmKit) ShortForget(group, key string) error {
 
 // OperatorChats replaces the WHATSAPP_OPERATOR_CHATS lookup a compiled-in loop
 // used to do for itself.
-func (w *wasmKit) OperatorChats() []string {
-	return splitCSV(os.Getenv("WHATSAPP_OPERATOR_CHATS"))
-}
-
-// MonitoredChats returns the chats KARMAX watches, minus the operator's own.
-//
-// This used to be the loop's job: it fetched wacli's /webhooks over HTTP. Loops
-// can no longer reach localhost — that API sends messages as the operator — so
-// the host does the fetch and hands back the answer.
-func (w *wasmKit) MonitoredChats(ctx context.Context) ([]string, error) {
-	body, err := hostGet(ctx, hostpaths.WacliAPIURL()+"/webhooks")
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Webhooks []struct {
-			URL      string   `json:"url"`
-			ChatJIDs []string `json:"chat_jids"`
-			Enabled  bool     `json:"enabled"`
-		} `json:"webhooks"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, err
-	}
-
-	operator := map[string]bool{}
-	for _, c := range w.OperatorChats() {
-		operator[normalizeChatID(c)] = true
-	}
-	var out []string
-	for _, wh := range resp.Webhooks {
-		if !wh.Enabled || !strings.Contains(wh.URL, "/comms/whatsapp") {
-			continue
-		}
-		for _, c := range wh.ChatJIDs {
-			if !operator[normalizeChatID(c)] {
-				out = append(out, c)
-			}
-		}
-	}
-	return out, nil
-}
-
-// normalizeChatID reduces a chat id or phone number to a comparable form.
-func normalizeChatID(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	if i := strings.IndexAny(s, "@:"); i >= 0 {
-		s = s[:i]
-	}
-	return s
-}
-
-// The named reads that replace a loop's exec.
-//
-// A compiled-in loop ran `wacli messages` and `gws chat spaces list` itself. A
-// sandboxed one cannot, and the replacement is deliberately not "run this
-// command" — it is a fixed set of reads, each of which is a capability the
-// operator can grant or withhold. "May read your WhatsApp messages" is a
-// permission somebody can reason about; "may run wacli" is not.
-
-func (w *wasmKit) WhatsAppChats(ctx context.Context, limit int) (string, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 1000
-	}
-	return runHostTool(ctx, hostpaths.Wacli(), "chats", "--json", "--limit", strconv.Itoa(limit))
-}
-
-func (w *wasmKit) WhatsAppMessages(ctx context.Context, chat string, limit int, fromMeOnly bool) (string, error) {
-	if strings.TrimSpace(chat) == "" {
-		return "", fmt.Errorf("a chat is required")
-	}
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	args := []string{"messages", "--chat", chat, "--limit", strconv.Itoa(limit)}
-	if fromMeOnly {
-		args = append(args, "--from-me", "yes")
-	}
-	return runHostTool(ctx, hostpaths.Wacli(), args...)
-}
-
-func (w *wasmKit) GoogleChatSpaces(ctx context.Context) (string, error) {
-	return runHostTool(ctx, hostpaths.GWS(), "chat", "spaces", "list", "--format", "json")
-}
+func (w *wasmKit) OperatorChats() []string { return builtin.OperatorChats() }
 
 // runHostTool runs one read-only host command with a bounded output.
 //
 // The output is returned even when the command fails, because for these tools
-// the output IS the diagnosis. gws exits 2 with a JSON body saying Google needs
+// the output IS the diagnosis: gws exits 2 with a JSON body saying Google needs
 // an interactive reauth, and gchat-watch classifies that to tell the operator
-// once with the command to run. Discarding it on error turned a specific,
-// actionable message into "gchat_spaces failed:" and left the operator with a
-// dead Google integration and no idea why.
+// which command to run. Discarding it turned a specific, actionable message
+// into "it failed" and left a dead integration with no explanation.
 func runHostTool(ctx context.Context, bin string, args ...string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

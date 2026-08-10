@@ -56,7 +56,7 @@ func (in *Installer) Inspect(data []byte) (*Preview, error) {
 	p := &Preview{
 		Manifest: a.Manifest,
 		Verdict:  v,
-		Grants:   Describe(a.Manifest.Host, a.Manifest.Capabilities),
+		Grants:   Describe(a.Manifest),
 	}
 
 	lock, err := LoadLock(in.Dir)
@@ -120,6 +120,20 @@ func (in *Installer) Install(data []byte) (*Preview, error) {
 	// No auto-grants for host functions. A manifest that asks for `notify` must
 	// also ask for `tool:app.push`, so the list the operator approves is the
 	// whole list — not a visible half plus an inferred remainder.
+	//
+	// `tools:` is the exception, and only because it is not an inference: the
+	// entries ARE the operator-visible list, rendered by Describe as "call the
+	// tool X". Requiring the same names again under capabilities: would add a
+	// second place to keep in sync and no information the operator did not
+	// already read.
+	for _, name := range a.Manifest.Tools {
+		if err := in.Broker.SaveGrant(store.Grant{
+			Subject: subject, Capability: store.CapTool, Value: name,
+			GrantedBy: "loop-manifest:" + a.Manifest.Version,
+		}); err != nil {
+			return nil, err
+		}
+	}
 
 	lock, err := LoadLock(in.Dir)
 	if err != nil {

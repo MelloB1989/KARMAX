@@ -306,7 +306,7 @@ func monitor() error {
 		// gateway has NO tools, so it either writes the reply itself, routes the
 		// message, or asks to escalate. Claude Code is the exception, not the
 		// default: it used to run for EVERY incoming message.
-		thread, _ := loopwasm.ReadWhatsApp(chatID, 15)
+		thread := shared.ReadThread(chatID, 15)
 		gwPrompt := "You are the operator's WhatsApp assistant. " + context_ + "\n\n" +
 			"Chat: " + who + "\n" +
 			"Latest message: " + content + "\n\n" +
@@ -469,7 +469,7 @@ func sendAwayNote(chatID, who string, incoming string, isGroup bool) {
 		loopwasm.Log("wa-monitor: away-note compose failed for %s: %v %.80s", who, err, note)
 		return
 	}
-	if err := loopwasm.SendWhatsApp(chatID, truncate(note, 500), ""); err != nil {
+	if err := shared.SendWhatsApp(chatID, truncate(note, 500), ""); err != nil {
 		loopwasm.Log("wa-monitor: away-note to %s failed: %v", who, err)
 		return
 	}
@@ -629,7 +629,7 @@ func sendViaWacli(chatID, text, replyToID string) error {
 	if prev, ok, _ := loopwasm.ShortGet(chatID, "last_sent"); ok && normalizeSent(prev) == normalizeSent(text) {
 		return errDuplicateSend
 	}
-	if err := loopwasm.SendWhatsApp(chatID, text, replyToID); err != nil {
+	if err := shared.SendWhatsApp(chatID, text, replyToID); err != nil {
 		return err
 	}
 	// Remember the exact text so a later pass (or the harness, via short-term
@@ -860,8 +860,7 @@ func justRepliedNote(justReplied bool) string {
 
 // thread15 returns the recent thread text for a chat (best-effort, empty on error).
 func thread15(chatID string) string {
-	t, _ := loopwasm.ReadWhatsApp(chatID, 15)
-	return t
+	return shared.ReadThread(chatID, 15)
 }
 
 // replyToArg builds the optional `--reply-to <id>` fragment for a wacli send.

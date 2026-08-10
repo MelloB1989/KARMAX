@@ -9,9 +9,13 @@ memory_mb: 64
 
 # It reads chats and messages and writes summaries. It sends nothing and has no
 # network of its own.
-host: [log, config, summarize, wa_chats, wa_messages, chat_summary_get, chat_summary_save]
+host: [log, config, summarize, tool, chat_summary_get, chat_summary_save]
+
+tools:
+  - whatsapp.chats
+  - whatsapp.messages
+
 capabilities:
   - tool:summarize
-  - tool:whatsapp.read
   - memory:nexus
   - memory:nexus:write

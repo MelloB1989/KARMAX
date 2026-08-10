@@ -176,7 +176,8 @@ func watch() error {
 }
 
 func listGchatSpaces() ([]gchatSpace, error) {
-	raw, err := loopwasm.GoogleChatSpaces()
+	raw, err := loopwasm.Tool("google_workspace", map[string]any{
+		"service": "chat", "resource": "spaces", "method": "list"})
 	out := []byte(raw)
 	if err != nil {
 		if isGchatAuthError(string(out)) || strings.Contains(err.Error(), "exit status 2") {
