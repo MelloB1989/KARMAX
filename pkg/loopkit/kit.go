@@ -117,6 +117,24 @@ type Kit interface {
 	// it could not honour rather than pretending.
 	Sleep(ctx context.Context, d time.Duration) error
 
+	// Step runs fn once and remembers what it returned. On a retry, or after the
+	// daemon was killed mid-run, a step that already completed returns its
+	// stored result instead of running again — which is what makes a retry safe
+	// for a loop that sends messages or spends money.
+	//
+	//	summary, err := k.Step("summarise", func() (string, error) {
+	//	    return k.Harness(ctx, "summarise today's threads")
+	//	})
+	//
+	// name must be stable across attempts, so derive it from what the step does,
+	// not from a counter. Checkpoints are dropped once the work finishes either
+	// way, so the next trigger starts clean.
+	Step(name string, fn func() (string, error)) (string, error)
+
+	// Once runs fn at most once per execution, for a step whose point is its
+	// side effect rather than its result.
+	Once(name string, fn func() error) error
+
 	// RunLoop triggers another registered loop by name (manual trigger). Lets a
 	// loop hand work to a dedicated loop rather than doing it inline.
 	RunLoop(name string) error

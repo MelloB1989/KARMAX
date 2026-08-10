@@ -184,21 +184,35 @@ func TestDeadRunsSurvivePruning(t *testing.T) {
 	}
 }
 
-func TestInterruptedRunsAreReaped(t *testing.T) {
+func TestInterruptedRunsAreReturnedForResuming(t *testing.T) {
 	s := newTestStore(t)
-	// A killed daemon leaves rows that say "running" forever, which makes the
-	// lease look held and the status page look busy.
 	if err := s.StartLoopRun(LoopRun{
-		ID: "orphan", Loop: "l", Attempt: 1, StartedAt: time.Now().Add(-time.Hour),
+		ID: "orphan", Loop: "l", Attempt: 2, StartedAt: time.Now().Add(-time.Hour),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.ReapStaleLoopRuns(time.Now().Add(-30 * time.Minute))
-	if err != nil || n != 1 {
-		t.Fatalf("reaped %d: %v", n, err)
+	if err := s.StartLoopRun(LoopRun{
+		ID: "live", Loop: "m", Attempt: 1, StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
 	}
-	dead, _ := s.DeadLoopRuns(10)
-	if len(dead) != 1 {
-		t.Fatal("the interrupted run was not marked dead")
+
+	got, err := s.ReapStaleLoopRuns(time.Now().Add(-30 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Returned rather than only counted, so the caller can resume the work.
+	if len(got) != 1 || got[0].ID != "orphan" || got[0].Attempt != 2 {
+		t.Fatalf("reaped %+v", got)
+	}
+
+	runs, _ := s.RecentLoopRuns("l", 10)
+	if len(runs) != 1 || runs[0].Status != "interrupted" {
+		t.Errorf("run status = %+v", runs)
+	}
+	// A run still within its lease is not touched.
+	live, _ := s.RecentLoopRuns("m", 10)
+	if len(live) != 1 || live[0].Status != "running" {
+		t.Errorf("a run in progress was reaped: %+v", live)
 	}
 }

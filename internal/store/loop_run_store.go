@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"time"
 )
 
@@ -288,18 +289,42 @@ func (s *Store) PruneLoopRuns(before time.Time) (int64, error) {
 	return n, nil
 }
 
-// ReapStaleLoopRuns marks runs that were left "running" by a crash. Without it
-// a killed daemon leaves rows that look like work still in progress forever.
-func (s *Store) ReapStaleLoopRuns(olderThan time.Time) (int64, error) {
+// ReapStaleLoopRuns closes out runs left "running" by a crash and returns them,
+// so the caller can decide whether to resume the work rather than only record
+// that it stopped. Without this a killed daemon leaves rows that look like work
+// still in progress forever.
+func (s *Store) ReapStaleLoopRuns(olderThan time.Time) ([]LoopRun, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`
-UPDATE loop_runs SET status = 'dead', finished_at = ?,
+
+	rows, err := s.db.Query(`
+SELECT id, loop, trigger_kind, attempt, started_at FROM loop_runs
+WHERE status = 'running' AND started_at < ?`, olderThan)
+	if err != nil {
+		return nil, err
+	}
+	var out []LoopRun
+	for rows.Next() {
+		var r LoopRun
+		var trigger sql.NullString
+		if err := rows.Scan(&r.ID, &r.Loop, &trigger, &r.Attempt, &r.StartedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		r.Trigger, r.Status = trigger.String, "interrupted"
+		out = append(out, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+
+	_, err = s.db.Exec(`
+UPDATE loop_runs SET status = 'interrupted', finished_at = ?,
   error = 'interrupted: the daemon stopped while this run was in progress'
 WHERE status = 'running' AND started_at < ?`, time.Now(), olderThan)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	return out, err
 }
