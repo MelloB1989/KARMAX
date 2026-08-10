@@ -14,6 +14,8 @@ github.com/MelloB1989/karma v1.20.0 h1:mYkadoVtgIEoRu5SxK5ROFI37khGAv7jQl/56f21q
 github.com/MelloB1989/karma v1.20.0/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
 github.com/MelloB1989/wacli v0.2.0 h1:2FYXsPHP5nPp46u/lwVUxONUBYV8XW9wmYss1KvdI30=
 github.com/MelloB1989/wacli v0.2.0/go.mod h1:IQVxbDBFsoPPbtAv4PnTnzmVfK7bxuXIKaUecWVnerk=
+github.com/MelloB1989/wacli v0.3.0 h1:5NPB5YD6H0tlqFf9nCqwzSWWG4sHViluvKvBBaMBVNw=
+github.com/MelloB1989/wacli v0.3.0/go.mod h1:IQVxbDBFsoPPbtAv4PnTnzmVfK7bxuXIKaUecWVnerk=
 github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36 h1:OCI373QkuzXNOoaUBNEwh4uxaaPOfSFYn3ck7WlrqMI=
 github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36/go.mod h1:yrKnA/812p/Vh84TYQMz36/8SNLF7OOdTmKFr5i7W7g=
 github.com/anthropics/anthropic-sdk-go v1.4.0 h1:fU1jKxYbQdQDiEXCxeW5XZRIOwKevn/PMg8Ay1nnUx0=

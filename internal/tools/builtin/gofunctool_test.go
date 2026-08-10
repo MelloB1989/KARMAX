@@ -130,3 +130,46 @@ var errTest = errTestType{}
 type errTestType struct{}
 
 func (errTestType) Error() string { return "the daemon is not running" }
+
+// Every tool wacli publishes has been classified by a person.
+//
+// This is the test that makes the guard survive a library upgrade. v0.3.0 added
+// six tools, two of which carry other people's words — webhook DELIVERIES hold
+// the incoming message as their body, and the log holds message previews. Both
+// read as diagnostics, which is exactly why they would have been waved through.
+//
+// An unclassified tool fails here rather than arriving unguarded and being
+// noticed the day a message tells the agent to do something and it does.
+func TestEveryWacliToolIsClassified(t *testing.T) {
+	var unclassified []string
+	for _, tool := range FromGoFunctionTools(wacli.All(wacli.New(""))) {
+		name := tool.Manifest().Name
+		if _, known := Classify(name); !known {
+			unclassified = append(unclassified, name)
+		}
+	}
+	if len(unclassified) > 0 {
+		t.Fatalf("wacli added %d tool(s) nobody has classified: %v\n"+
+			"Decide for each whether its output is other people's words:\n"+
+			"  it is  → add a prefix to untrustedPrefixes (it gets defanged)\n"+
+			"  it is not → add a prefix to ownOutputPrefixes",
+			len(unclassified), unclassified)
+	}
+}
+
+// The two v0.3.0 additions that carry message content are guarded, named
+// explicitly so a refactor of the prefix lists cannot quietly drop them.
+func TestDiagnosticToolsThatCarryMessagesAreGuarded(t *testing.T) {
+	for _, name := range []string{"whatsapp_webhook_deliveries", "whatsapp_logs"} {
+		if guarded, _ := Classify(name); !guarded {
+			t.Errorf("%s carries other people's words and is not guarded", name)
+		}
+	}
+	// And the ones that are genuinely ours are not, or KARMAX defangs its own
+	// send confirmations.
+	for _, name := range []string{"whatsapp_send_message", "whatsapp_status", "whatsapp_sync"} {
+		if guarded, _ := Classify(name); guarded {
+			t.Errorf("%s is our own output and should not be guarded", name)
+		}
+	}
+}

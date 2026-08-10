@@ -29,7 +29,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.6.0 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/Davincible/goinsta/v3 v3.2.6 // indirect
-	github.com/MelloB1989/wacli v0.2.0 // indirect
+	github.com/MelloB1989/wacli v0.3.0 // indirect
 	github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.4.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
