@@ -177,3 +177,133 @@ func TestForgetRefusesAHandleTheStoreCannotUse(t *testing.T) {
 		t.Errorf("the error does not say what a handle looks like: %v", err)
 	}
 }
+
+// A staleness answer must not erase a whole subject.
+//
+// A GitLoom path names a SUBJECT and every fact about it folds in as a ##
+// section — one file on the live instance holds 166. The operator is asked
+// "that June deadline, still open?" and answers "done"; reading that as
+// permission to delete everything KARMAX knows about the subject would destroy
+// 165 unrelated facts, silently, and they would never know what went.
+func TestForgettingRefusesToTakeAWholeSubjectWithIt(t *testing.T) {
+	var mu sync.Mutex
+	deleted := false
+
+	body := "# Subject\n\n## first fact\nsomething\n\n## second fact\nsomething else\n"
+	srv := fakeGitLoom(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories"):
+			writeJSON(w, map[string]any{"path": "facts/context/subject.md", "content": body})
+			return true
+		case r.Method == http.MethodDelete || strings.Contains(r.URL.Path, "forget"):
+			mu.Lock()
+			deleted = true
+			mu.Unlock()
+			writeJSON(w, map[string]any{"forgotten": 1})
+			return true
+		}
+		return false
+	})
+
+	m, _ := managerWithGitLoom(t, srv.URL)
+	removed, err := m.ForgetFact(context.Background(), "facts/context/subject.md")
+	if err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+	if removed {
+		t.Error("a multi-fact subject reported itself deleted")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if deleted {
+		t.Error("a subject holding several facts was deleted to retire one of them")
+	}
+}
+
+// A memory that holds ONE fact is exactly what the question was about, so it
+// does go — otherwise nothing could ever be forgotten.
+func TestForgettingASingleFactStillWorks(t *testing.T) {
+	var mu sync.Mutex
+	deleted := false
+
+	srv := fakeGitLoom(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories"):
+			writeJSON(w, map[string]any{"path": "facts/context/one.md", "content": "a single fact, no sections"})
+			return true
+		default:
+			mu.Lock()
+			deleted = true
+			mu.Unlock()
+			writeJSON(w, map[string]any{"forgotten": 1})
+			return true
+		}
+	})
+
+	m, _ := managerWithGitLoom(t, srv.URL)
+	removed, err := m.ForgetFact(context.Background(), "facts/context/one.md")
+	if err != nil || !removed {
+		t.Fatalf("removed = %v, err = %v; a single fact should be forgettable", removed, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !deleted {
+		t.Error("nothing was deleted")
+	}
+}
+
+// Correcting one detail must not overwrite the subject it lives in.
+func TestCorrectingAddsToASubjectRatherThanReplacingIt(t *testing.T) {
+	var mu sync.Mutex
+	var written string
+
+	body := "# Subject\n\n## first fact\nthe old detail\n\n## second fact\nsomething unrelated\n"
+	srv := fakeGitLoom(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories"):
+			writeJSON(w, map[string]any{"path": "facts/context/subject.md", "content": body})
+			return true
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/memories"):
+			var in struct {
+				Memories []map[string]any `json:"memories"`
+			}
+			_ = decodeJSON(r, &in)
+			mu.Lock()
+			if len(in.Memories) > 0 {
+				written, _ = in.Memories[0]["content"].(string)
+			}
+			mu.Unlock()
+			writeJSON(w, map[string]any{"written": 1})
+			return true
+		}
+		return false
+	})
+
+	m, _ := managerWithGitLoom(t, srv.URL)
+	replaced, err := m.Correct(context.Background(), "facts/context/subject.md", "the corrected detail")
+	if err != nil {
+		t.Fatalf("correct: %v", err)
+	}
+	if replaced {
+		t.Error("a multi-fact subject was replaced wholesale by one correction")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(written, "the corrected detail") {
+		t.Error("the correction was not recorded")
+	}
+	if !strings.Contains(written, "something unrelated") {
+		t.Error("correcting one detail destroyed the other facts about the subject")
+	}
+}
+
+// Sections are how KARMAX writes facts, so counting them counts the facts.
+func TestCountFactsTreatsProseAsOneFact(t *testing.T) {
+	if n := CountFacts("just a sentence, no headers"); n != 1 {
+		t.Errorf("prose counted as %d facts, want 1", n)
+	}
+	if n := CountFacts("# Title\n\n## a\nx\n\n## b\ny\n"); n != 2 {
+		t.Errorf("two sections counted as %d facts, want 2", n)
+	}
+}
