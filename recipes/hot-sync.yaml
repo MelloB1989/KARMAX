@@ -1,0 +1,17 @@
+# Active memory capture. Converted from the compiled-in loop of the same name —
+# it was 35 lines of Go around a single prompt, which is what this tier is for.
+name: hot-sync
+on:
+  schedule: "0 0 */2 * * *"
+
+steps:
+  - ask: |
+      You are running the ACTIVE MEMORY-CAPTURE pass. Your job: turn what has happened recently into durable long-term memory, so nothing important is lost.
+
+      Scan RECENT activity for anything worth remembering:
+      - The operator's ACTIVE WhatsApp chats (people and groups messaged in roughly the last week) via whatsapp.read. IGNORE large community/promotional groups they rarely text in.
+      - Recent decisions, commitments, deadlines, project updates, new people, changed facts, and stated preferences.
+
+      For each genuinely durable item, call memory.ingest with ONE clean, standalone FACT (who a person is, a commitment + its date, a decision + why, a project's new state, a preference). Set category and importance; add ttl_days for time-bound facts. Deduplication is automatic, so when a fact CHANGED, ingest the corrected version — the merge pass reconciles it with the old one.
+
+      NEVER ingest raw message text, greetings, casual chatter, your own replies, or whole-conversation dumps. If nothing durable happened in a chat, skip it. Aim for a handful of high-signal facts, not volume. Only message the operator if something is genuinely urgent.

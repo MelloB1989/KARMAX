@@ -1,0 +1,10 @@
+# Keeps ABOUT_ME current. Converted from a 27-line loop that was one Ask.
+name: profile-refresh
+on:
+  schedule: "0 0 */12 * * *"
+
+steps:
+  - ask: >
+      Retrieve recent context from memory, read the current ABOUT_ME.md profile, and rewrite
+      it with profile.update so it reflects the latest truth about your operator. Preserve
+      facts that are still valid.

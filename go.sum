@@ -8,12 +8,8 @@ github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d h1:PCThr0O4
 github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d/go.mod h1:jrMQxkBzbSrODP96kW1TAfKnDwLHnkb8rNvm5Fm5s28=
 github.com/MelloB1989/karma v1.20.0 h1:mYkadoVtgIEoRu5SxK5ROFI37khGAv7jQl/56f21qIw=
 github.com/MelloB1989/karma v1.20.0/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
-github.com/MelloB1989/karmax-loops v0.0.0-20260731153730-1be951b30ed6 h1:l4N5x4DSLJ+U4t8O240Ar0wnlYtbl5JUWAqU8WUKLns=
-github.com/MelloB1989/karmax-loops v0.0.0-20260731153730-1be951b30ed6/go.mod h1:zjKfl0D9oVoHEXulA1z9c7fVbchNuDEV3neVhqfxo2E=
 github.com/anthropics/anthropic-sdk-go v1.4.0 h1:fU1jKxYbQdQDiEXCxeW5XZRIOwKevn/PMg8Ay1nnUx0=
 github.com/anthropics/anthropic-sdk-go v1.4.0/go.mod h1:AapDW22irxK2PSumZiQXYUFvsdQgkwIWlpESweWZI/c=
-github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
-github.com/atotto/clipboard v0.1.4/go.mod h1:ZY9tmq7sm5xIbd9bOK4onWV4S6X0u6GY7Vn0Yu86PYI=
 github.com/aws/aws-sdk-go v1.55.5 h1:KKUZBfBoyqy5d3swXyiC7Q76ic40rYcbqH7qjh59kzU=
 github.com/aws/aws-sdk-go v1.55.5/go.mod h1:eRwEWoyTWFMVYVQzKMNHWP5/RV4xIUGMQfXQHfHkpNU=
 github.com/aws/aws-sdk-go-v2 v1.36.3 h1:mJoei2CxPutQVxaATCzDUjcZEjVRdpsiiXi2o38yqWM=

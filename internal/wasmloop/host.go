@@ -30,32 +30,91 @@ import (
 // Host function names. A closed set: an unknown name is refused, not ignored,
 // so a module built against a newer KARMAX fails visibly here.
 const (
-	FnLog      = "log"
-	FnRecall   = "recall"
-	FnRemember = "remember"
-	FnNotify   = "notify"
-	FnHTTP     = "http"
-	FnTrigger  = "trigger"
-	FnAsk      = "ask"
+	FnLog         = "log"
+	FnRecall      = "recall"
+	FnRemember    = "remember"
+	FnNotify      = "notify"
+	FnHTTP        = "http"
+	FnTrigger     = "trigger"
+	FnAsk         = "ask"
+	FnConfig      = "config"
+	FnHostTool    = "hosttool"
+	FnHarness     = "harness"
+	FnGateway     = "gateway"
+	FnSummarize   = "summarize"
+	FnPropose     = "propose"
+	FnRemind      = "remind"
+	FnSendWA      = "send_whatsapp"
+	FnReadWA      = "read_whatsapp"
+	FnShortSet    = "short_set"
+	FnShortGet    = "short_get"
+	FnShortAll    = "short_all"
+	FnChatGet     = "chat_summary_get"
+	FnChatSave    = "chat_summary_save"
+	FnRunLoop     = "run_loop"
+	FnShortForget = "short_forget"
+	FnOperators   = "operator_chats"
+	FnMonitored   = "monitored_chats"
+	FnWAChats     = "wa_chats"
+	FnWAMessages  = "wa_messages"
+	FnGChatSpaces = "gchat_spaces"
 )
 
 var hostDescriptions = map[string]string{
-	FnLog:      "write to KARMAX's log",
-	FnRecall:   "read your long-term memory",
-	FnRemember: "write to your long-term memory",
-	FnNotify:   "send you notifications",
-	FnHTTP:     "use the network — but only the hosts listed above",
-	FnTrigger:  "see what triggered it",
-	FnAsk:      "ask your agent questions (which can use its tools)",
+	FnLog:         "write to KARMAX's log",
+	FnRecall:      "read your long-term memory",
+	FnRemember:    "write to your long-term memory",
+	FnNotify:      "send you notifications",
+	FnHTTP:        "use the network — but only the hosts listed above",
+	FnTrigger:     "see what triggered it",
+	FnAsk:         "ask your agent questions (which can use its tools)",
+	FnConfig:      "read the settings you gave it at install",
+	FnHostTool:    "learn where wacli and gws live (a path, not permission to run them)",
+	FnHarness:     "run a coding harness — shell, files and web research",
+	FnGateway:     "ask the main model directly",
+	FnSummarize:   "summarise text with the cheap model",
+	FnPropose:     "ask for your approval before acting",
+	FnRemind:      "put reminders on your list",
+	FnSendWA:      "SEND WHATSAPP MESSAGES AS YOU",
+	FnReadWA:      "read your WhatsApp messages",
+	FnShortSet:    "keep short-term working notes",
+	FnShortGet:    "read its short-term working notes",
+	FnShortAll:    "read all its short-term working notes",
+	FnChatGet:     "read stored per-chat summaries",
+	FnChatSave:    "write stored per-chat summaries",
+	FnRunLoop:     "trigger your other loops",
+	FnShortForget: "clear its short-term working notes",
+	FnOperators:   "know which chats are yours rather than someone else's",
+	FnMonitored:   "know which chats KARMAX is watching",
+	FnWAChats:     "list your WhatsApp chats",
+	FnWAMessages:  "read messages from a WhatsApp chat",
+	FnGChatSpaces: "list your Google Chat spaces",
 }
 
 // capabilityFor maps a host function to the Broker capability it needs, so the
 // two cannot drift apart.
 var capabilityFor = map[string]func(*Runner) (class, value string){
-	FnRecall:   func(r *Runner) (string, string) { return "memory", r.namespace },
-	FnRemember: func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
-	FnNotify:   func(r *Runner) (string, string) { return "tool", "app.push" },
-	FnAsk:      func(r *Runner) (string, string) { return "tool", "agent.ask" },
+	FnRecall:      func(r *Runner) (string, string) { return "memory", r.namespace },
+	FnRemember:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
+	FnNotify:      func(r *Runner) (string, string) { return "tool", "app.push" },
+	FnAsk:         func(r *Runner) (string, string) { return "tool", "agent.ask" },
+	FnHarness:     func(r *Runner) (string, string) { return "tool", "harness" },
+	FnGateway:     func(r *Runner) (string, string) { return "tool", "gateway" },
+	FnSummarize:   func(r *Runner) (string, string) { return "tool", "summarize" },
+	FnPropose:     func(r *Runner) (string, string) { return "tool", "propose" },
+	FnRemind:      func(r *Runner) (string, string) { return "tool", "reminder.add" },
+	FnSendWA:      func(r *Runner) (string, string) { return "channel", "whatsapp" },
+	FnReadWA:      func(r *Runner) (string, string) { return "tool", "whatsapp.read" },
+	FnShortSet:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
+	FnShortGet:    func(r *Runner) (string, string) { return "memory", r.namespace },
+	FnShortAll:    func(r *Runner) (string, string) { return "memory", r.namespace },
+	FnChatGet:     func(r *Runner) (string, string) { return "memory", r.namespace },
+	FnChatSave:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
+	FnRunLoop:     func(r *Runner) (string, string) { return "tool", "loop.run" },
+	FnShortForget: func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
+	FnWAChats:     func(r *Runner) (string, string) { return "tool", "whatsapp.read" },
+	FnWAMessages:  func(r *Runner) (string, string) { return "tool", "whatsapp.read" },
+	FnGChatSpaces: func(r *Runner) (string, string) { return "tool", "google_workspace" },
 }
 
 // Error codes returned to the guest. Negative so a length can be positive.
@@ -75,6 +134,48 @@ type Kit interface {
 	Notify(title, body string) error
 	Ask(ctx context.Context, prompt string) (string, error)
 	HTTP(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, error)
+
+	Config(key string) string
+	HostTool(name string) string
+	Harness(ctx context.Context, prompt string) (string, error)
+	Gateway(ctx context.Context, prompt string, lend ...string) (string, error)
+	Summarize(ctx context.Context, prompt string) (string, error)
+	Propose(title, summary, action string) error
+	Remind(title, due, notes string) error
+	SendWhatsApp(ctx context.Context, target, content, replyTo string) error
+	ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error)
+	ShortSet(group, key, value string, ttlSeconds int) error
+	ShortGet(group, key string) (string, bool, error)
+	ShortAll(group string) ([]ShortMemory, error)
+	ChatSummary(jid string) (*ChatSummary, error)
+	SaveChatSummary(ChatSummary) error
+	RunLoop(name string) error
+	ShortForget(group, key string) error
+	OperatorChats() []string
+	MonitoredChats(ctx context.Context) ([]string, error)
+	WhatsAppChats(ctx context.Context, limit int) (string, error)
+	WhatsAppMessages(ctx context.Context, chat string, limit int, fromMeOnly bool) (string, error)
+	GoogleChatSpaces(ctx context.Context) (string, error)
+}
+
+// ShortMemory is one short-term working note.
+type ShortMemory struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// ChatSummary is the stored cold-memory record for one chat.
+type ChatSummary struct {
+	ChatJID         string `json:"jid"`
+	ChatName        string `json:"name"`
+	IsGroup         bool   `json:"is_group"`
+	Summary         string `json:"summary"`
+	MessageCount    int    `json:"message_count"`
+	OwnMessageCount int    `json:"own_count"`
+	// Unix seconds, because a guest and a host do not share a time.Time.
+	LastMessageAt int64  `json:"last_message_at"`
+	SummarizedAt  int64  `json:"summarized_at"`
+	Status        string `json:"status"`
 }
 
 // Runner executes one loop's module.
@@ -88,6 +189,11 @@ type Runner struct {
 
 	declared map[string]bool
 	hosts    []string // http allowlist derived from capabilities
+
+	// trigger is what started the current run, readable by the guest.
+	mu2         sync.Mutex
+	trigger     map[string]any
+	triggerKind string
 
 	mu       sync.Mutex
 	runtime  wazero.Runtime
@@ -181,7 +287,20 @@ func (r *Runner) Close(ctx context.Context) error {
 // A fresh instance per run: the spike put that at 3.4ms, which is a good price
 // for a loop that cannot carry state or corruption from the last one into the
 // next.
+// Run executes the module for one trigger.
 func (r *Runner) Run(ctx context.Context, timeout time.Duration) error {
+	return r.RunTriggered(ctx, timeout, "manual", nil)
+}
+
+// RunTriggered is Run with the trigger the guest can read back.
+func (r *Runner) RunTriggered(ctx context.Context, timeout time.Duration, kind string, payload map[string]any) error {
+	r.mu2.Lock()
+	r.trigger, r.triggerKind = payload, kind
+	r.mu2.Unlock()
+	return r.run(ctx, timeout)
+}
+
+func (r *Runner) run(ctx context.Context, timeout time.Duration) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -287,7 +406,13 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 		return nil, nil
 
 	case FnTrigger:
-		return json.Marshal(map[string]any{"loop": r.name})
+		r.mu2.Lock()
+		t := r.trigger
+		r.mu2.Unlock()
+		if t == nil {
+			t = map[string]any{}
+		}
+		return json.Marshal(map[string]any{"loop": r.name, "kind": r.triggerKind, "payload": t})
 
 	case FnRecall:
 		var in struct {
@@ -340,6 +465,206 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 
 	case FnHTTP:
 		return r.doHTTP(ctx, req)
+
+	case FnConfig:
+		return json.Marshal(map[string]any{"value": r.kit.Config(req)})
+
+	case FnHostTool:
+		// A path, not permission to run it. A sandboxed guest cannot exec;
+		// this exists so a loop can name the binary inside a harness prompt,
+		// and the harness — host-side — is what actually runs it.
+		return json.Marshal(map[string]any{"value": r.kit.HostTool(req)})
+
+	case FnHarness, FnGateway, FnSummarize:
+		var in struct {
+			Prompt string   `json:"prompt"`
+			Lend   []string `json:"lend"`
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		var (
+			answer string
+			err    error
+		)
+		switch name {
+		case FnHarness:
+			answer, err = r.kit.Harness(ctx, in.Prompt)
+		case FnGateway:
+			// Lent tools are named, not supplied. A compiled-in loop passed a
+			// Go closure that shelled out; a guest cannot, and should not — the
+			// read-only allowlist belongs to the host, where it is one rule
+			// rather than one per loop.
+			answer, err = r.kit.Gateway(ctx, in.Prompt, in.Lend...)
+		default:
+			answer, err = r.kit.Summarize(ctx, in.Prompt)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"answer": answer})
+
+	case FnPropose:
+		var in struct {
+			Title, Summary, Action string
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		return nil, r.kit.Propose(in.Title, in.Summary, in.Action)
+
+	case FnRemind:
+		var in struct {
+			Title, Due, Notes string
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		return nil, r.kit.Remind(in.Title, in.Due, in.Notes)
+
+	case FnSendWA:
+		var in struct {
+			To, Text string
+			ReplyTo  string `json:"reply_to"`
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		return nil, r.kit.SendWhatsApp(ctx, in.To, in.Text, in.ReplyTo)
+
+	case FnReadWA:
+		var in struct {
+			Chat  string `json:"chat"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		text, err := r.kit.ReadWhatsApp(ctx, in.Chat, in.Limit)
+		if err != nil {
+			return nil, err
+		}
+		// Fenced here rather than in the guest: whoever wrote those messages is
+		// not the operator, and a loop author must not be able to forget.
+		return json.Marshal(map[string]any{
+			"text": safety.Fence("WhatsApp messages in "+in.Chat, text),
+		})
+
+	case FnShortSet:
+		var in struct {
+			Group, Key, Value string
+			TTLSeconds        int `json:"ttl_seconds"`
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		return nil, r.kit.ShortSet(in.Group, in.Key, in.Value, in.TTLSeconds)
+
+	case FnShortGet:
+		var in struct{ Group, Key string }
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		v, found, err := r.kit.ShortGet(in.Group, in.Key)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"value": v, "found": found})
+
+	case FnShortAll:
+		var in struct{ Group string }
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		all, err := r.kit.ShortAll(in.Group)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"entries": all})
+
+	case FnChatGet:
+		var in struct{ JID string }
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		rec, err := r.kit.ChatSummary(in.JID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"found": rec != nil, "summary": rec})
+
+	case FnChatSave:
+		var in ChatSummary
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		return nil, r.kit.SaveChatSummary(in)
+
+	case FnRunLoop:
+		return nil, r.kit.RunLoop(req)
+
+	case FnShortForget:
+		var in struct{ Group, Key string }
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		return nil, r.kit.ShortForget(in.Group, in.Key)
+
+	case FnMonitored:
+		// KARMAX's knowledge, not the loop's. A compiled-in loop fetched this
+		// from wacli's API on localhost — which loops are now blocked from
+		// reaching, and rightly, since that API can send messages as the
+		// operator. The host asks; the loop is told the answer.
+		chats, err := r.kit.MonitoredChats(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"chats": chats})
+
+	case FnWAChats:
+		var in struct {
+			Limit int `json:"limit"`
+		}
+		_ = json.Unmarshal([]byte(req), &in)
+		out, err := r.kit.WhatsAppChats(ctx, in.Limit)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"raw": out})
+
+	case FnWAMessages:
+		// Structured, because the loop wants data. A compiled-in loop ran
+		// `wacli messages` itself; a sandboxed one cannot exec, and having the
+		// host run a NAMED read rather than an arbitrary command is the
+		// difference between "may read your messages" and "may run anything".
+		var in struct {
+			Chat       string `json:"chat"`
+			Limit      int    `json:"limit"`
+			FromMeOnly bool   `json:"from_me_only"`
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		out, err := r.kit.WhatsAppMessages(ctx, in.Chat, in.Limit, in.FromMeOnly)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"raw": out})
+
+	case FnGChatSpaces:
+		out, err := r.kit.GoogleChatSpaces(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{"raw": out})
+
+	case FnOperators:
+		// Read from the host rather than the environment. A loop that needs to
+		// tell the operator's own chats from a third party's used to call
+		// os.Getenv, which the sandbox removed — and having it explicit is
+		// better than having it ambient, since the daemon's environment holds
+		// rather more than this.
+		return json.Marshal(map[string]any{"chats": r.kit.OperatorChats()})
 	}
 	return nil, fmt.Errorf("no host function %q", name)
 }

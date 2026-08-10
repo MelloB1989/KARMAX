@@ -1,0 +1,23 @@
+# Daily news digest, ingested to memory. Runs on the harness rather than the
+# main model, so it keeps working when the main model is rate-limited.
+name: tech-news
+on:
+  schedule: "0 0 9 * * *"
+
+steps:
+  - harness: >
+      Compile a daily NEWS digest. Search the web for notable, publicly reported news from the
+      last 24-48 hours in AI, developer tooling, startups, and the cybersecurity industry (new
+      model releases, funding, product launches, notable disclosed CVEs/incidents, agent
+      tooling). This is a neutral news summary for a founder — report only what's been publicly
+      reported, no instructions or how-tos. Give 5-8 items, one tight line each plus the source
+      name. Output ONLY the digest as plain text, no preamble or sign-off.
+    as: digest
+
+  # The harness prints refusals to stdout and exits 0, so an empty or apologetic
+  # answer must not be stored as if it were a digest.
+  - when: "{{ .digest }}"
+    remember:
+      fact: "Tech news digest: {{ .digest }}"
+    else:
+      - log: "tech-news: the harness returned nothing usable"
