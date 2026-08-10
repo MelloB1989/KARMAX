@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
@@ -59,6 +61,7 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 			continue
 		}
 		rt.loopkitLoops[l.Name] = l
+		rt.setLoopTrust(l.Name)
 		triggers := []string{"manual"}
 
 		// Schedule trigger (cron/interval) → a scheduler job.
@@ -175,6 +178,31 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 				return nil
 			})
 	}
+}
+
+// setLoopTrust decides whether the broker gates this loop.
+//
+// Every loop today is compiled into the daemon by `loops install`, so gating one
+// that has been granted nothing would break it while protecting nothing — it
+// could call the same Go functions directly. So a loop with no grants is
+// Ungated, and granting a loop anything is what turns enforcement on for it.
+// When loops move to WASM, install writes grants from the manifest and every
+// loop crosses that line at once.
+func (rt *KarmaxRuntime) setLoopTrust(name string) {
+	subject := broker.LoopSubject(name)
+	grants, err := rt.store.Grants(subject)
+	if err != nil {
+		rt.log.Warn("could not read loop grants; gating it", zap.String("loop", name), zap.Error(err))
+		rt.broker.SetTrust(subject, broker.Community)
+		return
+	}
+	if len(grants) == 0 {
+		rt.broker.SetTrust(subject, broker.Ungated)
+		return
+	}
+	rt.broker.SetTrust(subject, broker.Registry)
+	rt.log.Info("loop runs under capability grants",
+		zap.String("loop", name), zap.Int("grants", len(grants)))
 }
 
 // RunLoopByName runs a registered loopkit loop on demand (manual trigger).
@@ -415,11 +443,15 @@ func (k *loopKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (str
 }
 
 func (k *loopKit) HTTP(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, error) {
-	// Loop code is third-party and the interesting targets are local — wacli on
-	// :8765, KARMAX's own API on :9091.
+	// Two gates, and they answer different questions. safety.CheckURL asks
+	// whether ANY loop should reach that address; the broker asks whether THIS
+	// loop was granted that host.
 	if err := safety.CheckURL(url); err != nil {
 		k.rt.log.Warn("loop HTTP request refused",
 			zap.String("loop", k.loopName), zap.String("url", url), zap.Error(err))
+		return "", 0, err
+	}
+	if err := k.grants().HTTP(hostOf(url)); err != nil {
 		return "", 0, err
 	}
 	if method == "" {
@@ -626,6 +658,19 @@ func (k *loopKit) Once(name string, fn func() error) error {
 
 func (k *loopKit) Fence(source, content string) string {
 	return safety.Fence(source, content)
+}
+
+// grants is this loop's capability handle.
+func (k *loopKit) grants() *broker.Handle {
+	return k.rt.broker.For(broker.LoopSubject(k.loopName))
+}
+
+func hostOf(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return raw
+	}
+	return strings.ToLower(u.Hostname())
 }
 
 // timerID namespaces a loop's timer ids so two loops cannot collide on "daily".

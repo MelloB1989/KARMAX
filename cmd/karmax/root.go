@@ -35,6 +35,7 @@ func newRootCmd() *cobra.Command {
 		newWebhookCmd(),
 		newMemoryCmd(),
 		meshCmd(),
+		capsCmd(),
 		migrateCmd(),
 		newToolCmd(),
 		newMCPCmd(),

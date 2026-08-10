@@ -12,6 +12,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
+	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/clock"
 	"github.com/MelloB1989/karmax/internal/comms"
@@ -52,6 +53,9 @@ type KarmaxRuntime struct {
 	comms     *comms.Manager
 	api       *api.Server
 
+	// broker decides what each loop, peer and connector may do.
+	broker *broker.Broker
+
 	// clock fires durable timers into the log — "continue on Thursday".
 	clock *clock.Clock
 
@@ -90,6 +94,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// per person, so the partition exists in the schema rather than in config.
 	b := bus.NewLog(s, store.DefaultWorkspace, log)
 	clk := clock.New(s, b, store.DefaultWorkspace, log)
+	brk := broker.New(s, log)
 	startedAt := time.Now()
 
 	// Set provider env vars from config
@@ -645,6 +650,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		store:       s,
 		bus:         b,
 		clock:       clk,
+		broker:      brk,
 		routedKinds: routedKinds,
 		mesh:        meshNode,
 		startedAt:   startedAt,
