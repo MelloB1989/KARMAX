@@ -160,11 +160,9 @@ func subjectOf(path string) string {
 			return "" // a date, so a sentence
 		}
 	}
-	// A single common word ("funding", "college") names nobody, and forbidding
-	// it costs a whole topic the operator can no longer post about.
-	if len(words) == 1 && social.Generic(words[0]) {
-		return ""
-	}
+	// Whether the subject is a topic rather than a name is the guard's decision,
+	// not this one — it applies the same test to contact names, which turn out
+	// to need it just as badly ("Agent", "Property Agent").
 	return name
 }
 

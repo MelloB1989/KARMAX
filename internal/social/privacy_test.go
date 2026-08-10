@@ -122,3 +122,52 @@ func TestScreenResolutionsAreNotMoney(t *testing.T) {
 		}
 	}
 }
+
+// A real address book is full of roles, not only people: "Agent", "Property
+// Agent", "Hyd T Service". Treating those as names makes the words "agent" and
+// "service" unpublishable, which is most of what somebody in software would
+// write about their day.
+func TestRolesInTheAddressBookAreNotNames(t *testing.T) {
+	g := Guard{
+		MaxRunes: 280,
+		Forbidden: []string{
+			"Agent", "Property Agent", "Hyd T Service", "Pavan Kumar Dishwash Service",
+			"Agent Ram Uppal", "CampX",
+		},
+	}
+
+	for _, draft := range []string{
+		"Spent the day teaching an agent to admit when it does not know something.",
+		"Pulled the reporting service out of the monolith. The extraction was the easy part.",
+		"A property deal fell through and I got my afternoon back.",
+	} {
+		if err := g.Check(draft); err != nil {
+			t.Errorf("refused an honest post: %q\n  %v", draft, err)
+		}
+	}
+
+	// The person inside that role entry is still protected, and so is the client.
+	for _, draft := range []string{
+		"Long call with Uppal about the rollout.",
+		"Shipped the first report for CampX today.",
+	} {
+		if err := g.Check(draft); err == nil {
+			t.Errorf("published a draft that names somebody: %q", draft)
+		}
+	}
+}
+
+// The operator's own list wins over the dictionary in both directions.
+func TestTheOperatorCanOverrideBothWays(t *testing.T) {
+	// A name the automatic sources cannot know.
+	strict := Guard{MaxRunes: 280, Forbidden: []string{"Srikanth"}}
+	if err := strict.Check("Long call with Srikanth about timelines."); err == nil {
+		t.Error("a name added by hand was not caught")
+	}
+
+	// And a word they are tired of seeing refused.
+	relaxed := Guard{MaxRunes: 280, Forbidden: []string{"Newtra EV"}, Allowed: []string{"newtra"}}
+	if err := relaxed.Check("Spent the morning on newtra ideas."); err != nil {
+		t.Errorf("an allowed word was still treated as a name: %v", err)
+	}
+}

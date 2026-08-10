@@ -107,7 +107,14 @@ func subject(path string) string {
 			return ""
 		}
 	}
-	if len(words) == 1 && social.Generic(words[0]) {
+	ordinary := true
+	for _, w := range words {
+		if !social.Topic(w) {
+			ordinary = false
+			break
+		}
+	}
+	if ordinary {
 		return ""
 	}
 	return name
