@@ -218,6 +218,10 @@ func (rt *KarmaxRuntime) setLoopTrust(name string) {
 // checkpointing without recipes knowing any of that exists.
 func (rt *KarmaxRuntime) startRecipes(ctx context.Context) {
 	dir := recipes.Dir()
+	// Written before the watcher starts, so a fresh install is useful without
+	// having reached the registry first. Existing files are never overwritten.
+	recipes.InstallBuiltins(dir, rt.log)
+
 	w := recipes.NewWatcher(dir, rt.log, func(loaded []recipes.Loaded) {
 		rt.applyRecipes(ctx, loaded)
 	})
