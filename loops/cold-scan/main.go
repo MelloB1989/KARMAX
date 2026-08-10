@@ -196,7 +196,7 @@ func summarize(c chatRec, msgs []msgRec) (string, bool) {
 }
 
 func listChats() ([]chatRec, error) {
-	raw, err := loopwasm.WhatsAppChats(1000)
+	raw, err := loopwasm.Tool("whatsapp.chats", map[string]any{"limit": 1000})
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +226,8 @@ func fetchMessages(jid string, limit int) []msgRec {
 }
 
 func runMessages(jid string, limit int, fromMeOnly bool) []msgRec {
-	raw, err := loopwasm.WhatsAppMessages(jid, limit, fromMeOnly)
+	raw, err := loopwasm.Tool("whatsapp.messages", map[string]any{
+		"chat": jid, "limit": limit, "from_me_only": fromMeOnly})
 	if err != nil {
 		return nil
 	}

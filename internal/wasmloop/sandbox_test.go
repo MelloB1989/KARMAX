@@ -58,11 +58,10 @@ func (nullKit) Gateway(context.Context, string, ...string) (string, error) {
 }
 func (nullKit) Summarize(context.Context, string) (string, error) { return "a summary", nil }
 
-func (nullKit) Propose(string, string, string) error                       { return nil }
-func (nullKit) Remind(string, string, string) error                        { return nil }
-func (nullKit) SendWhatsApp(context.Context, string, string, string) error { return nil }
-func (nullKit) ReadWhatsApp(context.Context, string, int) (string, error) {
-	return "recent messages", nil
+func (nullKit) Propose(string, string, string) error { return nil }
+func (nullKit) Remind(string, string, string) error  { return nil }
+func (nullKit) Tool(context.Context, string, map[string]any) (string, error) {
+	return "tool output", nil
 }
 
 func (nullKit) ShortSet(string, string, string, int) error    { return nil }
@@ -73,14 +72,6 @@ func (nullKit) SaveChatSummary(ChatSummary) error             { return nil }
 func (nullKit) RunLoop(string) error                          { return nil }
 func (nullKit) ShortForget(string, string) error              { return nil }
 func (nullKit) OperatorChats() []string                       { return []string{"911234567890"} }
-func (nullKit) MonitoredChats(context.Context) ([]string, error) {
-	return []string{"someone@s.whatsapp.net"}, nil
-}
-func (nullKit) WhatsAppChats(context.Context, int) (string, error) { return "[]", nil }
-func (nullKit) WhatsAppMessages(context.Context, string, int, bool) (string, error) {
-	return "[]", nil
-}
-func (nullKit) GoogleChatSpaces(context.Context) (string, error) { return "[]", nil }
 
 func TestAGuestCannotEscapeTheSandbox(t *testing.T) {
 	module := buildGuest(t)

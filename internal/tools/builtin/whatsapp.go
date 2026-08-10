@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 )
@@ -80,10 +81,27 @@ func (t *WhatsAppReadTool) Execute(ctx context.Context, input map[string]any) (t
 	}
 
 	return tools.SuccessResult(map[string]any{
-		"chat":     chat,
-		"limit":    limit,
-		"messages": t.enrichMessages(parseWacliJSON(out)),
+		"chat":  chat,
+		"limit": limit,
+		// Fenced because this result goes straight into a model's context and
+		// whoever wrote these messages is not the operator. The WASM path has
+		// always fenced its equivalent read; the agent's path did not, which
+		// left the more direct of the two routes as the unguarded one.
+		"messages": safety.Fence("WhatsApp messages in "+chat,
+			asText(t.enrichMessages(parseWacliJSON(out)))),
 	}), nil
+}
+
+// asText renders an enriched wacli payload for a model.
+func asText(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }
 
 // jidNumber extracts the digits of a WhatsApp JID's phone part

@@ -147,9 +147,20 @@ func DiffCapabilities(old Entry, next Manifest) CapabilityDiff {
 	return d
 }
 
-// Describe renders capabilities in the plain English an operator approves.
-func Describe(host, capabilities []string) []string {
+// Describe renders a manifest in the plain English an operator approves.
+//
+// It takes the whole manifest rather than the fields it happens to use today,
+// so a new kind of reach cannot be added to the format and quietly stay out of
+// the list the operator is shown.
+func Describe(m Manifest) []string {
+	host, capabilities := m.Host, m.Capabilities
 	var out []string
+	for _, t := range m.Tools {
+		out = append(out, "call the tool "+t)
+	}
+	for _, p := range m.Provides {
+		out = append(out, "ADD the tool "+p.Name+" to your agent — "+p.Description)
+	}
 	for _, c := range capabilities {
 		class, value, ok := strings.Cut(c, ":")
 		if !ok {

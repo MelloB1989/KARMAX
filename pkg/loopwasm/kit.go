@@ -180,8 +180,7 @@ const (
 	fnSummarize   = "summarize"
 	fnPropose     = "propose"
 	fnRemind      = "remind"
-	fnSendWA      = "send_whatsapp"
-	fnReadWA      = "read_whatsapp"
+	fnTool        = "tool"
 	fnShortSet    = "short_set"
 	fnShortGet    = "short_get"
 	fnShortAll    = "short_all"
@@ -191,10 +190,6 @@ const (
 	fnTrigger     = "trigger"
 	fnShortForget = "short_forget"
 	fnOperators   = "operator_chats"
-	fnMonitored   = "monitored_chats"
-	fnWAChats     = "wa_chats"
-	fnWAMessages  = "wa_messages"
-	fnGChatSpaces = "gchat_spaces"
 )
 
 func scalar(fn, payload string) (string, error) {
@@ -297,35 +292,51 @@ func Remind(title, due, notes string) error {
 	return err
 }
 
-// SendWhatsApp sends a message as the operator. replyTo threads it onto an
-// existing message; pass "" for a plain send.
-func SendWhatsApp(to, text, replyTo string) error {
-	req, err := json.Marshal(map[string]any{"To": to, "Text": text, "reply_to": replyTo})
-	if err != nil {
-		return err
+// Tool calls one of KARMAX's tools and returns its output.
+//
+// This is how a loop reaches everything outside its own sandbox — WhatsApp,
+// Google Workspace, GitHub, anything an integration exposes. The tool must be
+// listed in the manifest's `tools:`, and the operator must have granted
+// `tool:<name>`; either gate refusing is an error here rather than an empty
+// result.
+//
+// Content that came from someone other than the operator arrives already
+// fenced as untrusted, so a loop author cannot forget to do it.
+func Tool(name string, input any) (string, error) {
+	if input == nil {
+		input = map[string]any{}
 	}
-	_, err = request(fnSendWA, string(req))
-	return err
-}
-
-// ReadWhatsApp returns recent messages. The result arrives already fenced as
-// untrusted content, because whoever wrote it is not the operator.
-func ReadWhatsApp(chat string, limit int) (string, error) {
-	req, err := json.Marshal(map[string]any{"chat": chat, "limit": limit})
+	req, err := json.Marshal(map[string]any{"name": name, "input": input})
 	if err != nil {
 		return "", err
 	}
-	out, err := request(fnReadWA, string(req))
+	out, err := request(fnTool, string(req))
 	if err != nil {
 		return "", err
 	}
 	var res struct {
-		Text string `json:"text"`
+		Output string `json:"output"`
+		Error  string `json:"error"`
 	}
 	if err := json.Unmarshal(out, &res); err != nil {
 		return "", err
 	}
-	return res.Text, nil
+	// The output is returned alongside the error on purpose: a tool that failed
+	// usually explains itself in what it printed, and "run gws auth login" is a
+	// more useful thing for a loop to see than "it failed".
+	if res.Error != "" {
+		return res.Output, errors.New(res.Error)
+	}
+	return res.Output, nil
+}
+
+// ToolJSON calls a tool and decodes its output into out.
+func ToolJSON(name string, input, out any) error {
+	raw, err := Tool(name, input)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(raw), out)
 }
 
 // ShortMemory is one short-term working note.
@@ -492,62 +503,3 @@ func OperatorChats() []string {
 	return res.Chats
 }
 
-// MonitoredChats lists the chats KARMAX is watching, excluding the operator's
-// own. The host fetches it — a loop cannot reach wacli's API itself, since that
-// API can send messages as the operator.
-func MonitoredChats() ([]string, error) {
-	out, err := request(fnMonitored, "")
-	if err != nil {
-		return nil, err
-	}
-	var res struct {
-		Chats []string `json:"chats"`
-	}
-	if err := json.Unmarshal(out, &res); err != nil {
-		return nil, err
-	}
-	return res.Chats, nil
-}
-
-// WhatsAppChats returns the raw JSON of the operator's chats.
-func WhatsAppChats(limit int) (string, error) {
-	req, _ := json.Marshal(map[string]any{"limit": limit})
-	return rawOf(fnWAChats, string(req))
-}
-
-// WhatsAppMessages returns the raw JSON of a chat's messages.
-//
-// Structured rather than formatted, because callers parse it. A compiled-in
-// loop ran `wacli messages` itself; a sandboxed one asks the host for a NAMED
-// read instead, which is a capability the operator can grant or withhold.
-func WhatsAppMessages(chat string, limit int, fromMeOnly bool) (string, error) {
-	req, _ := json.Marshal(map[string]any{
-		"chat": chat, "limit": limit, "from_me_only": fromMeOnly})
-	return rawOf(fnWAMessages, string(req))
-}
-
-// GoogleChatSpaces returns the raw JSON of the operator's Google Chat spaces.
-func GoogleChatSpaces() (string, error) { return rawOf(fnGChatSpaces, "") }
-
-// rawOf returns the tool's output AND its error together.
-//
-// Both, because for these tools the output is the diagnosis: gws exits non-zero
-// with a JSON body explaining that Google needs an interactive reauth, and a
-// loop can only tell the operator what to do if it can read that.
-func rawOf(fn, payload string) (string, error) {
-	out, err := request(fn, payload)
-	if err != nil {
-		return "", err
-	}
-	var res struct {
-		Raw   string `json:"raw"`
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(out, &res); err != nil {
-		return "", err
-	}
-	if res.Error != "" {
-		return res.Raw, errors.New(res.Error)
-	}
-	return res.Raw, nil
-}

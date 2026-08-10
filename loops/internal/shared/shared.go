@@ -138,7 +138,39 @@ func firstLine(s string) string {
 }
 
 // MonitoredChats returns the chats KARMAX watches, minus the operator's own.
-func MonitoredChats() ([]string, error) { return loopwasm.MonitoredChats() }
+func MonitoredChats() ([]string, error) {
+	var res struct {
+		Chats []string `json:"chats"`
+	}
+	if err := loopwasm.ToolJSON("whatsapp.monitored", nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Chats, nil
+}
+
+// ReadThread returns a chat's recent messages as text for a prompt. The result
+// arrives already fenced as untrusted content — whoever wrote it is not the
+// operator — so it can be dropped into a prompt as-is.
+//
+// This lives here rather than in loopwasm because loopwasm knows nothing about
+// WhatsApp, and that is the point: integrations reach a loop as tools.
+func ReadThread(chatID string, limit int) string {
+	var res struct {
+		Messages string `json:"messages"`
+	}
+	if err := loopwasm.ToolJSON("whatsapp.read",
+		map[string]any{"chat": chatID, "limit": limit}, &res); err != nil {
+		return ""
+	}
+	return res.Messages
+}
+
+// SendWhatsApp sends as the operator, threading onto replyTo when non-empty.
+func SendWhatsApp(chatID, text, replyTo string) error {
+	_, err := loopwasm.Tool("whatsapp.send", map[string]any{
+		"to": chatID, "text": text, "reply_to": replyTo})
+	return err
+}
 
 // OperatorChatSet returns the operator's own chats, normalised for comparison.
 func OperatorChatSet() map[string]bool {

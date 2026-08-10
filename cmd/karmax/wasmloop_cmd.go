@@ -167,7 +167,7 @@ func wloopSignCmd() *cobra.Command {
 			}
 			fmt.Printf("Signed %s (%s) as %s, %d KB.\n\n", m.Name, m.Version, role, len(data)/1024)
 			fmt.Println("It declares:")
-			for _, line := range wasmloop.Describe(m.Host, m.Capabilities) {
+			for _, line := range wasmloop.Describe(m) {
 				fmt.Println("  - " + line)
 			}
 			fmt.Printf("\nWrote %s. Whoever installs it will see exactly that list.\n", out)

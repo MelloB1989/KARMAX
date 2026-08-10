@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // magic identifies a KARMAX loop artifact. Checked before anything is parsed,
@@ -38,35 +40,84 @@ const (
 
 // Manifest is what the artifact declares about itself. It is inside the
 // signature, so none of it can be changed after publishing.
+//
+// The yaml tags are explicit because the manifest is also hand-written as
+// loop.yaml, and yaml.v3 does not read json tags — it lowercases field names
+// instead. Without them `memory_mb: 32` parsed as nothing at all and every
+// loop silently took the default limit.
 type Manifest struct {
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	Description string `json:"description"`
+	Name        string `json:"name" yaml:"name"`
+	Version     string `json:"version" yaml:"version"`
+	Description string `json:"description" yaml:"description"`
 	// Publisher is the Ed25519 key that signed this artifact.
-	Publisher string `json:"publisher"`
+	Publisher string `json:"publisher" yaml:"publisher"`
 
 	// Host names the host functions the module may call. Anything not listed
 	// is refused at runtime, not logged.
-	Host []string `json:"host"`
+	Host []string `json:"host" yaml:"host"`
+	// Tools names the KARMAX tools the module may call through the `tool` host
+	// function. Every integration reaches a loop this way, so this list is the
+	// whole of what it can touch outside its own sandbox.
+	Tools []string `json:"tools,omitempty" yaml:"tools"`
+	// Provides are tools this module IMPLEMENTS and lends to the agent. They
+	// exist only while the agent is working on this loop's behalf.
+	Provides []ToolSpec `json:"provides,omitempty" yaml:"provides"`
 	// Capabilities are Broker grants in class:value form — "http:api.github.com",
 	// "memory:nexus:write", "tool:comms.send".
-	Capabilities []string `json:"capabilities"`
+	Capabilities []string `json:"capabilities" yaml:"capabilities"`
 
 	// Triggers.
-	Schedule string   `json:"schedule,omitempty"`
-	Events   []string `json:"events,omitempty"`
-	Webhook  string   `json:"webhook,omitempty"`
+	Schedule string   `json:"schedule,omitempty" yaml:"schedule"`
+	Events   []string `json:"events,omitempty" yaml:"events"`
+	Webhook  string   `json:"webhook,omitempty" yaml:"webhook"`
 
 	// Limits the operator can see before installing.
-	MemoryMB int `json:"memory_mb,omitempty"`
+	MemoryMB int `json:"memory_mb,omitempty" yaml:"memory_mb"`
 
 	// SHA256 is the hex digest of the module bytes, inside the signature so the
 	// code cannot be swapped for different code under the same manifest.
-	SHA256 string `json:"sha256"`
+	SHA256 string `json:"sha256" yaml:"sha256"`
 
 	// Provenance.
-	SourceURL string `json:"source_url,omitempty"`
-	BuiltAt   int64  `json:"built_at,omitempty"`
+	SourceURL string `json:"source_url,omitempty" yaml:"source_url"`
+	BuiltAt   int64  `json:"built_at,omitempty" yaml:"built_at"`
+}
+
+// ToolSpec is a tool a module implements, in the shape the agent needs to call
+// it. Inside the signature, so a module cannot widen its own description after
+// the operator approved it.
+type ToolSpec struct {
+	Name        string          `json:"name" yaml:"name"`
+	Description string          `json:"description" yaml:"description"`
+	Parameters  json.RawMessage `json:"parameters,omitempty" yaml:"-"`
+}
+
+// UnmarshalYAML lets a manifest write the JSON Schema as ordinary YAML. The
+// canonical form stays JSON — that is what is signed and what the model is
+// shown — so the schema is converted here rather than carried in two shapes.
+func (t *ToolSpec) UnmarshalYAML(n *yaml.Node) error {
+	var doc struct {
+		Name        string    `yaml:"name"`
+		Description string    `yaml:"description"`
+		Parameters  yaml.Node `yaml:"parameters"`
+	}
+	if err := n.Decode(&doc); err != nil {
+		return err
+	}
+	t.Name, t.Description = doc.Name, doc.Description
+	if doc.Parameters.IsZero() {
+		return nil
+	}
+	var params any
+	if err := doc.Parameters.Decode(&params); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("wasmloop: tool %q has parameters that are not valid JSON Schema: %w", doc.Name, err)
+	}
+	t.Parameters = raw
+	return nil
 }
 
 // Role says which signature this is.

@@ -270,6 +270,16 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: hostpaths.GWS()})
 	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, DefaultChat: waTarget, Store: s})
 	toolReg.Register(&builtin.WacliTool{WacliPath: waCLIPath})
+	// The WhatsApp integration's own surface. These used to be host functions in
+	// the WASM ABI; as tools they serve the agent and workflows alike.
+	toolReg.Register(&builtin.WhatsAppChatsTool{WacliPath: waCLIPath})
+	toolReg.Register(&builtin.WhatsAppMessagesTool{WacliPath: waCLIPath})
+	toolReg.Register(&builtin.WhatsAppMonitoredTool{})
+	toolReg.Register(&builtin.WhatsAppSendTool{
+		WacliPath: waCLIPath,
+		Send:      commsMgr.Send,
+		ChannelID: commsMgr.DefaultChannelID,
+	})
 	toolReg.Register(&builtin.WhatsAppSendMediaTool{WacliPath: waCLIPath})
 	toolReg.Register(&builtin.WhatsAppViewMediaTool{WacliPath: waCLIPath, Store: s, AgentID: waAgentID})
 	var waMonitorTool *builtin.WhatsAppMonitorTool

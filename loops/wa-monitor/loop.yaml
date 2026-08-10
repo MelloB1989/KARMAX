@@ -8,8 +8,6 @@ events:
   - comms.message
 memory_mb: 96
 
-# The one loop that can send as the operator, and the reason a capability list
-# is worth reading before installing anything.
 host:
   - log
   - config
@@ -22,22 +20,25 @@ host:
   - notify
   - propose
   - remind
-  - send_whatsapp
-  - read_whatsapp
-  - wa_messages
+  - tool
   - short_set
   - short_get
   - short_all
   - operator_chats
-  - monitored_chats
+
+# The one loop that can send as the operator, and the reason a capability list
+# is worth reading before installing anything.
+tools:
+  - whatsapp.send
+  - whatsapp.read
+  - whatsapp.messages
+  - whatsapp.monitored
 
 capabilities:
-  - channel:whatsapp
   - tool:agent.ask
   - tool:gateway
   - tool:harness
   - tool:summarize
-  - tool:whatsapp.read
   - tool:app.push
   - tool:propose
   - tool:reminder.add
