@@ -279,6 +279,15 @@ func (rt *KarmaxRuntime) applyRecipes(ctx context.Context, loaded []recipes.Load
 
 	next := map[string]*recipes.Recipe{}
 	for _, r := range recipes.Valid(loaded) {
+		// A signed loop was installed deliberately and carries a capability
+		// manifest; a recipe is a file someone dropped in a directory. If both
+		// claim a name, the one the operator approved wins and the other is
+		// said out loud rather than silently shadowed.
+		if _, taken := rt.loopkitLoops[r.Name]; taken {
+			rt.log.Warn("recipe name is already taken by an installed loop; not loading it",
+				zap.String("recipe", r.Name), zap.String("file", r.Path))
+			continue
+		}
 		next[r.Name] = r
 	}
 

@@ -49,6 +49,39 @@ func (nullKit) HTTP(context.Context, string, string, map[string]string, string) 
 	return "{}", 200, nil
 }
 
+func (nullKit) Config(string) string     { return "" }
+func (nullKit) HostTool(n string) string { return "/usr/bin/" + n }
+
+func (nullKit) Harness(context.Context, string) (string, error) { return "harness output", nil }
+func (nullKit) Gateway(context.Context, string, ...string) (string, error) {
+	return "gateway output", nil
+}
+func (nullKit) Summarize(context.Context, string) (string, error) { return "a summary", nil }
+
+func (nullKit) Propose(string, string, string) error                       { return nil }
+func (nullKit) Remind(string, string, string) error                        { return nil }
+func (nullKit) SendWhatsApp(context.Context, string, string, string) error { return nil }
+func (nullKit) ReadWhatsApp(context.Context, string, int) (string, error) {
+	return "recent messages", nil
+}
+
+func (nullKit) ShortSet(string, string, string, int) error    { return nil }
+func (nullKit) ShortGet(string, string) (string, bool, error) { return "", false, nil }
+func (nullKit) ShortAll(string) ([]ShortMemory, error)        { return nil, nil }
+func (nullKit) ChatSummary(string) (*ChatSummary, error)      { return nil, nil }
+func (nullKit) SaveChatSummary(ChatSummary) error             { return nil }
+func (nullKit) RunLoop(string) error                          { return nil }
+func (nullKit) ShortForget(string, string) error              { return nil }
+func (nullKit) OperatorChats() []string                       { return []string{"911234567890"} }
+func (nullKit) MonitoredChats(context.Context) ([]string, error) {
+	return []string{"someone@s.whatsapp.net"}, nil
+}
+func (nullKit) WhatsAppChats(context.Context, int) (string, error) { return "[]", nil }
+func (nullKit) WhatsAppMessages(context.Context, string, int, bool) (string, error) {
+	return "[]", nil
+}
+func (nullKit) GoogleChatSpaces(context.Context) (string, error) { return "[]", nil }
+
 func TestAGuestCannotEscapeTheSandbox(t *testing.T) {
 	module := buildGuest(t)
 

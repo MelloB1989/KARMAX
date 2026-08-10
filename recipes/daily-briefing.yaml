@@ -1,0 +1,22 @@
+# Morning briefing to the app feed. Set the whatsapp step's target to also send
+# it as a message, or delete that step.
+name: daily-briefing
+on:
+  schedule: "0 30 8 * * *"
+
+steps:
+  - ask: >
+      Write the operator's morning briefing. Gather what you can — today's calendar and
+      reminders, the latest tech-news digest from your memory, any open coding sessions, and
+      anything pending or urgent from recent WhatsApp; skip any source that errors, don't get
+      stuck. Then RETURN the briefing itself as your reply: a few short, skimmable bullet
+      lines, no preamble. Do NOT call app.push or comms.send — just return the briefing text;
+      delivery is handled for you.
+    as: briefing
+
+  - when: "{{ .briefing }}"
+    notify:
+      title: "Morning briefing"
+      body: "{{ .briefing }}"
+    else:
+      - log: "daily-briefing: the agent returned nothing usable"

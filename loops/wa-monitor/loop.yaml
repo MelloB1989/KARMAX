@@ -1,0 +1,45 @@
+name: wa-monitor
+version: 1.0.0
+description: >
+  The proactive WhatsApp proxy. Reacts to incoming messages in monitored chats,
+  answers what it confidently can in the operator's voice, and escalates
+  anything that is a decision.
+events:
+  - comms.message
+memory_mb: 96
+
+# The one loop that can send as the operator, and the reason a capability list
+# is worth reading before installing anything.
+host:
+  - log
+  - config
+  - hosttool
+  - trigger
+  - ask
+  - gateway
+  - harness
+  - summarize
+  - notify
+  - propose
+  - remind
+  - send_whatsapp
+  - read_whatsapp
+  - wa_messages
+  - short_set
+  - short_get
+  - short_all
+  - operator_chats
+  - monitored_chats
+
+capabilities:
+  - channel:whatsapp
+  - tool:agent.ask
+  - tool:gateway
+  - tool:harness
+  - tool:summarize
+  - tool:whatsapp.read
+  - tool:app.push
+  - tool:propose
+  - tool:reminder.add
+  - memory:nexus
+  - memory:nexus:write

@@ -5,7 +5,6 @@ go 1.25.0
 require (
 	github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d
 	github.com/MelloB1989/karma v1.20.0
-	github.com/MelloB1989/karmax-loops v0.0.0-20260731153730-1be951b30ed6
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -29,7 +28,6 @@ require (
 	cloud.google.com/go/auth v0.14.0 // indirect
 	cloud.google.com/go/compute/metadata v0.6.0 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.4.0 // indirect
-	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aws/aws-sdk-go v1.55.5 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.36.3 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.10 // indirect

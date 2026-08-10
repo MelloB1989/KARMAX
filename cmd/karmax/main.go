@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	_ "github.com/MelloB1989/karmax/internal/installedloops" // third-party loopkit loops (managed by `karmax loops`)
 	"github.com/joho/godotenv"
 )
 

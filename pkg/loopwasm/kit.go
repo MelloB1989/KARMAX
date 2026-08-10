@@ -165,3 +165,380 @@ func request(name, payload string) ([]byte, error) {
 	}
 	return nil, ErrBufferTooSmall
 }
+
+// --- The rest of the surface -------------------------------------------------
+//
+// Everything below executes host-side. The guest is orchestration glue, which
+// is why it can be sandboxed without losing capability: a loop that needs the
+// shell asks the harness for it, and the harness is not in here.
+
+const (
+	fnConfig      = "config"
+	fnHostTool    = "hosttool"
+	fnHarness     = "harness"
+	fnGateway     = "gateway"
+	fnSummarize   = "summarize"
+	fnPropose     = "propose"
+	fnRemind      = "remind"
+	fnSendWA      = "send_whatsapp"
+	fnReadWA      = "read_whatsapp"
+	fnShortSet    = "short_set"
+	fnShortGet    = "short_get"
+	fnShortAll    = "short_all"
+	fnChatGet     = "chat_summary_get"
+	fnChatSave    = "chat_summary_save"
+	fnRunLoop     = "run_loop"
+	fnTrigger     = "trigger"
+	fnShortForget = "short_forget"
+	fnOperators   = "operator_chats"
+	fnMonitored   = "monitored_chats"
+	fnWAChats     = "wa_chats"
+	fnWAMessages  = "wa_messages"
+	fnGChatSpaces = "gchat_spaces"
+)
+
+func scalar(fn, payload string) (string, error) {
+	out, err := request(fn, payload)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", err
+	}
+	return res.Value, nil
+}
+
+func prompted(fn, prompt string) (string, error) {
+	req, err := json.Marshal(map[string]any{"prompt": prompt})
+	if err != nil {
+		return "", err
+	}
+	out, err := request(fn, string(req))
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Answer string `json:"answer"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", err
+	}
+	return res.Answer, nil
+}
+
+// Config returns an install-time setting, or "".
+func Config(key string) string {
+	v, _ := scalar(fnConfig, key)
+	return v
+}
+
+// HostTool resolves where a host binary lives — "wacli", "gws", "karmax".
+//
+// It returns a PATH, not permission to run it: a sandboxed loop cannot exec.
+// The path is for naming the tool inside a Harness prompt, where the harness
+// runs it host-side.
+func HostTool(name string) string {
+	v, _ := scalar(fnHostTool, name)
+	return v
+}
+
+// Harness runs a prompt through a coding harness with shell, file and web
+// tools. Use it for research and for anything needing the command line.
+func Harness(prompt string) (string, error) { return prompted(fnHarness, prompt) }
+
+// Gateway asks the main model directly — no agent loop. Cheapest path.
+//
+// lend names host tools to make available for this call only: "wacli" gives the
+// model read-only WhatsApp access. A loop cannot supply a tool of its own — the
+// host owns what those tools may do, so the allowlist is one rule rather than
+// one per loop.
+func Gateway(prompt string, lend ...string) (string, error) {
+	req, err := json.Marshal(map[string]any{"prompt": prompt, "lend": lend})
+	if err != nil {
+		return "", err
+	}
+	out, err := request(fnGateway, string(req))
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Answer string `json:"answer"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", err
+	}
+	return res.Answer, nil
+}
+
+// Summarize uses the cheap summary model for bulk distillation.
+func Summarize(prompt string) (string, error) { return prompted(fnSummarize, prompt) }
+
+// Propose asks the operator to approve an action before it happens. Use this,
+// never Notify, for anything that is a decision, a commitment, or money.
+func Propose(title, summary, action string) error {
+	req, err := json.Marshal(map[string]any{"Title": title, "Summary": summary, "Action": action})
+	if err != nil {
+		return err
+	}
+	_, err = request(fnPropose, string(req))
+	return err
+}
+
+// Remind puts something on the operator's list, for things only they can do.
+func Remind(title, due, notes string) error {
+	req, err := json.Marshal(map[string]any{"Title": title, "Due": due, "Notes": notes})
+	if err != nil {
+		return err
+	}
+	_, err = request(fnRemind, string(req))
+	return err
+}
+
+// SendWhatsApp sends a message as the operator. replyTo threads it onto an
+// existing message; pass "" for a plain send.
+func SendWhatsApp(to, text, replyTo string) error {
+	req, err := json.Marshal(map[string]any{"To": to, "Text": text, "reply_to": replyTo})
+	if err != nil {
+		return err
+	}
+	_, err = request(fnSendWA, string(req))
+	return err
+}
+
+// ReadWhatsApp returns recent messages. The result arrives already fenced as
+// untrusted content, because whoever wrote it is not the operator.
+func ReadWhatsApp(chat string, limit int) (string, error) {
+	req, err := json.Marshal(map[string]any{"chat": chat, "limit": limit})
+	if err != nil {
+		return "", err
+	}
+	out, err := request(fnReadWA, string(req))
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", err
+	}
+	return res.Text, nil
+}
+
+// ShortMemory is one short-term working note.
+type ShortMemory struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// ShortSet stores working state. ttlSeconds <= 0 never expires.
+//
+// Seconds rather than a Duration: a guest and a host do not share a time
+// package, and an int is the same on both sides.
+func ShortSet(group, key, value string, ttlSeconds int) error {
+	req, err := json.Marshal(map[string]any{
+		"Group": group, "Key": key, "Value": value, "ttl_seconds": ttlSeconds})
+	if err != nil {
+		return err
+	}
+	_, err = request(fnShortSet, string(req))
+	return err
+}
+
+// ShortGet reads working state.
+func ShortGet(group, key string) (string, bool, error) {
+	req, err := json.Marshal(map[string]any{"Group": group, "Key": key})
+	if err != nil {
+		return "", false, err
+	}
+	out, err := request(fnShortGet, string(req))
+	if err != nil {
+		return "", false, err
+	}
+	var res struct {
+		Value string `json:"value"`
+		Found bool   `json:"found"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", false, err
+	}
+	return res.Value, res.Found, nil
+}
+
+// ShortAll returns every live note in a group.
+func ShortAll(group string) ([]ShortMemory, error) {
+	req, err := json.Marshal(map[string]any{"Group": group})
+	if err != nil {
+		return nil, err
+	}
+	out, err := request(fnShortAll, string(req))
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Entries []ShortMemory `json:"entries"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil, err
+	}
+	return res.Entries, nil
+}
+
+// ChatSummary is the stored cold-memory record for one chat.
+type ChatSummary struct {
+	ChatJID         string `json:"jid"`
+	ChatName        string `json:"name"`
+	IsGroup         bool   `json:"is_group"`
+	Summary         string `json:"summary"`
+	MessageCount    int    `json:"message_count"`
+	OwnMessageCount int    `json:"own_count"`
+	// Unix seconds, because a guest and a host do not share a time.Time.
+	LastMessageAt int64  `json:"last_message_at"`
+	SummarizedAt  int64  `json:"summarized_at"`
+	Status        string `json:"status"`
+}
+
+// GetChatSummary reads a stored per-chat summary; nil when there is none.
+func GetChatSummary(jid string) (*ChatSummary, error) {
+	req, err := json.Marshal(map[string]any{"JID": jid})
+	if err != nil {
+		return nil, err
+	}
+	out, err := request(fnChatGet, string(req))
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Found   bool         `json:"found"`
+		Summary *ChatSummary `json:"summary"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil, err
+	}
+	if !res.Found {
+		return nil, nil
+	}
+	return res.Summary, nil
+}
+
+// SaveChatSummary stores a per-chat summary.
+func SaveChatSummary(c ChatSummary) error {
+	req, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	_, err = request(fnChatSave, string(req))
+	return err
+}
+
+// RunLoop triggers another loop by name.
+func RunLoop(name string) error {
+	_, err := request(fnRunLoop, name)
+	return err
+}
+
+// TriggerInfo reports what started this run.
+type TriggerInfo struct {
+	Loop    string         `json:"loop"`
+	Kind    string         `json:"kind"`
+	Payload map[string]any `json:"payload"`
+}
+
+// Trigger reports what started this run — "schedule", "event", "webhook",
+// "timer" or "manual", with whatever payload came with it.
+func Trigger() TriggerInfo {
+	out, err := request(fnTrigger, "")
+	if err != nil {
+		return TriggerInfo{}
+	}
+	var t TriggerInfo
+	if err := json.Unmarshal(out, &t); err != nil {
+		return TriggerInfo{}
+	}
+	return t
+}
+
+// ShortForget drops one short-term note.
+func ShortForget(group, key string) error {
+	req, err := json.Marshal(map[string]any{"Group": group, "Key": key})
+	if err != nil {
+		return err
+	}
+	_, err = request(fnShortForget, string(req))
+	return err
+}
+
+// OperatorChats lists the chats that belong to the operator themselves, so a
+// loop can tell a command from a third party's message.
+//
+// A compiled-in loop read WHATSAPP_OPERATOR_CHATS from the environment. The
+// sandbox has no environment, and that is the right outcome: the daemon's
+// environment holds considerably more than this, and a loop asking for exactly
+// what it needs is better than a loop reading whatever is lying around.
+func OperatorChats() []string {
+	out, err := request(fnOperators, "")
+	if err != nil {
+		return nil
+	}
+	var res struct {
+		Chats []string `json:"chats"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil
+	}
+	return res.Chats
+}
+
+// MonitoredChats lists the chats KARMAX is watching, excluding the operator's
+// own. The host fetches it — a loop cannot reach wacli's API itself, since that
+// API can send messages as the operator.
+func MonitoredChats() ([]string, error) {
+	out, err := request(fnMonitored, "")
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Chats []string `json:"chats"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil, err
+	}
+	return res.Chats, nil
+}
+
+// WhatsAppChats returns the raw JSON of the operator's chats.
+func WhatsAppChats(limit int) (string, error) {
+	req, _ := json.Marshal(map[string]any{"limit": limit})
+	return rawOf(fnWAChats, string(req))
+}
+
+// WhatsAppMessages returns the raw JSON of a chat's messages.
+//
+// Structured rather than formatted, because callers parse it. A compiled-in
+// loop ran `wacli messages` itself; a sandboxed one asks the host for a NAMED
+// read instead, which is a capability the operator can grant or withhold.
+func WhatsAppMessages(chat string, limit int, fromMeOnly bool) (string, error) {
+	req, _ := json.Marshal(map[string]any{
+		"chat": chat, "limit": limit, "from_me_only": fromMeOnly})
+	return rawOf(fnWAMessages, string(req))
+}
+
+// GoogleChatSpaces returns the raw JSON of the operator's Google Chat spaces.
+func GoogleChatSpaces() (string, error) { return rawOf(fnGChatSpaces, "") }
+
+func rawOf(fn, payload string) (string, error) {
+	out, err := request(fn, payload)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Raw string `json:"raw"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", err
+	}
+	return res.Raw, nil
+}
