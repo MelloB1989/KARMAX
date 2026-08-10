@@ -85,7 +85,11 @@ type Envelope struct {
 	Via string `json:"via,omitempty"`
 	// Cert is the membership/authority certificate backing Via.
 	Cert *Certificate `json:"cert,omitempty"`
-	Sig  string       `json:"sig"`
+	// Chain is the delegation history: who asked whom, in order, when this
+	// envelope is sent on somebody else's behalf. Empty when the sender is
+	// acting for itself. See delegation.go.
+	Chain []Hop  `json:"chain,omitempty"`
+	Sig   string `json:"sig"`
 }
 
 // signingBytes renders the fields a signature covers, in a fixed order.
@@ -93,6 +97,14 @@ type Envelope struct {
 // Everything that changes meaning is covered — including To and Via, so an
 // envelope cannot be re-aimed at a different recipient or re-labelled as
 // org-authorised while keeping a valid signature.
+//
+// Optional fields contribute a line only when present, which is what lets the
+// delegation chain be added without invalidating the format: an envelope with
+// no chain signs exactly the bytes it always did, so an instance built before
+// chains existed and one built after still agree about every envelope neither
+// of them delegates. A chained envelope simply requires both ends to know what
+// a chain is, and an older instance refuses it rather than acting on a part of
+// it — which is the safe direction to fail.
 func (e *Envelope) signingBytes() []byte {
 	var b strings.Builder
 	b.WriteString("karmax-mesh-v1\n")
@@ -100,6 +112,11 @@ func (e *Envelope) signingBytes() []byte {
 		e.V, e.ID, e.Kind, e.From, e.To, e.TS, e.Nonce, e.Via, e.Body)
 	if e.Cert != nil {
 		b.WriteString("cert=" + e.Cert.signingString() + "\n")
+	}
+	// Covered by the sender's signature, so a chain cannot be attached to,
+	// stripped from, or reordered within an envelope after it was signed.
+	for i := range e.Chain {
+		b.WriteString("hop=" + e.Chain[i].canonical() + "\n")
 	}
 	return []byte(b.String())
 }
@@ -227,7 +244,10 @@ func VerifySignature(e *Envelope) error {
 	if !ed25519.Verify(from, e.signingBytes(), sig) {
 		return fmt.Errorf("mesh: signature does not verify")
 	}
-	return nil
+	// Only now, once the envelope is known to be genuine. A chain costs one
+	// signature verification per hop, and doing that for anything that arrives
+	// would let an unauthenticated sender multiply its own cost by eight.
+	return verifyChain(e)
 }
 
 // CheckFreshness rejects envelopes that are too old, too far in the future, or

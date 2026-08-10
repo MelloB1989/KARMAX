@@ -58,7 +58,7 @@ func TestTwoInstancesConnectAndTalk(t *testing.T) {
 	bob.srv.Config.Handler = bobN.Handler()
 
 	got := make(chan mesh.MessageBody, 4)
-	bobN.OnMessage(func(_ store.MeshPeer, _ mesh.Kind, b mesh.MessageBody) { got <- b })
+	bobN.OnMessage(func(_ store.MeshPeer, _ mesh.Kind, b mesh.MessageBody, _ mesh.Provenance) { got <- b })
 
 	// Before any connection, a message must be refused outright.
 	if err := aliceN.Send(ctx, bobN.Identity().ID(), mesh.KindMessage, mesh.MessageBody{Text: "hi"}); err == nil {
@@ -151,7 +151,7 @@ func TestOrgReachesAMemberWithNoConnection(t *testing.T) {
 	member.srv.Config.Handler = memberN.Handler()
 
 	got := make(chan mesh.MessageBody, 2)
-	memberN.OnMessage(func(_ store.MeshPeer, _ mesh.Kind, b mesh.MessageBody) { got <- b })
+	memberN.OnMessage(func(_ store.MeshPeer, _ mesh.Kind, b mesh.MessageBody, _ mesh.Provenance) { got <- b })
 
 	cert := mesh.IssueCertificate(orgN.Identity(), "Vector",
 		memberN.Identity().ID(), []string{mesh.ScopeMessage}, time.Hour)
@@ -177,6 +177,123 @@ func TestOrgReachesAMemberWithNoConnection(t *testing.T) {
 	}
 }
 
+// link connects x to y and has y accept it with the given scopes.
+func link(ctx context.Context, t *testing.T, x, y *mesh.Node, yEndpoint string, scopes []string) {
+	t.Helper()
+	if _, err := x.Connect(ctx, yEndpoint, ""); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := y.Accept(ctx, x.Identity().ID(), scopes); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+}
+
+// The delegation scenario: alice asks bob, bob needs carol's help.
+func delegationTrio(ctx context.Context, t *testing.T) (a, b, c *mesh.Node, cInst *inst) {
+	t.Helper()
+	ai, bi, ci := newInst(t, "alice", mesh.Config{}), newInst(t, "bob", mesh.Config{}), newInst(t, "carol", mesh.Config{})
+	a = mesh.New(ai.node.Identity(), mesh.Config{Endpoint: ai.endpoint()}, ai.db, zap.NewNop())
+	b = mesh.New(bi.node.Identity(), mesh.Config{Endpoint: bi.endpoint()}, bi.db, zap.NewNop())
+	c = mesh.New(ci.node.Identity(), mesh.Config{Endpoint: ci.endpoint()}, ci.db, zap.NewNop())
+	ai.srv.Config.Handler = a.Handler()
+	bi.srv.Config.Handler = b.Handler()
+	ci.srv.Config.Handler = c.Handler()
+
+	link(ctx, t, b, c, ci.endpoint(), []string{mesh.ScopeMessage, mesh.ScopeAsk})
+	link(ctx, t, a, c, ci.endpoint(), []string{mesh.ScopeMessage})
+	return a, b, c, ci
+}
+
+// askedBy builds the provenance bob would hold after alice put a question to it.
+func askedBy(t *testing.T, from *mesh.Node, to *mesh.Node) mesh.Provenance {
+	t.Helper()
+	box, err := mesh.ParseBoxKey(to.Public().BoxPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := mesh.Seal(from.Identity(), mesh.KindAsk, to.Identity().ID(), box,
+		mesh.MessageBody{Text: "what did we agree with the vendor?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mesh.ProvenanceOf(e)
+}
+
+func TestADelegatedAskArrivesWithItsOrigin(t *testing.T) {
+	ctx := context.Background()
+	alice, bob, carol, carolInst := delegationTrio(ctx, t)
+
+	seen := make(chan mesh.Provenance, 2)
+	carol.OnAsk(func(_ context.Context, _ store.MeshPeer, _ string, p mesh.Provenance) (string, error) {
+		seen <- p
+		return "we agreed on net-30", nil
+	})
+
+	if err := bob.SendOnBehalf(ctx, carol.Identity().ID(), mesh.KindAsk,
+		mesh.MessageBody{Text: "what did we agree with the vendor?"}, askedBy(t, alice, bob)); err != nil {
+		t.Fatalf("delegated ask: %v", err)
+	}
+
+	select {
+	case p := <-seen:
+		if p.Origin() != alice.Identity().ID() {
+			t.Error("carol could not tell the question originated with alice")
+		}
+		if p.Asker() != bob.Identity().ID() {
+			t.Error("carol lost track of who asked it directly")
+		}
+		if !p.Delegated() || p.Depth() != 1 {
+			t.Errorf("depth = %d", p.Depth())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the delegated ask never arrived")
+	}
+
+	msgs, _ := carolInst.db.RecentMeshMessages(10)
+	if len(msgs) == 0 || msgs[0].Origin != alice.Identity().ID() {
+		t.Error("the origin was not recorded for audit")
+	}
+}
+
+func TestWorkDelegatedForABlockedInstanceIsRefused(t *testing.T) {
+	ctx := context.Background()
+	alice, bob, carol, _ := delegationTrio(ctx, t)
+
+	// Carol wants nothing to do with alice — but still trusts bob.
+	if err := carol.Block(alice.Identity().ID()); err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan struct{}, 1)
+	carol.OnAsk(func(context.Context, store.MeshPeer, string, mesh.Provenance) (string, error) {
+		answered <- struct{}{}
+		return "net-30", nil
+	})
+
+	// Bob asks on alice's behalf. The signature is valid and bob is trusted, so
+	// without the chain this is how a block gets bypassed by one hop.
+	err := bob.SendOnBehalf(ctx, carol.Identity().ID(), mesh.KindAsk,
+		mesh.MessageBody{Text: "what did we agree with the vendor?"}, askedBy(t, alice, bob))
+	if err == nil {
+		t.Error("carol accepted work laundered on behalf of an instance it blocked")
+	}
+	select {
+	case <-answered:
+		t.Fatal("carol answered a question from a blocked instance")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// Bob asking for itself is still fine — the block is on alice, not bob.
+	if err := bob.Send(ctx, carol.Identity().ID(), mesh.KindAsk,
+		mesh.MessageBody{Text: "unrelated question"}); err != nil {
+		t.Errorf("bob's own question was refused: %v", err)
+	}
+	select {
+	case <-answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bob's own question never arrived")
+	}
+}
+
 func TestAnUntrustedOrgIsRefused(t *testing.T) {
 	ctx := context.Background()
 	realOrg := newInst(t, "vector", mesh.Config{})
@@ -193,7 +310,7 @@ func TestAnUntrustedOrgIsRefused(t *testing.T) {
 	member.srv.Config.Handler = memberN.Handler()
 
 	delivered := make(chan struct{}, 1)
-	memberN.OnMessage(func(store.MeshPeer, mesh.Kind, mesh.MessageBody) { delivered <- struct{}{} })
+	memberN.OnMessage(func(store.MeshPeer, mesh.Kind, mesh.MessageBody, mesh.Provenance) { delivered <- struct{}{} })
 
 	// A rogue org signs itself a certificate naming this member and calls
 	// itself "Vector". Everything verifies internally — and it must still be

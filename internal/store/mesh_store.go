@@ -159,6 +159,7 @@ type MeshMessage struct {
 	Direction  string // in | out
 	Body       string
 	Via        string // org key, when delivered under an org certificate
+	Origin     string // the instance the work traces back to, when delegated
 	ReceivedAt time.Time
 }
 
@@ -168,10 +169,10 @@ func (s *Store) RecordMeshMessage(m MeshMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-INSERT INTO mesh_messages (id, peer_id, peer_name, kind, direction, body, via, received_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO mesh_messages (id, peer_id, peer_name, kind, direction, body, via, origin, received_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING`,
-		m.ID, m.PeerID, m.PeerName, m.Kind, m.Direction, m.Body, m.Via, time.Now())
+		m.ID, m.PeerID, m.PeerName, m.Kind, m.Direction, m.Body, m.Via, m.Origin, time.Now())
 	return err
 }
 
@@ -183,7 +184,7 @@ func (s *Store) RecentMeshMessages(limit int) ([]MeshMessage, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(`
-SELECT id, peer_id, peer_name, kind, direction, body, COALESCE(via,''), received_at
+SELECT id, peer_id, peer_name, kind, direction, body, COALESCE(via,''), COALESCE(origin,''), received_at
 FROM mesh_messages ORDER BY received_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -194,7 +195,7 @@ FROM mesh_messages ORDER BY received_at DESC LIMIT ?`, limit)
 	for rows.Next() {
 		var m MeshMessage
 		if err := rows.Scan(&m.ID, &m.PeerID, &m.PeerName, &m.Kind, &m.Direction,
-			&m.Body, &m.Via, &m.ReceivedAt); err != nil {
+			&m.Body, &m.Via, &m.Origin, &m.ReceivedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
