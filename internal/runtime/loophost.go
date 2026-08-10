@@ -35,9 +35,6 @@ import (
 // prompt path (a loopkit loop is real Go code, not a prompt).
 func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 	loops := loopkit.Registered()
-	if len(loops) == 0 {
-		return
-	}
 
 	yamlNames := map[string]bool{}
 	for _, l := range rt.cfg.Loops {
@@ -51,6 +48,7 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 
 	rt.loopkitLoops = make(map[string]loopkit.Loop, len(loops))
 	rt.loopWebhooks = map[string]string{}
+	rt.startWasmLoops(ctx)
 	loopEvents := map[bus.EventKind][]string{} // event kind -> loop names
 	for _, l := range loops {
 		if yamlNames[l.Name] {
@@ -59,6 +57,13 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 		}
 		if disabled[l.Name] {
 			rt.log.Info("loopkit loop disabled by operator; not scheduling", zap.String("loop", l.Name))
+			continue
+		}
+		if _, taken := rt.loopkitLoops[l.Name]; taken {
+			// A signed loop already holds the name. The compiled-in one does not
+			// get to shadow something the operator explicitly installed.
+			rt.log.Warn("compiled-in loop name clashes with an installed signed loop; skipping",
+				zap.String("loop", l.Name))
 			continue
 		}
 		rt.loopkitLoops[l.Name] = l

@@ -36,6 +36,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/tracker"
+	"github.com/MelloB1989/karmax/internal/wasmloop"
 	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
@@ -72,6 +73,9 @@ type KarmaxRuntime struct {
 	// recipeLoops are the YAML recipes currently loaded from disk.
 	recipeMu    sync.RWMutex
 	recipeLoops map[string]*recipes.Recipe
+
+	// wasmRunners hold the compiled signed loops, released on shutdown.
+	wasmRunners []*wasmloop.Runner
 
 	// loopkit runtime state (set by startLoopkitLoops)
 	loopkitLoops     map[string]loopkit.Loop
@@ -873,6 +877,7 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	if rt.api != nil {
 		rt.api.Stop()
 	}
+	rt.closeWasmLoops(context.Background())
 	rt.store.Close()
 
 	wg.Wait()

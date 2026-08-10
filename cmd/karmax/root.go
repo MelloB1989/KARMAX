@@ -40,6 +40,7 @@ func newRootCmd() *cobra.Command {
 		recipeCmd(),
 		orgChartCmd(),
 		vorgCmd(),
+		wloopCmd(),
 		migrateCmd(),
 		newToolCmd(),
 		newMCPCmd(),
