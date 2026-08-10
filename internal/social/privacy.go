@@ -150,6 +150,9 @@ func (g Guard) namesIn(text string) []string {
 		}
 		seenName[name] = true
 		for _, cand := range append([]string{name}, g.nameParts(name)...) {
+			if !g.nameLike(cand) {
+				continue
+			}
 			if !wordIn(lower, cand) || seenHit[cand] {
 				continue
 			}
@@ -176,18 +179,40 @@ func (g Guard) nameParts(name string) []string {
 	}
 	var out []string
 	for _, w := range words {
-		if len([]rune(w)) >= 4 && !g.ordinary(w) {
+		if len([]rune(w)) >= 4 {
 			out = append(out, w)
 		}
 	}
 	return out
 }
 
-// ordinary reports whether a word names nobody.
-func (g Guard) ordinary(word string) bool {
-	if generic[word] {
-		return true
+// nameLike reports whether a candidate can be somebody's name at all.
+//
+// It can if at least one of its words is not ordinary. This is what separates
+// the real entries in an address book from the roles people also save there:
+// "Agent" and "Property Agent" are jobs, "Agent Ram Uppal" is a person, and
+// "Uppal" is the word that says so.
+//
+// The cost is a contact saved under a single ordinary word — somebody called
+// "Rose" stops being protected, because nothing distinguishes that entry from
+// the flower. KARMAX_SOCIAL_FORBIDDEN is the answer for those, and it is a
+// better trade than the alternative: with "Agent" on the list, almost nothing
+// anybody in software writes about their day can be published.
+func (g Guard) nameLike(candidate string) bool {
+	words := strings.Fields(candidate)
+	if len(words) == 0 {
+		return false
 	}
+	for _, w := range words {
+		if !Topic(w) && !g.allows(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// allows reports whether the operator declared this word never to be a name.
+func (g Guard) allows(word string) bool {
 	for _, a := range g.Allowed {
 		if strings.EqualFold(strings.TrimSpace(a), word) {
 			return true
