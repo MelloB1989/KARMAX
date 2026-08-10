@@ -311,7 +311,10 @@ steps:
 		"package digest",
 		`loopkit.Register`,
 		`Name: "digest"`,
-		`loopkit.Cron("0 9 * * *")`,
+		// The NORMALISED schedule: the recipe was written with five-field
+		// crontab and the ejected Go must carry what the scheduler runs, or the
+		// loop it becomes fires at a different time than the recipe did.
+		`loopkit.Cron("0 0 9 * * *")`,
 		"k.Recall",
 		"k.Notify",
 		// Step names must survive, or an in-flight run resumes at the wrong place.

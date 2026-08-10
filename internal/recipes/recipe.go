@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,7 +43,13 @@ type Recipe struct {
 	Name    string   `yaml:"name"`
 	Enabled *bool    `yaml:"enabled"`
 	On      Trigger  `yaml:"on"`
-	Steps   []Step   `yaml:"steps"`
+	// Steps is walked by hand (parseSteps) so each keeps its line number, and
+	// is skipped here so the generic decode never sees it. It used to be
+	// decoded twice: the first attempt failed on anything malformed with
+	// "cannot unmarshal !!map into []recipes.Step" — a Go type name, shown to
+	// someone writing YAML — and returned before the walker could say "steps
+	// must be a list" and point at the line.
+	Steps []Step `yaml:"-"`
 	Grants  []string `yaml:"grants"`
 
 	// Path is where it was loaded from, for error messages.
@@ -185,7 +192,18 @@ func decodeStep(path string, node *yaml.Node) (Step, error) {
 			case yaml.MappingNode:
 				s.Args = map[string]string{}
 				for j := 0; j+1 < len(val.Content); j += 2 {
-					s.Args[val.Content[j].Value] = val.Content[j+1].Value
+					name, v := val.Content[j], val.Content[j+1]
+					// A nested block has no scalar value, so it would land here
+					// as an empty string and the step would run as though the
+					// field had never been written. Refused instead: silently
+					// dropping half of what someone wrote is the worst way to
+					// disagree with them.
+					if v.Kind != yaml.ScalarNode {
+						return s, &Error{Path: path, Line: v.Line,
+							Message: fmt.Sprintf("%q under %q is a block, and steps take plain values", name.Value, key),
+							Fix:     nestedFix(key, name.Value)}
+					}
+					s.Args[name.Value] = v.Value
 				}
 			default:
 				return s, &Error{Path: path, Line: val.Line,
@@ -222,6 +240,13 @@ func (r *Recipe) validate() error {
 		return &Error{Path: r.Path, Line: 1, Message: "nothing triggers this recipe",
 			Fix: "add an 'on:' block with event, schedule, webhook, or manual: true"}
 	}
+	// Normalised in place, so the scheduler is handed the six-field form
+	// regardless of which the author wrote.
+	normalised, err := normaliseSchedule(r.Path, t.Schedule)
+	if err != nil {
+		return err
+	}
+	r.On.Schedule = normalised
 	if len(r.Steps) == 0 {
 		return &Error{Path: r.Path, Line: 1, Message: "no steps"}
 	}
@@ -321,3 +346,61 @@ func cleanYAMLError(err error) string {
 	}
 	return msg
 }
+
+// nestedFix suggests the flat form for a field someone nested.
+//
+// http headers are the case this exists for: "headers:" with keys under it is
+// the obvious thing to write and is not how they are spelled, so the error
+// names the spelling rather than saying "no blocks".
+func nestedFix(verb, field string) string {
+	if verb == VerbHTTP && (field == "headers" || field == "header") {
+		return "write each header flat:\n    - http:\n        url: ...\n        header.Authorization: Bearer ..."
+	}
+	return fmt.Sprintf("give %q a single value on one line", field)
+}
+
+// normaliseSchedule checks a schedule and returns the form the scheduler runs.
+//
+// Checked at parse time, with the same parser the scheduler uses, because
+// otherwise a bad expression is accepted by `karmax recipe check`, reported as
+// valid, and then fails when the daemon registers the job — one WARN in a log
+// nobody is reading. The author finds out by noticing, weeks later, that their
+// recipe has never run. Two of this package's own test recipes were written
+// with a schedule that could never have fired.
+//
+// FIVE-field crontab is accepted and normalised. KARMAX's scheduler takes six
+// fields because loops sometimes need seconds, but five is the syntax the whole
+// world writes and every example anyone will copy from. Rejecting it to be
+// consistent with an internal detail would be making the operator pay for our
+// scheduler's extra column.
+func normaliseSchedule(path, spec string) (string, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", nil
+	}
+	if _, err := cronParser.Parse(spec); err == nil {
+		return spec, nil
+	}
+	// Exactly five fields is standard crontab; seconds are simply absent.
+	if fields := strings.Fields(spec); len(fields) == 5 {
+		withSeconds := "0 " + strings.Join(fields, " ")
+		if _, err := cronParser.Parse(withSeconds); err == nil {
+			return withSeconds, nil
+		}
+	}
+	_, err := cronParser.Parse(spec)
+	return "", &Error{Path: path, Line: 1,
+		Message: fmt.Sprintf("the schedule %q is not one the scheduler can run: %v", spec, err),
+		Fix: "cron takes five fields, or six if you need seconds:\n" +
+			"    \"0 9 * * *\"      every day at 09:00\n" +
+			"    \"0 0 9 * * *\"    the same thing, with seconds\n" +
+			"    \"0 */15 * * * *\" every 15 minutes\n" +
+			"  or a shorthand: \"@every 45m\", \"@daily\"",
+	}
+}
+
+// cronParser matches scheduler.New's cron.WithSeconds(), so the two cannot
+// disagree about what a valid schedule is.
+var cronParser = cron.NewParser(
+	cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
+)

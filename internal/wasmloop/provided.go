@@ -31,7 +31,7 @@ import (
 //     no live instance at all. A fresh instance makes both cases the same code
 //     path instead of two.
 //
-// It costs 3.4ms against an already-compiled module (spikes/wasm/FINDINGS.md),
+// It costs 3.4ms against an already-compiled module (docs/WASM-PERFORMANCE.md),
 // which is nothing inside an agent turn. What it does NOT buy is shared state:
 // a provided tool cannot see the loop body's variables. Workflows that need to
 // share use short-term memory, which is durable and already there.
