@@ -493,6 +493,19 @@ var migrations = []string{
 		enabled       INTEGER NOT NULL DEFAULT 0,
 		updated_at    DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
+	// 024_org — the org chart as data, so hiring is a config action.
+	`CREATE TABLE IF NOT EXISTS org_members (
+		org        TEXT NOT NULL,
+		member     TEXT NOT NULL,
+		name       TEXT NOT NULL DEFAULT '',
+		department TEXT NOT NULL DEFAULT '',
+		role       TEXT NOT NULL DEFAULT '',
+		namespace  TEXT NOT NULL DEFAULT '',
+		added_at   DATETIME NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (org, member)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_org_members_dept ON org_members(org, department)`,
+
 	`CREATE TABLE IF NOT EXISTS connector_cursors (
 		connector  TEXT NOT NULL,
 		source     TEXT NOT NULL,

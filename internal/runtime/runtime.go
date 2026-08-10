@@ -889,6 +889,8 @@ func (rt *KarmaxRuntime) wireMesh() {
 	if rt.mesh == nil {
 		return
 	}
+	rt.mesh.OnCertificate(rt.applyOrgCertificate)
+
 	rt.mesh.OnAsk(func(ctx context.Context, peer store.MeshPeer, question string, prov mesh.Provenance) (string, error) {
 		ag, ok := rt.agents.Get(rt.loopDefaultAgent)
 		if !ok || ag == nil {
@@ -933,6 +935,40 @@ func (rt *KarmaxRuntime) wireMesh() {
 			fmt.Sprintf("%s wants to connect", peer.Name),
 			"Fingerprint "+peer.Fingerprint+" — verify it out of band, then `karmax mesh accept`.")
 	})
+}
+
+// applyOrgCertificate turns the capability scopes on a verified org certificate
+// into Broker grants for that org.
+//
+// The certificate is the org saying what it may do here; the Broker is this
+// instance deciding whether that is honoured, and metering it either way.
+// Keeping them separate is what lets an operator revoke a capability without
+// leaving the org, and what stops a transport verb from silently becoming
+// permission to read memory.
+//
+// Grants expire with the certificate, so an org that stops re-issuing loses
+// access without anybody having to remember to withdraw it.
+func (rt *KarmaxRuntime) applyOrgCertificate(cert *mesh.Certificate) {
+	caps := cert.Capabilities()
+	if len(caps) == 0 {
+		return
+	}
+	subject := broker.PeerSubject(cert.Org)
+	expires := time.Unix(cert.Expires, 0)
+
+	for _, c := range caps {
+		if err := rt.broker.Grant(store.Grant{
+			Subject: subject, Capability: c.Class, Value: c.Value,
+			GrantedBy: "org-certificate:" + cert.OrgName, ExpiresAt: &expires,
+		}); err != nil {
+			rt.log.Warn("could not record an org capability",
+				zap.String("org", cert.OrgName), zap.String("capability", c.Class), zap.Error(err))
+		}
+	}
+	rt.broker.SetTrust(subject, broker.Registry)
+	rt.log.Info("org certificate granted capabilities",
+		zap.String("org", cert.OrgName), zap.Int("capabilities", len(caps)),
+		zap.Time("until", expires))
 }
 
 func short(id string) string {

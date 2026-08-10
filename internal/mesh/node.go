@@ -75,6 +75,10 @@ type Node struct {
 	onMessage func(peer store.MeshPeer, kind Kind, body MessageBody, prov Provenance)
 	onAsk     func(ctx context.Context, peer store.MeshPeer, question string, prov Provenance) (string, error)
 	onRequest func(peer store.MeshPeer)
+	// onCert fires when an org certificate verifies, so the runtime can turn
+	// its capability scopes into grants. The mesh does not know what a Broker
+	// is, and should not.
+	onCert func(cert *Certificate)
 }
 
 // MessageBody is the payload of a message, broadcast, ask or answer.
@@ -123,6 +127,13 @@ func (n *Node) OnAsk(fn func(context.Context, store.MeshPeer, string, Provenance
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.onAsk = fn
+}
+
+// OnCertificate installs the handler for a verified org certificate.
+func (n *Node) OnCertificate(fn func(*Certificate)) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.onCert = fn
 }
 
 // OnPeerRequest installs the notifier for inbound connection requests, so the
@@ -265,7 +276,18 @@ func (n *Node) verifyOrgAuthority(e *Envelope) error {
 	if e.From != e.Via {
 		return fmt.Errorf("mesh: only the org itself may send under its own authority")
 	}
-	return e.Cert.Verify(n.cfg.TrustedOrg, n.id.ID())
+	if err := e.Cert.Verify(n.cfg.TrustedOrg, n.id.ID()); err != nil {
+		return err
+	}
+	// Announced only after it verified, so an unverified certificate cannot
+	// grant anything.
+	n.mu.RLock()
+	fn := n.onCert
+	n.mu.RUnlock()
+	if fn != nil {
+		fn(e.Cert)
+	}
+	return nil
 }
 
 // dispatch acts on an authorised envelope.

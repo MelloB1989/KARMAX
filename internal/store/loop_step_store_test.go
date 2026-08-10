@@ -88,3 +88,71 @@ func TestOrphanedCheckpointsArePruned(t *testing.T) {
 		t.Error("a stale checkpoint was not pruned")
 	}
 }
+
+func TestTheOrgChartIsData(t *testing.T) {
+	s := newTestStore(t)
+	org := "org-key"
+
+	for _, m := range []OrgMember{
+		{Org: org, Member: "k1", Name: "Kartik", Department: "engineering", Role: "backend",
+			Namespace: OrgNamespace("Vector", "engineering")},
+		{Org: org, Member: "k2", Name: "Siva", Department: "delivery", Role: "day-to-day",
+			Namespace: OrgNamespace("Vector", "delivery")},
+		{Org: org, Member: "k3", Name: "Asha", Department: "engineering",
+			Namespace: OrgNamespace("Vector", "engineering")},
+	} {
+		if err := s.SaveOrgMember(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	members, err := s.OrgMembers(org)
+	if err != nil || len(members) != 3 {
+		t.Fatalf("members = %d, err = %v", len(members), err)
+	}
+	// Ordered by department then name, so the chart reads as a chart.
+	if members[0].Department != "delivery" || members[1].Name != "Asha" {
+		t.Errorf("order = %+v", members)
+	}
+
+	depts, _ := s.Departments(org)
+	if len(depts) != 2 {
+		t.Errorf("departments = %v", depts)
+	}
+
+	one, err := s.OrgMemberByKey("k2")
+	if err != nil || one.Name != "Siva" {
+		t.Errorf("lookup by key = %+v, err %v", one, err)
+	}
+
+	// Re-hiring updates rather than duplicating.
+	if err := s.SaveOrgMember(OrgMember{Org: org, Member: "k1", Name: "Kartik",
+		Department: "delivery", Namespace: OrgNamespace("Vector", "delivery")}); err != nil {
+		t.Fatal(err)
+	}
+	members, _ = s.OrgMembers(org)
+	if len(members) != 3 {
+		t.Errorf("a transfer created a duplicate: %d members", len(members))
+	}
+
+	if err := s.RemoveOrgMember(org, "k3"); err != nil {
+		t.Fatal(err)
+	}
+	members, _ = s.OrgMembers(org)
+	if len(members) != 2 {
+		t.Errorf("removal left %d members", len(members))
+	}
+}
+
+func TestOrgNamespacesAreDerivedTheSameWayEveryTime(t *testing.T) {
+	// Two spellings of a namespace means two memories nobody can find.
+	if got := OrgNamespace("The Vector Company", "Engineering"); got != "org-the-vector-company-engineering" {
+		t.Errorf("namespace = %q", got)
+	}
+	if got := OrgNamespace("Vector", ""); got != "org-vector" {
+		t.Errorf("org-level namespace = %q", got)
+	}
+	if OrgNamespace("Vector", "Eng") != OrgNamespace("  vector  ", "eng") {
+		t.Error("the same org and department produced different namespaces")
+	}
+}
