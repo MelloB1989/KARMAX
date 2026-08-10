@@ -77,6 +77,15 @@ type KarmaxRuntime struct {
 	// wasmRunners hold the compiled signed loops, released on shutdown.
 	wasmRunners []*wasmloop.Runner
 
+	// wasmByName resolves a workflow so the tools it provides can be lent to
+	// the agent for one turn.
+	providedMu sync.RWMutex
+	wasmByName map[string]*wasmloop.Runner
+
+	// attributions link work a workflow started to the workflow, so a turn
+	// arriving later — a delegation completing — can still be traced back.
+	attributions *attributions
+
 	// loopkit runtime state (set by startLoopkitLoops)
 	loopkitLoops     map[string]loopkit.Loop
 	loopWebhooks     map[string]string // webhook route -> loop name
@@ -680,27 +689,35 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			}
 		}
 	}
-	return &KarmaxRuntime{
-		cfg:         cfg,
-		log:         log,
-		store:       s,
-		bus:         b,
-		clock:       clk,
-		broker:      brk,
-		connectors:  connHost,
-		recipeLoops: map[string]*recipes.Recipe{},
-		routedKinds: routedKinds,
-		mesh:        meshNode,
-		startedAt:   startedAt,
-		memory:      memFactory,
-		tools:       toolReg,
-		mcpBridge:   mcpBridge,
-		agents:      agentReg,
-		scheduler:   sched,
-		webhooks:    wh,
-		comms:       commsMgr,
-		api:         apiSrv,
-	}, nil
+	rt := &KarmaxRuntime{
+		cfg:          cfg,
+		log:          log,
+		store:        s,
+		bus:          b,
+		clock:        clk,
+		broker:       brk,
+		connectors:   connHost,
+		recipeLoops:  map[string]*recipes.Recipe{},
+		routedKinds:  routedKinds,
+		mesh:         meshNode,
+		startedAt:    startedAt,
+		wasmByName:   map[string]*wasmloop.Runner{},
+		attributions: newAttributions(),
+		memory:       memFactory,
+		tools:        toolReg,
+		mcpBridge:    mcpBridge,
+		agents:       agentReg,
+		scheduler:    sched,
+		webhooks:     wh,
+		comms:        commsMgr,
+		api:          apiSrv,
+	}
+	// Installed here rather than where the agents are registered, because it
+	// closes over the runtime and the runtime does not exist until now.
+	for _, a := range agentReg.List() {
+		a.SetLentTools(rt.lentToolsForEvent)
+	}
+	return rt, nil
 }
 
 func (rt *KarmaxRuntime) Start(ctx context.Context) error {

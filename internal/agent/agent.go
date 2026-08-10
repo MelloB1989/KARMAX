@@ -48,6 +48,12 @@ type Agent struct {
 	// can list and invoke exactly what the harness itself has.
 	allTools []tools.Tool
 
+	// lentToolsFor returns tools that belong on the turn handling one event and
+	// nowhere else — a WASM workflow's provided tools, on the turn that
+	// workflow caused. Injected rather than imported: the runtime knows which
+	// workflows exist, and the agent must not.
+	lentToolsFor func(bus.Event) []tools.Tool
+
 	// Communication send function (injected to avoid circular imports)
 	commsSend func(channelID, target, content string) error
 	// Communication escalation function for permission requests and failures.
@@ -765,6 +771,29 @@ func (a *Agent) isPaused() bool {
 	return a.paused
 }
 
+// SetLentTools installs the hook that decides which extra tools a turn gets.
+func (a *Agent) SetLentTools(fn func(bus.Event) []tools.Tool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lentToolsFor = fn
+}
+
+// lentTools asks the hook what this event's turn should be able to call.
+func (a *Agent) lentTools(evt bus.Event) []tools.Tool {
+	a.mu.RLock()
+	fn := a.lentToolsFor
+	a.mu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	lent := fn(evt)
+	if len(lent) > 0 {
+		a.log.Info("lending a workflow's tools for this turn",
+			zap.String("kind", string(evt.Kind)), zap.Int("tools", len(lent)))
+	}
+	return lent
+}
+
 func (a *Agent) handleEvent(evt bus.Event) error {
 	// Harness loops (e.g. tech-news) run their prompt directly through a coding
 	// harness and ingest the result, bypassing the main model entirely — so they
@@ -831,7 +860,8 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// inbox worker forever (that silently deafens the whole agent). On
 		// timeout the turn fails and the loop moves on to the next message.
 		turnCtx, turnCancel := context.WithTimeout(a.ctx, 3*time.Minute)
-		response, toolCalls, err := a.mainSession.ProcessMessageWithContext(turnCtx, dynamicCtx, userPrompt)
+		lent := a.lentTools(evt)
+		response, toolCalls, err := a.mainSession.ProcessMessageWithContextAndTools(turnCtx, dynamicCtx, userPrompt, lent)
 		turnCancel()
 		ackCancel()
 		if err != nil {
@@ -977,16 +1007,37 @@ func (a *Agent) startAckWatchdog(evt bus.Event) func() {
 // (per the operator's requirement) and runs compaction when needed. This is the
 // path used by the HTTP API so the phone app can talk to the agent directly.
 func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
+	return a.ChatWithTools(ctx, text, nil)
+}
+
+// ChatWithTools is Chat with tools lent for the turn.
+//
+// A WASM workflow that asks the agent something can also hand it the tools to
+// answer with — its own, declared in its manifest and gated by the Broker.
+// They last exactly as long as the turn.
+func (a *Agent) ChatWithTools(ctx context.Context, text string, lent []tools.Tool) (string, error) {
+	out, _, err := a.ChatDetailed(ctx, text, lent)
+	return out, err
+}
+
+// ChatDetailed is ChatWithTools, returning what the turn actually called.
+//
+// The caller needs those records to attribute work the turn STARTED but did not
+// finish: a background delegation returns a job id now and completes as an
+// event minutes later, and the workflow's tools have to still be there when it
+// does. Guessing from timing would misattribute the moment two workflows ask
+// anything at once.
+func (a *Agent) ChatDetailed(ctx context.Context, text string, lent []tools.Tool) (string, []karmahelper.ToolCallRecord, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return "", fmt.Errorf("empty message")
+		return "", nil, fmt.Errorf("empty message")
 	}
 
 	a.mu.RLock()
 	session := a.mainSession
 	a.mu.RUnlock()
 	if session == nil {
-		return "", fmt.Errorf("agent %s is not ready", a.def.ID)
+		return "", nil, fmt.Errorf("agent %s is not ready", a.def.ID)
 	}
 
 	a.mu.Lock()
@@ -999,9 +1050,9 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 	// sessions, available comms channels, and retrieved long-term memory.
 	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
 
-	response, toolCalls, err := session.ProcessMessageWithContext(ctx, dynamicCtx, text)
+	response, toolCalls, err := session.ProcessMessageWithContextAndTools(ctx, dynamicCtx, text, lent)
 	if err != nil {
-		return "", fmt.Errorf("chat: %w", err)
+		return "", nil, fmt.Errorf("chat: %w", err)
 	}
 	response = cleanOutboundResponse(response)
 
@@ -1010,7 +1061,9 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 	if len(toolCalls) == 0 && claimsCompletedAction(response) {
 		a.log.Warn("act-evidence(chat): reply claims action with no tool call; re-prompting")
 		nudge := "SYSTEM: You just claimed to have done something but called NO tool this turn — nothing actually happened. Call the correct tool NOW to actually do it, or reply plainly stating what is blocking. This is your one correction."
-		if resp2, tc2, err2 := session.ProcessMessage(ctx, nudge); err2 == nil && strings.TrimSpace(resp2) != "" {
+		// The lent tools go with the correction too: the reply may well be
+		// claiming to have used one of them.
+		if resp2, tc2, err2 := session.ProcessMessageWithTools(ctx, nudge, lent); err2 == nil && strings.TrimSpace(resp2) != "" {
 			response = cleanOutboundResponse(resp2)
 			toolCalls = tc2
 		}
@@ -1041,7 +1094,7 @@ func (a *Agent) Chat(ctx context.Context, text string) (string, error) {
 	}))
 	a.persistSnapshot()
 
-	return response, nil
+	return response, toolCalls, nil
 }
 
 // ToolManifests returns the manifest of every tool the agent's main model has —

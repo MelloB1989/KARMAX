@@ -183,7 +183,12 @@ type Runner struct {
 	trigger     map[string]any
 	triggerKind string
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// toolMu guards provided-tool invocations, deliberately separate from mu.
+	// A run holds mu for its whole duration; a provided tool is often called
+	// DURING a run, by the agent turn that run is waiting on, so sharing the
+	// lock would deadlock the workflow against itself.
+	toolMu   sync.Mutex
 	runtime  wazero.Runtime
 	compiled wazero.CompiledModule
 }

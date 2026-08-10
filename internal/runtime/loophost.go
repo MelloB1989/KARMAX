@@ -416,12 +416,24 @@ type loopKit struct {
 func (k *loopKit) Trigger() loopkit.Trigger { return k.trigger }
 
 func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
+	return k.AskWithTools(ctx, prompt, nil)
+}
+
+// AskWithTools is Ask with tools lent to the agent for that turn — the way a
+// WASM workflow hands the agent its own tools to answer with.
+func (k *loopKit) AskWithTools(ctx context.Context, prompt string, lent []tools.Tool) (string, error) {
 	ag, ok := k.rt.agents.Get(k.agentID)
 	if !ok || ag == nil {
 		return "", fmt.Errorf("agent %q unavailable", k.agentID)
 	}
-	out, err := ag.Chat(ctx, prompt)
+	out, calls, err := ag.ChatDetailed(ctx, prompt, lent)
 	if err == nil {
+		// Work the turn STARTED but did not finish — a background delegation —
+		// completes as an event long after this returns. Recording the job now
+		// is what lets the workflow's tools be there when it does.
+		if len(lent) > 0 {
+			k.rt.attributeJobs(k.loopName, calls)
+		}
 		return out, nil
 	}
 	// Every configured "fallback model" is reached through the same

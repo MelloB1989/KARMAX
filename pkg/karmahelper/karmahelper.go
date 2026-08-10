@@ -94,6 +94,27 @@ func (s *Session) SetContext(ctx string) {
 // transient errors with exponential backoff, and falls back to alternative
 // models if the primary is exhausted.
 func (s *Session) Chat(ctx context.Context, userMessage string) (string, []ToolCallRecord, TokenInfo, error) {
+	return s.ChatWithExtraTools(ctx, userMessage, nil)
+}
+
+// ChatWithExtraTools is Chat with tools available for this turn only.
+//
+// Used to lend a WASM workflow the agent's attention: the tools a workflow
+// provides belong on the turns that workflow caused, and nowhere else. A
+// hundred installed workflows must not put a hundred tools in every prompt.
+//
+// The model is rebuilt for the turn rather than the session being mutated,
+// which is what makes "this turn only" true even if the call fails partway.
+// buildKarmaAI is pure construction, so it is cheap enough to do per turn.
+func (s *Session) ChatWithExtraTools(ctx context.Context, userMessage string, extra []tools.Tool) (string, []ToolCallRecord, TokenInfo, error) {
+	if len(extra) == 0 {
+		return s.chat(ctx, userMessage, s.kai, s.tools)
+	}
+	turnTools := append(append([]tools.Tool{}, s.tools...), extra...)
+	return s.chat(ctx, userMessage, buildKarmaAI(s.cfg, turnTools), turnTools)
+}
+
+func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI, turnTools []tools.Tool) (string, []ToolCallRecord, TokenInfo, error) {
 	userMessage = CleanContent(userMessage)
 	s.history.Messages = append(s.history.Messages, models.AIMessage{
 		Role:    models.User,
@@ -104,7 +125,7 @@ func (s *Session) Chat(ctx context.Context, userMessage string) (string, []ToolC
 	sanitizeHistory(&s.history)
 
 	// --- Try primary model with retries ---
-	resp, err := chatWithRetry(ctx, s.kai, &s.history, 3)
+	resp, err := chatWithRetry(ctx, kai, &s.history, 3)
 	if err == nil {
 		return s.processResponse(resp)
 	}
@@ -120,7 +141,10 @@ func (s *Session) Chat(ctx context.Context, userMessage string) (string, []ToolC
 		fbCfg.Provider = fb.Provider
 		fbCfg.Model = fb.Model
 
-		fbKai := buildKarmaAI(fbCfg, s.tools)
+		// Built with the TURN's tools, not the session's: a fallback that
+		// silently dropped the lent ones would answer without the tools the
+		// question needed and look like the model simply chose not to use them.
+		fbKai := buildKarmaAI(fbCfg, turnTools)
 
 		// Re-sanitize before each fallback attempt
 		sanitizeHistory(&s.history)
@@ -145,7 +169,7 @@ func (s *Session) Chat(ctx context.Context, userMessage string) (string, []ToolC
 	// not know about the harness, the store, or the CLI it shells out to.
 	// Tools are the one thing that cannot cross over, so a session that lent
 	// tools fails rather than quietly answering without them.
-	if fn := transportFallback(); fn != nil && len(s.tools) == 0 && isTransportFailure(primaryErr) {
+	if fn := transportFallback(); fn != nil && len(turnTools) == 0 && isTransportFailure(primaryErr) {
 		log.Printf("[karmahelper] every model shares a dead transport; trying the out-of-band fallback")
 		if out, ferr := fn(ctx, userMessage); ferr == nil {
 			return CleanContent(out), nil, TokenInfo{}, nil

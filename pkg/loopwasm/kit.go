@@ -246,10 +246,12 @@ func Harness(prompt string) (string, error) { return prompted(fnHarness, prompt)
 
 // Gateway asks the main model directly — no agent loop. Cheapest path.
 //
-// lend names host tools to make available for this call only: "wacli" gives the
-// model read-only WhatsApp access. A loop cannot supply a tool of its own — the
-// host owns what those tools may do, so the allowlist is one rule rather than
-// one per loop.
+// lend names HOST tools to make available for this call only: "wacli" gives the
+// model read-only WhatsApp access. The set is a fixed allowlist, so a loop
+// cannot invent a host capability by describing one.
+//
+// Tools this loop PROVIDES travel automatically and do not need naming — they
+// were approved in its manifest at install. See Provide.
 func Gateway(prompt string, lend ...string) (string, error) {
 	req, err := json.Marshal(map[string]any{"prompt": prompt, "lend": lend})
 	if err != nil {
