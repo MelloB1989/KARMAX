@@ -39,7 +39,7 @@ loops: $(LOOP_OUT)
 		echo "building $$l"; \
 		GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared \
 			-o $(LOOP_OUT)/$$l.wasm ./loops/$$l || exit 1; \
-		go run ./cmd/karmax wloop sign \
+		go run ./cmd/karmax wloop sign --countersign \
 			--manifest loops/$$l/loop.yaml \
 			--module $(LOOP_OUT)/$$l.wasm \
 			-o $(LOOP_OUT)/$$l.kloop || exit 1; \

@@ -87,14 +87,16 @@ func TestASlowSubscriberLosesNothing(t *testing.T) {
 func TestASubscriberResumesWhereItStopped(t *testing.T) {
 	s := testStore(t)
 	l := newTestLog(t, s)
-	mustPublish(t, l, EventUserDefined, 5)
 
+	// Started BEFORE anything is published: a new subscriber begins at the head,
+	// so events that predate it are not its business.
 	first := make(chan Event, 8)
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	l.Consume(ctx1, "resumer", []EventKind{EventUserDefined}, func(_ context.Context, e Event) error {
 		first <- e
 		return nil
 	})
+	mustPublish(t, l, EventUserDefined, 5)
 	for i := 0; i < 5; i++ {
 		select {
 		case <-first:
@@ -285,7 +287,7 @@ func TestOffsetsNeverGoBackwards(t *testing.T) {
 	if err := s.SetConsumerOffset("x", store.DefaultWorkspace, 3); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ConsumerOffset("x", store.DefaultWorkspace)
+	got, _, err := s.ConsumerOffset("x", store.DefaultWorkspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,5 +313,78 @@ func TestPublishingTheSameEventTwiceAppendsOnce(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Errorf("the same event id was appended %d times", len(got))
+	}
+}
+
+// The bug this pins, found by restarting a real daemon: a subscriber that had
+// never run started at offset 0 and replayed the entire retained history. For
+// the agent router that meant re-delivering every WhatsApp message ever
+// received, and the agent would have answered conversations long finished.
+//
+// Durability exists so nothing is lost while a subscriber is DOWN. A subscriber
+// that never existed missed nothing.
+func TestANewSubscriberStartsAtTheHeadNotAtTheBeginning(t *testing.T) {
+	s := testStore(t)
+	l := newTestLog(t, s)
+
+	// A history it was not around for.
+	mustPublish(t, l, EventUserDefined, 50)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan Event, 64)
+	l.Consume(ctx, "newcomer", []EventKind{EventUserDefined}, func(_ context.Context, e Event) error {
+		got <- e
+		return nil
+	})
+
+	// Nothing historical.
+	select {
+	case e := <-got:
+		t.Fatalf("a new subscriber replayed history: got event %v", e.Payload["i"])
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// But everything from now on.
+	if err := l.Publish(NewEvent(EventUserDefined, "agent", map[string]any{"i": 999})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case e := <-got:
+		if e.Payload["i"].(float64) != 999 {
+			t.Errorf("received %v, want the new event", e.Payload["i"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a new subscriber missed a live event")
+	}
+}
+
+// The other half: a subscriber that HAS run picks up where it left off, so a
+// restart loses nothing. Fixing the replay bug must not break this.
+func TestAKnownSubscriberStillResumesFromItsOffset(t *testing.T) {
+	s := testStore(t)
+	l := newTestLog(t, s)
+
+	// It ran once and got to seq 0 — recorded, so it is "known".
+	if err := s.SetConsumerOffset("returning", store.DefaultWorkspace, 0); err != nil {
+		t.Fatal(err)
+	}
+	mustPublish(t, l, EventUserDefined, 3)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan Event, 8)
+	l.Consume(ctx, "returning", []EventKind{EventUserDefined}, func(_ context.Context, e Event) error {
+		got <- e
+		return nil
+	})
+
+	// All three, because it was down while they happened.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-got:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("a returning subscriber lost event %d — durability is the point", i)
+		}
 	}
 }

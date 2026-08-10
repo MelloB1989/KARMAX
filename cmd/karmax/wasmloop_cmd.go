@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -29,7 +28,8 @@ func wloopCmd() *cobra.Command {
 			"byte reaches the compiler, and grants exactly what the manifest declared.",
 	}
 	cmd.AddCommand(wloopKeygenCmd(), wloopSignCmd(), wloopInspectCmd(),
-		wloopInstallCmd(), wloopListCmd(), wloopRemoveCmd(), wloopVerifyAllCmd())
+		wloopInstallCmd(), wloopListCmd(), wloopRemoveCmd(), wloopVerifyAllCmd(),
+		wloopTrustCmd())
 	return cmd
 }
 
@@ -96,6 +96,7 @@ func wloopKeygenCmd() *cobra.Command {
 
 func wloopSignCmd() *cobra.Command {
 	var manifestPath, modulePath, out string
+	var countersign bool
 	cmd := &cobra.Command{
 		Use:   "sign",
 		Short: "Package a WASM module and a manifest into a signed artifact",
@@ -141,8 +142,16 @@ func wloopSignCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sig := wasmloop.Sign(&a.Manifest, wasmloop.RolePublisher, priv)
-			data, err := wasmloop.Pack(a.Manifest, module, []wasmloop.Signature{sig})
+			sigs := []wasmloop.Signature{wasmloop.Sign(&a.Manifest, wasmloop.RolePublisher, priv)}
+			if countersign {
+				// Self-publishing: the operator is the reviewer for their own
+				// loops. Countersigning with the same key means an instance that
+				// trusts this key as a registry accepts them, while a stranger's
+				// publisher-only artifact is still refused — which is narrower
+				// than turning community trust on for everything.
+				sigs = append(sigs, wasmloop.Sign(&a.Manifest, wasmloop.RoleRegistry, priv))
+			}
+			data, err := wasmloop.Pack(a.Manifest, module, sigs)
 			if err != nil {
 				return err
 			}
@@ -152,7 +161,11 @@ func wloopSignCmd() *cobra.Command {
 			if err := os.WriteFile(out, data, 0o644); err != nil {
 				return err
 			}
-			fmt.Printf("Signed %s (%s), %d KB.\n\n", m.Name, m.Version, len(data)/1024)
+			role := "publisher"
+			if countersign {
+				role = "publisher and registry"
+			}
+			fmt.Printf("Signed %s (%s) as %s, %d KB.\n\n", m.Name, m.Version, role, len(data)/1024)
 			fmt.Println("It declares:")
 			for _, line := range wasmloop.Describe(m.Host, m.Capabilities) {
 				fmt.Println("  - " + line)
@@ -164,25 +177,19 @@ func wloopSignCmd() *cobra.Command {
 	cmd.Flags().StringVar(&manifestPath, "manifest", "loop.yaml", "the manifest to sign")
 	cmd.Flags().StringVar(&modulePath, "module", "loop.wasm", "the WASM module")
 	cmd.Flags().StringVarP(&out, "out", "o", "", "output file")
+	cmd.Flags().BoolVar(&countersign, "countersign", false,
+		"also countersign as a registry, for loops you publish and trust yourself")
 	return cmd
 }
 
+// trustFromEnv reads the shared trust configuration, with --allow-community as
+// a per-command override.
 func trustFromEnv(allowCommunity bool) wasmloop.Trust {
-	return wasmloop.Trust{
-		Registries:     splitList(os.Getenv("KARMAX_LOOP_REGISTRIES")),
-		Revoked:        splitList(os.Getenv("KARMAX_LOOP_REVOKED")),
-		AllowCommunity: allowCommunity,
+	t := wasmloop.LoadTrust(wasmloop.Dir())
+	if allowCommunity {
+		t.AllowCommunity = true
 	}
-}
-
-func splitList(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	return t
 }
 
 func showPreview(p *wasmloop.Preview) {
@@ -375,4 +382,72 @@ func wloopVerifyAllCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&allowCommunity, "allow-community", false, "accept publisher-only signatures")
 	return cmd
+}
+
+func wloopTrustCmd() *cobra.Command {
+	var addRegistry, revoke string
+	var allowCommunity, showOnly bool
+	cmd := &cobra.Command{
+		Use:   "trust",
+		Short: "Which publishers this instance accepts loops from",
+		Long: "Read by both the CLI and the daemon, so they cannot disagree about whether a\n" +
+			"loop is trusted.\n\n" +
+			"  karmax wloop trust --registry <key>   accept loops countersigned by this key\n" +
+			"  karmax wloop trust --revoke <key>     refuse anything signed by it\n\n" +
+			"For loops you publish yourself, sign with --countersign and trust your own key:\n" +
+			"that keeps a stranger's publisher-only artifact refused.",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			dir := wasmloop.Dir()
+			registries, revoked, community := wasmloop.StoredTrust(dir)
+
+			changed := false
+			if addRegistry != "" {
+				registries = append(registries, addRegistry)
+				changed = true
+			}
+			if revoke != "" {
+				revoked = append(revoked, revoke)
+				changed = true
+			}
+			if allowCommunity {
+				community = true
+				changed = true
+			}
+			if changed && !showOnly {
+				if err := wasmloop.SaveTrust(dir, registries, revoked, community); err != nil {
+					return err
+				}
+			}
+
+			t := wasmloop.LoadTrust(dir)
+			fmt.Printf("Trusted registries (%d):\n", len(t.Registries))
+			for _, r := range t.Registries {
+				fmt.Println("  " + r)
+			}
+			if len(t.Revoked) > 0 {
+				fmt.Printf("\nRevoked (%d):\n", len(t.Revoked))
+				for _, r := range t.Revoked {
+					fmt.Println("  " + r)
+				}
+			}
+			fmt.Printf("\nUnreviewed (publisher-only) loops: %s\n", allowed(t.AllowCommunity))
+			fmt.Printf("Stored in %s\n", wasmloop.TrustPath(dir))
+			if changed {
+				fmt.Println("Restart KARMAX for the daemon to pick this up.")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&addRegistry, "registry", "", "trust loops countersigned by this key")
+	cmd.Flags().StringVar(&revoke, "revoke", "", "refuse anything signed by this key")
+	cmd.Flags().BoolVar(&allowCommunity, "allow-community", false, "accept publisher-only loops from anyone")
+	cmd.Flags().BoolVar(&showOnly, "dry-run", false, "show what would change without saving")
+	return cmd
+}
+
+func allowed(b bool) string {
+	if b {
+		return "accepted"
+	}
+	return "refused"
 }

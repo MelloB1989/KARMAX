@@ -97,11 +97,7 @@ func (rt *KarmaxRuntime) closeWasmLoops(ctx context.Context) {
 
 // loopTrust is the operator's configuration for which publishers count.
 func (rt *KarmaxRuntime) loopTrust() wasmloop.Trust {
-	return wasmloop.Trust{
-		Registries:     splitCSV(os.Getenv("KARMAX_LOOP_REGISTRIES")),
-		Revoked:        splitCSV(os.Getenv("KARMAX_LOOP_REVOKED")),
-		AllowCommunity: strings.EqualFold(os.Getenv("KARMAX_LOOP_ALLOW_COMMUNITY"), "true"),
-	}
+	return wasmloop.LoadTrust(wasmloop.Dir())
 }
 
 func (rt *KarmaxRuntime) loopNamespace() string {

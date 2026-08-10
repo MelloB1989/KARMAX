@@ -106,6 +106,12 @@ func (b *Broker) For(subject string) *Handle { return &Handle{b: b, subject: sub
 // Subject is who this handle speaks for.
 func (h *Handle) Subject() string { return h.subject }
 
+// Check asks about any capability class by name. Used where the class is
+// decided at runtime rather than at the call site.
+func (h *Handle) Check(class, value string) error {
+	return h.b.check(h.subject, class, value)
+}
+
 // Tool reports whether this subject may call a tool.
 func (h *Handle) Tool(name string) error {
 	return h.b.check(h.subject, store.CapTool, name)

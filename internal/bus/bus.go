@@ -35,7 +35,8 @@ type Handler func(context.Context, Event) error
 type Journal interface {
 	AppendLogEvent(store.LogEvent) (int64, error)
 	LogEventsAfter(workspace string, after int64, kinds []string, limit int) ([]store.LogEvent, error)
-	ConsumerOffset(name, workspace string) (int64, error)
+	ConsumerOffset(name, workspace string) (int64, bool, error)
+	LogHead(workspace string) (int64, error)
 	SetConsumerOffset(name, workspace string, seq int64) error
 	RecordDeadLetter(store.DeadLetter) error
 }
@@ -103,22 +104,60 @@ func (l *Log) Publish(e Event) error {
 
 // Consume runs a durable subscriber until ctx is cancelled. The name is the
 // offset's identity: stable across restarts, unique per subscriber.
+// Consume registers a durable subscriber and returns once its starting point is
+// fixed.
+//
+// The offset is resolved SYNCHRONOUSLY, before the worker is spawned. If it were
+// resolved in the goroutine, an event published in the moment after registering
+// could land before the subscriber had recorded its head — and a new subscriber
+// starting at the head would then skip it. Registration has to be a point in
+// time, not a race.
 func (l *Log) Consume(ctx context.Context, name string, kinds []EventKind, h Handler) {
-	go l.consume(ctx, name, kinds, h)
+	offset, ok := l.startingPoint(name)
+	if !ok {
+		return
+	}
+	go l.consume(ctx, name, kinds, h, offset)
 }
 
-func (l *Log) consume(ctx context.Context, name string, kinds []EventKind, h Handler) {
-	filter := make([]string, 0, len(kinds))
-	for _, k := range kinds {
-		filter = append(filter, string(k))
-	}
-
-	offset, err := l.journal.ConsumerOffset(name, l.workspace)
+// startingPoint fixes where a subscriber begins.
+func (l *Log) startingPoint(name string) (int64, bool) {
+	offset, known, err := l.journal.ConsumerOffset(name, l.workspace)
 	if err != nil {
 		// Starting from zero would replay everything retained.
 		l.log.Error("could not read subscriber offset; not starting",
 			zap.String("subscriber", name), zap.Error(err))
-		return
+		return 0, false
+	}
+	if !known {
+		// A subscriber that has never run starts at the HEAD, not at zero.
+		//
+		// Starting at zero replays the whole retained history through it, which
+		// for the agent router means re-delivering every WhatsApp message ever
+		// received — the agent would answer conversations that finished months
+		// ago. Events are durable so that nothing is lost while a subscriber is
+		// DOWN; a subscriber that never existed missed nothing.
+		head, err := l.journal.LogHead(l.workspace)
+		if err != nil {
+			l.log.Error("could not read the log head; not starting",
+				zap.String("subscriber", name), zap.Error(err))
+			return 0, false
+		}
+		offset = head
+		if err := l.journal.SetConsumerOffset(name, l.workspace, offset); err != nil {
+			l.log.Warn("could not record a new subscriber's starting point",
+				zap.String("subscriber", name), zap.Error(err))
+		}
+		l.log.Info("new subscriber starts at the head rather than replaying history",
+			zap.String("subscriber", name), zap.Int64("from_seq", offset))
+	}
+	return offset, true
+}
+
+func (l *Log) consume(ctx context.Context, name string, kinds []EventKind, h Handler, offset int64) {
+	filter := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		filter = append(filter, string(k))
 	}
 	l.log.Info("event subscriber started",
 		zap.String("subscriber", name), zap.Int64("from_seq", offset))
