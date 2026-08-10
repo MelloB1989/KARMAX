@@ -48,8 +48,9 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 
 	rt.loopkitLoops = make(map[string]loopkit.Loop, len(loops))
 	rt.loopWebhooks = map[string]string{}
-	rt.startWasmLoops(ctx)
-	loopEvents := map[bus.EventKind][]string{} // event kind -> loop names
+	// Signed loops first: they were installed deliberately, so they hold their
+	// names against a compiled-in loop that happens to share one.
+	loopEvents := rt.startWasmLoops(ctx) // event kind -> loop names
 	for _, l := range loops {
 		if yamlNames[l.Name] {
 			rt.log.Warn("loopkit loop name clashes with a yaml loop; skipping", zap.String("loop", l.Name))
@@ -363,14 +364,26 @@ func (rt *KarmaxRuntime) pruneStaleLoopJobs() {
 		yamlNames[l.Name] = true
 		valid["loop:"+l.Name] = true
 	}
-	for _, l := range loopkit.Registered() {
-		if yamlNames[l.Name] || disabled[l.Name] {
+	// From what is actually LOADED, not from the compiled-in registry.
+	//
+	// Reading the registry meant a signed loop's job was created by
+	// startWasmLoops and deleted here seconds later, because the registry knows
+	// nothing about loops that arrive as WASM. The loop then reported itself
+	// loaded, with its schedule in the log, and never fired.
+	for name := range rt.loopkitLoops {
+		if yamlNames[name] || disabled[name] {
 			continue
 		}
-		valid["loopkit:"+l.Name] = true
+		valid["loopkit:"+name] = true
 	}
+	rt.recipeMu.RLock()
+	for name := range rt.recipeLoops {
+		valid["recipe:"+name] = true
+	}
+	rt.recipeMu.RUnlock()
 	for _, j := range rt.scheduler.ListJobs() {
-		if (strings.HasPrefix(j.ID, "loop:") || strings.HasPrefix(j.ID, "loopkit:")) && !valid[j.ID] {
+		if (strings.HasPrefix(j.ID, "loop:") || strings.HasPrefix(j.ID, "loopkit:") ||
+			strings.HasPrefix(j.ID, "recipe:")) && !valid[j.ID] {
 			if err := rt.scheduler.RemoveJob(j.ID); err != nil {
 				rt.log.Warn("failed to prune stale loop job", zap.String("job", j.ID), zap.Error(err))
 			} else {
