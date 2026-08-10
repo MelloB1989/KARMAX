@@ -1,136 +1,90 @@
-// Package telegram implements a KARMAX comms channel over the Telegram Bot API.
+// Package telegram implements a KARMAX comms channel over the Bot API.
 //
-// It uses long-polling (getUpdates) rather than webhooks, so it works on a
-// laptop, a Pi or anything behind NAT with no tunnel and no public URL — the
-// same "runs on your own hardware" property as the rest of KARMAX.
+// Long polling, not webhooks: KARMAX runs on a laptop or a Pi behind somebody's
+// router, so there is no public URL for Telegram to call. Polling means the
+// connection is always outbound, like Slack's socket and wacli's local API.
+//
+// Built on gotgbot rather than hand-rolled HTTP. What was 390 lines of request
+// building, JSON shapes and offset bookkeeping is now the parts that are
+// actually KARMAX's: which updates are worth waking the agent for, and what the
+// agent is told about them.
 package telegram
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"mime/multipart"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/comms"
+	"github.com/PaulSonOfLars/gotgbot/v2"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 const (
-	apiBase     = "https://api.telegram.org/bot"
-	pollTimeout = 50 // seconds held open by Telegram per getUpdates call
-	maxMessage  = 4096
+	// maxMessage is Telegram's per-message limit.
+	maxMessage = 4096
+	// pollTimeout is how long a getUpdates call waits for something to happen.
+	// Long, because an idle poll costs nothing and a short one is a busy loop.
+	pollTimeout = 50
 )
 
 // Channel is a Telegram bot exposed as a comms.Channel.
 type Channel struct {
-	id      string
-	token   string
-	inbox   chan comms.Message
-	log     *zap.Logger
-	http    *http.Client
-	cancel  context.CancelFunc
+	id    string
+	token string
+	inbox chan comms.Message
+	log   *zap.Logger
+
+	bot    *gotgbot.Bot
+	cancel context.CancelFunc
+
 	mu      sync.RWMutex
-	offset  int64
-	botUser string
 	botID   int64
+	botUser string
+	offset  int64
 }
 
-// New creates a Telegram channel. token comes from BotFather.
+// New creates a Telegram channel.
 func New(id, token string, log *zap.Logger) *Channel {
 	return &Channel{
 		id:    id,
 		token: strings.TrimSpace(token),
 		inbox: make(chan comms.Message, 256),
 		log:   log,
-		// Slightly longer than the poll window so the request isn't cut short.
-		http: &http.Client{Timeout: (pollTimeout + 15) * time.Second},
 	}
 }
 
-func (c *Channel) ID() string   { return c.id }
-func (c *Channel) Type() string { return "telegram" }
-
+func (c *Channel) ID() string                             { return c.id }
+func (c *Channel) Type() string                           { return "telegram" }
 func (c *Channel) IncomingMessages() <-chan comms.Message { return c.inbox }
 
-func (c *Channel) api(method string) string { return apiBase + c.token + "/" + method }
-
-// call performs a Bot API call and unwraps Telegram's {ok, result} envelope.
-func (c *Channel) call(ctx context.Context, method string, payload any, out any) error {
-	var body io.Reader
-	if payload != nil {
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.api(method), body)
-	if err != nil {
-		return err
-	}
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var env struct {
-		OK          bool            `json:"ok"`
-		Result      json.RawMessage `json:"result"`
-		Description string          `json:"description"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return fmt.Errorf("telegram %s: bad response: %w", method, err)
-	}
-	if !env.OK {
-		return fmt.Errorf("telegram %s: %s", method, env.Description)
-	}
-	if out != nil && len(env.Result) > 0 {
-		return json.Unmarshal(env.Result, out)
-	}
-	return nil
-}
-
-// Start verifies the token and begins long-polling for updates.
+// Start authenticates and begins polling.
 func (c *Channel) Start(ctx context.Context) error {
 	if c.token == "" {
-		return fmt.Errorf("telegram: bot token is empty")
+		return fmt.Errorf("telegram: no bot token")
 	}
-
-	var me struct {
-		ID       int64  `json:"id"`
-		Username string `json:"username"`
-	}
-	verifyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	err := c.call(verifyCtx, "getMe", nil, &me)
-	cancel()
+	bot, err := gotgbot.NewBot(c.token, nil)
 	if err != nil {
-		return fmt.Errorf("telegram: cannot authenticate: %w", err)
+		return fmt.Errorf("telegram: the bot token was refused: %w", err)
 	}
+	c.bot = bot
 	c.mu.Lock()
-	c.botUser, c.botID = me.Username, me.ID
+	c.botID, c.botUser = bot.User.Id, bot.User.Username
 	c.mu.Unlock()
+	c.log.Info("telegram connected",
+		zap.String("bot", "@"+bot.User.Username), zap.String("channel", c.id))
 
-	runCtx, cancelRun := context.WithCancel(ctx)
-	c.cancel = cancelRun
+	runCtx, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
 	go c.poll(runCtx)
-
-	c.log.Info("telegram channel started",
-		zap.String("channel_id", c.id), zap.String("bot", "@"+me.Username))
 	return nil
 }
 
+// Stop ends polling.
 func (c *Channel) Stop() error {
 	if c.cancel != nil {
 		c.cancel()
@@ -138,49 +92,8 @@ func (c *Channel) Stop() error {
 	return nil
 }
 
-type tgUpdate struct {
-	UpdateID int64 `json:"update_id"`
-	Message  *struct {
-		MessageID int64 `json:"message_id"`
-		Date      int64 `json:"date"`
-		Text      string
-		Caption   string `json:"caption"`
-		From      struct {
-			ID        int64  `json:"id"`
-			IsBot     bool   `json:"is_bot"`
-			FirstName string `json:"first_name"`
-			Username  string `json:"username"`
-		} `json:"from"`
-		Chat struct {
-			ID    int64  `json:"id"`
-			Type  string `json:"type"` // private | group | supergroup | channel
-			Title string `json:"title"`
-		} `json:"chat"`
-		ReplyToMessage *struct {
-			MessageID int64  `json:"message_id"`
-			Text      string `json:"text"`
-			From      struct {
-				ID    int64 `json:"id"`
-				IsBot bool  `json:"is_bot"`
-			} `json:"from"`
-		} `json:"reply_to_message"`
-		Entities []struct {
-			Type   string `json:"type"`
-			Offset int    `json:"offset"`
-			Length int    `json:"length"`
-		} `json:"entities"`
-		Photo    []any `json:"photo"`
-		Document *struct {
-			FileName string `json:"file_name"`
-			MimeType string `json:"mime_type"`
-		} `json:"document"`
-		Voice *any `json:"voice"`
-	} `json:"message"`
-}
-
-// poll runs the long-poll loop until the context is cancelled.
+// poll pulls updates until the context ends.
 func (c *Channel) poll(ctx context.Context) {
-	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
 			return
@@ -189,36 +102,36 @@ func (c *Channel) poll(ctx context.Context) {
 		offset := c.offset
 		c.mu.RUnlock()
 
-		var updates []tgUpdate
-		err := c.call(ctx, "getUpdates", map[string]any{
-			"offset":          offset,
-			"timeout":         pollTimeout,
-			"allowed_updates": []string{"message"},
-		}, &updates)
-
+		updates, err := c.bot.GetUpdatesWithContext(ctx, &gotgbot.GetUpdatesOpts{
+			Offset:  offset,
+			Timeout: pollTimeout,
+			// Only what we act on. Asking for everything means waking for edits,
+			// reactions and poll answers that are then discarded.
+			AllowedUpdates: []string{"message"},
+			RequestOpts:    &gotgbot.RequestOpts{Timeout: (pollTimeout + 15) * time.Second},
+		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			// Network blips and Telegram hiccups are expected on a long poll —
-			// back off rather than spinning, and never exit the loop.
-			c.log.Warn("telegram poll failed", zap.String("channel_id", c.id), zap.Error(err))
+			// A failed poll is usually the network, and retrying immediately
+			// would spin. The pause is short enough not to feel like downtime.
+			c.log.Warn("telegram poll failed", zap.String("channel", c.id), zap.Error(err))
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
+			case <-time.After(5 * time.Second):
 			}
 			continue
 		}
-		backoff = time.Second
 
 		for _, u := range updates {
+			// Advanced BEFORE handling: an update that makes routing panic would
+			// otherwise be re-fetched forever, and the channel would never move
+			// past it.
 			c.mu.Lock()
-			if u.UpdateID >= c.offset {
-				c.offset = u.UpdateID + 1 // ack: Telegram drops everything below
+			if u.UpdateId >= c.offset {
+				c.offset = u.UpdateId + 1
 			}
 			c.mu.Unlock()
 			c.route(u)
@@ -226,10 +139,11 @@ func (c *Channel) poll(ctx context.Context) {
 	}
 }
 
-// route converts a Telegram update into an inbound comms.Message.
-func (c *Channel) route(u tgUpdate) {
+// route decides whether an update is worth waking the agent for, and what it
+// should be told.
+func (c *Channel) route(u gotgbot.Update) {
 	m := u.Message
-	if m == nil || m.From.IsBot {
+	if m == nil || m.From == nil || m.From.IsBot {
 		return // ignore bots, including ourselves
 	}
 
@@ -256,11 +170,12 @@ func (c *Channel) route(u tgUpdate) {
 	c.mu.RUnlock()
 
 	isGroup := m.Chat.Type == "group" || m.Chat.Type == "supergroup"
-	// Telegram marks @mentions as entities; a reply to one of our messages is
-	// equally "addressed to us". Both are computed here rather than left to the
-	// model, matching how the WhatsApp channel behaves.
+	// Whether we were addressed is computed HERE rather than left to the model,
+	// matching how the WhatsApp channel behaves: it changes whether KARMAX
+	// speaks at all, which is too consequential to infer from prose.
 	mentionsMe := botUser != "" && strings.Contains(strings.ToLower(body), "@"+strings.ToLower(botUser))
-	quotedIsFromMe := m.ReplyToMessage != nil && m.ReplyToMessage.From.ID == botID
+	quotedIsFromMe := m.ReplyToMessage != nil && m.ReplyToMessage.From != nil &&
+		m.ReplyToMessage.From.Id == botID
 
 	name := strings.TrimSpace(m.From.FirstName)
 	if m.From.Username != "" {
@@ -272,16 +187,16 @@ func (c *Channel) route(u tgUpdate) {
 
 	msg := comms.Message{
 		ID:          uuid.New().String(),
-		ChannelID:   strconv.FormatInt(m.Chat.ID, 10),
+		ChannelID:   strconv.FormatInt(m.Chat.Id, 10),
 		ChannelType: "telegram",
-		SenderID:    strconv.FormatInt(m.From.ID, 10),
+		SenderID:    strconv.FormatInt(m.From.Id, 10),
 		SenderName:  name,
 		Content:     body,
 		Direction:   comms.Inbound,
 		Timestamp:   time.Unix(m.Date, 0),
 		Metadata: map[string]any{
-			"telegram_message_id": m.MessageID,
-			"chat_id":             m.Chat.ID,
+			"telegram_message_id": m.MessageId,
+			"chat_id":             m.Chat.Id,
 			"chat_type":           m.Chat.Type,
 			"chat_name":           m.Chat.Title,
 			"is_group":            isGroup,
@@ -308,83 +223,87 @@ func (c *Channel) Send(ctx context.Context, target, content string) error {
 	if content == "" {
 		return nil
 	}
-	for _, chunk := range chunks(content, maxMessage) {
-		if err := c.call(ctx, "sendMessage", map[string]any{
-			"chat_id":                  target,
-			"text":                     chunk,
-			"link_preview_options":     map[string]any{"is_disabled": true},
-			"disable_web_page_preview": true,
-		}, nil); err != nil {
+	if c.bot == nil {
+		return fmt.Errorf("telegram: not connected")
+	}
+	chatID, err := strconv.ParseInt(strings.TrimSpace(target), 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: %q is not a chat id", target)
+	}
+	for _, part := range Chunks(content, maxMessage) {
+		if _, err := c.bot.SendMessageWithContext(ctx, chatID, part, &gotgbot.SendMessageOpts{
+			RequestOpts: &gotgbot.RequestOpts{Timeout: 30 * time.Second},
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// SendEmbed renders an embed as plain text — Telegram has no embed concept.
+// SendEmbed renders an embed as text, since Telegram has no embeds.
 func (c *Channel) SendEmbed(ctx context.Context, target string, embed comms.Embed) error {
 	var b strings.Builder
 	if embed.Title != "" {
 		b.WriteString(embed.Title + "\n\n")
 	}
 	if embed.Description != "" {
-		b.WriteString(embed.Description)
+		b.WriteString(embed.Description + "\n")
 	}
 	for _, f := range embed.Fields {
-		b.WriteString("\n\n" + f.Name + "\n" + f.Value)
+		b.WriteString("\n" + f.Name + ": " + f.Value)
+	}
+	if embed.Footer != "" {
+		b.WriteString("\n\n" + embed.Footer)
 	}
 	return c.Send(ctx, target, b.String())
 }
 
-// SendFile uploads a document to the chat.
+// SendFile uploads a document.
 func (c *Channel) SendFile(ctx context.Context, target, filename string, data []byte) error {
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	_ = w.WriteField("chat_id", target)
-	part, err := w.CreateFormFile("document", filename)
+	if c.bot == nil {
+		return fmt.Errorf("telegram: not connected")
+	}
+	chatID, err := strconv.ParseInt(strings.TrimSpace(target), 10, 64)
 	if err != nil {
-		return err
+		return fmt.Errorf("telegram: %q is not a chat id", target)
 	}
-	if _, err := part.Write(data); err != nil {
-		return err
-	}
-	if err := w.Close(); err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.api("sendDocument"), &buf)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("telegram sendDocument: %s: %s", resp.Status, strings.TrimSpace(string(b)))
-	}
-	return nil
+	_, err = c.bot.SendDocumentWithContext(ctx, chatID,
+		gotgbot.InputFileByReader(filename, strings.NewReader(string(data))),
+		&gotgbot.SendDocumentOpts{RequestOpts: &gotgbot.RequestOpts{Timeout: 60 * time.Second}})
+	return err
 }
 
-// chunks splits s on line boundaries where possible, so long replies stay readable.
-func chunks(s string, size int) []string {
-	if len(s) <= size {
+// Chunks splits a message on line boundaries so each part fits the limit.
+//
+// A message cut mid-word reads as a transmission error, so the break goes at a
+// newline where there is one. A single line longer than the limit is cut,
+// because there is nothing else to break on.
+func Chunks(s string, limit int) []string {
+	if len(s) <= limit {
 		return []string{s}
 	}
 	var out []string
-	for len(s) > size {
-		cut := strings.LastIndex(s[:size], "\n")
-		if cut < size/2 {
-			cut = size
+	var cur strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		for len(line) > limit {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+			out = append(out, line[:limit])
+			line = line[limit:]
 		}
-		out = append(out, s[:cut])
-		s = strings.TrimLeft(s[cut:], "\n")
+		if cur.Len()+len(line)+1 > limit && cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+		if cur.Len() > 0 {
+			cur.WriteByte('\n')
+		}
+		cur.WriteString(line)
 	}
-	if s != "" {
-		out = append(out, s)
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
 	}
 	return out
 }

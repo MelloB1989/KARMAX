@@ -7,31 +7,30 @@
 // Two tokens are required:
 //   - an app-level token (xapp-…) with connections:write — opens the socket
 //   - a bot token (xoxb-…) — reads and posts messages
+//
+// Built on slack-go rather than hand-rolled HTTP. The previous version was 500
+// lines reimplementing the socket handshake, the envelope acks, the reconnect
+// backoff and the JSON shapes — all of which Slack changes and none of which is
+// KARMAX's problem to track.
 package slack
 
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/comms"
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
+	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
+	"github.com/slack-go/slack/socketmode"
 	"go.uber.org/zap"
 )
 
-const (
-	apiBase    = "https://slack.com/api/"
-	maxMessage = 3800 // Slack's hard limit is 4000; leave room for formatting
-)
+// maxMessage leaves room under Slack's 4000-character limit for formatting.
+const maxMessage = 3800
 
 // Channel is a Slack bot exposed as a comms.Channel.
 type Channel struct {
@@ -40,14 +39,15 @@ type Channel struct {
 	botToken string // xoxb-… : reads and posts
 	inbox    chan comms.Message
 	log      *zap.Logger
-	http     *http.Client
 	cancel   context.CancelFunc
 
-	mu     sync.RWMutex
-	botID  string // our bot user id, for self/mention detection
-	teamID string
-	// Slack message events carry user IDs, not names. Resolved names are cached
-	// so a busy channel doesn't cost one users.info call per message.
+	api    *slack.Client
+	socket *socketmode.Client
+
+	mu    sync.RWMutex
+	botID string // our bot user id, for self/mention detection
+	// Slack events carry user IDs, not names. Resolved names are cached so a
+	// busy channel does not cost one users.info call per message.
 	names map[string]string
 }
 
@@ -59,13 +59,137 @@ func New(id, appToken, botToken string, log *zap.Logger) *Channel {
 		botToken: strings.TrimSpace(botToken),
 		inbox:    make(chan comms.Message, 256),
 		log:      log,
-		http:     &http.Client{Timeout: 30 * time.Second},
 		names:    make(map[string]string),
 	}
 }
 
+func (c *Channel) ID() string                             { return c.id }
+func (c *Channel) Type() string                           { return "slack" }
+func (c *Channel) IncomingMessages() <-chan comms.Message { return c.inbox }
+
+// Start opens the socket and pumps events until the context ends.
+func (c *Channel) Start(ctx context.Context) error {
+	if c.appToken == "" || c.botToken == "" {
+		return fmt.Errorf("slack: both an app token (xapp-…) and a bot token (xoxb-…) are required")
+	}
+	if !strings.HasPrefix(c.appToken, "xapp-") {
+		return fmt.Errorf("slack: the app token should start with xapp- — %q looks like the wrong one", short(c.appToken))
+	}
+
+	c.api = slack.New(c.botToken, slack.OptionAppLevelToken(c.appToken))
+	auth, err := c.api.AuthTestContext(ctx)
+	if err != nil {
+		return fmt.Errorf("slack: the bot token was refused: %w", err)
+	}
+	c.mu.Lock()
+	c.botID = auth.UserID
+	c.mu.Unlock()
+	c.log.Info("slack connected",
+		zap.String("team", auth.Team), zap.String("bot", auth.User), zap.String("channel", c.id))
+
+	c.socket = socketmode.New(c.api)
+	runCtx, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
+
+	go c.pump(runCtx)
+	go func() {
+		// Run blocks until the context ends; its own reconnect handling is why
+		// this package no longer has any.
+		if err := c.socket.RunContext(runCtx); err != nil && runCtx.Err() == nil {
+			c.log.Error("slack socket stopped", zap.Error(err))
+		}
+	}()
+	return nil
+}
+
+// pump turns socket events into KARMAX messages.
+func (c *Channel) pump(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-c.socket.Events:
+			if !ok {
+				return
+			}
+			switch evt.Type {
+			case socketmode.EventTypeEventsAPI:
+				api, ok := evt.Data.(slackevents.EventsAPIEvent)
+				if !ok {
+					continue
+				}
+				// Acked immediately, before any work: Slack redelivers anything
+				// unacknowledged within three seconds, and a slow turn would
+				// otherwise become the same message handled twice.
+				if evt.Request != nil {
+					c.socket.Ack(*evt.Request)
+				}
+				c.handleEvent(ctx, api)
+			case socketmode.EventTypeConnectionError:
+				c.log.Warn("slack connection error; the client will retry", zap.Any("data", evt.Data))
+			case socketmode.EventTypeInvalidAuth:
+				c.log.Error("slack rejected the tokens — reconnecting will not help",
+					zap.String("channel", c.id))
+			}
+		}
+	}
+}
+
+// handleEvent forwards a user message and ignores everything else.
+func (c *Channel) handleEvent(ctx context.Context, api slackevents.EventsAPIEvent) {
+	if api.Type != slackevents.CallbackEvent {
+		return
+	}
+	inner, ok := api.InnerEvent.Data.(*slackevents.MessageEvent)
+	if !ok {
+		// Also accept an app mention, which is how a bot is addressed in a
+		// channel it is not a member of.
+		if mention, ok := api.InnerEvent.Data.(*slackevents.AppMentionEvent); ok {
+			c.deliver(ctx, mention.User, mention.Channel, mention.Text, mention.TimeStamp, mention.ThreadTimeStamp)
+		}
+		return
+	}
+	// A bot's own messages come back on the socket; forwarding them would have
+	// KARMAX answering itself.
+	c.mu.RLock()
+	self := c.botID
+	c.mu.RUnlock()
+	if inner.BotID != "" || inner.User == "" || inner.User == self {
+		return
+	}
+	// Edits, deletions and joins arrive as messages with a subtype.
+	if inner.SubType != "" {
+		return
+	}
+	c.deliver(ctx, inner.User, inner.Channel, inner.Text, inner.TimeStamp, inner.ThreadTimeStamp)
+}
+
+func (c *Channel) deliver(ctx context.Context, user, channel, text, ts, threadTS string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	msg := comms.Message{
+		ID:          ts,
+		ChannelID:   c.id,
+		ChannelType: "slack",
+		SenderID:    user,
+		SenderName:  c.userName(ctx, user),
+		Content:     text,
+		Direction:   comms.Inbound,
+		ReplyToID:   threadTS,
+		Timestamp:   time.Now(),
+		Metadata:    map[string]any{"slack_channel": channel, "thread_ts": threadTS},
+	}
+	select {
+	case c.inbox <- msg:
+	default:
+		// Dropped rather than blocking the socket: a full inbox means the agent
+		// is behind, and stalling the event pump would stop the acks too.
+		c.log.Warn("slack inbox is full; dropped a message", zap.String("channel", channel))
+	}
+}
+
 // userName resolves a Slack user ID to a display name, caching the result.
-// Failures fall back to the raw ID rather than blocking the message.
 func (c *Channel) userName(ctx context.Context, userID string) string {
 	if userID == "" {
 		return ""
@@ -77,150 +201,98 @@ func (c *Channel) userName(ctx context.Context, userID string) string {
 		return name
 	}
 
-	var resp struct {
-		User struct {
-			Name    string `json:"name"`
-			Profile struct {
-				DisplayName string `json:"display_name"`
-				RealName    string `json:"real_name"`
-			} `json:"profile"`
-		} `json:"user"`
-	}
 	lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := c.get(lookupCtx, "users.info?user="+url.QueryEscape(userID), &resp); err != nil {
+	user, err := c.api.GetUserInfoContext(lookupCtx, userID)
+	if err != nil {
+		// The id is a worse name than a name, and a better one than nothing.
 		c.log.Debug("slack users.info failed", zap.String("user", userID), zap.Error(err))
 		return userID
 	}
+	name = firstNonEmpty(user.Profile.DisplayName, user.Profile.RealName, user.Name, userID)
 
-	name = resp.User.Profile.DisplayName
-	if name == "" {
-		name = resp.User.Profile.RealName
-	}
-	if name == "" {
-		name = resp.User.Name
-	}
-	if name == "" {
-		name = userID
-	}
 	c.mu.Lock()
 	c.names[userID] = name
 	c.mu.Unlock()
 	return name
 }
 
-func (c *Channel) ID() string                             { return c.id }
-func (c *Channel) Type() string                           { return "slack" }
-func (c *Channel) IncomingMessages() <-chan comms.Message { return c.inbox }
+// Send posts a message, threading it when the target names a thread.
+//
+// The target is "<channel>" or "<channel>:<thread_ts>", so a reply lands under
+// the message it answers rather than at the bottom of the channel.
+func (c *Channel) Send(ctx context.Context, target, content string) error {
+	if c.api == nil {
+		return fmt.Errorf("slack: not connected")
+	}
+	channel, thread := splitTarget(target)
+	if channel == "" {
+		return fmt.Errorf("slack: no channel to send to")
+	}
 
-// call performs a Slack Web API request and unwraps the {ok, error} envelope.
-func (c *Channel) call(ctx context.Context, method, token string, payload any, out any) error {
-	var body io.Reader
-	if payload != nil {
-		b, err := json.Marshal(payload)
-		if err != nil {
+	// Split rather than truncated. A long answer cut at 3800 characters is an
+	// answer that stops mid-sentence, and the operator has no way to ask for
+	// the rest — so it goes as several messages, broken on line boundaries.
+	for _, part := range chunks(content, maxMessage) {
+		opts := []slack.MsgOption{
+			slack.MsgOptionText(part, false),
+			slack.MsgOptionDisableLinkUnfurl(),
+		}
+		if thread != "" {
+			opts = append(opts, slack.MsgOptionTS(thread))
+		}
+		if _, _, err := c.api.PostMessageContext(ctx, channel, opts...); err != nil {
 			return err
 		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+method, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return err
-	}
-	var env struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return fmt.Errorf("slack %s: bad response: %w", method, err)
-	}
-	if !env.OK {
-		return fmt.Errorf("slack %s: %s", method, env.Error)
-	}
-	if out != nil {
-		return json.Unmarshal(raw, out)
 	}
 	return nil
 }
 
-// get performs a read-only Slack Web API call whose arguments are in the query
-// string. Separate from call() because the write methods must stay POST+JSON.
-func (c *Channel) get(ctx context.Context, method string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+method, nil)
-	if err != nil {
-		return err
+// SendEmbed renders an embed as a Slack attachment.
+func (c *Channel) SendEmbed(ctx context.Context, target string, embed comms.Embed) error {
+	if c.api == nil {
+		return fmt.Errorf("slack: not connected")
 	}
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
+	channel, thread := splitTarget(target)
+	att := slack.Attachment{
+		Title:      embed.Title,
+		Text:       truncate(embed.Description, maxMessage),
+		Footer:     embed.Footer,
+		MarkdownIn: []string{"text", "fields"},
 	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return err
+	if embed.Color != 0 {
+		att.Color = fmt.Sprintf("#%06x", embed.Color&0xFFFFFF)
 	}
-	var env struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
+	for _, f := range embed.Fields {
+		att.Fields = append(att.Fields, slack.AttachmentField{
+			Title: f.Name, Value: f.Value, Short: f.Inline,
+		})
 	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return fmt.Errorf("slack %s: bad response: %w", method, err)
+	opts := []slack.MsgOption{slack.MsgOptionAttachments(att)}
+	if thread != "" {
+		opts = append(opts, slack.MsgOptionTS(thread))
 	}
-	if !env.OK {
-		return fmt.Errorf("slack %s: %s", method, env.Error)
-	}
-	if out != nil {
-		return json.Unmarshal(raw, out)
-	}
-	return nil
+	_, _, err := c.api.PostMessageContext(ctx, channel, opts...)
+	return err
 }
 
-// Start authenticates and runs the Socket Mode loop.
-func (c *Channel) Start(ctx context.Context) error {
-	if c.appToken == "" || c.botToken == "" {
-		return fmt.Errorf("slack: both app token (xapp-) and bot token (xoxb-) are required")
+// SendFile uploads a file to a channel.
+func (c *Channel) SendFile(ctx context.Context, target, filename string, data []byte) error {
+	if c.api == nil {
+		return fmt.Errorf("slack: not connected")
 	}
-
-	var auth struct {
-		UserID string `json:"user_id"`
-		TeamID string `json:"team_id"`
-		Team   string `json:"team"`
-	}
-	authCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	err := c.call(authCtx, "auth.test", c.botToken, nil, &auth)
-	cancel()
-	if err != nil {
-		return fmt.Errorf("slack: cannot authenticate: %w", err)
-	}
-	c.mu.Lock()
-	c.botID, c.teamID = auth.UserID, auth.TeamID
-	c.mu.Unlock()
-
-	runCtx, cancelRun := context.WithCancel(ctx)
-	c.cancel = cancelRun
-	go c.run(runCtx)
-
-	c.log.Info("slack channel started",
-		zap.String("channel_id", c.id), zap.String("team", auth.Team), zap.String("bot", auth.UserID))
-	return nil
+	channel, thread := splitTarget(target)
+	_, err := c.api.UploadFileContext(ctx, slack.UploadFileParameters{
+		Channel:         channel,
+		Filename:        filename,
+		FileSize:        len(data),
+		Reader:          bytes.NewReader(data),
+		ThreadTimestamp: thread,
+	})
+	return err
 }
 
+// Stop closes the socket.
 func (c *Channel) Stop() error {
 	if c.cancel != nil {
 		c.cancel()
@@ -228,279 +300,75 @@ func (c *Channel) Stop() error {
 	return nil
 }
 
-// run keeps a Socket Mode connection alive, reconnecting with backoff. Slack
-// recycles these sockets routinely, so reconnecting is normal operation rather
-// than an error path.
-func (c *Channel) run(ctx context.Context) {
-	backoff := time.Second
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		if err := c.connectOnce(ctx); err != nil && ctx.Err() == nil {
-			c.log.Warn("slack socket closed", zap.String("channel_id", c.id), zap.Error(err))
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			if backoff < 60*time.Second {
-				backoff *= 2
-			}
-			continue
-		}
-		backoff = time.Second
+// splitTarget separates "<channel>:<thread_ts>".
+//
+// A Slack timestamp contains a dot and no colon, so this cannot be confused
+// with one — which is why the separator is a colon rather than the more obvious
+// slash a channel name may contain.
+func splitTarget(target string) (channel, thread string) {
+	target = strings.TrimSpace(target)
+	if i := strings.LastIndexByte(target, ':'); i > 0 {
+		return target[:i], target[i+1:]
 	}
+	return target, ""
 }
 
-type socketEnvelope struct {
-	Type        string          `json:"type"`
-	EnvelopeID  string          `json:"envelope_id"`
-	Payload     json.RawMessage `json:"payload"`
-	AcceptsResp bool            `json:"accepts_response_payload"`
-	Reason      string          `json:"reason"`
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
-type eventPayload struct {
-	Event struct {
-		Type        string `json:"type"`
-		Subtype     string `json:"subtype"`
-		Text        string `json:"text"`
-		User        string `json:"user"`
-		BotID       string `json:"bot_id"`
-		Channel     string `json:"channel"`
-		ChannelType string `json:"channel_type"` // im | channel | group | mpim
-		TS          string `json:"ts"`
-		ThreadTS    string `json:"thread_ts"`
-		Files       []struct {
-			Name     string `json:"name"`
-			Mimetype string `json:"mimetype"`
-		} `json:"files"`
-	} `json:"event"`
-}
-
-// connectOnce opens one Socket Mode connection and pumps it until it dies.
-func (c *Channel) connectOnce(ctx context.Context) error {
-	var conn struct {
-		URL string `json:"url"`
-	}
-	openCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	err := c.call(openCtx, "apps.connections.open", c.appToken, nil, &conn)
-	cancel()
-	if err != nil {
-		return fmt.Errorf("apps.connections.open: %w", err)
-	}
-
-	ws, _, err := websocket.DefaultDialer.DialContext(ctx, conn.URL, nil)
-	if err != nil {
-		return fmt.Errorf("dial socket: %w", err)
-	}
-	defer ws.Close()
-	c.log.Info("slack socket connected", zap.String("channel_id", c.id))
-
-	go func() { // close the socket when the runtime shuts down
-		<-ctx.Done()
-		_ = ws.Close()
-	}()
-
-	for {
-		_, raw, err := ws.ReadMessage()
-		if err != nil {
-			return err
-		}
-		var env socketEnvelope
-		if json.Unmarshal(raw, &env) != nil {
-			continue
-		}
-
-		switch env.Type {
-		case "hello":
-			continue
-		case "disconnect":
-			// Slack asks us to reconnect (refresh / server rotation).
-			return fmt.Errorf("slack asked to disconnect: %s", env.Reason)
-		}
-
-		// Every envelope must be acked or Slack redelivers it.
-		if env.EnvelopeID != "" {
-			ack, _ := json.Marshal(map[string]string{"envelope_id": env.EnvelopeID})
-			if err := ws.WriteMessage(websocket.TextMessage, ack); err != nil {
-				return fmt.Errorf("ack: %w", err)
-			}
-		}
-
-		if env.Type == "events_api" && len(env.Payload) > 0 {
-			var p eventPayload
-			if json.Unmarshal(env.Payload, &p) == nil {
-				c.route(p)
-			}
-		}
-	}
-}
-
-var slackMention = regexp.MustCompile(`<@([A-Z0-9]+)>`)
-
-// route converts a Slack message event into an inbound comms.Message.
-func (c *Channel) route(p eventPayload) {
-	e := p.Event
-	if e.Type != "message" || e.BotID != "" {
-		return // not a human message (or it's us)
-	}
-	// Edits, deletions, joins and similar carry a subtype we don't act on.
-	if e.Subtype != "" && e.Subtype != "file_share" {
-		return
-	}
-
-	c.mu.RLock()
-	botID := c.botID
-	c.mu.RUnlock()
-	if e.User == botID || e.User == "" {
-		return
-	}
-
-	body := strings.TrimSpace(e.Text)
-	for _, f := range e.Files {
-		body = strings.TrimSpace(body + " [received a file: " + f.Name + "]")
-	}
-	if body == "" {
-		return
-	}
-
-	isDM := e.ChannelType == "im"
-	// Deterministic addressing signals, mirroring the WhatsApp/Telegram
-	// channels: a <@BOT> mention, and how many people were tagged (so an
-	// @here-style blast can be told apart from being addressed directly).
-	mentions := slackMention.FindAllStringSubmatch(body, -1)
-	mentionsMe := false
-	for _, m := range mentions {
-		if len(m) > 1 && m[1] == botID {
-			mentionsMe = true
-			break
-		}
-	}
-	// Render <@U123> as @display-name. Raw Slack IDs in the text are unreadable
-	// for both the operator and the model; the name cache makes this cheap.
-	lookupCtx := context.Background()
-	body = slackMention.ReplaceAllStringFunc(body, func(tag string) string {
-		m := slackMention.FindStringSubmatch(tag)
-		if len(m) < 2 {
-			return tag
-		}
-		return "@" + c.userName(lookupCtx, m[1])
-	})
-
-	msg := comms.Message{
-		ID:          uuid.New().String(),
-		ChannelID:   e.Channel,
-		ChannelType: "slack",
-		SenderID:    e.User,
-		SenderName:  c.userName(lookupCtx, e.User),
-		Content:     body,
-		Direction:   comms.Inbound,
-		Timestamp:   time.Now(),
-		Metadata: map[string]any{
-			"slack_ts":          e.TS,
-			"thread_ts":         e.ThreadTS,
-			"channel_type":      e.ChannelType,
-			"is_group":          !isDM,
-			"mentions_me":       mentionsMe,
-			"quoted_is_from_me": false,
-			"mention_count":     len(mentions),
-		},
-	}
-
-	select {
-	case c.inbox <- msg:
-		c.log.Info("slack message received",
-			zap.String("channel_id", c.id), zap.String("chat", e.Channel), zap.Bool("dm", isDM))
-	default:
-		c.log.Warn("slack inbox full, dropping message", zap.String("channel_id", c.id))
-	}
-}
-
-// Send posts text to a channel or DM. target is a Slack channel ID.
-func (c *Channel) Send(ctx context.Context, target, content string) error {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return nil
-	}
-	for _, chunk := range chunks(content, maxMessage) {
-		if err := c.call(ctx, "chat.postMessage", c.botToken, map[string]any{
-			"channel": target,
-			"text":    chunk,
-		}, nil); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// SendEmbed renders an embed as Slack mrkdwn.
-func (c *Channel) SendEmbed(ctx context.Context, target string, embed comms.Embed) error {
-	var b strings.Builder
-	if embed.Title != "" {
-		b.WriteString("*" + embed.Title + "*\n")
-	}
-	if embed.Description != "" {
-		b.WriteString(embed.Description)
-	}
-	for _, f := range embed.Fields {
-		b.WriteString("\n\n*" + f.Name + "*\n" + f.Value)
-	}
-	return c.Send(ctx, target, b.String())
-}
-
-// SendFile uploads a file using the external-upload flow (files.upload is
-// retired). Falls back to posting a notice if the upload can't be completed.
-func (c *Channel) SendFile(ctx context.Context, target, filename string, data []byte) error {
-	var up struct {
-		UploadURL string `json:"upload_url"`
-		FileID    string `json:"file_id"`
-	}
-	if err := c.call(ctx, "files.getUploadURLExternal", c.botToken, map[string]any{
-		"filename": filename,
-		"length":   len(data),
-	}, &up); err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, up.UploadURL, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/octet-stream")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("slack upload: %s", resp.Status)
-	}
-
-	files, _ := json.Marshal([]map[string]string{{"id": up.FileID, "title": filename}})
-	return c.call(ctx, "files.completeUploadExternal", c.botToken, map[string]any{
-		"files":      json.RawMessage(files),
-		"channel_id": target,
-	}, nil)
-}
-
-// chunks splits on line boundaries where possible so long replies stay readable.
-func chunks(s string, size int) []string {
-	if len(s) <= size {
+// chunks splits a message on line boundaries so each part fits.
+//
+// Line boundaries rather than a hard cut, because a message split mid-word
+// reads as a transmission error, and code or a list split mid-line is worse.
+// A single line longer than the limit is cut, since there is nothing else to
+// break on.
+func chunks(s string, limit int) []string {
+	if len(s) <= limit {
 		return []string{s}
 	}
 	var out []string
-	for len(s) > size {
-		cut := strings.LastIndex(s[:size], "\n")
-		if cut < size/2 {
-			cut = size
+	var cur strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		for len(line) > limit {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+			out = append(out, line[:limit])
+			line = line[limit:]
 		}
-		out = append(out, s[:cut])
-		s = strings.TrimLeft(s[cut:], "\n")
+		// +1 for the newline this line would add.
+		if cur.Len()+len(line)+1 > limit && cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+		if cur.Len() > 0 {
+			cur.WriteByte('\n')
+		}
+		cur.WriteString(line)
 	}
-	if s != "" {
-		out = append(out, s)
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
 	}
 	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func short(s string) string {
+	if len(s) > 12 {
+		return s[:12] + "…"
+	}
+	return s
 }
