@@ -329,6 +329,9 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			cp := *tt
 			cp.AgentID = a.def.ID
 			cp.Namespace = a.def.Memory.Namespace
+			// The agent's own memory, so the harness is handed context from
+			// whichever store is actually holding it.
+			cp.MemoryMgr = a.memory
 			// What makes background delegation possible: the result comes back
 			// as an event on a later turn rather than blocking this one.
 			cp.Publish = a.bus.Publish

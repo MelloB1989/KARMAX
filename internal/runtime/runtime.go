@@ -427,7 +427,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		reviewer := review.New(review.Config{
 			Namespace: ns, AgentID: waAgentID, Provider: provider, Model: model, Fallbacks: fbs,
 			WAChannelID: waChannelID, WATarget: waTarget, SendFunc: commsMgr.Send,
-		}, s, log)
+		}, s, memFactory.For(waAgentID, ns), log)
 		loopkit.Register(loopkit.Loop{
 			Name:        "memory-review",
 			Description: "Finds stale, time-sensitive memories & reminders and asks the operator (app + WhatsApp) if each is still relevant — once per item, capped so it never spams.",
@@ -831,7 +831,8 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// is a last resort. Without this the configured "fallback models" are not
 	// redundancy at all: they share one base URL and die with one process.
 	karmahelper.SetTransportFallback(func(c context.Context, prompt string) (string, error) {
-		tool := &builtin.ClaudeCodeTool{Store: rt.store, AgentID: rt.loopDefaultAgent}
+		tool := &builtin.ClaudeCodeTool{Store: rt.store, AgentID: rt.loopDefaultAgent,
+			MemoryMgr: rt.memory.For(rt.loopDefaultAgent, rt.loopNamespace())}
 		res, err := tool.Execute(c, map[string]any{"prompt": prompt, "ephemeral": true})
 		if err != nil {
 			return "", err

@@ -107,9 +107,21 @@ func cleanupTruncate(s string, max int) string {
 	return s
 }
 
+// cleanupBatch is how many memories the model is offered to pick from.
+const cleanupBatch = 60
+
 func (s *Server) handleCleanupQuestion(w http.ResponseWriter, r *http.Request) {
 	ns := s.defaultNamespace()
-	entries, err := s.store.ListMemoryEntries(ns, 60)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	// Surveyed rather than listed off the table. The ids are whatever the store
+	// deals in — row ids locally, paths in GitLoom — and they travel to the app
+	// and back untouched, so the answer handler deletes the thing the question
+	// was actually about.
+	mgr := s.mem.For("", ns)
+	entries, err := mgr.Survey(ctx, cleanupBatch)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -133,8 +145,6 @@ func (s *Server) handleCleanupQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
 	resp, _, _, err := s.cleanupSession(cleanupQuestionPrompt).Chat(ctx, "Memory entries:\n"+sb.String())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -152,15 +162,29 @@ func (s *Server) handleCleanupQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content := ""
+	// The id has to be one WE offered. A model that invents an id would
+	// otherwise send the operator a question about a memory that does not
+	// exist, and their answer would delete or rewrite whatever that id hits.
+	offered := false
 	for _, e := range entries {
 		if e.ID == out.MemoryID {
-			content = e.Content
+			offered = true
 			break
 		}
 	}
-	if content == "" {
-		// model referenced an unknown id — treat as done rather than error.
+	if !offered {
+		writeJSON(w, http.StatusOK, map[string]any{"done": true})
+		return
+	}
+
+	// Fetched in full for the question. The survey carries summaries, and
+	// asking someone to judge a memory from its first sixty characters is
+	// asking them to guess.
+	content := ""
+	if full, err := mgr.Load(ctx, out.MemoryID); err == nil && full != nil {
+		content = full.Content
+	}
+	if strings.TrimSpace(content) == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"done": true})
 		return
 	}
@@ -204,9 +228,14 @@ func (s *Server) handleCleanupAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal([]byte(extractJSON(resp)), &out)
 
+	// Both go through the manager, so the memory is removed from or rewritten
+	// in whichever store is holding it. Deleting a row in a table nothing reads
+	// would report success and leave the memory exactly where it was — the
+	// operator having just said, explicitly, to get rid of it.
+	mgr := s.mem.For("", s.defaultNamespace())
 	switch strings.ToLower(strings.TrimSpace(out.Action)) {
 	case "delete":
-		if err := s.store.DeleteMemoryEntry(req.MemoryID); err != nil {
+		if err := mgr.Forget(req.MemoryID); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -216,7 +245,7 @@ func (s *Server) handleCleanupAnswer(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "model returned no content"})
 			return
 		}
-		if err := s.store.UpdateMemoryEntry(req.MemoryID, out.Content); err != nil {
+		if err := mgr.Update(ctx, req.MemoryID, out.Content); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
