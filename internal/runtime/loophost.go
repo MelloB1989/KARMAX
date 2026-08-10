@@ -231,6 +231,9 @@ type loopKit struct {
 	mem       *memory.Manager
 	wacliPath string
 	trigger   loopkit.Trigger
+	// executionID identifies this piece of work across every attempt at it, so
+	// checkpoints from a failed attempt are visible to the next one.
+	executionID string
 }
 
 func (k *loopKit) Trigger() loopkit.Trigger { return k.trigger }
@@ -580,6 +583,39 @@ func (k *loopKit) SaveChatSummary(rec loopkit.ChatSummaryRecord) error {
 
 // Config reads an install-time value from the environment, namespaced per loop:
 // KARMAX_LOOP_<LOOPNAME>_<KEY> (non-alnum chars uppercased to '_').
+func (k *loopKit) Step(name string, fn func() (string, error)) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("step: a checkpoint needs a name")
+	}
+	if k.executionID == "" {
+		return fn() // nothing to checkpoint against; do not pretend to memoise
+	}
+	if result, done, err := k.rt.store.LoopStep(k.executionID, name); err != nil {
+		k.rt.log.Warn("could not read a loop checkpoint; running the step again",
+			zap.String("loop", k.loopName), zap.String("step", name), zap.Error(err))
+	} else if done {
+		k.Logf("step %q already done; skipping", name)
+		return result, nil
+	}
+
+	result, err := fn()
+	if err != nil {
+		return "", err
+	}
+	// Recorded only on success: a step that failed has not happened.
+	if err := k.rt.store.SaveLoopStep(k.executionID, k.loopName, name, result); err != nil {
+		k.rt.log.Warn("could not record a loop checkpoint; a retry will repeat this step",
+			zap.String("loop", k.loopName), zap.String("step", name), zap.Error(err))
+	}
+	return result, nil
+}
+
+func (k *loopKit) Once(name string, fn func() error) error {
+	_, err := k.Step(name, func() (string, error) { return "", fn() })
+	return err
+}
+
 // timerID namespaces a loop's timer ids so two loops cannot collide on "daily".
 func (k *loopKit) timerID(id string) string {
 	return "loop:" + k.loopName + ":" + strings.TrimSpace(id)

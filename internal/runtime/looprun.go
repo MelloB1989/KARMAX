@@ -75,6 +75,8 @@ func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, 
 		}
 	}()
 
+	executionID := rt.executionFor(l.Name, attempt)
+
 	started := time.Now()
 	if err := rt.store.StartLoopRun(store.LoopRun{
 		ID: runID, Loop: l.Name, Trigger: trigger.Kind,
@@ -83,9 +85,10 @@ func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, 
 		rt.log.Warn("could not record loop run", zap.String("loop", l.Name), zap.Error(err))
 	}
 
-	runErr := rt.executeLoop(parent, l, trigger)
+	runErr := rt.executeLoop(parent, l, trigger, executionID)
 
 	if runErr == nil {
+		rt.finishExecution(l.Name, executionID)
 		if err := rt.store.FinishLoopRun(runID, l.Name, "ok", "", attempt, nil); err != nil {
 			rt.log.Warn("could not record loop success", zap.String("loop", l.Name), zap.Error(err))
 		}
@@ -99,6 +102,8 @@ func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, 
 	var next *time.Time
 	if attempt >= maxAttempts {
 		status = "dead"
+		// Nothing will resume this, so the checkpoints are just clutter.
+		rt.finishExecution(l.Name, executionID)
 		rt.log.Error("loop failed permanently; work was NOT done",
 			zap.String("loop", l.Name), zap.Int("attempts", attempt), zap.Error(runErr))
 		// A dead loop is the one thing here worth interrupting someone about:
@@ -118,12 +123,46 @@ func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, 
 	}
 }
 
+// executionFor returns the execution id this attempt belongs to: a new one for
+// a first attempt, the previous one for a retry, so checkpoints carry across.
+func (rt *KarmaxRuntime) executionFor(loop string, attempt int) string {
+	if attempt > 1 {
+		if id, err := rt.store.LoopExecution(loop); err == nil && id != "" {
+			if n, err := rt.store.CompletedSteps(id); err == nil && n > 0 {
+				rt.log.Info("resuming a loop where it stopped",
+					zap.String("loop", loop), zap.Int("steps_done", n), zap.Int("attempt", attempt))
+			}
+			return id
+		}
+	}
+	id := uuid.New().String()
+	if err := rt.store.SetLoopExecution(loop, id); err != nil {
+		rt.log.Warn("could not record the loop execution; checkpoints will not carry across attempts",
+			zap.String("loop", loop), zap.Error(err))
+		return ""
+	}
+	return id
+}
+
+// finishExecution drops the checkpoints once the work is over either way.
+func (rt *KarmaxRuntime) finishExecution(loop, executionID string) {
+	if executionID == "" {
+		return
+	}
+	if err := rt.store.ClearLoopSteps(executionID); err != nil {
+		rt.log.Warn("could not clear loop checkpoints", zap.String("loop", loop), zap.Error(err))
+	}
+	if err := rt.store.SetLoopExecution(loop, ""); err != nil {
+		rt.log.Warn("could not clear the loop execution", zap.String("loop", loop), zap.Error(err))
+	}
+}
+
 // executeLoop runs the loop body, converting a panic into an error.
 //
 // Loop code is third-party — it comes from the marketplace registry — so a nil
 // map or a bad index in someone's loop must not take down the daemon that runs
 // everything else.
-func (rt *KarmaxRuntime) executeLoop(parent context.Context, l loopkit.Loop, trigger loopkit.Trigger) (err error) {
+func (rt *KarmaxRuntime) executeLoop(parent context.Context, l loopkit.Loop, trigger loopkit.Trigger, executionID string) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("loop panicked: %v\n%s", r, debug.Stack())
@@ -140,17 +179,52 @@ func (rt *KarmaxRuntime) executeLoop(parent context.Context, l loopkit.Loop, tri
 	}
 
 	k := &loopKit{
-		loopName:  l.Name,
-		agentID:   agentID,
-		namespace: ns,
-		rt:        rt,
-		mem:       rt.memory.For(agentID, ns),
-		wacliPath: hostWacli(),
-		trigger:   trigger,
+		loopName:    l.Name,
+		agentID:     agentID,
+		namespace:   ns,
+		rt:          rt,
+		mem:         rt.memory.For(agentID, ns),
+		wacliPath:   hostWacli(),
+		trigger:     trigger,
+		executionID: executionID,
 	}
 	rt.log.Info("running loopkit loop",
 		zap.String("loop", l.Name), zap.String("trigger", trigger.Kind))
 	return l.Run(ctx, k)
+}
+
+// resumeInterruptedRuns reschedules work the daemon was killed in the middle
+// of, which used to be marked dead and left there.
+func (rt *KarmaxRuntime) resumeInterruptedRuns() {
+	runs, err := rt.store.ReapStaleLoopRuns(time.Now().Add(-leaseTTL))
+	if err != nil {
+		rt.log.Warn("could not check for interrupted loop runs", zap.Error(err))
+		return
+	}
+	for _, r := range runs {
+		if r.Attempt >= maxAttempts {
+			rt.log.Error("a loop run was interrupted after its last attempt; work was NOT done",
+				zap.String("loop", r.Loop))
+			continue
+		}
+		// Soon rather than immediately: a daemon that crashed mid-run may be
+		// about to crash again, and a thundering resume makes that worse.
+		next := time.Now().Add(retryDelay(r.Attempt))
+		if err := rt.store.FinishLoopRun(r.ID, r.Loop, "interrupted",
+			"the daemon stopped mid-run", r.Attempt, &next); err != nil {
+			rt.log.Warn("could not schedule a resume", zap.String("loop", r.Loop), zap.Error(err))
+			continue
+		}
+		steps, _ := rt.store.CompletedSteps(mustExecution(rt, r.Loop))
+		rt.log.Warn("resuming a loop run the daemon interrupted",
+			zap.String("loop", r.Loop), zap.Int("attempt", r.Attempt+1),
+			zap.Int("steps_already_done", steps), zap.Time("at", next))
+	}
+}
+
+func mustExecution(rt *KarmaxRuntime, loop string) string {
+	id, _ := rt.store.LoopExecution(loop)
+	return id
 }
 
 // retryWorker dispatches retries whose time has come, and keeps the run history
@@ -159,11 +233,7 @@ func (rt *KarmaxRuntime) executeLoop(parent context.Context, l loopkit.Loop, tri
 // A ticker rather than a timer per failure: timers die with the process, and
 // the whole point is that a retry survives a restart.
 func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
-	// Runs left mid-flight by a crash are marked dead on startup, so they stop
-	// looking like work still in progress.
-	if n, err := rt.store.ReapStaleLoopRuns(time.Now().Add(-leaseTTL)); err == nil && n > 0 {
-		rt.log.Warn("marked interrupted loop runs as dead", zap.Int64("count", n))
-	}
+	rt.resumeInterruptedRuns()
 
 	tick := time.NewTicker(30 * time.Second)
 	prune := time.NewTicker(6 * time.Hour)
@@ -188,6 +258,9 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			// Only timers that already fired; an armed one is waiting, not stale.
 			if _, err := rt.store.PruneTimers(time.Now().AddDate(0, 0, -14)); err != nil {
 				rt.log.Warn("could not prune fired timers", zap.Error(err))
+			}
+			if _, err := rt.store.PruneLoopSteps(time.Now().AddDate(0, 0, -7)); err != nil {
+				rt.log.Warn("could not prune loop checkpoints", zap.Error(err))
 			}
 		case <-tick.C:
 			due, err := rt.store.DueLoopRetries(time.Now())

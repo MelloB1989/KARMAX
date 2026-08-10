@@ -445,6 +445,19 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_timers_due ON timers(workspace, fired_at, fire_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_timers_loop ON timers(loop, fired_at)`,
+
+	// 021_loop_steps — what a retry may skip because it already happened.
+	`CREATE TABLE IF NOT EXISTS loop_steps (
+		execution_id TEXT NOT NULL,
+		loop         TEXT NOT NULL,
+		name         TEXT NOT NULL,
+		result       TEXT NOT NULL DEFAULT '',
+		completed_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (execution_id, name)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_loop_steps_age ON loop_steps(completed_at)`,
+	// The execution survives across attempts; the run id does not.
+	`ALTER TABLE loop_state ADD COLUMN execution_id TEXT NOT NULL DEFAULT ''`,
 }
 
 func (s *Store) migrate() error {
