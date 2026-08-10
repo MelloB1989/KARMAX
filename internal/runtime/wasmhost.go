@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/scheduler"
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/wasmloop"
 	"github.com/MelloB1989/karmax/internal/webhook"
@@ -76,6 +77,9 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 			continue
 		}
 		rt.wasmRunners = append(rt.wasmRunners, runner)
+		rt.providedMu.Lock()
+		rt.wasmByName[e.Name] = runner
+		rt.providedMu.Unlock()
 
 		l := loopkit.Loop{
 			Name:    e.Name,
@@ -123,10 +127,15 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 			}
 		}
 
-		rt.log.Info("signed loop loaded",
+		fields := []zap.Field{
 			zap.String("loop", e.Name), zap.String("version", e.Version),
 			zap.String("trust", string(e.Tier)), zap.Strings("triggers", triggers),
-			zap.Strings("host", a.Manifest.Host))
+			zap.Strings("host", a.Manifest.Host), zap.Strings("tools", a.Manifest.Tools),
+		}
+		if d := describeProvided(a.Manifest.Provides); d != "" {
+			fields = append(fields, zap.String("provides", d))
+		}
+		rt.log.Info("signed loop loaded", fields...)
 	}
 	return events
 }
@@ -137,6 +146,9 @@ func (rt *KarmaxRuntime) closeWasmLoops(ctx context.Context) {
 		_ = r.Close(ctx)
 	}
 	rt.wasmRunners = nil
+	rt.providedMu.Lock()
+	rt.wasmByName = map[string]*wasmloop.Runner{}
+	rt.providedMu.Unlock()
 }
 
 // loopTrust is the operator's configuration for which publishers count.
@@ -174,8 +186,10 @@ func (w *wasmKit) Remember(fact string) error { return w.mem().Remember(fact) }
 
 func (w *wasmKit) Notify(title, body string) error { return w.mem().Notify(title, body) }
 
+// Ask puts the question to the agent, lending it whatever tools this workflow
+// provides — the agent can call back into the workflow to answer.
 func (w *wasmKit) Ask(ctx context.Context, prompt string) (string, error) {
-	return w.mem().Ask(ctx, prompt)
+	return w.mem().AskWithTools(ctx, prompt, w.rt.providedTools(w.loop))
 }
 
 func (w *wasmKit) HTTP(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, error) {
@@ -189,10 +203,12 @@ func (w *wasmKit) Harness(ctx context.Context, prompt string) (string, error) {
 	return w.mem().Harness(ctx, prompt)
 }
 
-// Gateway lends named host tools for one call. Only what is listed here can be
-// lent, so a loop cannot invent a capability by describing one.
+// Gateway lends named host tools for one call, plus whatever this workflow
+// itself provides. Only host tools on the allowlist can be named, so a loop
+// cannot invent a capability by describing one — but its OWN tools travel
+// automatically, since they were approved in its manifest at install.
 func (w *wasmKit) Gateway(ctx context.Context, prompt string, lend ...string) (string, error) {
-	var tools []loopkit.Tool
+	var lent []loopkit.Tool
 	for _, name := range lend {
 		t, ok := w.rt.lendableTool(name)
 		if !ok {
@@ -200,9 +216,30 @@ func (w *wasmKit) Gateway(ctx context.Context, prompt string, lend ...string) (s
 				zap.String("loop", w.loop), zap.String("tool", name))
 			continue
 		}
-		tools = append(tools, t)
+		lent = append(lent, t)
 	}
-	return w.mem().Gateway(ctx, prompt, tools...)
+	for _, t := range w.rt.providedTools(w.loop) {
+		lent = append(lent, asLoopkitTool(t))
+	}
+	return w.mem().Gateway(ctx, prompt, lent...)
+}
+
+// asLoopkitTool adapts a tools.Tool for the gateway's lend list.
+func asLoopkitTool(t tools.Tool) loopkit.Tool {
+	m := t.Manifest()
+	return loopkit.Tool{
+		Name: m.Name, Description: m.Description, Schema: m.Parameters,
+		Run: func(ctx context.Context, in map[string]any) (string, error) {
+			res, err := t.Execute(ctx, in)
+			if err != nil {
+				return "", err
+			}
+			if res.IsError {
+				return "", fmt.Errorf("%s", res.Error)
+			}
+			return renderToolOutput(res.Output), nil
+		},
+	}
 }
 
 func (w *wasmKit) Summarize(ctx context.Context, prompt string) (string, error) {

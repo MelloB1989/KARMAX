@@ -134,6 +134,17 @@ func (in *Installer) Install(data []byte) (*Preview, error) {
 			return nil, err
 		}
 	}
+	// The tools it PROVIDES, under their own prefix so they cannot be confused
+	// with the tools it may call. Revoking "provides:deal.status" takes the tool
+	// away from the agent without touching what the workflow itself can reach.
+	for _, p := range a.Manifest.Provides {
+		if err := in.Broker.SaveGrant(store.Grant{
+			Subject: subject, Capability: store.CapTool, Value: "provides:" + p.Name,
+			GrantedBy: "loop-manifest:" + a.Manifest.Version,
+		}); err != nil {
+			return nil, err
+		}
+	}
 
 	lock, err := LoadLock(in.Dir)
 	if err != nil {

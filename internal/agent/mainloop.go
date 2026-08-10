@@ -115,6 +115,14 @@ func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.
 // from message length (1 token ~ 4 chars) until we wire actual provider
 // token counts through karmahelper.Session.
 func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage string) (string, []karmahelper.ToolCallRecord, error) {
+	return m.ProcessMessageWithTools(ctx, userMessage, nil)
+}
+
+// ProcessMessageWithTools is ProcessMessage with tools lent for this turn.
+//
+// Used by WASM workflows, which provide tools that belong only on the turns
+// they caused. They are not registered anywhere and do not survive the call.
+func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMessage string, lent []tools.Tool) (string, []karmahelper.ToolCallRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -123,9 +131,10 @@ func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage strin
 		zap.Int("message_len", len(userMessage)),
 		zap.Int("history_len", len(m.session.GetHistory().Messages)),
 		zap.Int64("total_tokens_before", m.totalTokens),
+		zap.Int("lent_tools", len(lent)),
 	)
 
-	response, toolCalls, tokens, err := m.session.Chat(ctx, userMessage)
+	response, toolCalls, tokens, err := m.session.ChatWithExtraTools(ctx, userMessage, lent)
 	if err != nil {
 		return "", nil, fmt.Errorf("main model chat: %w", err)
 	}
@@ -237,12 +246,18 @@ func (m *MainModelSession) SetContext(ctx string) {
 // ProcessMessage lets another conversation's context land in the gap — and the
 // turn then runs with somebody else's chat history and profile pinned to it.
 func (m *MainModelSession) ProcessMessageWithContext(ctx context.Context, dynamicContext, userMessage string) (string, []karmahelper.ToolCallRecord, error) {
+	return m.ProcessMessageWithContextAndTools(ctx, dynamicContext, userMessage, nil)
+}
+
+// ProcessMessageWithContextAndTools is the full form: dynamic context and
+// tools lent for this turn, both applied without releasing the lock between.
+func (m *MainModelSession) ProcessMessageWithContextAndTools(ctx context.Context, dynamicContext, userMessage string, lent []tools.Tool) (string, []karmahelper.ToolCallRecord, error) {
 	m.mu.Lock()
 	if dynamicContext != "" {
 		m.session.SetContext(dynamicContext)
 	}
 	m.mu.Unlock()
-	return m.ProcessMessage(ctx, userMessage)
+	return m.ProcessMessageWithTools(ctx, userMessage, lent)
 }
 
 // truncateForLog truncates a string for safe logging output.
