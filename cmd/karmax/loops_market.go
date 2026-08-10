@@ -233,9 +233,18 @@ func newLoopsInstallCmd() *cobra.Command {
 	var noRestart bool
 	cmd := &cobra.Command{
 		Use:   "install <name|module>",
-		Short: "Install a loop from the marketplace (by name) or any Go module path",
-		Args:  cobra.ExactArgs(1),
+		Short: "Install a loop by compiling it into the daemon (superseded by `karmax wloop`)",
+		Long: "This compiles third-party Go into the KARMAX binary, which needs a Go toolchain\n" +
+			"and a source checkout here, and gives the loop the daemon's full authority —\n" +
+			"including the WhatsApp session, Google tokens and the GitLoom key.\n\n" +
+			"`karmax wloop install` runs a signed WASM module instead: verified before it is\n" +
+			"compiled, sandboxed with no filesystem or environment, and limited to the\n" +
+			"capabilities its manifest declared. Prefer it where the loop is available that way.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			fmt.Fprintln(os.Stderr,
+				"note: this compiles third-party Go into the daemon with full privileges.\n"+
+					"      `karmax wloop install` is the sandboxed path — see `karmax wloop --help`.")
 			ref := strings.TrimSpace(args[0])
 			module, pkg := ref, ref
 			if !strings.Contains(ref, "/") {
