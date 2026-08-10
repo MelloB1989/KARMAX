@@ -16,6 +16,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/memory"
+	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -203,6 +204,126 @@ func (rt *KarmaxRuntime) setLoopTrust(name string) {
 	rt.broker.SetTrust(subject, broker.Registry)
 	rt.log.Info("loop runs under capability grants",
 		zap.String("loop", name), zap.Int("grants", len(grants)))
+}
+
+// startRecipes loads ~/.karmax/recipes and keeps them in step with the files.
+//
+// A recipe becomes a loopkit.Loop, so it gets durable runs, retries and step
+// checkpointing without recipes knowing any of that exists.
+func (rt *KarmaxRuntime) startRecipes(ctx context.Context) {
+	dir := recipes.Dir()
+	w := recipes.NewWatcher(dir, rt.log, func(loaded []recipes.Loaded) {
+		rt.applyRecipes(ctx, loaded)
+	})
+	w.Start(ctx)
+
+	// Registered here rather than alongside the loopkit consumers, which return
+	// early when no Go loops exist — recipes must work on an instance that has
+	// none, since not writing Go is the entire point of the tier.
+	rt.bus.Consume(ctx, bus.SubRecipeSchedule, []bus.EventKind{bus.EventScheduledJob},
+		func(_ context.Context, evt bus.Event) error {
+			inner, _ := evt.Payload["payload"].(map[string]any)
+			name, _ := inner["recipe"].(string)
+			if name == "" {
+				return nil
+			}
+			return rt.RunRecipe(ctx, name, loopkit.Trigger{Kind: loopkit.TriggerSchedule})
+		})
+
+	rt.bus.Consume(ctx, bus.SubRecipeTimer, []bus.EventKind{bus.EventTimerFired},
+		func(_ context.Context, evt bus.Event) error {
+			loop, _ := evt.Payload["loop"].(string)
+			name, ok := strings.CutPrefix(loop, "recipe:")
+			if !ok {
+				return nil
+			}
+			return rt.RunRecipe(ctx, name, loopkit.Trigger{
+				Kind: loopkit.TriggerTimer, Payload: evt.Payload})
+		})
+
+	rt.bus.Consume(ctx, bus.SubRecipeEvent, nil,
+		func(_ context.Context, evt bus.Event) error {
+			rt.recipeMu.RLock()
+			var fire []string
+			for name, r := range rt.recipeLoops {
+				if r.On.Event != "" && bus.EventKind(r.On.Event) == evt.Kind {
+					fire = append(fire, name)
+				}
+			}
+			rt.recipeMu.RUnlock()
+			for _, name := range fire {
+				payload := map[string]any{"event_kind": string(evt.Kind)}
+				for k, v := range evt.Payload {
+					payload[k] = v
+				}
+				if err := rt.RunRecipe(ctx, name, loopkit.Trigger{
+					Kind: loopkit.TriggerEvent, Payload: payload}); err != nil {
+					rt.log.Warn("could not run a recipe", zap.String("recipe", name), zap.Error(err))
+				}
+			}
+			return nil
+		})
+
+	rt.log.Info("watching recipes", zap.String("dir", dir))
+}
+
+// applyRecipes replaces the registered recipe loops with what is on disk now.
+func (rt *KarmaxRuntime) applyRecipes(ctx context.Context, loaded []recipes.Loaded) {
+	rt.recipeMu.Lock()
+	defer rt.recipeMu.Unlock()
+
+	next := map[string]*recipes.Recipe{}
+	for _, r := range recipes.Valid(loaded) {
+		next[r.Name] = r
+	}
+
+	// Recipes that vanished stop being scheduled and lose their timers, so a
+	// deleted file cannot wake anything later.
+	for name := range rt.recipeLoops {
+		if _, still := next[name]; !still {
+			_ = rt.scheduler.RemoveJob("recipe:" + name)
+			if n, err := rt.store.CancelLoopTimers("recipe:" + name); err == nil && n > 0 {
+				rt.log.Info("disarmed timers for a removed recipe", zap.String("recipe", name))
+			}
+			rt.log.Info("recipe removed", zap.String("recipe", name))
+		}
+	}
+
+	for name, r := range next {
+		if prev, ok := rt.recipeLoops[name]; ok && prev.On == r.On {
+			rt.recipeLoops[name] = r
+			continue
+		}
+		rt.recipeLoops[name] = r
+		if r.On.Schedule != "" {
+			if err := rt.scheduler.AddJob(scheduler.ScheduledJob{
+				ID: "recipe:" + name, Name: "recipe:" + name, Cron: r.On.Schedule,
+				Payload: map[string]any{"recipe": name}, Enabled: true,
+			}); err != nil {
+				rt.log.Error("recipe schedule is not valid",
+					zap.String("recipe", name), zap.String("schedule", r.On.Schedule), zap.Error(err))
+			}
+		}
+		rt.log.Info("recipe loaded", zap.String("recipe", name), zap.Int("steps", len(r.Steps)))
+	}
+	rt.recipeLoops = next
+}
+
+// RunRecipe executes one recipe by name.
+func (rt *KarmaxRuntime) RunRecipe(ctx context.Context, name string, trigger loopkit.Trigger) error {
+	rt.recipeMu.RLock()
+	r, ok := rt.recipeLoops[name]
+	rt.recipeMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("no recipe %q is loaded", name)
+	}
+	go rt.runLoopDurable(ctx, loopkit.Loop{
+		Name: "recipe:" + name,
+		Run: func(c context.Context, k loopkit.Kit) error {
+			return recipes.Run(c, r, k)
+		},
+	}, trigger, 1)
+	return nil
 }
 
 // RunLoopByName runs a registered loopkit loop on demand (manual trigger).
