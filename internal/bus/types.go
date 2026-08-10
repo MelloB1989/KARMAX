@@ -31,6 +31,8 @@ type Event struct {
 	Timestamp time.Time         `json:"timestamp"`
 	Payload   map[string]any    `json:"payload"`
 	Meta      map[string]string `json:"meta,omitempty"`
+	// Seq is the log position, set on read. Zero on an event not yet appended.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 func NewEvent(kind EventKind, agentID string, payload map[string]any) Event {
@@ -43,20 +45,13 @@ func NewEvent(kind EventKind, agentID string, payload map[string]any) Event {
 	}
 }
 
-type Subscription struct {
-	ID      string
-	Filters []EventKind
-	Ch      chan Event
-}
-
-func (s *Subscription) matches(kind EventKind) bool {
-	if len(s.Filters) == 0 {
-		return true
-	}
-	for _, f := range s.Filters {
-		if f == kind {
-			return true
-		}
-	}
-	return false
-}
+// Subscriber names. The name IS the durable offset key, so these are constants
+// rather than strings at the call site — a typo would silently create a second
+// subscriber that replays from the beginning.
+const (
+	SubLoopSchedule = "loops.schedule"
+	SubLoopEvent    = "loops.event"
+	SubLoopWebhook  = "loops.webhook"
+	SubAgentRouter  = "agents.router"
+	SubCritical     = "alerts.critical"
+)

@@ -17,7 +17,7 @@ import (
 type Scheduler struct {
 	cron  *cron.Cron
 	store *store.Store
-	bus   *bus.Bus
+	bus   *bus.Log
 	log   *zap.Logger
 	jobs  map[string]*jobEntry
 	mu    sync.RWMutex
@@ -28,7 +28,7 @@ type jobEntry struct {
 	entryID cron.EntryID
 }
 
-func New(s *store.Store, b *bus.Bus, log *zap.Logger) *Scheduler {
+func New(s *store.Store, b *bus.Log, log *zap.Logger) *Scheduler {
 	return &Scheduler{
 		cron:  cron.New(cron.WithSeconds()),
 		store: s,
@@ -188,12 +188,17 @@ func (s *Scheduler) fireJob(id string) {
 
 	s.log.Info("firing scheduled job", zap.String("job", j.Name), zap.String("agent", j.AgentID))
 
-	s.bus.Publish(bus.NewEvent(bus.EventScheduledJob, j.AgentID, map[string]any{
+	if err := s.bus.Publish(bus.NewEvent(bus.EventScheduledJob, j.AgentID, map[string]any{
 		"job_id":   j.ID,
 		"job_name": j.Name,
 		"agent_id": j.AgentID,
 		"payload":  j.Payload,
-	}))
+	})); err != nil {
+		// The schedule still advances below: a job that cannot be recorded is
+		// not a job that should fire twice as fast from then on.
+		s.log.Error("scheduled job did not fire — the event could not be recorded",
+			zap.String("job", j.Name), zap.Error(err))
+	}
 
 	s.mu.Lock()
 	entry.job.LastRun = &now

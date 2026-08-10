@@ -40,7 +40,7 @@ type KarmaxRuntime struct {
 	cfg       *config.KarmaxConfig
 	log       *zap.Logger
 	store     *store.Store
-	bus       *bus.Bus
+	bus       *bus.Log
 	memory    *memory.ManagerFactory
 	tools     *tools.Registry
 	mcpBridge *mcp.MCPBridge
@@ -49,6 +49,10 @@ type KarmaxRuntime struct {
 	webhooks  *webhook.WebhookServer
 	comms     *comms.Manager
 	api       *api.Server
+
+	// routedKinds are the event kinds that reach agent inboxes, computed at
+	// construction and consumed once the runtime starts.
+	routedKinds []bus.EventKind
 
 	// loopkit runtime state (set by startLoopkitLoops)
 	loopkitLoops     map[string]loopkit.Loop
@@ -77,7 +81,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		return nil, fmt.Errorf("store: %w", err)
 	}
 
-	b := bus.New(log)
+	// One workspace per daemon: multi-tenant packaging runs a separate KARMAX
+	// per person, so the partition exists in the schema rather than in config.
+	b := bus.NewLog(s, store.DefaultWorkspace, log)
 	startedAt := time.Now()
 
 	// Set provider env vars from config
@@ -626,46 +632,30 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			}
 		}
 	}
-	sub, _ := b.Subscribe(routedKinds...)
-	go func() {
-		for evt := range sub.Ch {
-			if evt.AgentID != "" {
-				if a, ok := agentReg.Get(evt.AgentID); ok {
-					a.Send(evt)
-				}
-			}
-		}
-	}()
-
-	// Persist all events
-	eventSub, _ := b.Subscribe()
-	go func() {
-		for evt := range eventSub.Ch {
-			s.AppendEvent(evt.ID, string(evt.Kind), evt.AgentID, evt.Payload, evt.Meta)
-		}
-	}()
-
 	return &KarmaxRuntime{
-		cfg:       cfg,
-		log:       log,
-		store:     s,
-		bus:       b,
-		mesh:      meshNode,
-		startedAt: startedAt,
-		memory:    memFactory,
-		tools:     toolReg,
-		mcpBridge: mcpBridge,
-		agents:    agentReg,
-		scheduler: sched,
-		webhooks:  wh,
-		comms:     commsMgr,
-		api:       apiSrv,
+		cfg:         cfg,
+		log:         log,
+		store:       s,
+		bus:         b,
+		routedKinds: routedKinds,
+		mesh:        meshNode,
+		startedAt:   startedAt,
+		memory:      memFactory,
+		tools:       toolReg,
+		mcpBridge:   mcpBridge,
+		agents:      agentReg,
+		scheduler:   sched,
+		webhooks:    wh,
+		comms:       commsMgr,
+		api:         apiSrv,
 	}, nil
 }
 
 func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
+	rt.startAgentRouter(ctx)
 	rt.startCriticalAlertLoop(ctx)
+	rt.startDeadLetterAlerts()
 
 	if err := rt.mcpBridge.StartAll(ctx); err != nil {
 		rt.log.Error("MCP bridge start error", zap.Error(err))
@@ -847,36 +837,56 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	return nil
 }
 
-func (rt *KarmaxRuntime) startCriticalAlertLoop(ctx context.Context) {
-	sub, cancel := rt.bus.Subscribe(bus.EventSystemCritical)
-	go func() {
-		defer cancel()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case evt, ok := <-sub.Ch:
-				if !ok {
-					return
-				}
-				message, _ := evt.Payload["message"].(string)
-				if message == "" {
-					message = "KARMAX critical system event"
-				}
-				if attempted, _ := evt.Payload["alternative_alert_attempted"].(bool); attempted {
-					continue
-				}
-				primary, _ := evt.Payload["karmax_channel_id"].(string)
-				if err := rt.comms.AlertAlternative(evt.AgentID, primary, "Critical KARMAX alert: "+message); err != nil {
-					rt.log.Warn("failed to send critical alert through alternative channel",
-						zap.String("agent_id", evt.AgentID),
-						zap.String("primary_channel_id", primary),
-						zap.Error(err),
-					)
-				}
+// startAgentRouter delivers routed events to agent inboxes.
+//
+// An event for an agent that is not running, or that names no agent, has
+// nowhere to go and is not an error. A full inbox is: it gets retried and then
+// dead-lettered rather than dropped with a warning nobody reads.
+func (rt *KarmaxRuntime) startAgentRouter(ctx context.Context) {
+	rt.bus.Consume(ctx, bus.SubAgentRouter, rt.routedKinds,
+		func(_ context.Context, evt bus.Event) error {
+			if evt.AgentID == "" {
+				return nil
 			}
-		}
-	}()
+			a, ok := rt.agents.Get(evt.AgentID)
+			if !ok {
+				return nil
+			}
+			return a.Send(evt)
+		})
+}
+
+// startDeadLetterAlerts tells the operator when an event was given up on.
+//
+// A dead letter means something that should have happened did not, which is
+// the same class of failure as a dead loop run and gets the same treatment.
+func (rt *KarmaxRuntime) startDeadLetterAlerts() {
+	rt.bus.OnDeadLetter(func(d store.DeadLetter) {
+		builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "alert",
+			fmt.Sprintf("Event %q was never processed", d.Kind),
+			truncErr(fmt.Sprintf("%s gave up after %d attempts: %s",
+				d.Subscriber, d.Attempts, d.LastError), 300))
+	})
+}
+
+func (rt *KarmaxRuntime) startCriticalAlertLoop(ctx context.Context) {
+	rt.bus.Consume(ctx, bus.SubCritical, []bus.EventKind{bus.EventSystemCritical},
+		func(_ context.Context, evt bus.Event) error {
+			if attempted, _ := evt.Payload["alternative_alert_attempted"].(bool); attempted {
+				return nil
+			}
+			message, _ := evt.Payload["message"].(string)
+			if message == "" {
+				message = "KARMAX critical system event"
+			}
+			primary, _ := evt.Payload["karmax_channel_id"].(string)
+			// Returned rather than logged: a critical alert that could not be
+			// delivered is exactly what the retry and dead-letter path is for.
+			if err := rt.comms.AlertAlternative(evt.AgentID, primary, "Critical KARMAX alert: "+message); err != nil {
+				return fmt.Errorf("alternative channel alert for %s: %w", evt.AgentID, err)
+			}
+			return nil
+		})
 }
 
 func (rt *KarmaxRuntime) publishCritical(agentID, message string, fields map[string]any) {

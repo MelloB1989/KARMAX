@@ -388,6 +388,48 @@ var migrations = []string{
 
 	// 018_mesh_delegation
 	`ALTER TABLE mesh_messages ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+
+	// 019_event_log — the durable replacement for the in-memory bus.
+	`CREATE TABLE IF NOT EXISTS event_log (
+		seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+		event_id   TEXT NOT NULL UNIQUE,
+		workspace  TEXT NOT NULL DEFAULT 'default',
+		kind       TEXT NOT NULL,
+		agent_id   TEXT,
+		payload    TEXT NOT NULL DEFAULT '{}',
+		meta       TEXT NOT NULL DEFAULT '{}',
+		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_event_log_read ON event_log(workspace, seq)`,
+	`CREATE INDEX IF NOT EXISTS idx_event_log_kind ON event_log(workspace, kind, seq)`,
+	`CREATE INDEX IF NOT EXISTS idx_event_log_agent ON event_log(workspace, agent_id, seq)`,
+
+	`CREATE TABLE IF NOT EXISTS event_offsets (
+		subscriber TEXT NOT NULL,
+		workspace  TEXT NOT NULL DEFAULT 'default',
+		seq        INTEGER NOT NULL DEFAULT 0,
+		updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (subscriber, workspace)
+	)`,
+
+	`CREATE TABLE IF NOT EXISTS event_dead_letters (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		subscriber TEXT NOT NULL,
+		event_seq  INTEGER NOT NULL,
+		event_id   TEXT NOT NULL,
+		kind       TEXT NOT NULL,
+		attempts   INTEGER NOT NULL DEFAULT 0,
+		last_error TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_dead_letters_time ON event_dead_letters(created_at DESC)`,
+
+	// Carry the old events table across so the operator's history survives the
+	// switch. Ordered by time so seq matches the order things actually happened.
+	`INSERT OR IGNORE INTO event_log (event_id, workspace, kind, agent_id, payload, meta, created_at)
+	 SELECT id, 'default', kind, agent_id,
+	        COALESCE(NULLIF(payload, ''), '{}'), COALESCE(NULLIF(meta, ''), '{}'), created_at
+	 FROM events ORDER BY created_at ASC`,
 }
 
 func (s *Store) migrate() error {

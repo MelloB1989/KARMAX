@@ -490,7 +490,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	events := make([]map[string]any, 0)
-	if evs, err := s.store.ListEvents(30, ""); err == nil {
+	if evs, err := s.store.RecentLogEvents(store.DefaultWorkspace, "", 30); err == nil {
 		for _, e := range evs {
 			events = append(events, map[string]any{"id": e.ID, "kind": e.Kind, "agent": e.AgentID, "created_at": e.CreatedAt.Format(time.RFC3339)})
 		}

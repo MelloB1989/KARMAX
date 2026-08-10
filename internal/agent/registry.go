@@ -15,12 +15,12 @@ import (
 type Registry struct {
 	mu     sync.RWMutex
 	agents map[string]*Agent
-	bus    *bus.Bus
+	bus    *bus.Log
 	store  *store.Store
 	log    *zap.Logger
 }
 
-func NewRegistry(b *bus.Bus, s *store.Store, log *zap.Logger) *Registry {
+func NewRegistry(b *bus.Log, s *store.Store, log *zap.Logger) *Registry {
 	return &Registry{
 		agents: make(map[string]*Agent),
 		bus:    b,

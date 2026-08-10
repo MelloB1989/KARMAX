@@ -178,6 +178,13 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			if _, err := rt.store.PruneLoopRuns(time.Now().AddDate(0, 0, -14)); err != nil {
 				rt.log.Warn("could not prune loop run history", zap.Error(err))
 			}
+			// Only events every subscriber has already read are removed, so a
+			// lagging subscriber is never pruned out from under.
+			if n, err := rt.store.PruneEventLog(store.DefaultWorkspace, time.Now().AddDate(0, 0, -14)); err != nil {
+				rt.log.Warn("could not prune the event log", zap.Error(err))
+			} else if n > 0 {
+				rt.log.Info("pruned consumed events", zap.Int64("count", n))
+			}
 		case <-tick.C:
 			due, err := rt.store.DueLoopRetries(time.Now())
 			if err != nil {

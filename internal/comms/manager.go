@@ -36,14 +36,14 @@ type Manager struct {
 	lastIncomingTargets map[string]map[string]string // agentID -> KARMAX channel ID -> target
 	operatorTargets     map[string]bool              // normalized targets that are the operator (never "proactive")
 	proactiveNotify     func(target, content string) // fired when a message is sent to a NON-operator target
-	bus                 *bus.Bus
+	bus                 *bus.Log
 	store               *store.Store
 	log                 *zap.Logger
 	mu                  sync.RWMutex
 }
 
 // NewManager creates a Manager wired to the given bus, store, and logger.
-func NewManager(b *bus.Bus, s *store.Store, log *zap.Logger) *Manager {
+func NewManager(b *bus.Log, s *store.Store, log *zap.Logger) *Manager {
 	return &Manager{
 		channels:            make(map[string]*channelEntry),
 		lastIncomingTarget:  make(map[string]string),
