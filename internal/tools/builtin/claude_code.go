@@ -12,6 +12,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/google/uuid"
@@ -23,6 +24,10 @@ type ClaudeCodeTool struct {
 	// Namespace is the memory namespace whose profile/entries are injected into
 	// every call. Set per-agent in bindAgentTools; falls back to AgentID.
 	Namespace string
+	// MemoryMgr is what the injected memory is read from. Optional: a nil
+	// manager just means the harness runs without the "possibly relevant
+	// memory" block rather than with a stale one.
+	MemoryMgr *memory.Manager
 	// Publish delivers the result of a background delegation as an event. Nil
 	// means background mode is unavailable and every call runs inline.
 	Publish func(bus.Event) error
@@ -75,17 +80,20 @@ func (t *ClaudeCodeTool) memoryContext(prompt string) string {
 		}
 	}
 
-	if t.Store != nil {
+	// Read through the manager so the harness is given memory as it is now.
+	// Querying the table directly went stale the moment GitLoom became the
+	// store — and a harness handed a frozen snapshot acts on it confidently.
+	if t.MemoryMgr != nil {
 		seen := map[string]bool{}
 		var hits []string
 		for _, kw := range pickKeywords(prompt, 4) {
-			entries, _ := t.Store.SearchMemoryEntries(ns, kw, 4)
-			for _, e := range entries {
-				if seen[e.ID] {
+			results, _ := t.MemoryMgr.Search(kw, 4)
+			for _, r := range results {
+				if seen[r.Entry.ID] {
 					continue
 				}
-				seen[e.ID] = true
-				hits = append(hits, "- "+truncate(e.Content, 200))
+				seen[r.Entry.ID] = true
+				hits = append(hits, "- "+truncate(r.Entry.Content, 200))
 			}
 		}
 		if len(hits) > 8 {

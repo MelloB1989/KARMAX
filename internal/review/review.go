@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
@@ -55,11 +56,16 @@ type Config struct {
 type Reviewer struct {
 	cfg   Config
 	store *store.Store
-	log   *zap.Logger
+	// mem is the memory store. Reviews are about memories going stale, so this
+	// has to be whatever is actually holding them — reading the local table
+	// once GitLoom owned memory meant reviewing a frozen snapshot and asking
+	// the operator about facts from before the cutover, forever.
+	mem *memory.Manager
+	log *zap.Logger
 }
 
-func New(cfg Config, s *store.Store, log *zap.Logger) *Reviewer {
-	return &Reviewer{cfg: cfg, store: s, log: log}
+func New(cfg Config, s *store.Store, mem *memory.Manager, log *zap.Logger) *Reviewer {
+	return &Reviewer{cfg: cfg, store: s, mem: mem, log: log}
 }
 
 // judgePrompt asks the cheap model to pick the single stalest, most-worth-asking
@@ -88,7 +94,7 @@ func (r *Reviewer) Tick(ctx context.Context) error {
 		return nil
 	}
 
-	candidates := r.gatherCandidates(ns)
+	candidates := r.gatherCandidates(ctx, ns)
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -176,26 +182,18 @@ func (c candidate) dedupKey() string {
 
 // gatherCandidates collects stale, time-sensitive items: old non-pinned memory
 // entries, and failed/old reminders that never landed.
-func (r *Reviewer) gatherCandidates(ns string) []candidate {
+func (r *Reviewer) gatherCandidates(ctx context.Context, ns string) []candidate {
 	cutoff := time.Now().Add(-staleAfter)
 	var out []candidate
 
-	// Old, non-pinned memory entries (the model filters to time-sensitive ones).
-	if entries, err := r.store.ListMemoryEntries(ns, 400); err == nil {
-		for _, e := range entries {
-			if e.Pinned || e.CreatedAt.After(cutoff) {
-				continue
-			}
-			// Cheap pre-filter: only consider entries whose text hints at time.
-			if !looksTimeSensitive(e.Content) {
-				continue
-			}
-			out = append(out, candidate{kind: "memory", id: e.ID, text: e.Content, at: e.CreatedAt})
-			if len(out) >= 40 {
-				break
-			}
-		}
-	}
+	// Old, non-pinned memories (the model then filters to time-sensitive ones).
+	//
+	// Two steps, and the order is the point. The survey is ONE call and carries
+	// summaries but no dates; the text pre-filter runs on those, and only the
+	// handful that survive are fetched for their age. Asking the store for four
+	// hundred memories in full to discard all but a dozen would be a request per
+	// memory to answer a question a substring match already answered.
+	out = append(out, r.staleMemories(ctx, cutoff)...)
 
 	// Reminders that failed or are old and unresolved.
 	if acts, err := r.store.ListDeviceActions("", 100); err == nil {
@@ -212,6 +210,46 @@ func (r *Reviewer) gatherCandidates(ns string) []candidate {
 	sort.Slice(out, func(i, j int) bool { return out[i].at.Before(out[j].at) })
 	if len(out) > 12 {
 		out = out[:12]
+	}
+	return out
+}
+
+// staleMemories returns old memories whose text hints at something temporal.
+//
+// The pre-filter runs on summaries, before any per-memory request, so a store
+// full of durable identity facts costs one call rather than hundreds.
+func (r *Reviewer) staleMemories(ctx context.Context, cutoff time.Time) []candidate {
+	if r.mem == nil {
+		return nil
+	}
+	surveyed, err := r.mem.Survey(ctx, 400)
+	if err != nil {
+		r.log.Warn("review: could not survey memory", zap.Error(err))
+		return nil
+	}
+
+	var out []candidate
+	for _, e := range surveyed {
+		if e.Pinned || !looksTimeSensitive(e.Content) {
+			continue
+		}
+		// The date is why this one is fetched: staleness is the whole judgement
+		// and the survey does not carry it.
+		full, err := r.mem.Load(ctx, e.ID)
+		if err != nil || full == nil {
+			continue
+		}
+		if full.CreatedAt.IsZero() || full.CreatedAt.After(cutoff) {
+			continue
+		}
+		text := full.Content
+		if strings.TrimSpace(text) == "" {
+			text = e.Content
+		}
+		out = append(out, candidate{kind: "memory", id: full.ID, text: oneLine(text, 400), at: full.CreatedAt})
+		if len(out) >= 40 {
+			break
+		}
 	}
 	return out
 }

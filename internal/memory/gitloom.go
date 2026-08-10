@@ -198,31 +198,17 @@ func (g *gitloomBackend) status() (bool, string) {
 // table of contents and takes the leaves. That is an approximation of recency
 // and says so, rather than pretending the store answers a question it does not.
 func (g *gitloomBackend) recent(ctx context.Context, n int) ([]MemoryEntry, error) {
-	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
-	defer cancel()
-
-	res, err := g.client.Tree(cctx, &gitloom.TreeOptions{Namespace: g.cfg.Namespace, Depth: 3})
+	// Surveyed at full depth. Walking a shallow tree returns DIRECTORIES as its
+	// leaves — they have paths and no summaries, so every entry came back with
+	// empty content and the app showed a list of blank rows.
+	all, err := g.survey(ctx, 0)
 	if err != nil {
-		g.setHealth(false, err)
 		return nil, err
 	}
-	g.setHealth(true, nil)
-
-	leaves := leafNodes(&res.Tree, nil)
-	if n > 0 && len(leaves) > n {
-		leaves = leaves[len(leaves)-n:]
+	if n > 0 && len(all) > n {
+		all = all[len(all)-n:]
 	}
-	out := make([]MemoryEntry, 0, len(leaves))
-	for _, l := range leaves {
-		content := strings.TrimSpace(l.Summary)
-		if content == "" {
-			content = strings.TrimSpace(l.Title)
-		}
-		out = append(out, MemoryEntry{
-			ID: l.Path, Namespace: g.cfg.Namespace, Role: RoleGitLoom, Content: content,
-		})
-	}
-	return out, nil
+	return all, nil
 }
 
 // count reports how many memories the namespace holds.

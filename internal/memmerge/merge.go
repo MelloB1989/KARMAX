@@ -70,6 +70,17 @@ type mergeResult struct {
 // and returns how many entries were merged away (deleted). Processing one
 // category per tick keeps each run cheap; successive ticks cover the rest.
 func (mg *Merger) Tick(ctx context.Context) (int, error) {
+	// Nothing to do when the store consolidates by construction.
+	//
+	// GitLoom files every memory about one subject at one path and folds new
+	// facts in as sections of that file, so "many entries about Siva" is one
+	// document rather than a cluster waiting to be merged. Running anyway would
+	// spend a model call reorganising a local table nothing reads, and delete
+	// rows that are not the memory any more.
+	if mg.mem != nil && mg.mem.HasRemote() {
+		return 0, nil
+	}
+
 	entries, err := mg.store.ListMemoryEntries(mg.cfg.Namespace, 2000)
 	if err != nil {
 		return 0, fmt.Errorf("list entries: %w", err)

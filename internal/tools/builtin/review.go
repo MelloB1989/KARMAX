@@ -72,19 +72,28 @@ func (t *ReviewResolveTool) Execute(ctx context.Context, input map[string]any) (
 		return tools.ErrorResult(fmt.Errorf("resolve review: %w", err)), nil
 	}
 
-	// Apply the consequence to the underlying MEMORY entry (reminders just close).
+	// Apply the consequence to the underlying MEMORY (reminders just close).
+	//
+	// Through the manager, not the table. The operator has just been asked "is
+	// this still true?" and answered no — deleting a row in a store nothing
+	// reads would report "memory forgotten" and leave the fact in place to be
+	// recalled tomorrow, which is worse than never having asked.
 	applied := "review closed"
 	if rev.TargetKind == "memory" && rev.TargetID != "" && t.MemoryMgr != nil {
 		switch resolution {
 		case "forgotten", "done", "dropped":
-			if derr := t.Store.DeleteMemoryEntry(rev.TargetID); derr == nil {
+			if derr := t.MemoryMgr.Forget(rev.TargetID); derr == nil {
 				applied = "review closed; memory forgotten"
 			}
 		case "updated":
 			if strings.TrimSpace(newContent) != "" {
-				_ = t.Store.DeleteMemoryEntry(rev.TargetID)
-				_ = t.MemoryMgr.Write(memory.MemoryEntry{Role: "assistant", Content: strings.TrimSpace(newContent), Tags: []string{"reviewed"}})
-				applied = "review closed; memory updated"
+				// Rewritten in place rather than deleted-and-rewritten: the
+				// memory keeps its tags, cues and relationships, and a correction
+				// does not cost the operator everything that made the fact
+				// findable.
+				if uerr := t.MemoryMgr.Update(ctx, rev.TargetID, strings.TrimSpace(newContent)); uerr == nil {
+					applied = "review closed; memory updated"
+				}
 			}
 		}
 	}

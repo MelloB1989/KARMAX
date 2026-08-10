@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"go.uber.org/zap"
@@ -134,7 +135,8 @@ func (s *Server) graphLinkResponse(ctx context.Context, entriesBlock string) str
 		}
 	}
 	if agentID != "" {
-		cc := &builtin.ClaudeCodeTool{Store: s.store, AgentID: agentID, Namespace: ns}
+		cc := &builtin.ClaudeCodeTool{Store: s.store, AgentID: agentID, Namespace: ns,
+			MemoryMgr: s.mem.For("", ns)}
 		prompt := graphLinkPrompt + "\n\n" + body +
 			"\n\nOutput ONLY the JSON array described above — nothing else."
 		hctx, cancel := context.WithTimeout(ctx, 120*time.Second)
@@ -174,8 +176,38 @@ func (s *Server) graphNodes(entries []store.StoredMemoryEntry) []map[string]any 
 	return nodes
 }
 
+// storeGraph returns the graph the memory store keeps, when it keeps one.
+//
+// GitLoom builds it during ingestion from the links a memory declares and the
+// cross-mentions in its prose. Reading it replaces the LLM pass below — a model
+// call, on a two-hour timer, reconstructing something the store already knew —
+// and it stays current without anything having to rebuild it.
+func (s *Server) storeGraph(ctx context.Context, ns string) (*memory.Graph, bool) {
+	mgr := s.mem.For("", ns)
+	if mgr == nil || !mgr.HasRemote() {
+		return nil, false
+	}
+	g, err := mgr.Graph(ctx, graphNodeLimit)
+	if err != nil {
+		s.log.Warn("could not read the memory graph from the store", zap.Error(err))
+		return nil, false
+	}
+	return g, true
+}
+
 func (s *Server) handleMemoryGraph(w http.ResponseWriter, r *http.Request) {
 	ns := s.defaultNamespace()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	if g, ok := s.storeGraph(ctx, ns); ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"nodes": g.Nodes, "links": g.Links,
+			"total": g.Total, "shown": len(g.Nodes), "capped": g.Truncated,
+		})
+		return
+	}
+
 	entries, err := s.store.ListMemoryEntries(ns, graphNodeLimit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -218,13 +250,25 @@ func linkEntries(entries []store.StoredMemoryEntry) []store.StoredMemoryEntry {
 
 func (s *Server) handleRebuildGraph(w http.ResponseWriter, r *http.Request) {
 	ns := s.defaultNamespace()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
+	defer cancel()
+
+	// Nothing to rebuild when the store keeps the graph itself — a re-read is
+	// the rebuild, and it costs one request instead of a model pass.
+	if g, ok := s.storeGraph(ctx, ns); ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"nodes": g.Nodes, "links": g.Links, "total": g.Total,
+			"note": "read from the memory store, which maintains its own graph",
+		})
+		return
+	}
+
 	entries, err := s.store.ListMemoryEntries(ns, graphNodeLimit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
-	defer cancel()
 	total, _ := s.store.CountMemoryEntries(ns)
 	links := s.generateGraphLinks(ctx, linkEntries(entries))
 	if links == nil {
@@ -283,6 +327,13 @@ func (s *Server) startGraphMaintainer(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(firstDelay):
+		}
+		// Nothing to maintain when the store maintains its own graph. Leaving
+		// this running would spend a model call every two hours rebuilding a
+		// local links table that nothing reads any more.
+		if mgr := s.mem.For("", s.defaultNamespace()); mgr != nil && mgr.HasRemote() {
+			s.log.Info("graph maintainer stood down: the memory store keeps its own graph")
+			return
 		}
 		// On startup, refresh if links are stale/missing relative to memory.
 		if links, _ := s.store.ListMemoryLinks(); len(links) == 0 {

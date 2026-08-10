@@ -603,15 +603,20 @@ func (s *Server) handleAnswerReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Apply to memory (reminders just close).
+	//
+	// Through the manager: the operator has just said this fact is no longer
+	// true, and deleting a row in a store nothing reads would answer "done"
+	// while leaving it to be recalled tomorrow.
 	if rv.TargetKind == "memory" && rv.TargetID != "" {
-		switch req.Resolution {
-		case "forgotten", "done", "dropped":
-			_ = s.store.DeleteMemoryEntry(rv.TargetID)
-		case "updated":
-			if strings.TrimSpace(req.NewContent) != "" {
-				_ = s.store.DeleteMemoryEntry(rv.TargetID)
-				if mgr := s.memManager(); mgr != nil {
-					_ = mgr.Write(memory.MemoryEntry{Role: "assistant", Content: strings.TrimSpace(req.NewContent), Tags: []string{"reviewed"}})
+		if mgr := s.memManager(); mgr != nil {
+			switch req.Resolution {
+			case "forgotten", "done", "dropped":
+				_ = mgr.Forget(rv.TargetID)
+			case "updated":
+				if strings.TrimSpace(req.NewContent) != "" {
+					// Rewritten in place, so the corrected memory keeps the tags
+					// and relationships that make it findable.
+					_ = mgr.Update(r.Context(), rv.TargetID, strings.TrimSpace(req.NewContent))
 				}
 			}
 		}
@@ -693,7 +698,14 @@ func (s *Server) handleMemoryEntries(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.store.DeleteMemoryEntry(id); err != nil {
+	mgr := s.memManager()
+	if mgr == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "memory is not configured"})
+		return
+	}
+	// The manager removes it from whichever store holds it. Deleting the row
+	// was the same thing only while the row WAS the memory.
+	if err := mgr.Forget(id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}

@@ -150,3 +150,22 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// localManager builds a manager with no GitLoom, which is the offline path.
+func localManager(t *testing.T) *Manager {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "k.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	m := NewManager("test", "test-ns", dir, db, zap.NewNop())
+	t.Cleanup(m.Stop)
+	return m
+}
+
+// decodeJSON reads a request body in a test handler.
+func decodeJSON(r *http.Request, v any) error {
+	return json.NewDecoder(r.Body).Decode(v)
+}
