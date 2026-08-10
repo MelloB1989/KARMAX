@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -22,6 +23,9 @@ type ClaudeCodeTool struct {
 	// Namespace is the memory namespace whose profile/entries are injected into
 	// every call. Set per-agent in bindAgentTools; falls back to AgentID.
 	Namespace string
+	// Publish delivers the result of a background delegation as an event. Nil
+	// means background mode is unavailable and every call runs inline.
+	Publish func(bus.Event) error
 }
 
 func (t *ClaudeCodeTool) Manifest() tools.ToolManifest {
@@ -36,7 +40,8 @@ func (t *ClaudeCodeTool) Manifest() tools.ToolManifest {
 				"prompt": {"type": "string", "description": "The coding task or follow-up instruction to send to Claude Code"},
 				"session_id": {"type": "string", "description": "To CONTINUE prior work: the session_id from '## Active Coding Sessions' in your context. Omit only for brand-new, unrelated tasks."},
 				"working_dir": {"type": "string", "description": "Working directory for the coding task"},
-				"ephemeral": {"type": "boolean", "description": "One-off task: don't keep the session for resumption; its transcript is deleted after the run."}
+				"ephemeral": {"type": "boolean", "description": "One-off task: don't keep the session for resumption; its transcript is deleted after the run."},
+				"background": {"type": "boolean", "description": "Run without waiting. Returns a job_id immediately and the result arrives later as a delegation.completed event. Use for anything long (research, multi-file changes) so you stay responsive to the operator meanwhile — you will be told the outcome, so never claim it is done before then."}
 			},
 			"required": ["prompt"]
 		}`),
@@ -152,6 +157,58 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 		return tools.ErrorResult(fmt.Errorf("prompt is required")), nil
 	}
 
+	// A delegation can take ten minutes, and it runs inside the model turn — so
+	// inline, it holds the agent's session for ten minutes and every other chat
+	// waits. Backgrounding it is what keeps the agent answering meanwhile.
+	if bg, _ := input["background"].(bool); bg && t.Publish != nil {
+		return t.startBackground(input, prompt), nil
+	}
+	return t.run(ctx, input, prompt)
+}
+
+// startBackground hands the work to a goroutine and returns a handle.
+func (t *ClaudeCodeTool) startBackground(input map[string]any, prompt string) tools.ToolResult {
+	jobID := uuid.New().String()
+	go func() {
+		// Not the caller's context: it dies with the turn, which is the whole
+		// point of running this after the turn is over.
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+
+		res, err := t.run(ctx, input, prompt)
+		payload := map[string]any{
+			"job_id": jobID,
+			"tool":   "claude_code.call",
+			"task":   truncate(prompt, 500),
+		}
+		switch {
+		case err != nil:
+			payload["status"], payload["error"] = "failed", err.Error()
+		case res.IsError:
+			payload["status"], payload["error"] = "failed", res.Error
+		default:
+			payload["status"] = "completed"
+			if out, ok := res.Output.(map[string]any); ok {
+				payload["output"] = out["output"]
+				payload["session_id"] = out["session_id"]
+			}
+		}
+		if err := t.Publish(bus.NewEvent(bus.EventDelegationDone, t.AgentID, payload)); err != nil {
+			// The work happened; only the notification failed, and the log is
+			// the only place left to say so.
+			fmt.Fprintf(os.Stderr, "karmax: background delegation %s finished but could not be announced: %v\n", jobID, err)
+		}
+	}()
+
+	return tools.SuccessResult(map[string]any{
+		"status": "started",
+		"job_id": jobID,
+		"note": "Running in the background. You will receive a delegation.completed event with the result. " +
+			"Do NOT claim the task is done until then — tell the operator it is underway.",
+	})
+}
+
+func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt string) (tools.ToolResult, error) {
 	ephemeral, _ := input["ephemeral"].(bool)
 
 	sessionID, _ := input["session_id"].(string)

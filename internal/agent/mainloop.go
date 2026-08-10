@@ -230,6 +230,21 @@ func (m *MainModelSession) SetContext(ctx string) {
 	m.session.SetContext(ctx)
 }
 
+// ProcessMessageWithContext sets the dynamic context and sends the message
+// without releasing the lock in between.
+//
+// Conversations run concurrently now, so a separate SetContext followed by
+// ProcessMessage lets another conversation's context land in the gap — and the
+// turn then runs with somebody else's chat history and profile pinned to it.
+func (m *MainModelSession) ProcessMessageWithContext(ctx context.Context, dynamicContext, userMessage string) (string, []karmahelper.ToolCallRecord, error) {
+	m.mu.Lock()
+	if dynamicContext != "" {
+		m.session.SetContext(dynamicContext)
+	}
+	m.mu.Unlock()
+	return m.ProcessMessage(ctx, userMessage)
+}
+
 // truncateForLog truncates a string for safe logging output.
 func truncateForLog(s string, maxLen int) string {
 	if len(s) <= maxLen {
