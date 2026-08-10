@@ -82,8 +82,18 @@ func (t *ReviewResolveTool) Execute(ctx context.Context, input map[string]any) (
 	if rev.TargetKind == "memory" && rev.TargetID != "" && t.MemoryMgr != nil {
 		switch resolution {
 		case "forgotten", "done", "dropped":
-			if derr := t.MemoryMgr.Forget(rev.TargetID); derr == nil {
+			// ForgetFact, not Forget: the handle names a SUBJECT, and the
+			// operator answered a question about one item under it.
+			removed, derr := t.MemoryMgr.ForgetFact(ctx, rev.TargetID)
+			switch {
+			case derr != nil:
+				applied = "review closed; the memory could not be removed: " + derr.Error()
+			case removed:
 				applied = "review closed; memory forgotten"
+			default:
+				applied = "review closed; the memory was KEPT — it holds several " +
+					"facts about this subject and only one of them was asked about. " +
+					"Tell the operator, and use memory.forget on the specific fact if they want it gone."
 			}
 		case "updated":
 			if strings.TrimSpace(newContent) != "" {

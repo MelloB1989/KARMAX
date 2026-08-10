@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -150,6 +151,87 @@ func (m *Manager) Update(ctx context.Context, handle, content string) error {
 	return m.db.UpdateMemoryEntry(handle, content)
 }
 
+// ForgetFact removes a memory only when the handle addresses ONE fact, and
+// reports whether it did.
+//
+// The distinction matters because a GitLoom path is a SUBJECT, not a fact:
+// every memory about a subject folds into one file as ## sections, and one file
+// here holds 166 of them. A staleness review asks about a single item — "that
+// June deadline, still open?" — so answering "it's done" must not be read as
+// permission to erase everything KARMAX knows about that subject.
+//
+// Deleting the wrong thing here is unrecoverable from the operator's side: they
+// answered a one-line question and would have no idea what went with it. So the
+// coarse case keeps the memory and says so, and the caller tells them.
+func (m *Manager) ForgetFact(ctx context.Context, handle string) (bool, error) {
+	m.mu.Lock()
+	remote := m.remote
+	m.mu.Unlock()
+	if remote == nil {
+		// A local row is one fact, so there is nothing to be coarse about.
+		return true, m.db.DeleteMemoryEntry(handle)
+	}
+
+	stored, err := remote.load(ctx, handle)
+	if err != nil {
+		return false, err
+	}
+	if stored == nil {
+		return false, nil // already gone
+	}
+	if CountFacts(stored.Content) > 1 {
+		return false, nil
+	}
+	return true, remote.forget(ctx, handle)
+}
+
+// Correct records a correction to a memory, and reports whether it replaced
+// the whole thing or was added alongside what was already there.
+//
+// Replacing is right when the handle names ONE fact and wrong when it names a
+// subject: overwriting a 166-section file with a single corrected sentence
+// would destroy everything KARMAX knows about that subject, silently, in
+// response to the operator fixing one detail. In that case the correction is
+// appended as a new section, which is how every other fact reaches the file and
+// what makes the newer statement win over the older one it contradicts.
+func (m *Manager) Correct(ctx context.Context, handle, content string) (replaced bool, err error) {
+	if err := safety.CheckWrite(content); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	remote := m.remote
+	m.mu.Unlock()
+	if remote == nil {
+		return true, m.db.UpdateMemoryEntry(handle, content)
+	}
+
+	stored, err := remote.load(ctx, handle)
+	if err != nil {
+		return false, err
+	}
+	if stored == nil || CountFacts(stored.Content) <= 1 {
+		return true, remote.update(ctx, handle, content)
+	}
+	return false, remote.append(ctx, handle, content)
+}
+
+// CountFacts reports how many separate facts a memory's markdown holds.
+//
+// Sections are what KARMAX writes one fact into, so counting the ## headers is
+// counting the facts. A file with none is a single fact written as prose.
+func CountFacts(content string) int {
+	n := 0
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "## ") {
+			n++
+		}
+	}
+	if n == 0 {
+		return 1
+	}
+	return n
+}
+
 // graph reads GitLoom's relationship graph.
 func (g *gitloomBackend) graph(ctx context.Context, limit int) (*Graph, error) {
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
@@ -267,6 +349,31 @@ func (g *gitloomBackend) load(ctx context.Context, path string) (*MemoryEntry, e
 		}
 	}
 	return e, nil
+}
+
+// append adds a correction to a memory as a new section, keeping the rest.
+func (g *gitloomBackend) append(ctx context.Context, path, content string) error {
+	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
+	defer cancel()
+
+	existing, err := g.client.Get(cctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	if err != nil {
+		g.setHealth(false, err)
+		return err
+	}
+	if existing == nil || strings.TrimSpace(existing.Content) == "" {
+		return fmt.Errorf("gitloom: %s read back empty; refusing to overwrite what is there", path)
+	}
+	merged := AppendSection(existing.Content, gitloom.Memory{Path: path, Content: content})
+	merged.Tags = unionStrings(existing.Tags, merged.Tags, 24)
+	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
+	merged.Related = unionStrings(existing.Related, merged.Related, 32)
+	if err := g.client.Write(cctx, []gitloom.Memory{merged}, nil); err != nil {
+		g.setHealth(false, err)
+		return err
+	}
+	g.setHealth(true, nil)
+	return nil
 }
 
 // update rewrites one memory's text, keeping its metadata.

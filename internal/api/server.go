@@ -611,12 +611,14 @@ func (s *Server) handleAnswerReview(w http.ResponseWriter, r *http.Request) {
 		if mgr := s.memManager(); mgr != nil {
 			switch req.Resolution {
 			case "forgotten", "done", "dropped":
-				_ = mgr.Forget(rv.TargetID)
+				// Only when the handle names one fact — see ForgetFact. A
+				// staleness answer is not consent to erase a whole subject.
+				_, _ = mgr.ForgetFact(r.Context(), rv.TargetID)
 			case "updated":
 				if strings.TrimSpace(req.NewContent) != "" {
-					// Rewritten in place, so the corrected memory keeps the tags
-					// and relationships that make it findable.
-					_ = mgr.Update(r.Context(), rv.TargetID, strings.TrimSpace(req.NewContent))
+					// Correct, not Update — see ForgetFact for why a handle that
+					// names a subject must not be replaced wholesale.
+					_, _ = mgr.Correct(r.Context(), rv.TargetID, strings.TrimSpace(req.NewContent))
 				}
 			}
 		}
