@@ -529,16 +529,25 @@ func WhatsAppMessages(chat string, limit int, fromMeOnly bool) (string, error) {
 // GoogleChatSpaces returns the raw JSON of the operator's Google Chat spaces.
 func GoogleChatSpaces() (string, error) { return rawOf(fnGChatSpaces, "") }
 
+// rawOf returns the tool's output AND its error together.
+//
+// Both, because for these tools the output is the diagnosis: gws exits non-zero
+// with a JSON body explaining that Google needs an interactive reauth, and a
+// loop can only tell the operator what to do if it can read that.
 func rawOf(fn, payload string) (string, error) {
 	out, err := request(fn, payload)
 	if err != nil {
 		return "", err
 	}
 	var res struct {
-		Raw string `json:"raw"`
+		Raw   string `json:"raw"`
+		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(out, &res); err != nil {
 		return "", err
+	}
+	if res.Error != "" {
+		return res.Raw, errors.New(res.Error)
 	}
 	return res.Raw, nil
 }

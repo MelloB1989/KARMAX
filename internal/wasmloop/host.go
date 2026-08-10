@@ -627,10 +627,7 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 		}
 		_ = json.Unmarshal([]byte(req), &in)
 		out, err := r.kit.WhatsAppChats(ctx, in.Limit)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(map[string]any{"raw": out})
+		return json.Marshal(map[string]any{"raw": out, "error": errText(err)})
 
 	case FnWAMessages:
 		// Structured, because the loop wants data. A compiled-in loop ran
@@ -646,17 +643,15 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 			return nil, err
 		}
 		out, err := r.kit.WhatsAppMessages(ctx, in.Chat, in.Limit, in.FromMeOnly)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(map[string]any{"raw": out})
+		return json.Marshal(map[string]any{"raw": out, "error": errText(err)})
 
 	case FnGChatSpaces:
+		// The error is carried in the payload rather than returned, so the guest
+		// still receives the output. For these tools the output is the
+		// diagnosis — an auth failure's JSON is what lets a loop say "run gws
+		// auth login" instead of "it failed".
 		out, err := r.kit.GoogleChatSpaces(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(map[string]any{"raw": out})
+		return json.Marshal(map[string]any{"raw": out, "error": errText(err)})
 
 	case FnOperators:
 		// Read from the host rather than the environment. A loop that needs to
@@ -752,6 +747,14 @@ func (w logWriter) Write(p []byte) (int, error) {
 			zap.String("loop", w.loop), zap.String("stream", w.stream), zap.String("message", trunc(msg, 2000)))
 	}
 	return len(p), nil
+}
+
+// errText renders an error for the guest, empty when there was none.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func trunc(s string, n int) string {

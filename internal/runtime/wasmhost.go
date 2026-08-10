@@ -435,16 +435,24 @@ func (w *wasmKit) GoogleChatSpaces(ctx context.Context) (string, error) {
 }
 
 // runHostTool runs one read-only host command with a bounded output.
+//
+// The output is returned even when the command fails, because for these tools
+// the output IS the diagnosis. gws exits 2 with a JSON body saying Google needs
+// an interactive reauth, and gchat-watch classifies that to tell the operator
+// once with the command to run. Discarding it on error turned a specific,
+// actionable message into "gchat_spaces failed:" and left the operator with a
+// dead Google integration and no idea why.
 func runHostTool(ctx context.Context, bin string, args ...string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+
 	out, err := exec.CommandContext(cctx, bin, args...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s %s: %w", filepath.Base(bin), args[0], err)
-	}
 	const max = 512 << 10
 	if len(out) > max {
 		out = out[:max]
+	}
+	if err != nil {
+		return string(out), fmt.Errorf("%s %s: %w", filepath.Base(bin), args[0], err)
 	}
 	return string(out), nil
 }
