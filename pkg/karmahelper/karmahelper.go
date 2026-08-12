@@ -42,6 +42,40 @@ type Session struct {
 	history    models.AIChatHistory
 	kai        *ai.KarmaAI
 	LastTokens TokenInfo
+	rec        *callRecorder
+}
+
+// callRecorder captures what the model actually invoked during one turn.
+//
+// karma executes tools itself (UseMCPExecution defaults on) and its terminal
+// response carries no ToolCalls, so the only place that knows a tool ran is the
+// wrapper around the tool's own Execute. Without this the caller sees zero tool
+// calls on every turn — which made the act-evidence guard re-prompt "you called
+// NO tool" at agents that had just called one, and the model do the work twice.
+type callRecorder struct {
+	mu    sync.Mutex
+	calls []ToolCallRecord
+}
+
+func (c *callRecorder) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = nil
+}
+
+func (c *callRecorder) add(r ToolCallRecord) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, r)
+}
+
+// take returns this turn's calls and clears them.
+func (c *callRecorder) take() []ToolCallRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := c.calls
+	c.calls = nil
+	return out
 }
 
 type ToolCallRecord struct {
@@ -53,12 +87,12 @@ type ToolCallRecord struct {
 }
 
 func NewSession(cfg SessionConfig, agentTools []tools.Tool) *Session {
-	kai := buildKarmaAI(cfg, agentTools)
-
+	rec := &callRecorder{}
 	return &Session{
 		cfg:   cfg,
 		tools: agentTools,
-		kai:   kai,
+		kai:   buildKarmaAI(cfg, agentTools, rec),
+		rec:   rec,
 		history: models.AIChatHistory{
 			Messages: []models.AIMessage{},
 		},
@@ -111,7 +145,7 @@ func (s *Session) ChatWithExtraTools(ctx context.Context, userMessage string, ex
 		return s.chat(ctx, userMessage, s.kai, s.tools)
 	}
 	turnTools := append(append([]tools.Tool{}, s.tools...), extra...)
-	return s.chat(ctx, userMessage, buildKarmaAI(s.cfg, turnTools), turnTools)
+	return s.chat(ctx, userMessage, buildKarmaAI(s.cfg, turnTools, s.rec), turnTools)
 }
 
 func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI, turnTools []tools.Tool) (string, []ToolCallRecord, TokenInfo, error) {
@@ -123,6 +157,12 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 
 	// --- Sanitize history: strip stale tool call metadata ---
 	sanitizeHistory(&s.history)
+
+	// Cleared per turn so a retry or a fallback model cannot inherit the calls
+	// of the attempt before it.
+	if s.rec != nil {
+		s.rec.reset()
+	}
 
 	// --- Try primary model with retries ---
 	resp, err := chatWithRetry(ctx, kai, &s.history, 3)
@@ -164,7 +204,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 		// Built with the TURN's tools, not the session's: a fallback that
 		// silently dropped the lent ones would answer without the tools the
 		// question needed and look like the model simply chose not to use them.
-		fbKai := buildKarmaAI(fbCfg, turnTools)
+		fbKai := buildKarmaAI(fbCfg, turnTools, s.rec)
 
 		// Re-sanitize before each fallback attempt
 		sanitizeHistory(&s.history)
@@ -277,8 +317,23 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 	}
 	s.LastTokens = tokens
 	response := CleanContent(resp.AIResponse)
+
+	// Collected before the empty-response check: a turn that ran tools and then
+	// returned no text still ran them, and the caller needs to know that.
+	var executed []ToolCallRecord
+	if s.rec != nil {
+		executed = s.rec.take()
+	}
+
 	if strings.TrimSpace(response) == "" {
-		return "", nil, tokens, fmt.Errorf("empty response from model after sanitization")
+		return "", executed, tokens, fmt.Errorf("empty response from model after sanitization")
+	}
+
+	// What the wrapper saw beats what the provider reported. Providers that run
+	// tools server-side return none at all; the ones that hand them back
+	// unexecuted are covered by the fallback below.
+	if len(executed) > 0 {
+		return response, executed, tokens, nil
 	}
 
 	var records []ToolCallRecord
@@ -479,7 +534,7 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 }
 
 // buildKarmaAI creates a new KarmaAI instance from a session config and tools.
-func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool) *ai.KarmaAI {
+func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder) *ai.KarmaAI {
 	provider := resolveProvider(cfg.Provider)
 	model := resolveModel(cfg.Model)
 
@@ -497,7 +552,7 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool) *ai.KarmaAI {
 		options = append(options, ai.WithMaxToolPasses(8))
 
 		for _, t := range agentTools {
-			goTool := karmaxToolToGoFunctionTool(t)
+			goTool := karmaxToolToGoFunctionTool(t, rec)
 			options = append(options, ai.AddGoFunctionTool(goTool))
 		}
 	}
@@ -505,7 +560,7 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool) *ai.KarmaAI {
 	return ai.NewKarmaAI(model, provider, options...)
 }
 
-func karmaxToolToGoFunctionTool(t tools.Tool) ai.GoFunctionTool {
+func karmaxToolToGoFunctionTool(t tools.Tool, rec *callRecorder) ai.GoFunctionTool {
 	manifest := t.Manifest()
 
 	var params map[string]any
@@ -568,6 +623,18 @@ func karmaxToolToGoFunctionTool(t tools.Tool) ai.GoFunctionTool {
 			}
 
 			result, err := t.Execute(ctx, input)
+			// Recorded here because this is the only point that sees the call:
+			// karma runs the tool itself and its final response says nothing
+			// about what ran. Recorded on failure too — "it tried and the tool
+			// refused" is a different turn from "it did nothing".
+			if rec != nil {
+				rec.add(ToolCallRecord{
+					Name:   manifest.Name,
+					Input:  input,
+					Result: result,
+					Error:  err,
+				})
+			}
 			if err != nil {
 				return "", err
 			}

@@ -36,6 +36,7 @@ func newRootCmd() *cobra.Command {
 		newMemoryCmd(),
 		meshCmd(),
 		capsCmd(),
+		costCmd(),
 		connectorsCmd(),
 		recipeCmd(),
 		orgChartCmd(),
