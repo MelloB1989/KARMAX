@@ -326,6 +326,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Register new builtin tools
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: ""})
+	toolReg.Register(&builtin.RecipeTool{})
+	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
+	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send, DefaultChannelID: commsMgr.DefaultChannelID})
 	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: hostpaths.GWS()})
@@ -774,8 +777,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// bus_event kind, and agents may declare extra event kinds in
 	// triggers.events — subscribe to those too, or they are published and then
 	// silently dropped.
+	// EventTimerFired is here so the agent can wake ITSELF: self.remind arms a
+	// durable timer, and without this the timer fired into the loops subscriber
+	// only and the agent never heard about the reminder it set.
 	routedKinds := []bus.EventKind{bus.EventWebhookFired, bus.EventScheduledJob, bus.EventUserDefined,
-		bus.EventCommsMessage, bus.EventDelegationDone}
+		bus.EventCommsMessage, bus.EventDelegationDone, bus.EventTimerFired}
 	seenKinds := map[bus.EventKind]bool{}
 	for _, k := range routedKinds {
 		seenKinds[k] = true

@@ -357,6 +357,15 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			// as an event on a later turn rather than blocking this one.
 			cp.Publish = a.bus.Publish
 			out = append(out, &cp)
+		case *builtin.SelfRemindTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			out = append(out, &cp)
+		case *builtin.CapabilitiesTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			cp.Store = a.store
+			out = append(out, &cp)
 		case *builtin.SubagentTool:
 			cp := *tt
 			cp.AgentID = a.def.ID
@@ -982,27 +991,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		//
 		// Bounded because a model that keeps asking instead of acting would
 		// otherwise loop; after the last round it continues with what it has.
-		for round := 0; round < maxToolLoadRounds; round++ {
-			want := requestedTools(toolCalls)
-			if len(want) == 0 {
-				break
-			}
-			lent := a.lendNamed(want)
-			if len(lent) == 0 {
-				break
-			}
-			a.log.Info("loading tools the model asked for",
-				zap.String("agent", a.def.ID), zap.Strings("tools", want))
-			lctx, lcancel := context.WithTimeout(a.ctx, 3*time.Minute)
-			resp2, tc2, err2 := a.mainSession.ProcessMessageWithTools(lctx,
-				"The tools you requested are now available. Use them to finish the task.", lent)
-			lcancel()
-			if err2 != nil || strings.TrimSpace(resp2) == "" {
-				break
-			}
-			response = cleanOutboundResponse(resp2)
-			toolCalls = tc2
-		}
+		response, toolCalls = a.loadRequestedTools(a.ctx, a.mainSession, response, toolCalls)
 
 		// Act-evidence guard: weak models fabricate "done" — they claim they
 		// sent/removed/scheduled something while calling zero tools. If the reply
@@ -1194,6 +1183,12 @@ func (a *Agent) ChatDetailed(ctx context.Context, text string, lent []tools.Tool
 	if err != nil {
 		return "", nil, fmt.Errorf("chat: %w", err)
 	}
+
+	// The same tool-loading round-trip the event path does. Without it a chat
+	// turn could ask for a tool, be told it was available, and then call
+	// something the model never actually held — which surfaces as an error from
+	// deep inside the provider rather than as the missing capability it is.
+	response, toolCalls = a.loadRequestedTools(ctx, session, response, toolCalls)
 	response = cleanOutboundResponse(response)
 
 	// Act-evidence guard (same as the event path): re-prompt once if the reply

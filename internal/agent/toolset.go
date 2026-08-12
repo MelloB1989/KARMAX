@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
+	"go.uber.org/zap"
 )
 
 // Which tools ride in every request, and which are only named.
@@ -27,6 +30,8 @@ var defaultCoreTools = []string{
 	"whatsapp.read",
 	"review.resolve",
 	"comms.escalate",
+	"self.remind",
+	"karmax.capabilities",
 }
 
 // splitToolSet divides tools into those the session holds and those it only
@@ -154,3 +159,38 @@ func toStringList(v any) []string {
 // is enough for "ask, then act, then ask once more"; beyond that the model is
 // deliberating rather than working, and it continues with what it holds.
 const maxToolLoadRounds = 2
+
+// loadRequestedTools finishes a turn the model paused to ask for a tool.
+//
+// It holds a core set and an index of everything else, so "I need X" is a real
+// step rather than a failure. Shared by the event and chat paths: a capability
+// that only appears on one of them is worse than not having it, because the
+// model is told the tool exists and then cannot call it.
+func (a *Agent) loadRequestedTools(ctx context.Context, session *MainModelSession,
+	response string, calls []karmahelper.ToolCallRecord) (string, []karmahelper.ToolCallRecord) {
+
+	for round := 0; round < maxToolLoadRounds; round++ {
+		want := requestedTools(calls)
+		if len(want) == 0 {
+			return response, calls
+		}
+		lent := a.lendNamed(want)
+		if len(lent) == 0 {
+			a.log.Warn("the model asked for tools this agent cannot bind",
+				zap.String("agent", a.def.ID), zap.Strings("tools", want))
+			return response, calls
+		}
+		a.log.Info("loading tools the model asked for",
+			zap.String("agent", a.def.ID), zap.Strings("tools", want))
+
+		lctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		resp2, tc2, err := session.ProcessMessageWithTools(lctx,
+			"The tools you requested are now available. Use them to finish the task.", lent)
+		cancel()
+		if err != nil || strings.TrimSpace(resp2) == "" {
+			return response, calls
+		}
+		response, calls = cleanOutboundResponse(resp2), tc2
+	}
+	return response, calls
+}
