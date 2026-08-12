@@ -524,6 +524,25 @@ var migrations = []string{
 		detail    TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_social_posts_when ON social_posts(platform, posted_at DESC)`,
+
+	// What each model call cost. The gateway KARMAX ran on reported zero for
+	// every usage field, so nothing here was measurable and a 28k-token routing
+	// decision looked identical to a 3k one. Metered inference makes that a
+	// billing problem rather than an aesthetic one.
+	`CREATE TABLE IF NOT EXISTS model_usage (
+		id             TEXT PRIMARY KEY,
+		agent_id       TEXT NOT NULL,
+		provider       TEXT NOT NULL DEFAULT '',
+		model          TEXT NOT NULL DEFAULT '',
+		kind           TEXT NOT NULL DEFAULT '',
+		input_tokens   INTEGER NOT NULL DEFAULT 0,
+		output_tokens  INTEGER NOT NULL DEFAULT 0,
+		cache_read     INTEGER NOT NULL DEFAULT 0,
+		cache_write    INTEGER NOT NULL DEFAULT 0,
+		created_at     DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_usage_when ON model_usage(created_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_usage_agent ON model_usage(agent_id, created_at DESC)`,
 }
 
 func (s *Store) migrate() error {

@@ -22,6 +22,8 @@ type MainModelSession struct {
 	totalTokens      int64
 	store            *store.Store
 	agentID          string
+	provider         string
+	model            string
 	log              *zap.Logger
 	mu               sync.Mutex
 	compactThreshold int // default 128000
@@ -104,6 +106,8 @@ func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.
 		totalTokens:      totalTokens,
 		store:            s,
 		agentID:          agentID,
+		provider:         cfg.Provider,
+		model:            cfg.Model,
 		log:              log,
 		compactThreshold: compactThreshold,
 		keepRecent:       keepRecent,
@@ -145,7 +149,23 @@ func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMess
 		zap.Int("input_tokens", tokens.InputTokens),
 		zap.Int("output_tokens", tokens.OutputTokens),
 		zap.Int("total_tokens", tokens.TotalTokens),
+		zap.Int("tool_calls", len(toolCalls)),
 	)
+
+	// Filed before the empty-response check below: those tokens were spent
+	// whether or not the turn produced anything usable.
+	if m.store != nil {
+		if err := m.store.RecordModelUsage(store.ModelUsage{
+			AgentID:      m.agentID,
+			Provider:     m.provider,
+			Model:        m.model,
+			Kind:         "main",
+			InputTokens:  tokens.InputTokens,
+			OutputTokens: tokens.OutputTokens,
+		}); err != nil {
+			m.log.Warn("could not record model usage", zap.Error(err))
+		}
+	}
 
 	if strings.TrimSpace(response) == "" {
 		m.log.Warn("main model returned empty response",
