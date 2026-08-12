@@ -24,11 +24,14 @@ func (t *ProfileTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name: "profile.update",
 		Description: "Read or rewrite the curated 'about me' profile (ABOUT_ME.md): the living, deduplicated summary of who the operator is — identity, projects, preferences, relationships, and goals. " +
-			"Use action 'read' to fetch the current profile, then action 'write' with the FULL new Markdown to replace it. Always read before writing and preserve facts that are still true; only revise what changed.",
+			"Call this whenever you need detail about the operator that your always-on context does not already carry. " +
+			"Prefer action 'read' WITH a 'section' — it returns just that part. Use action 'sections' to see what sections exist. " +
+			"Action 'read' with no section returns the whole document, which is large; do that only before a 'write', which replaces the document entirely.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"action": {"type": "string", "enum": ["read", "write"], "description": "'read' returns the current profile; 'write' overwrites it with 'content'."},
+				"action": {"type": "string", "enum": ["read", "sections", "write"], "description": "'sections' lists the section titles; 'read' returns one section (or the whole profile if none is named); 'write' overwrites the document with 'content'."},
+				"section": {"type": "string", "description": "For action 'read': the section to return, e.g. 'Relationships' or 'most time sensitive'. Matched loosely, so punctuation and emoji can be left out."},
 				"content": {"type": "string", "description": "For action 'write': the full new Markdown profile document. Replaces the existing one entirely."}
 			},
 			"required": ["action"]
@@ -43,7 +46,46 @@ func (t *ProfileTool) Execute(ctx context.Context, input map[string]any) (tools.
 
 	action := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", input["action"])))
 	switch action {
+	case "sections":
+		sections, err := t.MemoryMgr.ProfileSections()
+		if err != nil {
+			return tools.ErrorResult(fmt.Errorf("read profile: %w", err)), nil
+		}
+		index := make([]map[string]any, 0, len(sections))
+		for _, s := range sections {
+			index = append(index, map[string]any{"section": s.Title, "chars": s.Chars})
+		}
+		return tools.SuccessResult(map[string]any{
+			"path":     t.MemoryMgr.ProfilePath(),
+			"sections": index,
+			"hint":     "call profile.update with action 'read' and one of these section titles",
+		}), nil
+
 	case "read", "", "<nil>":
+		// A named section is the cheap path and the one to prefer: the whole
+		// document is ~5k tokens, and pulling all of it to answer one question
+		// is what the always-on context was trimmed to avoid.
+		if name, _ := input["section"].(string); strings.TrimSpace(name) != "" {
+			sec, err := t.MemoryMgr.ProfileSectionNamed(name)
+			if err != nil {
+				sections, lerr := t.MemoryMgr.ProfileSections()
+				if lerr != nil {
+					return tools.ErrorResult(err), nil
+				}
+				titles := make([]string, 0, len(sections))
+				for _, s := range sections {
+					titles = append(titles, s.Title)
+				}
+				return tools.ErrorResult(fmt.Errorf("%w — available sections: %s",
+					err, strings.Join(titles, "; "))), nil
+			}
+			return tools.SuccessResult(map[string]any{
+				"path":    t.MemoryMgr.ProfilePath(),
+				"section": sec.Title,
+				"content": sec.Body,
+			}), nil
+		}
+
 		current, err := t.MemoryMgr.ReadProfile()
 		if err != nil {
 			return tools.ErrorResult(fmt.Errorf("read profile: %w", err)), nil
@@ -72,7 +114,7 @@ func (t *ProfileTool) Execute(ctx context.Context, input map[string]any) (tools.
 		}), nil
 
 	default:
-		return tools.ErrorResult(fmt.Errorf("unknown action %q (use 'read' or 'write')", action)), nil
+		return tools.ErrorResult(fmt.Errorf("unknown action %q (use 'read', 'sections' or 'write')", action)), nil
 	}
 }
 

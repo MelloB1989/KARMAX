@@ -460,18 +460,68 @@ func (t *commsEscalateTool) Execute(ctx context.Context, input map[string]any) (
 
 // buildProfileContext injects the curated ABOUT_ME profile so the agent always
 // knows who the operator is from the profile (never a hardcoded identity).
+// buildProfileContext carries a summary of the operator plus an index of what
+// else is on file — not the file.
+//
+// ABOUT_ME.md was injected whole into every turn: 21KB, ~5,300 tokens, on a
+// decision that is only ever "do this myself, delegate it, or ask". The document
+// is still authoritative and still one tool call away; what changed is that
+// reading it is now a choice the agent makes when it needs a fact, rather than a
+// tax on every routing decision.
 func (a *Agent) buildProfileContext() string {
 	if a.memory == nil {
 		return ""
 	}
-	p, err := a.memory.ReadProfile()
-	if err != nil || strings.TrimSpace(p) == "" {
+	sections, err := a.memory.ProfileSections()
+	if err != nil || len(sections) == 0 {
 		return ""
 	}
-	if len(p) > 8000 {
-		p = p[:8000] + "\n…(truncated)"
+
+	var sb strings.Builder
+	sb.WriteString("## Operator profile (summary — the full profile is on disk)\n\n")
+
+	// The lead sections carry identity and what is urgent, which is exactly what
+	// a routing decision turns on. Everything else is named, not quoted.
+	var titles []string
+	budget := profileSummaryBudget
+	for _, s := range sections {
+		if s.Body == "" {
+			continue
+		}
+		titles = append(titles, s.Title)
+		if !isProfileLeadSection(s.Title) || budget <= 0 {
+			continue
+		}
+		body := s.Body
+		if len(body) > budget {
+			body = body[:budget] + "…"
+		}
+		budget -= len(body)
+		sb.WriteString("### " + s.Title + "\n" + body + "\n\n")
 	}
-	return "## Operator profile (ABOUT_ME — this is who you serve)\n\n" + p + "\n\n"
+
+	if len(titles) > 0 {
+		sb.WriteString("Also on file (call `profile.update` with action 'read' and the section name to see any of these): ")
+		sb.WriteString(strings.Join(titles, " · "))
+		sb.WriteString("\n\n")
+	}
+	return sb.String()
+}
+
+// profileSummaryBudget caps the operator summary in characters. Roughly 250
+// tokens: enough to know who is being served and what is urgent, and far short
+// of the document.
+const profileSummaryBudget = 1000
+
+// isProfileLeadSection picks the sections worth quoting rather than naming.
+func isProfileLeadSection(title string) bool {
+	l := strings.ToLower(title)
+	for _, want := range []string{"identity", "time-sensitive", "time sensitive", "current life"} {
+		if strings.Contains(l, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildSessionContext queries coding sessions and formats them as context.
