@@ -165,3 +165,88 @@ func TestTruncateStr(t *testing.T) {
 		})
 	}
 }
+
+// A job the agent scheduled for itself must arrive as its instruction, not as a
+// JSON dump. scheduler.add stores that instruction under "task", and reading
+// only "prompt" is what made these fire as contentless events.
+func TestBuildPromptFromEvent_ScheduledTaskCarriesItsInstruction(t *testing.T) {
+	evt := bus.Event{
+		ID:      "test-evt-task",
+		Kind:    bus.EventScheduledJob,
+		AgentID: "nexus",
+		Payload: map[string]any{
+			"job_name": "CampX follow-up",
+			"payload":  map[string]any{"task": "Ask Siva where the VAPT reports stand"},
+		},
+	}
+
+	prompt := buildPromptFromEvent(evt, nil)
+
+	if !strings.Contains(prompt, "Ask Siva where the VAPT reports stand") {
+		t.Errorf("the instruction was dropped, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "CampX follow-up") {
+		t.Errorf("the job name should label the task, got: %s", prompt)
+	}
+	if strings.Contains(prompt, "```json") {
+		t.Errorf("an instruction-carrying job should not be dumped as JSON, got: %s", prompt)
+	}
+}
+
+// An event with nothing to act on must not push the agent into messaging the
+// operator about it.
+func TestBuildPromptFromEvent_ContentlessEventPermitsSilence(t *testing.T) {
+	evt := bus.Event{
+		ID:      "test-evt-empty",
+		Kind:    bus.EventScheduledJob,
+		AgentID: "nexus",
+		Payload: map[string]any{"job_id": "loopkit:webhook-health"},
+	}
+
+	prompt := buildPromptFromEvent(evt, nil)
+
+	if !strings.Contains(prompt, "carries no instruction") {
+		t.Errorf("a contentless event should say so, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Do not message the operator") {
+		t.Errorf("silence must be an explicitly allowed outcome, got: %s", prompt)
+	}
+}
+
+// A group message must be rendered as what it is: the right channel, the right
+// chat, and a sender who is not assumed to be the operator. The old rendering
+// announced every inbound message as "the operator just messaged you on
+// WhatsApp", which is how replies ended up aimed at the wrong person.
+func TestBuildPromptFromEvent_GroupMessageNamesItsRealOrigin(t *testing.T) {
+	evt := bus.Event{
+		ID:      "test-evt-group",
+		Kind:    bus.EventCommsMessage,
+		AgentID: "nexus",
+		Payload: map[string]any{
+			"content":      "any update on the reports?",
+			"channel_id":   "9198@g.us",
+			"chat_name":    "CampX Team",
+			"channel_type": "slack",
+			"sender_id":    "siva",
+			"is_group":     true,
+		},
+	}
+
+	prompt := buildPromptFromEvent(evt, nil)
+
+	if strings.Contains(prompt, "operator just messaged") {
+		t.Errorf("a third party's message must not be attributed to the operator, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "slack") {
+		t.Errorf("the real channel must be named, not a hardcoded one, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "CampX Team") || !strings.Contains(prompt, "siva") {
+		t.Errorf("chat and sender must both be identified, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "GROUP") {
+		t.Errorf("a group must be marked as one, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "9198@g.us") {
+		t.Errorf("the chat id must be present so the reply lands in the right chat, got: %s", prompt)
+	}
+}
