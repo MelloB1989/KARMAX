@@ -801,6 +801,9 @@ func (a *Agent) handleOne(evt bus.Event) {
 			_ = a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
 				"error": fmt.Sprintf("%v", r),
 			}))
+			// A panicking turn is over, not running. Left open, the next restart
+			// would resume it and panic again.
+			a.finishTurn(evt, store.TurnFailed, fmt.Sprintf("panic: %v", r))
 		}
 	}()
 
@@ -820,6 +823,7 @@ func (a *Agent) handleOne(evt bus.Event) {
 	a.mu.Unlock()
 
 	if err := a.handleEvent(evt); err != nil {
+		a.finishTurn(evt, store.TurnFailed, err.Error())
 		streak := a.recordEventError(err)
 		a.log.Error("event handling failed", zap.Error(err))
 		_ = a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
@@ -837,7 +841,21 @@ func (a *Agent) handleOne(evt bus.Event) {
 		}
 		return
 	}
+	a.finishTurn(evt, store.TurnOK, "")
 	a.resetEventErrors()
+}
+
+// finishTurn closes this event's journal row. Best-effort: a turn that ran but
+// could not be marked done is retried once on the next restart, which is a far
+// smaller problem than a turn that never ran at all.
+func (a *Agent) finishTurn(evt bus.Event, status, errMsg string) {
+	if a.store == nil || evt.ID == "" {
+		return
+	}
+	if err := a.store.FinishAgentTurn(evt.ID, status, errMsg); err != nil {
+		a.log.Warn("could not close the turn journal",
+			zap.String("event", evt.ID), zap.Error(err))
+	}
 }
 
 func (a *Agent) isPaused() bool {

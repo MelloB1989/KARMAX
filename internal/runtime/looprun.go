@@ -234,6 +234,10 @@ func mustExecution(rt *KarmaxRuntime, loop string) string {
 // the whole point is that a retry survives a restart.
 func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 	rt.resumeInterruptedRuns()
+	// Agent turns get the same treatment as loop runs, and for the same reason:
+	// anything still marked running when this process is only now starting was
+	// killed mid-flight.
+	rt.resumeInterruptedTurns()
 
 	tick := time.NewTicker(30 * time.Second)
 	prune := time.NewTicker(6 * time.Hour)
@@ -247,6 +251,11 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 		case <-prune.C:
 			if _, err := rt.store.PruneLoopRuns(time.Now().AddDate(0, 0, -14)); err != nil {
 				rt.log.Warn("could not prune loop run history", zap.Error(err))
+			}
+			// Dead turns survive the prune: a permanent failure should stay
+			// visible rather than ageing quietly out of the table.
+			if _, err := rt.store.PruneAgentTurns(time.Now().AddDate(0, 0, -14)); err != nil {
+				rt.log.Warn("could not prune agent turn history", zap.Error(err))
 			}
 			// Only events every subscriber has already read are removed, so a
 			// lagging subscriber is never pruned out from under.

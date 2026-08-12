@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,6 +47,7 @@ import (
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	wacli "github.com/MelloB1989/wacli/tools"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -1115,6 +1117,12 @@ func short(id string) string {
 
 // startAgentRouter delivers routed events to agent inboxes. No agent means
 // nowhere to go, which is fine; a full inbox is retried and then dead-lettered.
+//
+// Every delivery opens a turn row first. The bus advances its offset when this
+// handler returns, and this handler returns as soon as the event is in an
+// in-memory mailbox — so without the row, a crash between here and the end of
+// the turn loses the work AND the event, because the subscriber resumes past
+// it and nothing redelivers it. The row is what a restart finds and retries.
 func (rt *KarmaxRuntime) startAgentRouter(ctx context.Context) {
 	rt.bus.Consume(ctx, bus.SubAgentRouter, rt.routedKinds,
 		func(_ context.Context, evt bus.Event) error {
@@ -1125,9 +1133,85 @@ func (rt *KarmaxRuntime) startAgentRouter(ctx context.Context) {
 			if !ok {
 				return nil
 			}
-			return a.Send(evt)
+			if !rt.openTurn(evt) {
+				// Already in flight — a redelivery of something still running.
+				return nil
+			}
+			if err := a.Send(evt); err != nil {
+				// It never reached the agent, so nothing will ever finish this
+				// row. Close it here or the next restart would "resume" a turn
+				// that never started.
+				_ = rt.store.FinishAgentTurn(evt.ID, store.TurnFailed, err.Error())
+				return err
+			}
+			return nil
 		})
 }
+
+// openTurn records a turn as running, reporting whether this caller owns it.
+func (rt *KarmaxRuntime) openTurn(evt bus.Event) bool {
+	payload, _ := json.Marshal(evt)
+	owned, err := rt.store.StartAgentTurn(store.AgentTurn{
+		ID:        uuid.New().String(),
+		AgentID:   evt.AgentID,
+		EventID:   evt.ID,
+		EventKind: string(evt.Kind),
+		EventJSON: string(payload),
+		Attempt:   1,
+	})
+	if err != nil {
+		// A journal that cannot be written is not a reason to drop the work:
+		// losing the turn is strictly worse than losing its crash-safety.
+		rt.log.Warn("could not journal agent turn; delivering anyway",
+			zap.String("event", evt.ID), zap.Error(err))
+		return true
+	}
+	return owned
+}
+
+// resumeInterruptedTurns redelivers work the daemon was killed in the middle of.
+//
+// Modelled on resumeInterruptedRuns for loops. Anything still marked running at
+// startup cannot be running — this process has only just begun — so it is reaped
+// and handed back to its agent.
+func (rt *KarmaxRuntime) resumeInterruptedTurns() {
+	turns, err := rt.store.ReapStaleTurns(time.Now(), maxTurnAttempts)
+	if err != nil {
+		rt.log.Warn("could not reap interrupted turns", zap.Error(err))
+		return
+	}
+	for _, t := range turns {
+		if t.Status == store.TurnDead {
+			rt.log.Error("giving up on a turn that keeps dying",
+				zap.String("event", t.EventID), zap.String("kind", t.EventKind),
+				zap.Int("attempts", t.Attempt))
+			builtin.PushAppNotification(rt.store, t.AgentID, "alert",
+				"A task was abandoned",
+				fmt.Sprintf("%s kept failing across %d restarts and will not be retried.", t.EventKind, t.Attempt))
+			continue
+		}
+		var evt bus.Event
+		if err := json.Unmarshal([]byte(t.EventJSON), &evt); err != nil {
+			rt.log.Warn("interrupted turn has an unreadable event", zap.String("event", t.EventID))
+			continue
+		}
+		a, ok := rt.agents.Get(t.AgentID)
+		if !ok {
+			continue
+		}
+		rt.log.Info("resuming a turn the daemon died during",
+			zap.String("event", t.EventID), zap.String("kind", t.EventKind), zap.Int("attempt", t.Attempt+1))
+		if rt.openTurn(evt) {
+			if err := a.Send(evt); err != nil {
+				_ = rt.store.FinishAgentTurn(evt.ID, store.TurnFailed, err.Error())
+			}
+		}
+	}
+}
+
+// maxTurnAttempts bounds how many restarts one event may survive. An event that
+// crashes the daemon three times is not going to work the fourth.
+const maxTurnAttempts = 3
 
 // startDeadLetterAlerts: a dead letter means something that should have
 // happened did not, so it gets the same alert a dead loop run does.

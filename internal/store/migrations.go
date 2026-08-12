@@ -543,6 +543,30 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_model_usage_when ON model_usage(created_at DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_model_usage_agent ON model_usage(agent_id, created_at DESC)`,
+
+	// A turn is a row, for the same reason a loop run is one.
+	//
+	// The bus advances its offset when an event is handed to the agent's
+	// mailbox, not when the turn finishes — so a crash mid-turn lost the work
+	// AND the event: the subscriber resumed past it and it was never redelivered.
+	// Loops already survive this via loop_runs + a lease; turns had nothing.
+	`CREATE TABLE IF NOT EXISTS agent_turns (
+		id           TEXT PRIMARY KEY,
+		agent_id     TEXT NOT NULL,
+		event_id     TEXT NOT NULL,
+		event_kind   TEXT NOT NULL DEFAULT '',
+		event_json   TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT 'running',
+		attempt      INTEGER NOT NULL DEFAULT 1,
+		started_at   DATETIME NOT NULL,
+		finished_at  DATETIME,
+		error        TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_agent_turns_status ON agent_turns(status, started_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_agent_turns_agent ON agent_turns(agent_id, started_at DESC)`,
+	// One row per event: a redelivered event must resume its turn, not start a
+	// second one alongside the first.
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_turns_event ON agent_turns(event_id)`,
 }
 
 func (s *Store) migrate() error {
