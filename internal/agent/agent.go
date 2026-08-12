@@ -76,6 +76,11 @@ type Agent struct {
 	parentCtx      context.Context
 	errorStreak    int
 	restartPending bool
+
+	// depth is how many spawns deep this agent already is. Zero for the agent
+	// the operator talks to; a child that could itself spawn would carry one
+	// more, which is what bounds a fan-out from recursing.
+	depth int
 }
 
 // CommsChannelInfo describes a communication channel available to the agent.
@@ -351,6 +356,16 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			// What makes background delegation possible: the result comes back
 			// as an event on a later turn rather than blocking this one.
 			cp.Publish = a.bus.Publish
+			out = append(out, &cp)
+		case *builtin.SubagentTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			cp.Store = a.store
+			cp.Publish = a.bus.Publish
+			cp.Depth = a.depth
+			// Spawning needs to build a whole agent, which this package can do
+			// and the tool package deliberately cannot.
+			cp.Spawn = a.spawnChild
 			out = append(out, &cp)
 		case *builtin.SchedulerTool:
 			cp := *tt
