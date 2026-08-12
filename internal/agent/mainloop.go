@@ -149,6 +149,8 @@ func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMess
 		zap.Int("input_tokens", tokens.InputTokens),
 		zap.Int("output_tokens", tokens.OutputTokens),
 		zap.Int("total_tokens", tokens.TotalTokens),
+		zap.Int("cache_read", tokens.CacheReadTokens),
+		zap.Int("cache_write", tokens.CacheWriteTokens),
 		zap.Int("tool_calls", len(toolCalls)),
 	)
 
@@ -162,6 +164,8 @@ func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMess
 			Kind:         "main",
 			InputTokens:  tokens.InputTokens,
 			OutputTokens: tokens.OutputTokens,
+			CacheRead:    tokens.CacheReadTokens,
+			CacheWrite:   tokens.CacheWriteTokens,
 		}); err != nil {
 			m.log.Warn("could not record model usage", zap.Error(err))
 		}

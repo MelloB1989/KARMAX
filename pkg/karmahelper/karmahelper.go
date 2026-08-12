@@ -25,6 +25,11 @@ type TokenInfo struct {
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
+	// CacheReadTokens is the part of the prompt served from cache, billed at
+	// roughly a tenth of fresh input; CacheWriteTokens is what was written this
+	// call. Both zero on providers without prompt caching.
+	CacheReadTokens  int
+	CacheWriteTokens int
 }
 
 type SessionConfig struct {
@@ -311,9 +316,11 @@ func isPersonaBreak(response string) bool {
 // info from a successful AIChatResponse.
 func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCallRecord, TokenInfo, error) {
 	tokens := TokenInfo{
-		InputTokens:  resp.InputTokens,
-		OutputTokens: resp.OutputTokens,
-		TotalTokens:  resp.Tokens,
+		InputTokens:      resp.InputTokens,
+		OutputTokens:     resp.OutputTokens,
+		TotalTokens:      resp.Tokens,
+		CacheReadTokens:  resp.CacheReadTokens,
+		CacheWriteTokens: resp.CacheWriteTokens,
 	}
 	s.LastTokens = tokens
 	response := CleanContent(resp.AIResponse)
