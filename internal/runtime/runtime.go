@@ -1266,6 +1266,7 @@ func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {
 		Temperature:          cfg.Temperature,
 		MaxTokens:            cfg.MaxTokens,
 		Tools:                cfg.Tools,
+		CoreTools:            cfg.CoreTools,
 		MCPs:                 cfg.MCPs,
 		RestartPolicy:        agent.RestartPolicy(cfg.RestartPolicy),
 		MaxRestarts:          cfg.MaxRestarts,

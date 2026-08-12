@@ -126,6 +126,7 @@ type AgentDefConfig struct {
 	Temperature          float32               `yaml:"temperature"`
 	MaxTokens            int                   `yaml:"max_tokens"`
 	Tools                []string              `yaml:"tools"`
+	CoreTools            []string              `yaml:"core_tools"`
 	MCPs                 []string              `yaml:"mcps"`
 	Memory               AgentMemoryConfig     `yaml:"memory"`
 	MemoryModel          AgentModelConfig      `yaml:"memory_model"`

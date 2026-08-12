@@ -34,16 +34,20 @@ type FallbackModelDef struct {
 }
 
 type AgentDef struct {
-	ID                   string             `yaml:"id"                    json:"id"`
-	Name                 string             `yaml:"name"                  json:"name"`
-	Description          string             `yaml:"description"           json:"description"`
-	Tags                 []string           `yaml:"tags"                  json:"tags"`
-	SystemPrompt         string             `yaml:"system_prompt"         json:"system_prompt"`
-	Model                string             `yaml:"model"                 json:"model"`
-	Provider             string             `yaml:"provider"              json:"provider"`
-	Temperature          float32            `yaml:"temperature"           json:"temperature"`
-	MaxTokens            int                `yaml:"max_tokens"            json:"max_tokens"`
-	Tools                []string           `yaml:"tools"                 json:"tools"`
+	ID           string   `yaml:"id"                    json:"id"`
+	Name         string   `yaml:"name"                  json:"name"`
+	Description  string   `yaml:"description"           json:"description"`
+	Tags         []string `yaml:"tags"                  json:"tags"`
+	SystemPrompt string   `yaml:"system_prompt"         json:"system_prompt"`
+	Model        string   `yaml:"model"                 json:"model"`
+	Provider     string   `yaml:"provider"              json:"provider"`
+	Temperature  float32  `yaml:"temperature"           json:"temperature"`
+	MaxTokens    int      `yaml:"max_tokens"            json:"max_tokens"`
+	Tools        []string `yaml:"tools"                 json:"tools"`
+	// CoreTools are held in full on every turn; everything else in Tools is
+	// listed by name and fetched via tools.load when the model asks. Empty uses
+	// a sensible default; ["*"] keeps every tool in full.
+	CoreTools            []string           `yaml:"core_tools" json:"core_tools"`
 	MCPs                 []string           `yaml:"mcps"                  json:"mcps"`
 	Memory               AgentMemoryConfig  `yaml:"memory"                json:"memory"`
 	MemoryModelCfg       ModelConfig        `yaml:"memory_model"          json:"memory_model"`
