@@ -127,6 +127,26 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	// --- Try primary model with retries ---
 	resp, err := chatWithRetry(ctx, kai, &s.history, 3)
 	if err == nil {
+		// A gateway that pre-prompts the model with its OWN identity sometimes
+		// answers as that identity instead of as this agent. It arrives as a
+		// normal 200 with a well-formed body, so nothing on the error path sees
+		// it — caught here or it reaches the operator verbatim.
+		if isPersonaBreak(resp.AIResponse) && len(resp.ToolCalls) == 0 {
+			log.Printf("[karmahelper] the model answered as something other than this agent; retrying")
+			retry, rerr := chatWithRetry(ctx, kai, &s.history, 1)
+			switch {
+			case rerr == nil && !isPersonaBreak(retry.AIResponse):
+				return s.processResponse(retry)
+			case transportFallback() != nil && len(turnTools) == 0:
+				log.Printf("[karmahelper] still out of character; trying the out-of-band path")
+				if out, ferr := transportFallback()(ctx, userMessage); ferr == nil {
+					return CleanContent(out), nil, TokenInfo{}, nil
+				}
+			}
+			// Returned as a failure rather than passed through: the operator
+			// reading "I'm <the gateway>" is the bug being fixed here.
+			return "", nil, TokenInfo{}, fmt.Errorf("model answered out of character and no path recovered it")
+		}
 		return s.processResponse(resp)
 	}
 
@@ -217,6 +237,28 @@ func isTransportFailure(err error) bool {
 		"connection refused", "no such host", "connection reset",
 		"i/o timeout", "dial tcp", "context deadline exceeded",
 		"502", "503", "504", "eof",
+	} {
+		if strings.Contains(s, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPersonaBreak reports whether a reply is the model introducing itself as
+// something other than this agent — the signature of an inference gateway whose
+// own system prompt won over the one this process sent.
+//
+// Matched only on FIRST-PERSON identity claims. The operator works on the
+// gateway itself, so a reply that merely mentions it by name is ordinary
+// conversation and must not trip this.
+func isPersonaBreak(response string) bool {
+	s := strings.ToLower(response)
+	for _, sig := range []string{
+		"i'm kiro", "i am kiro", "as kiro, i",
+		"i'm not karmax", "i am not karmax",
+		"i'm an ai development environment", "i am an ai development environment",
+		"i'm an ai-powered development environment", "i am an ai-powered development environment",
 	} {
 		if strings.Contains(s, sig) {
 			return true
