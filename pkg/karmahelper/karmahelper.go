@@ -543,8 +543,22 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder)
 		ai.WithMaxTokens(cfg.MaxTokens),
 	}
 
-	if cfg.Temperature > 0 && !strings.Contains(strings.ToLower(cfg.Model), "thinking") {
-		options = append(options, ai.WithTemperature(cfg.Temperature))
+	// Temperature or top_p, never both. Bedrock rejects a request carrying both
+	// with "cannot both be specified for this model", and karma sets BOTH by
+	// default (temperature 1, top_p 0.9) whether or not anyone asked — so every
+	// call 400s the moment the transport is Bedrock rather than a permissive
+	// proxy.
+	//
+	// top_p is suppressed unconditionally, not just when a temperature is
+	// configured: a session that sets no temperature still inherits karma's
+	// default of 1, so leaving top_p alone there sends both anyway. That is
+	// exactly how the memory sub-agent kept failing after the main agent was
+	// fixed — it never set a temperature, so the guard never fired.
+	if !strings.Contains(strings.ToLower(cfg.Model), "thinking") {
+		options = append(options, ai.WithTopP(0))
+		if cfg.Temperature > 0 {
+			options = append(options, ai.WithTemperature(cfg.Temperature))
+		}
 	}
 
 	if len(agentTools) > 0 {
