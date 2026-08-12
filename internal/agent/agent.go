@@ -277,11 +277,27 @@ func (a *Agent) initModels() error {
 		allTools = append(allTools, &commsEscalateTool{agent: a})
 	}
 
+	// The model is given the core tools in full and told about the rest by name.
+	// Seventy-one schemas is ~5,000 tokens on every routing decision; the ones it
+	// actually reaches for arrive when it asks (see tools.load).
+	sessionTools, indexed := a.splitToolSet(allTools)
+	systemPrompt := a.def.SystemPrompt
+	if len(indexed) > 0 {
+		sessionTools = append(sessionTools, &builtin.LoadToolTool{Available: manifestNames(indexed)})
+		systemPrompt += "\n\n## Tools you can ask for\n\n" +
+			"You hold the tools above. These exist too — call `tools.load` with the names you need and they " +
+			"become available immediately. Ask as soon as you know a task needs one; do not decide you cannot " +
+			"do something that is listed here.\n\n" +
+			tools.Index(manifestsOf(indexed))
+		a.log.Info("tool set split for context",
+			zap.Int("held", len(sessionTools)), zap.Int("indexed", len(indexed)))
+	}
+
 	// Initialize main model session
 	mainCfg := MainModelConfig{
 		Provider:             a.def.Provider,
 		Model:                a.def.Model,
-		SystemPrompt:         a.def.SystemPrompt,
+		SystemPrompt:         systemPrompt,
 		Temperature:          a.def.Temperature,
 		MaxTokens:            a.def.MaxTokens,
 		CompactionThreshold:  a.def.CompactionThreshold,
@@ -289,7 +305,7 @@ func (a *Agent) initModels() error {
 		FallbackModels:       fallbackModels,
 	}
 
-	mainSession, err := NewMainModelSession(mainCfg, allTools, a.store, a.def.ID, a.log)
+	mainSession, err := NewMainModelSession(mainCfg, sessionTools, a.store, a.def.ID, a.log)
 	if err != nil {
 		return fmt.Errorf("init main model session: %w", err)
 	}
@@ -927,6 +943,33 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			return fmt.Errorf("main model: %w", err)
 		}
 		response = cleanOutboundResponse(response)
+
+		// The model asked for a tool it was only told about. Hand it over and let
+		// it finish — the turn is not done, it is waiting on a capability.
+		//
+		// Bounded because a model that keeps asking instead of acting would
+		// otherwise loop; after the last round it continues with what it has.
+		for round := 0; round < maxToolLoadRounds; round++ {
+			want := requestedTools(toolCalls)
+			if len(want) == 0 {
+				break
+			}
+			lent := a.lendNamed(want)
+			if len(lent) == 0 {
+				break
+			}
+			a.log.Info("loading tools the model asked for",
+				zap.String("agent", a.def.ID), zap.Strings("tools", want))
+			lctx, lcancel := context.WithTimeout(a.ctx, 3*time.Minute)
+			resp2, tc2, err2 := a.mainSession.ProcessMessageWithTools(lctx,
+				"The tools you requested are now available. Use them to finish the task.", lent)
+			lcancel()
+			if err2 != nil || strings.TrimSpace(resp2) == "" {
+				break
+			}
+			response = cleanOutboundResponse(resp2)
+			toolCalls = tc2
+		}
 
 		// Act-evidence guard: weak models fabricate "done" — they claim they
 		// sent/removed/scheduled something while calling zero tools. If the reply
