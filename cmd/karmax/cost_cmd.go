@@ -72,7 +72,7 @@ func costCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Model usage, last %d day(s)\n\n", days)
-			fmt.Printf("  %-26s %-9s %7s %12s %12s %10s\n", "MODEL", "INSTANCE", "CALLS", "INPUT", "OUTPUT", "EST. COST")
+			fmt.Printf("  %-26s %-9s %7s %12s %12s %12s %10s\n", "MODEL", "INSTANCE", "CALLS", "INPUT", "CACHED", "OUTPUT", "EST. COST")
 			var estTotal float64
 			var anyUnpriced bool
 			for _, t := range totals {
@@ -81,6 +81,7 @@ func costCmd() *cobra.Command {
 					// Cache reads bill at roughly a tenth of fresh input.
 					c := (float64(t.InputTokens)/1e6)*r.in +
 						(float64(t.CacheRead)/1e6)*r.in*0.1 +
+						(float64(t.CacheWrite)/1e6)*r.in*1.25 +
 						(float64(t.OutputTokens)/1e6)*r.out
 					estTotal += c
 					est = fmt.Sprintf("$%.2f", c)
@@ -88,8 +89,8 @@ func costCmd() *cobra.Command {
 					anyUnpriced = true
 					est = "—"
 				}
-				fmt.Printf("  %-26s %-9s %7d %12d %12d %10s\n",
-					truncModel(t.Model, 26), t.Kind, t.Calls, t.InputTokens, t.OutputTokens, est)
+				fmt.Printf("  %-26s %-9s %7d %12d %12d %12d %10s\n",
+					truncModel(t.Model, 26), t.Kind, t.Calls, t.InputTokens, t.CacheRead, t.OutputTokens, est)
 			}
 			fmt.Printf("\n  estimated total: $%.2f", estTotal)
 			if days > 0 {

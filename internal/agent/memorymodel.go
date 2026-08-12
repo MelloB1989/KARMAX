@@ -103,6 +103,8 @@ func (mm *MemoryModel) Retrieve(ctx context.Context, query string) (string, erro
 			Kind:         "memory",
 			InputTokens:  tokens.InputTokens,
 			OutputTokens: tokens.OutputTokens,
+			CacheRead:    tokens.CacheReadTokens,
+			CacheWrite:   tokens.CacheWriteTokens,
 		}); uerr != nil {
 			mm.log.Warn("could not record memory model usage", zap.Error(uerr))
 		}
