@@ -567,6 +567,23 @@ var migrations = []string{
 	// One row per event: a redelivered event must resume its turn, not start a
 	// second one alongside the first.
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_turns_event ON agent_turns(event_id)`,
+
+	// Work handed to a copy of the agent. The parent link is the point: today
+	// the only record of "who asked for this" is an in-memory map with a 6h TTL,
+	// so a restart forgets which turn caused which background job.
+	`CREATE TABLE IF NOT EXISTS subagent_runs (
+		id          TEXT PRIMARY KEY,
+		parent_id   TEXT NOT NULL,
+		child_id    TEXT NOT NULL,
+		task        TEXT NOT NULL,
+		status      TEXT NOT NULL DEFAULT 'running',
+		result      TEXT NOT NULL DEFAULT '',
+		depth       INTEGER NOT NULL DEFAULT 1,
+		started_at  DATETIME NOT NULL,
+		finished_at DATETIME
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_subagent_parent ON subagent_runs(parent_id, started_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_subagent_status ON subagent_runs(status)`,
 }
 
 func (s *Store) migrate() error {

@@ -238,6 +238,14 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 	// anything still marked running when this process is only now starting was
 	// killed mid-flight.
 	rt.resumeInterruptedTurns()
+	// Sub-agents ran in goroutines that died with the process, so a row still
+	// marked running is a lie that would count against the concurrency cap
+	// forever.
+	if n, err := rt.store.AbandonRunningSubagents(); err != nil {
+		rt.log.Warn("could not close abandoned sub-agents", zap.Error(err))
+	} else if n > 0 {
+		rt.log.Info("closed sub-agents the daemon died during", zap.Int64("count", n))
+	}
 
 	tick := time.NewTicker(30 * time.Second)
 	prune := time.NewTicker(6 * time.Hour)

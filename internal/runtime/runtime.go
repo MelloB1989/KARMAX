@@ -325,6 +325,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	// Register new builtin tools
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
+	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send, DefaultChannelID: commsMgr.DefaultChannelID})
 	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: hostpaths.GWS()})

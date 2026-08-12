@@ -19,6 +19,7 @@ import (
 var defaultCoreTools = []string{
 	"comms.send",
 	"claude_code.call",
+	"subagent.spawn",
 	"memory.retrieve",
 	"memory.ingest",
 	"profile.update",
