@@ -3,7 +3,6 @@ package comms
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -450,12 +449,12 @@ func (m *Manager) send(ctx context.Context, channelID, target, content string, a
 	}
 
 	if err := entry.channel.Send(ctx, target, content); err != nil {
-		// A recipient that does not exist is the caller's mistake and is
-		// returned to them to fix. Alerting on it woke the operator over a bad
-		// tool argument, and — because the alert is itself a message — invited
-		// the same failure again on the way out.
-		var unresolved *UnresolvedTargetError
-		if alertOnFailure && !errors.As(err, &unresolved) {
+		// A bad address is the caller's mistake and is returned to them to fix.
+		// Alerting on it woke the operator over a tool argument, and — because
+		// the alert is itself a message — invited the same failure on the way
+		// out. Both shapes count: a name that matched nothing and a name that
+		// matched several are equally answerable by whoever wrote it.
+		if alertOnFailure && !isAddressingMistake(err) {
 			m.publishCritical(entry.agentID, channelID, "communication channel send failed", map[string]any{
 				"target": target,
 				"error":  err.Error(),
