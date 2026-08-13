@@ -136,6 +136,18 @@ func showIntegrations(ctx context.Context, reg *integration.Registry, check bool
 	if needsLogin > 0 {
 		fmt.Printf("\n%d need attention. Connect one with `karmax login <integration>`.\n", needsLogin)
 	}
+	// A channel type only becomes an integration once a channel of that type is
+	// configured, so one that is supported but unconfigured is missing from the
+	// table entirely — which reads as "KARMAX cannot do Discord" rather than
+	// "nothing has told it to".
+	if cfg, err := config.Load(findConfig()); err == nil {
+		if missing := integrations.UnconfiguredChannelTypes(cfg); len(missing) > 0 {
+			fmt.Printf("\nAlso supported, but no channel configured: %s\n"+
+				"Add one under comms.channels in karmax.yaml, then `karmax login <channel-id>`.\n",
+				strings.Join(missing, ", "))
+		}
+	}
+
 	// Browser sign-ins need this registered with the provider BEFORE the login
 	// is attempted — otherwise the round trip dies on a redirect_uri mismatch
 	// with no indication of what the URL should have been.
