@@ -12,6 +12,12 @@ import "fmt"
 //
 // Every outcome is recorded, including refusals.
 func Publish(platform string, guard Guard, lim *Limiter, text string, do func() (id, url string, err error)) (map[string]any, error) {
+	// The platform being posted TO is not a private-life name, whatever the
+	// forbidden list says. Memory files notes about LinkedIn under a subject
+	// called "linkedin", which put the word on the list and made every LinkedIn
+	// post unpublishable for naming LinkedIn. Added here rather than in either
+	// connector so a third platform cannot reintroduce it.
+	guard.Allowed = append(append([]string{}, guard.Allowed...), platform)
 	verdict := guard.Check(text)
 
 	// A dry run shows the operator BOTH outcomes — the drafts that would have
