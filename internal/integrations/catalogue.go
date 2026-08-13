@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -58,13 +59,8 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	// The token-based channels, one per configured channel so two Slack
 	// workspaces are two integrations rather than one that silently wins.
 	for _, ch := range cfg.Comms.Channels {
-		switch strings.ToLower(ch.Type) {
-		case "discord":
-			reg.Register(discord(ch.ID))
-		case "slack":
-			reg.Register(slack(ch.ID))
-		case "telegram":
-			reg.Register(telegram(ch.ID))
+		if build, ok := channelIntegrations[strings.ToLower(ch.Type)]; ok {
+			reg.Register(build(ch.ID))
 		}
 	}
 	return reg
@@ -269,4 +265,50 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// channelIntegrations are the channel types that become an integration once a
+// channel of that type is configured — one per channel, so two Slack
+// workspaces are two integrations rather than one that silently wins.
+//
+// A map rather than a switch because the CLI needs the same list to answer
+// "what could I connect that I have not", and a second copy written by hand is
+// a copy that drifts.
+var channelIntegrations = map[string]func(id string) integration.Integration{
+	"discord":  discord,
+	"slack":    slack,
+	"telegram": telegram,
+}
+
+// SupportedChannelTypes names every channel type KARMAX can run, sorted.
+//
+// Registration is per configured channel, which means a supported channel type
+// nobody has configured is absent from `karmax integrations` and therefore
+// indistinguishable from one KARMAX cannot do at all. Discord and Telegram have
+// been implemented and wired the whole time; the operator had no way to find out.
+func SupportedChannelTypes() []string {
+	out := make([]string, 0, len(channelIntegrations))
+	for name := range channelIntegrations {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// UnconfiguredChannelTypes names supported channel types with no channel
+// configured for them.
+func UnconfiguredChannelTypes(cfg *config.KarmaxConfig) []string {
+	configured := map[string]bool{}
+	if cfg != nil {
+		for _, ch := range cfg.Comms.Channels {
+			configured[strings.ToLower(ch.Type)] = true
+		}
+	}
+	var out []string
+	for _, name := range SupportedChannelTypes() {
+		if !configured[name] {
+			out = append(out, name)
+		}
+	}
+	return out
 }
