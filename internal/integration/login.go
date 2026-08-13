@@ -209,17 +209,22 @@ func loginOAuth2(ctx context.Context, m Manifest, auth connectorkit.AuthMethod,
 	}
 
 	host, port := callbackAddress()
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+	listeners, err := listenLoopback(host, port)
 	if err != nil {
 		// Deliberately not falling back to another port. The whole point of a
 		// fixed one is that it matches what the operator registered with the
 		// provider; quietly moving would produce a redirect_uri mismatch whose
 		// cause is invisible from the browser error.
 		return out, fmt.Errorf("could not open the OAuth callback port %d: %w\n"+
-			"Something else is using it. Free it, or set karmax.oauth_callback_port "+
-			"to a port you have registered with %s", port, err, m.Name)
+			"Something else is using it — check for another `karmax login` still waiting. "+
+			"Free it, or set karmax.oauth_callback_port to a port you have registered with %s",
+			port, err, m.Name)
 	}
-	defer listener.Close()
+	defer func() {
+		for _, l := range listeners {
+			l.Close()
+		}
+	}()
 	redirect := fmt.Sprintf("http://%s:%d/callback", host, port)
 
 	// Said out loud before the browser opens, because a redirect_uri mismatch is
@@ -255,7 +260,9 @@ func loginOAuth2(ctx context.Context, m Manifest, auth connectorkit.AuthMethod,
 			"<h2>%s is connected.</h2><p>You can close this tab.</p></body></html>", m.Name)
 		codes <- q.Get("code")
 	})}
-	go srv.Serve(listener)
+	for _, l := range listeners {
+		go srv.Serve(l)
+	}
 	defer srv.Close()
 
 	p.Say("Opening %s to authorise…", m.Name)
@@ -417,4 +424,42 @@ func callbackAddress() (string, int) {
 func CallbackURL() string {
 	host, port := callbackAddress()
 	return fmt.Sprintf("http://%s:%d/callback", host, port)
+}
+
+// listenLoopback opens the callback port on every loopback address the
+// advertised host can resolve to.
+//
+// net.Listen("tcp", "localhost:9095") binds ONE address — 127.0.0.1 on this
+// machine — while a browser resolving the same name may reach for ::1 and get
+// connection refused. The operator sees a browser that redirected to a page
+// that never loads and a login that hangs until it times out, with nothing
+// naming the cause. A literal IP is taken at its word; a hostname listens on
+// both families so whichever one the browser picks is answered.
+func listenLoopback(host string, port int) ([]net.Listener, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return nil, err
+		}
+		return []net.Listener{l}, nil
+	}
+
+	var out []net.Listener
+	var firstErr error
+	for _, addr := range []string{"127.0.0.1", "::1"} {
+		l, err := net.Listen("tcp", net.JoinHostPort(addr, strconv.Itoa(port)))
+		if err != nil {
+			// A machine with IPv6 disabled is normal, and so is one where only
+			// v6 loopback exists. Only failing on BOTH is a real failure.
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		out = append(out, l)
+	}
+	if len(out) == 0 {
+		return nil, firstErr
+	}
+	return out, nil
 }
