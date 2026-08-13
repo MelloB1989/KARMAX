@@ -32,6 +32,7 @@ var defaultCoreTools = []string{
 	"comms.escalate",
 	"self.remind",
 	"karmax.capabilities",
+	"tools.search",
 }
 
 // splitToolSet divides tools into those the session holds and those it only

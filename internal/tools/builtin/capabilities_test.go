@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -82,8 +83,15 @@ func TestCapabilitiesNamesToolsPresentButNotGranted(t *testing.T) {
 	if !found {
 		t.Errorf("linkedin.post should be reported as ungranted, got %v", out["tools_on_this_instance_but_not_yours"])
 	}
-	if out["ungranted_note"] == nil {
-		t.Error("the ungranted list needs the instruction that goes with it")
+	note, _ := out["ungranted_note"].(string)
+	// The note is the whole value of the list: it must point at the route that
+	// works. Telling the agent to ask the operator to edit karmax.yaml made it
+	// do exactly that instead of spawning the child that could have posted.
+	if !strings.Contains(note, "subagent.spawn") {
+		t.Errorf("the note must point at spawning a granted child, got: %s", note)
+	}
+	if strings.Contains(note, "karmax.yaml") && !strings.Contains(note, "do not ask") {
+		t.Errorf("the note must not send the operator to edit config, got: %s", note)
 	}
 }
 
