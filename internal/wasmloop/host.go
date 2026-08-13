@@ -53,7 +53,6 @@ const (
 	FnRunLoop     = "run_loop"
 	FnShortForget = "short_forget"
 	FnOperators   = "operator_chats"
-	FnSocialAuth  = "social_authorize"
 )
 
 var hostDescriptions = map[string]string{
@@ -65,7 +64,6 @@ var hostDescriptions = map[string]string{
 	FnTrigger:     "see what triggered it",
 	FnAsk:         "ask your agent questions (which can use its tools)",
 	FnConfig:      "read the settings you gave it at install",
-	FnSocialAuth:  "PUBLISH PUBLICLY — clear one exact post with the privacy guard and receive the credential to send it",
 	FnHostTool:    "learn where wacli and gws live (a path, not permission to run them)",
 	FnHarness:     "run a coding harness — shell, files and web research",
 	FnGateway:     "ask the main model directly",
@@ -143,28 +141,6 @@ type Kit interface {
 	RunLoop(name string) error
 	ShortForget(group, key string) error
 	OperatorChats() []string
-	// SocialAuthorize clears one exact post and hands back what is needed to
-	// send it.
-	//
-	// Deliberately one call rather than a guard and a credential the loop could
-	// fetch separately: a loop that can obtain the token without passing the
-	// text has a guard it can walk around, and this is the one capability that
-	// makes something visible to strangers with nobody having read it. The text
-	// approved here is the text the token is good for.
-	SocialAuthorize(ctx context.Context, platform, text string) (SocialGrant, error)
-}
-
-// SocialGrant is permission to publish one post, already checked.
-type SocialGrant struct {
-	// Endpoint and Token are what the loop needs to make the call itself.
-	Endpoint string            `json:"endpoint"`
-	Token    string            `json:"token"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	// Author is the account identifier the platform wants in the body.
-	Author string `json:"author,omitempty"`
-	// Refused explains a post the guard would not allow. Non-empty means no
-	// token was issued and the loop must not publish.
-	Refused string `json:"refused,omitempty"`
 }
 
 // ShortMemory is one short-term working note.
@@ -511,20 +487,6 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 
 	case FnConfig:
 		return json.Marshal(map[string]any{"value": r.kit.Config(req)})
-
-	case FnSocialAuth:
-		var in struct {
-			Platform string `json:"platform"`
-			Text     string `json:"text"`
-		}
-		if err := json.Unmarshal([]byte(req), &in); err != nil {
-			return nil, err
-		}
-		grant, err := r.kit.SocialAuthorize(ctx, in.Platform, in.Text)
-		if err != nil {
-			return json.Marshal(map[string]any{"refused": err.Error()})
-		}
-		return json.Marshal(grant)
 
 	case FnHostTool:
 		// A path, not permission to run it. A sandboxed guest cannot exec;
