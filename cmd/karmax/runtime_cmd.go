@@ -31,6 +31,7 @@ func newStartCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load config from %s: %w\nRun 'karmax init' to create one", cfgFile, err)
 			}
+			recordConfigPath(cfg.Karmax.DataDir, cfgFile)
 
 			var log *zap.Logger
 			if cfg.Karmax.LogFormat == "pretty" {
