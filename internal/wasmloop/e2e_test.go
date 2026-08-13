@@ -339,3 +339,7 @@ func TestToolNameRefusesARequestThatNamesNothing(t *testing.T) {
 		t.Errorf("toolName = %q, %v; want whatsapp.read", name, err)
 	}
 }
+
+func (k *countingKit) SocialAuthorize(context.Context, string, string) (SocialGrant, error) {
+	return SocialGrant{}, nil
+}

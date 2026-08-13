@@ -25,10 +25,9 @@ import (
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
-	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
-	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memmerge"
@@ -38,6 +37,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/review"
 	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
+	"github.com/MelloB1989/karmax/internal/social"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
@@ -93,6 +93,16 @@ type KarmaxRuntime struct {
 	// attributions link work a workflow started to the workflow, so a turn
 	// arriving later — a delegation completing — can still be traced back.
 	attributions *attributions
+
+	// socialGuard and socialLimit gate the one capability that makes something
+	// visible to strangers. Held on the runtime rather than inside a connector
+	// because the loop that publishes must not be able to reach around them.
+	socialGuard *forbiddenNames
+	socialLimit *social.Limiter
+	// integrations resolves the managed credential a publish needs, so
+	// `karmax login` stays the way tokens arrive and a refresh reaches the
+	// loop without anyone re-pasting one.
+	integrations *integration.Registry
 
 	// loopkit runtime state (set by startLoopkitLoops)
 	loopkitLoops     map[string]loopkit.Loop
@@ -150,11 +160,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// posting rather than trusted to whatever wrote the draft.
 	forbidden := newForbiddenNames(s, log)
 	socialLimit := newSocialLimiter(s)
-	// Unconditional: their tools exist before either account is connected, so a
-	// dry run can show what KARMAX would say without an X or LinkedIn account
-	// existing yet. Publishing for real still needs real credentials.
-	connHost.RegisterUnconditional(xconn.New(forbidden.Guard, socialLimit))
-	connHost.RegisterUnconditional(linkedinconn.New(forbidden.Guard, socialLimit))
+	// X and LinkedIn are NOT registered as connectors. Publishing is the one
+	// capability that makes something visible to strangers with nobody having
+	// read it, and as ordinary tools they sat in the registry where the
+	// orchestrator could hold them. It now reaches a loop that declares the
+	// capability, through social_authorize, and nowhere else. Their auth still
+	// lives in the integration catalogue so `karmax login linkedin` works.
 	startedAt := time.Now()
 
 	// Set provider env vars from config
@@ -826,6 +837,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	rt := &KarmaxRuntime{
 		cfg:          cfg,
 		log:          log,
+		socialGuard:  forbidden,
+		socialLimit:  socialLimit,
+		integrations: integrationReg,
 		store:        s,
 		bus:          b,
 		clock:        clk,
