@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,12 +208,24 @@ func loginOAuth2(ctx context.Context, m Manifest, auth connectorkit.AuthMethod,
 		return out, fmt.Errorf("%s needs a client id before it can authorise", m.Name)
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	host, port := callbackAddress()
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
 	if err != nil {
-		return out, fmt.Errorf("could not open a callback port: %w", err)
+		// Deliberately not falling back to another port. The whole point of a
+		// fixed one is that it matches what the operator registered with the
+		// provider; quietly moving would produce a redirect_uri mismatch whose
+		// cause is invisible from the browser error.
+		return out, fmt.Errorf("could not open the OAuth callback port %d: %w\n"+
+			"Something else is using it. Free it, or set karmax.oauth_callback_port "+
+			"to a port you have registered with %s", port, err, m.Name)
 	}
 	defer listener.Close()
-	redirect := fmt.Sprintf("http://127.0.0.1:%d/callback", listener.Addr().(*net.TCPAddr).Port)
+	redirect := fmt.Sprintf("http://%s:%d/callback", host, port)
+
+	// Said out loud before the browser opens, because a redirect_uri mismatch is
+	// reported by the provider as an opaque error page and the operator has no
+	// other way to learn the exact string to register.
+	p.Say("Callback URL (must be registered in your %s app): %s", m.Name, redirect)
 
 	state := fmt.Sprintf("karmax-%d", time.Now().UnixNano())
 	authURL := cfg.AuthURL + "?" + url.Values{
@@ -365,4 +379,42 @@ func OpenBrowser(target string) error {
 		}
 	}
 	return fmt.Errorf("no browser opener on this machine")
+}
+
+// The OAuth callback the browser is redirected back to.
+//
+// Fixed rather than ephemeral. An OS-assigned port changes every run, and a
+// provider that matches redirect URLs exactly — LinkedIn does — can never have
+// it registered, so the flow could not complete at all. 9095 sits beside the
+// webhook (9090) and API (9091) ports as one of KARMAX's own.
+const (
+	defaultCallbackPort = 9095
+	defaultCallbackHost = "127.0.0.1"
+)
+
+// callbackAddress resolves the host and port to listen on and to advertise.
+//
+// Both are overridable: some providers reject the bare-IP loopback form and
+// want "localhost", and an operator may already be using 9095 for something.
+// Whatever comes out here is both bound and sent as redirect_uri, so the two
+// can never disagree.
+func callbackAddress() (string, int) {
+	host := strings.TrimSpace(os.Getenv("KARMAX_OAUTH_CALLBACK_HOST"))
+	if host == "" {
+		host = defaultCallbackHost
+	}
+	port := defaultCallbackPort
+	if v := strings.TrimSpace(os.Getenv("KARMAX_OAUTH_CALLBACK_PORT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n < 65536 {
+			port = n
+		}
+	}
+	return host, port
+}
+
+// CallbackURL is the redirect URI this instance will use, for showing the
+// operator what to register before they start a login they cannot finish.
+func CallbackURL() string {
+	host, port := callbackAddress()
+	return fmt.Sprintf("http://%s:%d/callback", host, port)
 }

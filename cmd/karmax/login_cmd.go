@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -135,6 +136,17 @@ func showIntegrations(ctx context.Context, reg *integration.Registry, check bool
 	if needsLogin > 0 {
 		fmt.Printf("\n%d need attention. Connect one with `karmax login <integration>`.\n", needsLogin)
 	}
+	// Browser sign-ins need this registered with the provider BEFORE the login
+	// is attempted — otherwise the round trip dies on a redirect_uri mismatch
+	// with no indication of what the URL should have been.
+	for _, s := range statuses {
+		if s.AuthKind == connectorkit.AuthOAuth2 && !s.Configured {
+			fmt.Printf("\nBrowser sign-ins redirect back to: %s\n"+
+				"Register that exact URL in the provider's app settings first.\n",
+				integration.CallbackURL())
+			break
+		}
+	}
 	return nil
 }
 
@@ -186,6 +198,15 @@ func openIntegrations() (*integration.Registry, func(), error) {
 	db, err := store.New(filepath.Join(cfg.Karmax.DataDir, "db", "karmax.db"), zap.NewNop())
 	if err != nil {
 		return nil, nil, err
+	}
+	// The OAuth callback address is config, but the login flow lives in a
+	// package that has never taken a config — so it is handed over the
+	// environment, which the operator can also set directly.
+	if p := cfg.Karmax.OAuthCallbackPort; p > 0 && os.Getenv("KARMAX_OAUTH_CALLBACK_PORT") == "" {
+		_ = os.Setenv("KARMAX_OAUTH_CALLBACK_PORT", strconv.Itoa(p))
+	}
+	if h := strings.TrimSpace(cfg.Karmax.OAuthCallbackHost); h != "" && os.Getenv("KARMAX_OAUTH_CALLBACK_HOST") == "" {
+		_ = os.Setenv("KARMAX_OAUTH_CALLBACK_HOST", h)
 	}
 	return integrations.Build(cfg, db), func() { db.Close() }, nil
 }

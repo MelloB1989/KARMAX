@@ -70,6 +70,14 @@ type KarmaxCoreConfig struct {
 	// the run rate against, so "we are over" is a fact either can state rather
 	// than a number only the operator remembers. Zero means no budget set.
 	BudgetUSDPerMonth float64 `yaml:"budget_usd_per_month"`
+	// OAuthCallbackPort is the loopback port the browser is redirected back to
+	// when connecting an OAuth integration. Fixed rather than ephemeral because
+	// providers match redirect URLs exactly against what you registered, so the
+	// port has to be one you can register. Zero uses the default (9095).
+	OAuthCallbackPort int `yaml:"oauth_callback_port"`
+	// OAuthCallbackHost is the host in that URL. Defaults to 127.0.0.1; set it
+	// to "localhost" for a provider that refuses the bare-IP form.
+	OAuthCallbackHost string `yaml:"oauth_callback_host"`
 }
 
 type WebhooksConfig struct {
