@@ -62,5 +62,84 @@ func findConfig() string {
 			return c
 		}
 	}
+	// Last resort: the config a running instance recorded. Checked after every
+	// explicit location so it can never override a deliberate local file — it
+	// only answers "I am not in the checkout and there is no config here",
+	// which is where the operator usually is.
+	dataDir := strings.TrimSpace(os.Getenv("KARMAX_DATA_DIR"))
+	if dataDir == "" {
+		if home, _ := os.UserHomeDir(); home != "" {
+			dataDir = filepath.Join(home, ".karmax")
+		}
+	}
+	if p := configFromPointer(dataDir); p != "" {
+		return p
+	}
 	return "karmax.yaml"
+}
+
+// configPointer is the file the running daemon leaves in its data dir naming
+// the config it actually loaded.
+const configPointer = "config-path"
+
+// recordConfigPath notes where this instance's config lives, so the CLI works
+// from any directory.
+//
+// The config is found by walking the working directory, which is right for the
+// daemon — it is started from its own checkout — and wrong for the operator,
+// who runs `karmax integrations` from wherever they happen to be and got
+// "open karmax.yaml: no such file or directory" for their trouble.
+//
+// Written under the data dir rather than a fixed path, so an instance with its
+// own KARMAX_DATA_DIR leaves its own pointer and two instances never learn each
+// other's config.
+func recordConfigPath(dataDir, cfgFile string) {
+	dir := expandHome(strings.TrimSpace(dataDir))
+	abs, err := filepath.Abs(cfgFile)
+	if err != nil || dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	// Best effort throughout: failing to leave a convenience pointer is not a
+	// reason to refuse to start.
+	_ = os.WriteFile(filepath.Join(dir, configPointer), []byte(abs+"\n"), 0o644)
+}
+
+// configFromPointer reads the path a running instance recorded.
+func configFromPointer(dataDir string) string {
+	dir := expandHome(strings.TrimSpace(dataDir))
+	if dir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(dir, configPointer))
+	if err != nil {
+		return ""
+	}
+	path := strings.TrimSpace(string(data))
+	if path == "" {
+		return ""
+	}
+	if _, err := os.Stat(path); err != nil {
+		// The checkout moved or was deleted; a stale pointer is worse than none.
+		return ""
+	}
+	return path
+}
+
+// expandHome resolves a leading ~ so a data dir written as "~/.karmax" in YAML
+// is usable as a path.
+func expandHome(p string) string {
+	if p == "" {
+		return ""
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return p
+		}
+		return filepath.Join(home, strings.TrimPrefix(p, "~"))
+	}
+	return p
 }
