@@ -44,6 +44,11 @@ type CapabilitiesTool struct {
 	// Missing names tools the config asked for that nothing answers to. An
 	// agent that cannot see its own gaps guesses at names to fill them.
 	Missing []string
+	// Loadable names the tools this agent can fetch with tools.load — its own
+	// indexed set, NOT everything on the instance. Reporting the registry here
+	// told the agent it could load tools that tools.load cannot bind, because
+	// binding resolves against the agent's configured toolset.
+	Loadable []string
 }
 
 func (t *CapabilitiesTool) Manifest() tools.ToolManifest {
@@ -74,21 +79,37 @@ func (t *CapabilitiesTool) Execute(ctx context.Context, input map[string]any) (t
 		for _, n := range t.Held {
 			held[n] = true
 		}
-		var haveNow, canLoad []string
+		haveNow := append([]string(nil), t.Held...)
+		canLoad := append([]string(nil), t.Loadable...)
+		mine := map[string]bool{}
+		for _, n := range append(append([]string{}, haveNow...), canLoad...) {
+			mine[n] = true
+		}
+		// Present on this instance but not granted to this agent. A real case:
+		// LinkedIn was connected, linkedin.post was registered, and the agent
+		// told the operator it had no LinkedIn integration — true for the agent,
+		// and unfixable by it, because the tool was never in its config. Naming
+		// the difference turns "I cannot" into "grant me this and I can".
+		var ungranted []string
 		if t.Registry != nil {
 			for _, m := range t.Registry.List() {
-				if held[m.Name] {
-					haveNow = append(haveNow, m.Name)
-				} else {
-					canLoad = append(canLoad, m.Name)
+				if !mine[m.Name] {
+					ungranted = append(ungranted, m.Name)
 				}
 			}
 		}
 		sort.Strings(haveNow)
 		sort.Strings(canLoad)
+		sort.Strings(ungranted)
 		out["tools_held"] = haveNow
 		out["tools_loadable"] = canLoad
 		out["how_to_load"] = "call tools.load with the names you need"
+		if len(ungranted) > 0 {
+			out["tools_on_this_instance_but_not_yours"] = ungranted
+			out["ungranted_note"] = "these exist here but are not in your agent's tool list, so you cannot " +
+				"load or call them. Do not claim the capability is missing from KARMAX — tell the operator " +
+				"the tool exists and needs adding to the agent's tools in karmax.yaml"
+		}
 		if len(t.Missing) > 0 {
 			out["tools_configured_but_missing"] = t.Missing
 			out["missing_note"] = "these names are in your config but no tool answers to them — " +

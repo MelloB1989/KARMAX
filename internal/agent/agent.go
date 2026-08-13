@@ -290,6 +290,7 @@ func (a *Agent) initModels() error {
 	for _, t := range sessionTools {
 		if c, ok := t.(*builtin.CapabilitiesTool); ok {
 			c.Held = manifestNames(sessionTools)
+			c.Loadable = manifestNames(indexed)
 		}
 	}
 	systemPrompt := a.def.SystemPrompt
