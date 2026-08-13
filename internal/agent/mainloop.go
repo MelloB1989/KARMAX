@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -205,13 +206,14 @@ func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMess
 		m.log.Error("failed to persist user message", zap.Error(persistErr))
 	}
 
-	// Persist assistant response.
+	// Persist assistant response, with what it did to produce it.
 	if persistErr := m.store.AppendChatMessage(store.StoredChatMessage{
-		ID:      uuid.New().String(),
-		AgentID: m.agentID,
-		Role:    "assistant",
-		Content: response,
-		Tokens:  assistantTokens,
+		ID:        uuid.New().String(),
+		AgentID:   m.agentID,
+		Role:      "assistant",
+		Content:   response,
+		Tokens:    assistantTokens,
+		ToolCalls: encodeToolCalls(toolCalls),
 	}); persistErr != nil {
 		m.log.Error("failed to persist assistant message", zap.Error(persistErr))
 	}
@@ -220,6 +222,71 @@ func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMess
 	m.history = m.session.GetHistory()
 
 	return response, toolCalls, nil
+}
+
+// maxStoredToolInput bounds one tool's recorded arguments. A file write or a
+// long WhatsApp body would otherwise put the whole payload in the transcript
+// twice — once as the call, once as whatever it produced.
+const maxStoredToolInput = 600
+
+// encodeToolCalls records what the turn actually ran.
+//
+// The column and the struct field have been here all along and nothing ever
+// filled them, so the stored conversation showed replies with no trace of the
+// work behind them: a turn that sent a message, wrote a file and armed a timer
+// was indistinguishable from one that only talked. Reading it back, neither the
+// operator nor the agent could tell what had already been done.
+//
+// Arguments are kept and results are not. What was attempted is what makes the
+// transcript legible; results are large, often duplicated in the reply, and are
+// the part that would make history expensive to carry.
+func encodeToolCalls(calls []karmahelper.ToolCallRecord) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	type storedCall struct {
+		Name  string         `json:"name"`
+		Input map[string]any `json:"input,omitempty"`
+		Error string         `json:"error,omitempty"`
+	}
+	out := make([]storedCall, 0, len(calls))
+	for _, c := range calls {
+		sc := storedCall{Name: c.Name, Input: truncateToolInput(c.Input)}
+		switch {
+		case c.Error != nil:
+			sc.Error = c.Error.Error()
+		case c.Result.IsError:
+			sc.Error = c.Result.Error
+		}
+		out = append(out, sc)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		// Never worth failing a turn over: the reply is the load-bearing part.
+		return ""
+	}
+	return string(encoded)
+}
+
+// truncateToolInput shortens long argument values, keeping the keys — which
+// tool ran against which chat or path stays readable even when the body does not.
+func truncateToolInput(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		s, ok := v.(string)
+		if !ok {
+			out[k] = v
+			continue
+		}
+		if runes := []rune(s); len(runes) > maxStoredToolInput {
+			s = string(runes[:maxStoredToolInput]) + "…"
+		}
+		out[k] = s
+	}
+	return out
 }
 
 // NeedsCompaction returns true when the accumulated token count has reached

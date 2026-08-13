@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,7 +36,82 @@ func newAgentCmd() *cobra.Command {
 			return nil
 		},
 	})
+	cmd.AddCommand(newConversationCmd())
 	return cmd
+}
+
+// newConversationCmd shows the stored conversation and whether it is compacting.
+func newConversationCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "conversation [agent]",
+		Short: "Show the stored conversation: size, tool calls, and compaction state",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			cfg, err := config.Load(findConfig())
+			if err != nil {
+				return err
+			}
+			agentID := ""
+			if len(args) > 0 {
+				agentID = args[0]
+			} else if len(cfg.Agents) > 0 {
+				agentID = cfg.Agents[0].ID
+			}
+			if agentID == "" {
+				return fmt.Errorf("no agent configured; name one explicitly")
+			}
+
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			stats, err := s.ConversationStats(agentID)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("agent          %s\n", agentID)
+			fmt.Printf("messages       %d", stats.Messages)
+			if len(stats.ByRole) > 0 {
+				roles := make([]string, 0, len(stats.ByRole))
+				for r, n := range stats.ByRole {
+					roles = append(roles, fmt.Sprintf("%s %d", r, n))
+				}
+				sort.Strings(roles)
+				fmt.Printf("  (%s)", strings.Join(roles, ", "))
+			}
+			fmt.Println()
+			fmt.Printf("with tools     %d\n", stats.WithToolCalls)
+
+			threshold := 0
+			keepRecent := 0
+			for _, a := range cfg.Agents {
+				if a.ID == agentID {
+					threshold, keepRecent = a.CompactionThreshold, a.CompactionKeepRecent
+				}
+			}
+			fmt.Printf("tokens         %d", stats.Tokens)
+			if threshold > 0 {
+				fmt.Printf(" of %d (%d%% — compacts at 100%%, keeping the last %d messages)",
+					threshold, stats.Tokens*100/int64(threshold), keepRecent)
+			}
+			fmt.Println()
+
+			if stats.LastCompactedAt.IsZero() {
+				fmt.Println("compaction     never run on this history")
+			} else {
+				fmt.Printf("compaction     last ran %s (%s ago)\n",
+					stats.LastCompactedAt.Local().Format("2006-01-02 15:04"),
+					time.Since(stats.LastCompactedAt).Round(time.Minute))
+			}
+			if !stats.OldestMessageAt.IsZero() {
+				fmt.Printf("history since  %s\n", stats.OldestMessageAt.Local().Format("2006-01-02 15:04"))
+			}
+			return nil
+		},
+	}
 }
 
 func newSchedulerCmd() *cobra.Command {
