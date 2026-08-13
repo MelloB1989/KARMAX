@@ -171,3 +171,64 @@ func TestTheOperatorCanOverrideBothWays(t *testing.T) {
 		t.Errorf("an allowed word was still treated as a name: %v", err)
 	}
 }
+
+func TestGuardAllowsThePlatformItIsPostingTo(t *testing.T) {
+	// Memory files notes about LinkedIn under a subject called "linkedin",
+	// which put the word on the forbidden list and made every LinkedIn post
+	// unpublishable for the crime of naming LinkedIn.
+	guard := Guard{Forbidden: []string{"linkedin", "Rameez"}}
+	lim := &Limiter{}
+
+	_, err := Publish("linkedin", guard, lim, "Shipped something today. Posting about it on LinkedIn.",
+		func() (string, string, error) { return "1", "u", nil })
+	if err != nil {
+		t.Errorf("a LinkedIn post must be allowed to say LinkedIn: %v", err)
+	}
+
+	// The exemption is exactly one word wide.
+	_, err = Publish("linkedin", guard, lim, "Shipped something with Rameez today.",
+		func() (string, string, error) { return "1", "u", nil })
+	if err == nil {
+		t.Error("a real name must still be refused")
+	}
+}
+
+func TestRefusalTellsTheWriterWhatToDo(t *testing.T) {
+	guard := Guard{Forbidden: []string{"Rameez"}}
+	err := guard.Check("Worked with Rameez today.")
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	// A refusal that only says "no" gets reported as failure; one that says
+	// "rewrite without that" gets acted on.
+	if !strings.Contains(err.Error(), "rewrite") {
+		t.Errorf("refusal should invite a retry, got: %v", err)
+	}
+	// Lower-cased by the matcher, which is fine — the writer needs to know
+	// which word to remove, not how it was capitalised.
+	if !strings.Contains(strings.ToLower(err.Error()), "rameez") {
+		t.Errorf("refusal must name what tripped it, got: %v", err)
+	}
+}
+
+func TestMoneyPatternNeedsADigitNotAComma(t *testing.T) {
+	guard := Guard{}
+	// The exact draft that was refused: "monitors," and "infers," were read as
+	// currency because a bare comma satisfied the digit class.
+	ok := "It monitors, infers, and acts proactively for developers, year after year."
+	if err := guard.Check(ok); err != nil {
+		t.Errorf("ordinary prose refused as money: %v", err)
+	}
+
+	// Real amounts must still be caught, in the forms that actually appear.
+	for _, bad := range []string{
+		"We closed at ₹2,00,000 this month.",
+		"Rs. 500 for the domain.",
+		"It cost $1,200.",
+		"A 2.5L contract.",
+	} {
+		if err := guard.Check(bad); err == nil {
+			t.Errorf("money not caught in %q", bad)
+		}
+	}
+}

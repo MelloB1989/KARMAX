@@ -61,9 +61,14 @@ func (r *Refusal) Error() string {
 // because they do not depend on knowing anybody: an amount or a phone number in
 // a post about somebody's day is a leak by construction.
 var (
+	// An amount must START with a digit. It used to be [\d,]+, which a bare
+	// comma satisfies — so "monitors, " parsed as "rs" followed by an amount,
+	// and every ordinary post containing monitors, infers, developers or years
+	// before a comma was refused for containing money.
+	//
 	// Money in the forms this operator's life actually contains: ₹2,00,000,
 	// Rs 30000, $5k, 80k.
-	moneyPattern = regexp.MustCompile(`(?i)(₹|rs\.?\s*|\$|usd\s*|inr\s*)\s?[\d,]+(\.\d+)?\s*(k|l|lakh|lakhs|cr|crore|m|million)?|\b[\d,]+\s*(k|l|lakh|lakhs|cr|crore)\b`)
+	moneyPattern = regexp.MustCompile(`(?i)(₹|rs\.?\s*|\$|usd\s*|inr\s*)\s?\d[\d,]*(\.\d+)?\s*(k|l|lakh|lakhs|cr|crore|m|million)?|\b\d[\d,]*\s*(k|l|lakh|lakhs|cr|crore)\b`)
 	// "4k" is a screen, not a payment, and this operator writes about tech. A
 	// guard that refuses every post mentioning a display is a guard that gets
 	// switched off, which protects nothing.
@@ -112,8 +117,9 @@ func (g Guard) Check(draft string) error {
 
 	if found := g.namesIn(text); len(found) > 0 {
 		return &Refusal{
-			Reason: "it names somebody or something from the operator's private life",
-			Found:  found,
+			Reason: "it names somebody or something from the operator's private life — " +
+				"rewrite it without that and post again, keeping the substance",
+			Found: found,
 		}
 	}
 	return nil

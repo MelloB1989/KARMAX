@@ -219,6 +219,9 @@ func brief(task string) string {
 		"You do NOT share the parent's conversation, and nobody is reading your output as it happens: " +
 		"there is no one to ask a follow-up question of. Work from what is written here, use your tools to " +
 		"find what you need, and finish with the answer itself — not a plan to produce it.\n\n" +
+		"A tool that refuses you is usually telling you how to succeed: a guard that names what it " +
+		"objected to, an argument it wants differently. Read what it said, change that, and call it again " +
+		"before concluding the task cannot be done. Two or three attempts, not one, and not twenty.\n\n" +
 		"If you genuinely cannot complete it, say exactly what is missing.\n\n" +
 		"## Your task\n\n" + strings.TrimSpace(task)
 }
