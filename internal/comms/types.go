@@ -2,6 +2,7 @@ package comms
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -82,4 +83,39 @@ func (e *UnresolvedTargetError) Error() string {
 		return "no such recipient: " + e.Target
 	}
 	return "no such recipient " + e.Target + ": " + e.Reason
+}
+
+// TargetCandidate is one conversation a name might have meant.
+type TargetCandidate struct {
+	JID     string `json:"jid"`
+	Name    string `json:"name"`
+	Phone   string `json:"phone,omitempty"`
+	IsGroup bool   `json:"is_group"`
+}
+
+// AmbiguousTargetError says a name matched several conversations.
+//
+// Distinct from UnresolvedTargetError because the fix is different: nothing
+// matched means find another address, several matched means pick one. Sending
+// to a guess is the one option not on the table — a message to the wrong "Dev"
+// cannot be taken back — so the candidates travel with the error and whoever
+// asked gets to choose.
+type AmbiguousTargetError struct {
+	Target     string
+	Candidates []TargetCandidate
+}
+
+func (e *AmbiguousTargetError) Error() string {
+	names := make([]string, 0, len(e.Candidates))
+	for i, c := range e.Candidates {
+		if i == 5 {
+			break
+		}
+		label := c.Name
+		if label == "" {
+			label = c.JID
+		}
+		names = append(names, label+" <"+c.JID+">")
+	}
+	return "\"" + e.Target + "\" matches several conversations: " + strings.Join(names, ", ")
 }
