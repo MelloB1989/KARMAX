@@ -131,3 +131,33 @@ func TestPruneKeepsDeadTurns(t *testing.T) {
 		t.Errorf("prune should keep dead turns only: %+v", rows)
 	}
 }
+
+func TestRetryClearsThePreviousFinishTime(t *testing.T) {
+	s := turnStore(t)
+	if _, err := s.StartAgentTurn(turn("t1", "evt-retry")); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := s.FinishAgentTurn("evt-retry", TurnFailed, "boom"); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	// A failed turn is eligible to be retried, and the retry must not inherit
+	// the finish timestamp of the attempt that failed.
+	claimed, err := s.StartAgentTurn(turn("t2", "evt-retry"))
+	if err != nil || !claimed {
+		t.Fatalf("a failed turn should be reclaimable: %v %v", claimed, err)
+	}
+
+	var status string
+	var finished, started interface{}
+	row := s.db.QueryRow(`SELECT status, finished_at, started_at FROM agent_turns WHERE event_id = ?`, "evt-retry")
+	if err := row.Scan(&status, &finished, &started); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if status != "running" {
+		t.Errorf("status = %q, want running", status)
+	}
+	if finished != nil {
+		t.Errorf("a running turn must not carry a finish time, got %v", finished)
+	}
+}

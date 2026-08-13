@@ -58,10 +58,15 @@ func (s *Store) StartAgentTurn(t AgentTurn) (bool, error) {
 INSERT INTO agent_turns (id, agent_id, event_id, event_kind, event_json, status, attempt, started_at)
 VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
 ON CONFLICT(event_id) DO UPDATE SET
-	status     = 'running',
-	attempt    = agent_turns.attempt + 1,
-	started_at = excluded.started_at,
-	error      = ''
+	status      = 'running',
+	attempt     = agent_turns.attempt + 1,
+	started_at  = excluded.started_at,
+	-- Cleared with the rest: a retry that kept the previous attempt's
+	-- finish time left the row reading as both running and finished, with
+	-- finished_at earlier than started_at. Anything deciding "did this
+	-- complete" from that timestamp got the wrong answer.
+	finished_at = NULL,
+	error       = ''
 WHERE agent_turns.status IN ('interrupted', 'failed')`,
 		t.ID, t.AgentID, t.EventID, t.EventKind, t.EventJSON, t.Attempt, t.StartedAt)
 	if err != nil {
