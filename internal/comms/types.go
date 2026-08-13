@@ -2,6 +2,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 )
@@ -118,4 +119,17 @@ func (e *AmbiguousTargetError) Error() string {
 		names = append(names, label+" <"+c.JID+">")
 	}
 	return "\"" + e.Target + "\" matches several conversations: " + strings.Join(names, ", ")
+}
+
+// isAddressingMistake reports whether a send failed because of who it was
+// addressed to rather than because the channel is broken.
+//
+// One list, so a new addressing error cannot be added without the send path
+// learning about it — the first version checked only "matched nothing" and let
+// "matched several" page the operator, which is the same failure wearing a
+// different type.
+func isAddressingMistake(err error) bool {
+	var unresolved *UnresolvedTargetError
+	var ambiguous *AmbiguousTargetError
+	return errors.As(err, &unresolved) || errors.As(err, &ambiguous)
 }

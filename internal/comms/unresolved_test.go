@@ -32,3 +32,24 @@ func TestUnresolvedTargetErrorNamesTheTarget(t *testing.T) {
 		t.Errorf("Error() = %q", got)
 	}
 }
+
+func TestBothAddressingMistakesAreExemptFromAlerting(t *testing.T) {
+	// The first version of this guard covered only "matched nothing", so an
+	// ambiguous name still paged the operator — the same failure in a different
+	// type. Both must be recognised, and a real channel fault must not be.
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nothing matched", &UnresolvedTargetError{Target: "whatsapp-main"}, true},
+		{"several matched", &AmbiguousTargetError{Target: "Dev"}, true},
+		{"wrapped", fmt.Errorf("sending: %w", &AmbiguousTargetError{Target: "Dev"}), true},
+		{"channel fault", errors.New("exit status 1"), false},
+	}
+	for _, c := range cases {
+		if got := isAddressingMistake(c.err); got != c.want {
+			t.Errorf("%s: isAddressingMistake = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
