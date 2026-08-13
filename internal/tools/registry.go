@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"sort"
 	"strings"
 	"sync"
 )
@@ -78,14 +79,52 @@ func IsAgentScoped(name string) bool {
 // not present are returned in unresolved rather than causing a hard failure,
 // so a single typo (or an agent-scoped tool name) no longer wipes out an
 // agent's entire toolset. The caller decides how to report unresolved names.
+//
+// A name ending in '*' matches by prefix. Whole families of tools arrive from
+// SDKs — wacli alone brings forty-six — and naming each one in config is a list
+// that is wrong the moment the SDK grows another. The agent asks for the family.
 func (r *Registry) ResolveForAgent(names []string) (resolved []Tool, unresolved []string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	resolved = make([]Tool, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	add := func(t Tool) bool {
+		name := t.Manifest().Name
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		resolved = append(resolved, t)
+		return true
+	}
+
 	for _, name := range names {
+		if prefix, ok := strings.CutSuffix(name, "*"); ok {
+			// Sorted, because the registry is a map and an unstable tool order
+			// would invalidate the prompt cache on every restart.
+			matches := make([]Tool, 0, 8)
+			for key, t := range r.tools {
+				if strings.HasPrefix(key, prefix) || strings.HasPrefix(key, CanonicalName(prefix)) {
+					matches = append(matches, t)
+				}
+			}
+			sort.Slice(matches, func(i, j int) bool {
+				return matches[i].Manifest().Name < matches[j].Manifest().Name
+			})
+			matched := false
+			for _, t := range matches {
+				if add(t) {
+					matched = true
+				}
+			}
+			if !matched {
+				unresolved = append(unresolved, name)
+			}
+			continue
+		}
 		if t, ok := r.tools[name]; ok {
-			resolved = append(resolved, t)
+			add(t)
 			continue
 		}
 		unresolved = append(unresolved, name)

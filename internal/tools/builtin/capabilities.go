@@ -41,6 +41,9 @@ type CapabilitiesTool struct {
 	// Held names the tools carried in full this turn, so the answer can
 	// distinguish those from the ones needing tools.load first.
 	Held []string
+	// Missing names tools the config asked for that nothing answers to. An
+	// agent that cannot see its own gaps guesses at names to fill them.
+	Missing []string
 }
 
 func (t *CapabilitiesTool) Manifest() tools.ToolManifest {
@@ -86,6 +89,11 @@ func (t *CapabilitiesTool) Execute(ctx context.Context, input map[string]any) (t
 		out["tools_held"] = haveNow
 		out["tools_loadable"] = canLoad
 		out["how_to_load"] = "call tools.load with the names you need"
+		if len(t.Missing) > 0 {
+			out["tools_configured_but_missing"] = t.Missing
+			out["missing_note"] = "these names are in your config but no tool answers to them — " +
+				"treat them as unavailable and tell the operator rather than looking for a substitute name"
+		}
 	}
 
 	if section == "all" || section == "loops" {
