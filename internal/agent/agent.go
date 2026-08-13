@@ -292,6 +292,10 @@ func (a *Agent) initModels() error {
 			c.Held = manifestNames(sessionTools)
 			c.Loadable = manifestNames(indexed)
 		}
+		if c, ok := t.(*builtin.ToolSearchTool); ok {
+			c.Held = manifestNames(sessionTools)
+			c.Loadable = manifestNames(indexed)
+		}
 	}
 	systemPrompt := a.def.SystemPrompt
 	if len(indexed) > 0 {
@@ -367,6 +371,9 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 		case *builtin.SelfRemindTool:
 			cp := *tt
 			cp.AgentID = a.def.ID
+			out = append(out, &cp)
+		case *builtin.ToolSearchTool:
+			cp := *tt
 			out = append(out, &cp)
 		case *builtin.CapabilitiesTool:
 			cp := *tt

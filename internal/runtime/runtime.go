@@ -341,6 +341,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.GogTool{DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
+	toolReg.Register(&builtin.ToolSearchTool{Registry: toolReg})
 	toolReg.Register(&builtin.CostTool{Store: s, BudgetUSDPerMonth: cfg.Karmax.BudgetUSDPerMonth})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{
