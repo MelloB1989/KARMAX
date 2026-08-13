@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -109,12 +110,17 @@ func (sm *SummaryModel) Compact(ctx context.Context, history *models.AIChatHisto
 	})
 
 	for _, msg := range newHistory.Messages {
+		// The rewrite used to keep only role and text, so compaction quietly
+		// erased the tool calls on every message it carried forward — the recent
+		// turns, the ones most worth being able to read back.
 		storedMessages = append(storedMessages, store.StoredChatMessage{
-			ID:      uuid.New().String(),
-			AgentID: agentID,
-			Role:    roleToString(msg.Role),
-			Content: msg.Message,
-			Tokens:  len(msg.Message) / 4,
+			ID:         uuid.New().String(),
+			AgentID:    agentID,
+			Role:       roleToString(msg.Role),
+			Content:    msg.Message,
+			Tokens:     len(msg.Message) / 4,
+			ToolCalls:  encodeHistoryToolCalls(msg.ToolCalls),
+			ToolCallID: msg.ToolCallId,
 		})
 	}
 
@@ -124,6 +130,19 @@ func (sm *SummaryModel) Compact(ctx context.Context, history *models.AIChatHisto
 	}
 
 	return newHistory, nil
+}
+
+// encodeHistoryToolCalls serialises the tool calls attached to a history
+// message, so a compacted transcript still says what the turn did.
+func encodeHistoryToolCalls(calls []models.OpenAIToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(calls)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // roleToString converts a models.AIRoles to its string representation.

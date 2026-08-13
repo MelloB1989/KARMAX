@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -117,4 +119,89 @@ func (s *Store) GetChatTokenCount(agentID string) (int64, error) {
 		return 0, fmt.Errorf("get chat token count: %w", err)
 	}
 	return total, nil
+}
+
+// ConversationStats describes the stored conversation for one agent.
+//
+// Compaction was only ever visible by grepping the daemon log, so "is it even
+// running?" had no answer short of reading source. These are the numbers that
+// answer it: where the token count sits against the threshold, and when the last
+// compaction actually rewrote the history.
+type ConversationStats struct {
+	Messages      int
+	ByRole        map[string]int
+	WithToolCalls int
+	Tokens        int64
+	// LastCompactedAt is the timestamp of the newest summary row. Compaction
+	// writes exactly one, so its age is the age of the last compaction. Zero
+	// means the history has never been compacted.
+	LastCompactedAt time.Time
+	OldestMessageAt time.Time
+}
+
+func (s *Store) ConversationStats(agentID string) (ConversationStats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := ConversationStats{ByRole: map[string]int{}}
+
+	rows, err := s.db.Query(`
+		SELECT role, COUNT(*),
+		       SUM(CASE WHEN tool_calls IS NOT NULL AND tool_calls NOT IN ('', 'null', '[]') THEN 1 ELSE 0 END)
+		FROM chat_history WHERE agent_id = ? GROUP BY role`, agentID)
+	if err != nil {
+		return out, fmt.Errorf("conversation stats: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var role string
+		var count, withTools int
+		if err := rows.Scan(&role, &count, &withTools); err != nil {
+			return out, fmt.Errorf("scan conversation stats: %w", err)
+		}
+		out.ByRole[role] = count
+		out.Messages += count
+		out.WithToolCalls += withTools
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("conversation stats: %w", err)
+	}
+
+	if err := s.db.QueryRow(`SELECT COALESCE(SUM(tokens), 0) FROM chat_history WHERE agent_id = ?`,
+		agentID).Scan(&out.Tokens); err != nil {
+		return out, fmt.Errorf("conversation tokens: %w", err)
+	}
+
+	// ORDER BY ... LIMIT 1 rather than MAX/MIN: an aggregate loses the column's
+	// declared DATETIME type, so the driver hands back a string that will not
+	// scan into a time and the timestamp silently reads as "never".
+	out.LastCompactedAt, err = s.chatTimestamp(`
+		SELECT created_at FROM chat_history
+		WHERE agent_id = ? AND role = 'system' AND content LIKE '%Previous Conversation Summary%'
+		ORDER BY created_at DESC LIMIT 1`, agentID)
+	if err != nil {
+		return out, err
+	}
+	out.OldestMessageAt, err = s.chatTimestamp(`
+		SELECT created_at FROM chat_history WHERE agent_id = ? ORDER BY created_at ASC LIMIT 1`, agentID)
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// chatTimestamp reads one timestamp, treating "no such row" as a zero time
+// rather than an error — a history with no compaction yet is a normal state.
+func (s *Store) chatTimestamp(query, agentID string) (time.Time, error) {
+	var t sql.NullTime
+	switch err := s.db.QueryRow(query, agentID).Scan(&t); {
+	case errors.Is(err, sql.ErrNoRows):
+		return time.Time{}, nil
+	case err != nil:
+		return time.Time{}, fmt.Errorf("conversation timestamp: %w", err)
+	}
+	if !t.Valid {
+		return time.Time{}, nil
+	}
+	return t.Time, nil
 }

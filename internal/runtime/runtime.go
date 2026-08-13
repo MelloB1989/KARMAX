@@ -1143,6 +1143,17 @@ func (rt *KarmaxRuntime) startAgentRouter(ctx context.Context) {
 			if evt.AgentID == "" {
 				return nil
 			}
+			if age, stale := staleEvent(evt); stale {
+				// Dropped rather than retried: a subscriber that falls behind
+				// would otherwise replay weeks of conversation as if it had all
+				// just arrived, and each replay costs a model turn it can never
+				// catch up on. Answering a seven-week-old message is worse than
+				// not answering it.
+				rt.log.Warn("skipped an event too old to act on",
+					zap.String("kind", string(evt.Kind)), zap.String("event", evt.ID),
+					zap.Duration("age", age.Round(time.Minute)))
+				return nil
+			}
 			a, ok := rt.agents.Get(evt.AgentID)
 			if !ok {
 				return nil
@@ -1160,6 +1171,34 @@ func (rt *KarmaxRuntime) startAgentRouter(ctx context.Context) {
 			}
 			return nil
 		})
+}
+
+// Freshness windows for routed events.
+//
+// A conversation is perishable: replying to a message fifteen minutes late is
+// still a reply, an hour late is noise, and weeks late is a bug the operator
+// experiences as the agent talking to itself about the past. Timers and
+// scheduled work are different — those are meant to survive downtime and fire
+// late, so they get a day, which still rejects a months-old replay.
+const (
+	commsFreshness   = 15 * time.Minute
+	defaultFreshness = 24 * time.Hour
+)
+
+// staleEvent reports whether an event is too old to be worth acting on.
+func staleEvent(evt bus.Event) (time.Duration, bool) {
+	// A missing timestamp is not evidence of age, and dropping on it would
+	// discard live work.
+	if evt.Timestamp.IsZero() {
+		return 0, false
+	}
+	limit := defaultFreshness
+	switch evt.Kind {
+	case bus.EventCommsMessage, bus.EventAgentMessage, bus.EventSystemCritical:
+		limit = commsFreshness
+	}
+	age := time.Since(evt.Timestamp)
+	return age, age > limit
 }
 
 // openTurn records a turn as running, reporting whether this caller owns it.
@@ -1242,6 +1281,15 @@ func (rt *KarmaxRuntime) startCriticalAlertLoop(ctx context.Context) {
 	rt.bus.Consume(ctx, bus.SubCritical, []bus.EventKind{bus.EventSystemCritical},
 		func(_ context.Context, evt bus.Event) error {
 			if attempted, _ := evt.Payload["alternative_alert_attempted"].(bool); attempted {
+				return nil
+			}
+			// An alert is a "something is wrong now" signal. Re-sent days later
+			// it is noise about a condition that has long since resolved or been
+			// superseded — and a subscriber catching up on a backlog sends every
+			// one of them, which the operator experiences as the alert spamming.
+			if age, stale := staleEvent(evt); stale {
+				rt.log.Warn("skipped a critical alert too old to send",
+					zap.String("event", evt.ID), zap.Duration("age", age.Round(time.Minute)))
 				return nil
 			}
 			message, _ := evt.Payload["message"].(string)
