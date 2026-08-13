@@ -225,7 +225,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	for _, chCfg := range cfg.Comms.Channels {
 		switch chCfg.Type {
 		case "discord":
-			ch := discord.New(chCfg.ID, credential(chCfg.ID, "token", chCfg.Token), log)
+			token := credential(chCfg.ID, "token", chCfg.Token)
+			if unconfiguredChannel(log, chCfg.ID, "discord", token) {
+				continue
+			}
+			ch := discord.New(chCfg.ID, token, log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
 			}); err != nil {
@@ -237,7 +241,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		case "telegram":
 			// Long-polling: no public URL or tunnel needed, so it works on the
 			// same self-hosted boxes as the rest of KARMAX.
-			ch := telegram.New(chCfg.ID, credential(chCfg.ID, "token", chCfg.Token), log)
+			token := credential(chCfg.ID, "token", chCfg.Token)
+			if unconfiguredChannel(log, chCfg.ID, "telegram", token) {
+				continue
+			}
+			ch := telegram.New(chCfg.ID, token, log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
 			}); err != nil {
@@ -256,6 +264,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			botToken := credential(chCfg.ID, "bot_token", chCfg.Token)
 			if botToken == "" {
 				botToken = os.Getenv("SLACK_BOT_TOKEN")
+			}
+			if unconfiguredChannel(log, chCfg.ID, "slack", appToken, botToken) {
+				continue
 			}
 			ch := slack.New(chCfg.ID, appToken, botToken, log)
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
@@ -1494,3 +1505,25 @@ func meshInstanceName(cfg *config.KarmaxConfig) string {
 
 // Mesh exposes the mesh node, nil when this instance is not on a mesh.
 func (rt *KarmaxRuntime) Mesh() *mesh.Node { return rt.mesh }
+
+// unconfiguredChannel reports a channel that is declared but has no credentials
+// yet, so it can be skipped rather than started and failed.
+//
+// A channel in karmax.yaml with its token still unset is somebody who has not
+// finished setting it up — not a fault. Started anyway it fails, and a failed
+// channel publishes a critical AND sends an alert down another channel, so
+// three placeholder blocks become three alerts on the operator's phone about
+// work they had not begun. It still appears in `karmax integrations` as not
+// connected, which is where "you have not finished this" belongs.
+func unconfiguredChannel(log *zap.Logger, id, kind string, tokens ...string) bool {
+	for _, t := range tokens {
+		if strings.TrimSpace(t) != "" {
+			continue
+		}
+		log.Info("channel is configured but has no credentials yet; not starting it",
+			zap.String("id", id), zap.String("type", kind),
+			zap.String("next", "karmax login "+id))
+		return true
+	}
+	return false
+}

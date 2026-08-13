@@ -1,6 +1,7 @@
 package instagram
 
 import (
+	"encoding/base32"
 	"errors"
 	"strings"
 	"testing"
@@ -51,5 +52,72 @@ func TestSignInErrorKeepsTheUnderlyingCause(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "some new failure") {
 		t.Errorf("unclassified errors must pass through: %s", err)
+	}
+}
+
+func TestNormalizeTOTPSeedAcceptsWhatInstagramShows(t *testing.T) {
+	// Instagram displays the secret lowercase, in space-separated groups of
+	// four, with no padding. Pasted exactly as shown it used to fail.
+	got, err := normalizeTOTPSeed("abcd efgh ijkl mnop qrst uvwx yz23 4567")
+	if err != nil {
+		t.Fatalf("the displayed form must be accepted: %v", err)
+	}
+	if strings.ContainsAny(got, " \t") {
+		t.Errorf("spaces survived: %q", got)
+	}
+	if got != strings.ToUpper(got) {
+		t.Errorf("not uppercased: %q", got)
+	}
+	if _, err := base32.StdEncoding.DecodeString(got); err != nil {
+		t.Errorf("result must decode with the same decoder goinsta uses: %v", err)
+	}
+}
+
+func TestNormalizeTOTPSeedPadsShortSeeds(t *testing.T) {
+	// 26 characters: valid base32 content, but StdEncoding refuses it unpadded.
+	got, err := normalizeTOTPSeed("abcdefghijklmnopqrstuvwxyz")
+	if err != nil {
+		t.Fatalf("a 26-character seed should be padded, not rejected: %v", err)
+	}
+	if len(got)%8 != 0 {
+		t.Errorf("length %d is not a multiple of 8: %q", len(got), got)
+	}
+	if _, err := base32.StdEncoding.DecodeString(got); err != nil {
+		t.Errorf("padded seed still does not decode: %v", err)
+	}
+}
+
+func TestNormalizeTOTPSeedNamesTheBadCharacter(t *testing.T) {
+	// 0, 1, 8 and 9 are absent from the base32 alphabet and are exactly what
+	// someone transcribing by eye gets wrong.
+	_, err := normalizeTOTPSeed("ABC0EFGH")
+	if err == nil {
+		t.Fatal("expected a rejection")
+	}
+	if !strings.Contains(err.Error(), "'0'") || !strings.Contains(err.Error(), "A-Z") {
+		t.Errorf("error should name the character and the alphabet, got: %v", err)
+	}
+}
+
+func TestNormalizeTOTPSeedRejectsASixDigitCode(t *testing.T) {
+	// The likeliest mistake: pasting the rotating code instead of the secret.
+	if _, err := normalizeTOTPSeed("123456"); err == nil {
+		t.Error("a six-digit code is not a seed and must be refused")
+	}
+}
+
+func TestNormalizeTOTPSeedToleratesPaddingAndSeparators(t *testing.T) {
+	got, err := normalizeTOTPSeed("ABCD-EFGH_IJKL MNOP====")
+	if err != nil {
+		t.Fatalf("separators and existing padding should be tolerated: %v", err)
+	}
+	if _, err := base32.StdEncoding.DecodeString(got); err != nil {
+		t.Errorf("result does not decode: %v", err)
+	}
+}
+
+func TestNormalizeTOTPSeedRejectsAnEmptySeed(t *testing.T) {
+	if _, err := normalizeTOTPSeed("   "); err == nil {
+		t.Error("whitespace-only must be refused, not padded into nonsense")
 	}
 }
