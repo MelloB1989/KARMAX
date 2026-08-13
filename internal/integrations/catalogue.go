@@ -21,7 +21,9 @@ import (
 	"github.com/MelloB1989/karmax/internal/config"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
+	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
+	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -48,15 +50,11 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	}
 	reg.Register(integration.FromConnector(notionconn.New(), ""))
 	reg.Register(integration.FromConnector(instagramconn.New(), ""))
-	// The public accounts, present for authentication ONLY. They carry no tools:
-	// publishing left the registry entirely and is reachable from a loop through
-	// social_authorize, so the orchestrator cannot hold it. What stays here is
-	// `karmax login linkedin` and a health check, which is what keeps a token
-	// refreshed for the loop that does the posting.
-	reg.Register(socialAccount("x", "X", "Post to X as you.",
-		"https://developer.x.com/en/portal/dashboard", checkX))
-	reg.Register(socialAccount("linkedin", "LinkedIn", "Post to LinkedIn as you.",
-		"https://www.linkedin.com/developers/apps", checkLinkedIn))
+	// The public accounts. Registered with no forbidden-names list, because this
+	// registry only ever asks them to authenticate and report health — the list
+	// is supplied by the runtime, which is where posting actually happens.
+	reg.Register(integration.FromConnector(xconn.New(nil, nil), ""))
+	reg.Register(integration.FromConnector(linkedinconn.New(nil, nil), ""))
 
 	// The token-based channels, one per configured channel so two Slack
 	// workspaces are two integrations rather than one that silently wins.
@@ -313,71 +311,4 @@ func UnconfiguredChannelTypes(cfg *config.KarmaxConfig) []string {
 		}
 	}
 	return out
-}
-
-// socialAccount is an account KARMAX authenticates but does not act through.
-//
-// The connector that used to own these also owned linkedin.post and x.post,
-// which put publishing in the tool registry where the orchestrator could hold
-// it. Only the auth half remains: the loop that publishes asks the host for a
-// credential at the moment it posts, and gets one only for text the privacy
-// guard has already cleared.
-func socialAccount(id, name, desc, setupURL string,
-	check func(context.Context, connectorkit.Credentials) error) integration.Integration {
-
-	return integration.Simple{
-		Meta: integration.Manifest{
-			ID: id, Name: name, Description: desc,
-			Kind: integration.KindConnector, SetupURL: setupURL,
-			Config: []connectorkit.ConfigField{
-				{Key: "client_id", Description: "From your app's auth page", Required: true},
-				{Key: "client_secret", Description: "From the same page", Required: true, Secret: true},
-			},
-		},
-		Method: connectorkit.AuthMethod{
-			Kind:   connectorkit.AuthOAuth2,
-			OAuth2: oauthFor(id),
-		},
-		CheckFunc: check,
-	}
-}
-
-// oauthFor is each platform's browser flow.
-func oauthFor(id string) *connectorkit.OAuth2Config {
-	switch id {
-	case "linkedin":
-		return &connectorkit.OAuth2Config{
-			AuthURL:     "https://www.linkedin.com/oauth/v2/authorization",
-			TokenURL:    "https://www.linkedin.com/oauth/v2/accessToken",
-			Scopes:      []string{"openid", "profile", "w_member_social"},
-			ClientIDKey: "client_id", SecretKey: "client_secret",
-		}
-	case "x":
-		return &connectorkit.OAuth2Config{
-			AuthURL:     "https://x.com/i/oauth2/authorize",
-			TokenURL:    "https://api.x.com/2/oauth2/token",
-			Scopes:      []string{"tweet.read", "tweet.write", "users.read", "offline.access"},
-			ClientIDKey: "client_id", SecretKey: "client_secret",
-		}
-	}
-	return nil
-}
-
-// checkLinkedIn and checkX verify a stored token by calling the platform.
-func checkLinkedIn(ctx context.Context, c connectorkit.Credentials) error {
-	if strings.TrimSpace(c.AccessToken) == "" {
-		return fmt.Errorf("linkedin: not signed in — run `karmax login linkedin`")
-	}
-	_, err := get(ctx, "https://api.linkedin.com/v2/userinfo",
-		map[string]string{"Authorization": "Bearer " + c.AccessToken})
-	return err
-}
-
-func checkX(ctx context.Context, c connectorkit.Credentials) error {
-	if strings.TrimSpace(c.AccessToken) == "" {
-		return fmt.Errorf("x: not signed in — run `karmax login x`")
-	}
-	_, err := get(ctx, "https://api.x.com/2/users/me",
-		map[string]string{"Authorization": "Bearer " + c.AccessToken})
-	return err
 }

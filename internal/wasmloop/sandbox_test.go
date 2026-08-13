@@ -73,10 +73,6 @@ func (nullKit) RunLoop(string) error                          { return nil }
 func (nullKit) ShortForget(string, string) error              { return nil }
 func (nullKit) OperatorChats() []string                       { return []string{"911234567890"} }
 
-func (nullKit) SocialAuthorize(context.Context, string, string) (SocialGrant, error) {
-	return SocialGrant{}, nil
-}
-
 func TestAGuestCannotEscapeTheSandbox(t *testing.T) {
 	module := buildGuest(t)
 
