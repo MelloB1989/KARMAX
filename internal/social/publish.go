@@ -35,10 +35,21 @@ func Publish(platform string, guard Guard, lim *Limiter, text string, do func() 
 			status = "preview-refused"
 		}
 		lim.Record(platform, status, "", text, verdict)
-		return map[string]any{
+		out := map[string]any{
 			"dry_run": true, "posted": false, "platform": platform,
 			"would_publish": verdict == nil, "note": why,
-		}, nil
+		}
+		// A refused draft must not read as a clean one held back by the switch.
+		// The verdict used to be computed, recorded, and then dropped from the
+		// result — leaving would_publish:false as the only trace, which a caller
+		// reasonably read as "dry run stopped it". One sub-agent reported a post
+		// the guard had rejected as having "passed the privacy check".
+		if verdict != nil {
+			out["refused"] = verdict.Error()
+			out["note"] = "REFUSED by the privacy guard — this would NOT publish even with dry run off. " +
+				verdict.Error() + ". Rewrite it and call again."
+		}
+		return out, nil
 	}
 
 	if verdict != nil {

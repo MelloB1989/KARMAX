@@ -232,3 +232,40 @@ func TestMoneyPatternNeedsADigitNotAComma(t *testing.T) {
 		}
 	}
 }
+
+func TestDryRunResultDistinguishesRefusedFromMerelyHeld(t *testing.T) {
+	preview := func(string, string, error) error { return nil }
+
+	on := func() (bool, string) { return true, "switched on manually" }
+	clean := &Limiter{DryRun: on, Preview: preview}
+	out, err := Publish("linkedin", Guard{}, clean, "A perfectly ordinary post about shipping.",
+		func() (string, string, error) { return "1", "u", nil })
+	if err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	if out["refused"] != nil {
+		t.Errorf("a clean draft must not carry a refusal: %v", out["refused"])
+	}
+	if out["would_publish"] != true {
+		t.Errorf("a clean draft should say it would publish, got %v", out["would_publish"])
+	}
+
+	// The case that misled a sub-agent into reporting a rejected post as clean:
+	// blocked by the guard, not merely by the switch.
+	blocked := &Limiter{DryRun: on, Preview: preview}
+	out, err = Publish("linkedin", Guard{Forbidden: []string{"Rameez"}}, blocked,
+		"Shipped it with Rameez today.", func() (string, string, error) { return "1", "u", nil })
+	if err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	if out["refused"] == nil {
+		t.Fatal("a refused draft must say so in its result, not only in would_publish")
+	}
+	note, _ := out["note"].(string)
+	if !strings.Contains(note, "REFUSED") {
+		t.Errorf("the note must lead with the refusal, got: %s", note)
+	}
+	if !strings.Contains(strings.ToLower(note), "rameez") {
+		t.Errorf("the note must name what tripped it, got: %s", note)
+	}
+}
