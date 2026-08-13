@@ -136,14 +136,14 @@ func (c *Connector) connect(cr connectorkit.Credentials) (*goinsta.Instagram, er
 	}
 
 	var insta *goinsta.Instagram
-	if seed := strings.TrimSpace(cr.Get("totp_seed")); seed != "" {
+	seed := strings.TrimSpace(cr.Get("totp_seed"))
+	if seed != "" {
 		insta = goinsta.New(user, pass, seed)
 	} else {
 		insta = goinsta.New(user, pass)
 	}
 	if err := insta.Login(); err != nil {
-		return nil, fmt.Errorf("instagram: sign-in failed (a challenge here usually means the account "+
-			"was flagged — open the app and confirm it is you): %w", err)
+		return nil, signInError(err, seed != "")
 	}
 	if path := sessionPath(user); path != "" {
 		_ = insta.Export(path)
@@ -215,4 +215,41 @@ func safeName(s string) string {
 		return "account"
 	}
 	return b.String()
+}
+
+// signInError says what actually went wrong, in terms the operator can act on.
+//
+// The one blanket hint this used to give — "a challenge usually means the
+// account was flagged" — sent people to open the app and confirm their identity
+// when the real answer was that two-factor is on and no seed was supplied. The
+// underlying library reports that as "illegal base32 data at input byte 0",
+// which names the symptom (it tried to decode an empty seed) and not the cause.
+func signInError(err error, hadSeed bool) error {
+	low := strings.ToLower(err.Error())
+	twoFactor := strings.Contains(low, "2fa") ||
+		strings.Contains(low, "otp") ||
+		strings.Contains(low, "two-factor") ||
+		strings.Contains(low, "base32")
+
+	switch {
+	case twoFactor && !hadSeed:
+		return fmt.Errorf("instagram: this account has two-factor authentication enabled, "+
+			"so signing in needs its TOTP seed — run `karmax login instagram` again and paste it "+
+			"at the totp_seed prompt. That is the base32 SECRET shown when you set up the "+
+			"authenticator app (often behind \"can't scan the QR code\"), not a six-digit code. "+
+			"Underlying error: %w", err)
+
+	case twoFactor:
+		return fmt.Errorf("instagram: the TOTP seed was not usable — it must be the base32 secret "+
+			"from the authenticator setup screen, with no spaces, not a six-digit code and not a "+
+			"backup code. Underlying error: %w", err)
+
+	case strings.Contains(low, "challenge"):
+		return fmt.Errorf("instagram: sign-in hit a verification challenge, which usually means the "+
+			"account was flagged — open the app and confirm it is you, then try again: %w", err)
+
+	case strings.Contains(low, "password") || strings.Contains(low, "credential"):
+		return fmt.Errorf("instagram: the username or password was rejected: %w", err)
+	}
+	return fmt.Errorf("instagram: sign-in failed: %w", err)
 }
