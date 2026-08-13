@@ -25,25 +25,47 @@ import (
 // prompt, which is what MemoryModel has done for retrieval all along.
 
 // spawnChild runs one brief on a fresh session and returns its answer.
-func (a *Agent) spawnChild(ctx context.Context, childID, brief string) (string, error) {
+//
+// grant, when supplied, IS the child's toolset — the orchestrator built this
+// child around a capability rather than cloning itself. That is what lets the
+// orchestrator stay small: a tool it needs once a week belongs to the child
+// that needs it, not in the set carried into every routing decision.
+func (a *Agent) spawnChild(ctx context.Context, childID, brief string, grant []tools.Tool) (string, error) {
 	a.mu.RLock()
 	allTools := a.allTools
 	a.mu.RUnlock()
 
-	childTools := make([]tools.Tool, 0, len(allTools))
-	for _, t := range allTools {
+	source := allTools
+	if len(grant) > 0 {
+		// Plus the handful any child needs to report back and look things up;
+		// a child that can post but cannot recall who it is posting about is
+		// not a useful worker.
+		source = append(append([]tools.Tool{}, grant...), a.lendNamed(childGrantCore)...)
+	}
+
+	childTools := make([]tools.Tool, 0, len(source))
+	seen := make(map[string]bool, len(source))
+	for _, t := range source {
+		name := t.Manifest().Name
 		// No spawning from a spawn. Depth is also checked in the tool, but a
 		// child simply not holding the tool is the stronger guarantee.
-		if t.Manifest().Name == "subagent.spawn" {
+		if name == "subagent.spawn" || seen[name] {
 			continue
 		}
+		seen[name] = true
 		childTools = append(childTools, t)
 	}
 
 	// Same split the parent runs on: a core set in full, the rest named. Handing
 	// a child all seventy-odd schemas would cost more per run than the work and
-	// makes it likelier to reach for the wrong one.
-	held, indexed := a.splitToolSet(childTools)
+	// makes it likelier to reach for the wrong one. A child built around a grant
+	// is already small, so it holds everything it was given.
+	var held, indexed []tools.Tool
+	if len(grant) > 0 {
+		held = childTools
+	} else {
+		held, indexed = a.splitToolSet(childTools)
+	}
 	held, indexed = preloadNamedInBrief(brief, held, indexed)
 	if len(indexed) > 0 {
 		held = append(held, &builtin.LoadToolTool{Available: manifestNames(indexed)})
@@ -200,3 +222,10 @@ func usageOf(agentID string, def AgentDef, kind string, t karmahelper.TokenInfo)
 		CacheWrite:   t.CacheWriteTokens,
 	}
 }
+
+// childGrantCore is what a purpose-built child gets alongside its grant.
+//
+// Without memory it cannot check who or what it is acting on, and without
+// comms it cannot say anything went wrong — both are how a narrow child turns
+// a bad assumption into a confident mistake.
+var childGrantCore = []string{"memory.retrieve", "comms.send", "karmax.capabilities"}
