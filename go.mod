@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/Davincible/goinsta/v3 v3.2.6
 	github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d
-	github.com/MelloB1989/karma v1.21.0
+	github.com/MelloB1989/karma v1.21.1
 	github.com/MelloB1989/wacli v0.3.0
 	github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36
 	github.com/bwmarrin/discordgo v0.29.0

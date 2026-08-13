@@ -357,6 +357,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// webhooks; the subtraction is ours.
 	toolReg.Register(&builtin.WhatsAppMonitoredTool{})
 	toolReg.Register(&builtin.WhatsAppViewMediaTool{WacliPath: waCLIPath, Store: s, AgentID: waAgentID})
+	// The memory model and the loop host each built one of these privately, so
+	// the agent that actually talks to the operator was the only caller without
+	// a way to read a chat — it had forty-six wacli tools it was never given and
+	// a config asking for a name nobody had registered.
+	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, Store: s})
 	var waMonitorTool *builtin.WhatsAppMonitorTool
 	if cfg.Webhooks.Enabled {
 		waMonitorTool = &builtin.WhatsAppMonitorTool{
@@ -643,6 +648,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 		if len(unknownTools) > 0 {
 			log.Warn("agent lists unknown tools (skipped)", zap.String("agent", def.ID), zap.Strings("tools", unknownTools))
+			def.UnknownTools = unknownTools
 		}
 
 		var mcpTools []tools.Tool

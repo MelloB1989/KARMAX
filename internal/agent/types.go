@@ -47,7 +47,13 @@ type AgentDef struct {
 	// CoreTools are held in full on every turn; everything else in Tools is
 	// listed by name and fetched via tools.load when the model asks. Empty uses
 	// a sensible default; ["*"] keeps every tool in full.
-	CoreTools            []string           `yaml:"core_tools" json:"core_tools"`
+	CoreTools []string `yaml:"core_tools" json:"core_tools"`
+	// UnknownTools are names from Tools that no registered tool answered to.
+	// Set by the runtime at registration, never configured. The agent is told
+	// so it can report a capability gap instead of inventing a tool name to
+	// fill it — the failure this was written for looked like a broken bridge
+	// and was really four names that had quietly stopped existing.
+	UnknownTools         []string           `yaml:"-" json:"unknown_tools,omitempty"`
 	MCPs                 []string           `yaml:"mcps"                  json:"mcps"`
 	Memory               AgentMemoryConfig  `yaml:"memory"                json:"memory"`
 	MemoryModelCfg       ModelConfig        `yaml:"memory_model"          json:"memory_model"`

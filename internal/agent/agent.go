@@ -286,6 +286,12 @@ func (a *Agent) initModels() error {
 	// Seventy-one schemas is ~5,000 tokens on every routing decision; the ones it
 	// actually reaches for arrive when it asks (see tools.load).
 	sessionTools, indexed := a.splitToolSet(allTools)
+	// The split is only known here, so the tool that reports it is told here.
+	for _, t := range sessionTools {
+		if c, ok := t.(*builtin.CapabilitiesTool); ok {
+			c.Held = manifestNames(sessionTools)
+		}
+	}
 	systemPrompt := a.def.SystemPrompt
 	if len(indexed) > 0 {
 		sessionTools = append(sessionTools, &builtin.LoadToolTool{Available: manifestNames(indexed)})
@@ -365,6 +371,7 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			cp := *tt
 			cp.AgentID = a.def.ID
 			cp.Store = a.store
+			cp.Missing = a.def.UnknownTools
 			out = append(out, &cp)
 		case *builtin.SubagentTool:
 			cp := *tt
