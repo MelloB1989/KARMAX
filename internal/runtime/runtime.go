@@ -336,7 +336,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	// Register new builtin tools
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
-	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: ""})
+	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
 	toolReg.Register(&builtin.RecipeTool{})
 	toolReg.Register(&builtin.GogTool{DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})

@@ -26,7 +26,12 @@ import (
 
 // SpawnFunc runs a task on a fresh agent instance and returns its answer. The
 // runtime supplies it; this package must not know how an agent is constructed.
-type SpawnFunc func(ctx context.Context, childID, brief string) (string, error)
+//
+// grant is the toolset the child runs with. Empty means "inherit mine", which
+// is the ordinary case; naming tools builds a child around a capability the
+// orchestrator itself does not carry, which is how a small orchestrator reaches
+// a large instance without holding all of it.
+type SpawnFunc func(ctx context.Context, childID, brief string, grant []tools.Tool) (string, error)
 
 // Limits on fanning out. Deliberately small: every child is a full model
 // conversation, and an agent that can spawn without bound can spend without
@@ -43,6 +48,10 @@ type SubagentTool struct {
 	AgentID string
 	Spawn   SpawnFunc
 	Publish func(bus.Event) error
+	// Registry resolves the tool names a spawn asks for. The whole instance,
+	// not the orchestrator's own set: the point of naming tools is to give a
+	// child something the orchestrator does not carry.
+	Registry *tools.Registry
 	// Depth is how deep this agent already is. A child spawned by a child
 	// inherits depth+1, which is what stops a fan-out from recursing.
 	Depth int
@@ -67,6 +76,11 @@ func (t *SubagentTool) Manifest() tools.ToolManifest {
 				"background": {
 					"type": "boolean",
 					"description": "true to return immediately and receive each result as an event later. Use for slow work; the default waits."
+				},
+				"tools": {
+					"type": "array",
+					"items": {"type": "string"},
+					"description": "Exact tool names to build the child around, e.g. [\"linkedin.post\"]. Use this to give a child a capability you do not carry yourself — karmax.capabilities lists what exists on this instance. Omit to give the child your own toolset."
 				}
 			},
 			"required": ["tasks"]
@@ -95,6 +109,11 @@ func (t *SubagentTool) Execute(ctx context.Context, input map[string]any) (tools
 			running+len(tasks), maxConcurrentChildren)), nil
 	}
 
+	grant, err := t.resolveGrant(stringList(input["tools"]))
+	if err != nil {
+		return tools.ErrorResult(err), nil
+	}
+
 	background, _ := input["background"].(bool)
 	if background && t.Publish == nil {
 		background = false
@@ -102,7 +121,7 @@ func (t *SubagentTool) Execute(ctx context.Context, input map[string]any) (tools
 
 	if background {
 		for _, task := range tasks {
-			t.start(task, true)
+			t.start(task, true, grant)
 		}
 		return tools.SuccessResult(map[string]any{
 			"status": "started",
@@ -123,7 +142,7 @@ func (t *SubagentTool) Execute(ctx context.Context, input map[string]any) (tools
 	for i, task := range tasks {
 		go func(i int, task string) {
 			defer func() { done <- struct{}{} }()
-			answer, err := t.run(ctx, task)
+			answer, err := t.run(ctx, task, grant)
 			out[i] = result{Task: truncate(task, 120), Answer: answer}
 			if err != nil {
 				out[i].Error = err.Error()
@@ -141,14 +160,14 @@ func (t *SubagentTool) Execute(ctx context.Context, input map[string]any) (tools
 }
 
 // start launches a child in the background, detached from the caller's turn.
-func (t *SubagentTool) start(task string, announce bool) {
+func (t *SubagentTool) start(task string, announce bool, grant []tools.Tool) {
 	go func() {
 		// Not the turn's context: the turn ends long before this does, which is
 		// the entire point of running it in the background.
 		ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
 		defer cancel()
 
-		answer, err := t.run(ctx, task)
+		answer, err := t.run(ctx, task, grant)
 		if !announce || t.Publish == nil {
 			return
 		}
@@ -168,7 +187,7 @@ func (t *SubagentTool) start(task string, announce bool) {
 
 // run spawns one child, recording it before the work starts so a crash leaves a
 // trace rather than a job nobody knows ran.
-func (t *SubagentTool) run(ctx context.Context, task string) (string, error) {
+func (t *SubagentTool) run(ctx context.Context, task string, grant []tools.Tool) (string, error) {
 	runID := uuid.New().String()
 	childID := fmt.Sprintf("%s/sub/%s", t.AgentID, runID[:8])
 
@@ -181,7 +200,7 @@ func (t *SubagentTool) run(ctx context.Context, task string) (string, error) {
 		}
 	}
 
-	answer, err := t.Spawn(ctx, childID, brief(task))
+	answer, err := t.Spawn(ctx, childID, brief(task), grant)
 	if t.Store != nil {
 		status, result := "ok", truncate(answer, 4000)
 		if err != nil {
@@ -202,4 +221,50 @@ func brief(task string) string {
 		"find what you need, and finish with the answer itself — not a plan to produce it.\n\n" +
 		"If you genuinely cannot complete it, say exactly what is missing.\n\n" +
 		"## Your task\n\n" + strings.TrimSpace(task)
+}
+
+// resolveGrant turns requested tool names into the child's toolset.
+//
+// Resolved against the whole instance rather than the orchestrator's own set,
+// which is the point: the orchestrator stays small and reaches a capability by
+// building a child around it, instead of carrying every tool it might one day
+// need. An unknown name is refused rather than dropped — a child quietly
+// missing the one tool its brief depends on produces a confident, useless
+// answer, which is worse than a spawn that failed.
+func (t *SubagentTool) resolveGrant(names []string) ([]tools.Tool, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	if t.Registry == nil {
+		return nil, fmt.Errorf("this instance cannot grant tools to a sub-agent; omit 'tools' to give it yours")
+	}
+
+	out := make([]tools.Tool, 0, len(names))
+	var unknown []string
+	seen := map[string]bool{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		tool, ok := t.Registry.Get(name)
+		if !ok {
+			unknown = append(unknown, name)
+			continue
+		}
+		// No spawning from a spawn, however it is asked for.
+		if tools.CanonicalName(tool.Manifest().Name) == "subagent_spawn" {
+			continue
+		}
+		out = append(out, tool)
+	}
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf("no tool named %s on this instance — call karmax.capabilities to see what exists",
+			strings.Join(unknown, ", "))
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("none of those names resolved to a usable tool")
+	}
+	return out, nil
 }
