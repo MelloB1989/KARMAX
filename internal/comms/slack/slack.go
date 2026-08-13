@@ -169,8 +169,13 @@ func (c *Channel) deliver(ctx context.Context, user, channel, text, ts, threadTS
 		return
 	}
 	msg := comms.Message{
-		ID:          ts,
-		ChannelID:   c.id,
+		ID: ts,
+		// The Slack conversation, not this transport's name. ChannelID is what a
+		// reply is addressed to and what the manager remembers as the last known
+		// target — recording the transport here meant a reply was sent to the
+		// string "slack-main", and the same confusion reached WhatsApp through
+		// the event payload. Every other channel puts the conversation here.
+		ChannelID:   channel,
 		ChannelType: "slack",
 		SenderID:    user,
 		SenderName:  c.userName(ctx, user),

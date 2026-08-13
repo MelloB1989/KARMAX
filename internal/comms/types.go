@@ -63,3 +63,23 @@ type Channel interface {
 	SendFile(ctx context.Context, target string, filename string, data []byte) error
 	IncomingMessages() <-chan Message
 }
+
+// UnresolvedTargetError says the recipient could not be found — a bad address,
+// not a broken channel.
+//
+// The distinction decides whether the operator is woken. A send that fails
+// because the transport is down is a system fault worth a critical alert on
+// another channel; a send that fails because the caller named something that is
+// not a person is a caller mistake, and paging the operator about it turns one
+// bad tool call into an alert on their phone.
+type UnresolvedTargetError struct {
+	Target string
+	Reason string
+}
+
+func (e *UnresolvedTargetError) Error() string {
+	if e.Reason == "" {
+		return "no such recipient: " + e.Target
+	}
+	return "no such recipient " + e.Target + ": " + e.Reason
+}

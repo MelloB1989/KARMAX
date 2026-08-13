@@ -329,7 +329,21 @@ func (w *WhatsAppChannel) Send(ctx context.Context, target, content string) erro
 				zap.String("output", string(out)),
 				zap.Error(err),
 			)
-			return fmt.Errorf("send whatsapp message: %w", err)
+			// wacli's own words travel with the error. They used to go only to
+			// the log, so the caller got "exit status 1" and could not tell an
+			// unresolvable recipient from a disconnected bridge — one is fixed by
+			// retrying with a JID, the other cannot be fixed by retrying at all.
+			reason := strings.TrimSpace(string(out))
+			// wacli reports an address it cannot resolve in its own words. Typed
+			// here so the send path can tell "you named a non-existent recipient"
+			// from "the bridge is down" and only escalate the second.
+			if strings.Contains(reason, "no matches found") {
+				return &comms.UnresolvedTargetError{Target: target, Reason: reason}
+			}
+			if reason != "" {
+				return fmt.Errorf("send whatsapp message to %q: %s", target, reason)
+			}
+			return fmt.Errorf("send whatsapp message to %q: %w", target, err)
 		}
 	}
 	return nil

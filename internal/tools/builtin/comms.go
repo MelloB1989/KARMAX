@@ -16,6 +16,10 @@ type CommsSendTool struct {
 	// DefaultChannelID resolves the channel to use when the caller omits
 	// channel_id (injected by the runtime; never a hardcoded name).
 	DefaultChannelID func() (string, bool)
+	// KnownChannelID reports whether a string names a registered channel.
+	// Used to catch a channel id passed where a recipient belongs — the two
+	// arrive side by side in every event payload and are easy to swap.
+	KnownChannelID func(string) bool
 }
 
 func (t *CommsSendTool) Manifest() tools.ToolManifest {
@@ -48,6 +52,19 @@ func (t *CommsSendTool) Execute(ctx context.Context, input map[string]any) (tool
 	target, _ := input["target"].(string)
 	if target == "" {
 		return tools.ErrorResult(fmt.Errorf("target is required")), nil
+	}
+	// Every comms.message event carries channel_id (the chat) and
+	// karmax_channel_id (the transport) next to each other, and reaching for the
+	// wrong one sends the transport's name to WhatsApp as if it were a person.
+	// wacli answers "no matches found for \"whatsapp-main\"", which the send
+	// path escalated into a critical alert to the operator — a delivery failure
+	// reported as a system fault, for what is a caller mistake.
+	if t.KnownChannelID != nil && t.KnownChannelID(target) {
+		return tools.ErrorResult(fmt.Errorf(
+			"%q is a channel, not a recipient — it names HOW to send, not WHO to. "+
+				"Pass the conversation as target: for a reply use the incoming event's 'channel_id' "+
+				"(the chat JID or phone number), and put %q in 'channel_id' instead",
+			target, target)), nil
 	}
 
 	content, _ := input["content"].(string)
