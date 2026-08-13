@@ -332,7 +332,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CostTool{Store: s, BudgetUSDPerMonth: cfg.Karmax.BudgetUSDPerMonth})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
-	toolReg.Register(&builtin.CommsSendTool{SendFunc: commsMgr.Send, DefaultChannelID: commsMgr.DefaultChannelID})
+	toolReg.Register(&builtin.CommsSendTool{
+		SendFunc:         commsMgr.Send,
+		DefaultChannelID: commsMgr.DefaultChannelID,
+		KnownChannelID:   commsMgr.HasChannel,
+	})
 	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: hostpaths.GWS()})
 	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: hostpaths.GWS()})
 	// WhatsApp comes from wacli itself.

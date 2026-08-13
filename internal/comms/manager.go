@@ -3,6 +3,7 @@ package comms
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -298,6 +299,15 @@ func (m *Manager) Send(channelID, target, content string) error {
 	return nil
 }
 
+// HasChannel reports whether id names a registered channel, so callers can
+// tell a transport name from a recipient.
+func (m *Manager) HasChannel(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.channels[id]
+	return ok
+}
+
 // DefaultChannelID picks the channel to use when a caller doesn't specify one:
 // the sole channel if only one is registered, otherwise the first WhatsApp
 // channel, otherwise any.
@@ -440,7 +450,12 @@ func (m *Manager) send(ctx context.Context, channelID, target, content string, a
 	}
 
 	if err := entry.channel.Send(ctx, target, content); err != nil {
-		if alertOnFailure {
+		// A recipient that does not exist is the caller's mistake and is
+		// returned to them to fix. Alerting on it woke the operator over a bad
+		// tool argument, and — because the alert is itself a message — invited
+		// the same failure again on the way out.
+		var unresolved *UnresolvedTargetError
+		if alertOnFailure && !errors.As(err, &unresolved) {
 			m.publishCritical(entry.agentID, channelID, "communication channel send failed", map[string]any{
 				"target": target,
 				"error":  err.Error(),
