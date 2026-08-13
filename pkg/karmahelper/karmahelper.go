@@ -660,6 +660,16 @@ func karmaxToolToGoFunctionTool(t tools.Tool, rec *callRecorder) ai.GoFunctionTo
 				return "", err
 			}
 			if result.IsError {
+				// A failing tool may still return the thing that makes the next
+				// attempt work — the candidates behind "which Dev did you mean",
+				// the field that was missing. Dropping Output on the error path
+				// handed the model a dead end and kept the way out in a struct
+				// nobody read.
+				if result.Output != nil {
+					if details, mErr := json.Marshal(result.Output); mErr == nil {
+						return fmt.Sprintf("Error: %s\n%s", result.Error, details), nil
+					}
+				}
 				return fmt.Sprintf("Error: %s", result.Error), nil
 			}
 

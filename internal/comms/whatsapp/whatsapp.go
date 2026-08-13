@@ -314,6 +314,14 @@ func (w *WhatsAppChannel) Send(ctx context.Context, target, content string) erro
 		return fmt.Errorf("no target specified and no default target_chat configured")
 	}
 
+	// Resolved before sending, so a name matching several people comes back as a
+	// choice the caller can make rather than a send that simply failed.
+	resolved, err := w.resolveTarget(ctx, target)
+	if err != nil {
+		return err
+	}
+	target = resolved
+
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
