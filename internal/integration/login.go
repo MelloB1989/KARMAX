@@ -101,6 +101,13 @@ func (r *Registry) Login(ctx context.Context, id string, p Prompter) error {
 		p.Say("%s", res.Message)
 	}
 	p.Say("Connected. `karmax integrations` will show it.")
+	// A channel is read at startup, so one connected now is stored but not yet
+	// running — and "Connected" on its own reads as "it is live". Saying the
+	// last step here is the difference between a setup that works and one that
+	// looks finished and receives nothing.
+	if m.Kind == KindChannel {
+		p.Say("Restart KARMAX to bring the channel up: systemctl --user restart karmax")
+	}
 	return nil
 }
 
