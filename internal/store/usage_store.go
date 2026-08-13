@@ -105,3 +105,45 @@ func (s *Store) PruneModelUsage(before time.Time) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// DailyUsage is one day's spend, for spotting the day a run rate changed.
+type DailyUsage struct {
+	Day          string
+	Calls        int
+	InputTokens  int64
+	OutputTokens int64
+	CacheRead    int64
+	CacheWrite   int64
+	Model        string
+}
+
+// UsageByDay totals usage per day and model. A monthly figure hides the day
+// something started costing more, which is the day worth looking at.
+func (s *Store) UsageByDay(since time.Time) ([]DailyUsage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+SELECT date(created_at) AS day, model, COUNT(*),
+       COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+       COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
+FROM model_usage
+WHERE created_at >= ?
+GROUP BY day, model
+ORDER BY day ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DailyUsage
+	for rows.Next() {
+		var d DailyUsage
+		if err := rows.Scan(&d.Day, &d.Model, &d.Calls,
+			&d.InputTokens, &d.OutputTokens, &d.CacheRead, &d.CacheWrite); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

@@ -65,6 +65,11 @@ type KarmaxCoreConfig struct {
 	DataDir   string `yaml:"data_dir"`
 	LogLevel  string `yaml:"log_level"`
 	LogFormat string `yaml:"log_format"`
+	// BudgetUSDPerMonth is what the operator is willing to spend on inference.
+	// Nothing enforces it — it is the line the cost view and the agent measure
+	// the run rate against, so "we are over" is a fact either can state rather
+	// than a number only the operator remembers. Zero means no budget set.
+	BudgetUSDPerMonth float64 `yaml:"budget_usd_per_month"`
 }
 
 type WebhooksConfig struct {

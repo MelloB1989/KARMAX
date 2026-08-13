@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/cost"
+	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -12,47 +16,16 @@ import (
 // The gateway KARMAX ran on reported zero tokens for every call, so spend was
 // unmeasurable and a 28k-token routing decision was indistinguishable from a 3k
 // one. On metered inference that difference is the bill, so it gets a command.
-
-// Published per-million-token rates, used only to turn token counts into a
-// rough figure. Deliberately approximate: this is a tripwire, not an invoice,
-// and the authority on spend is the provider's own billing.
-var modelRates = map[string]struct{ in, out float64 }{
-	"claude-sonnet-4.6": {3.00, 15.00},
-	"claude-sonnet-4-6": {3.00, 15.00},
-	"claude-haiku-4.5":  {1.00, 5.00},
-	"claude-haiku-4-5":  {1.00, 5.00},
-	"claude-opus-4.6":   {5.00, 25.00},
-	"claude-opus-4-6":   {5.00, 25.00},
-}
-
-// rateFor matches a model name against the table, tolerating the provider
-// prefixes and version suffixes Bedrock adds.
-func rateFor(model string) (struct{ in, out float64 }, bool) {
-	if r, ok := modelRates[model]; ok {
-		return r, true
-	}
-	for name, r := range modelRates {
-		if len(model) >= len(name) && contains(model, name) {
-			return r, true
-		}
-	}
-	return struct{ in, out float64 }{}, false
-}
-
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}
+//
+// The rates now live in internal/cost, because the agent needs the same answer
+// this command gives and a second copy of the table would drift from it.
 
 func costCmd() *cobra.Command {
 	var days int
+	var daily bool
 	cmd := &cobra.Command{
 		Use:   "cost",
-		Short: "Show what the models have consumed",
+		Short: "Show what the models have consumed, against the budget",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := openStore()
 			if err != nil {
@@ -72,31 +45,48 @@ func costCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Model usage, last %d day(s)\n\n", days)
-			fmt.Printf("  %-26s %-9s %7s %12s %12s %12s %10s\n", "MODEL", "INSTANCE", "CALLS", "INPUT", "CACHED", "OUTPUT", "EST. COST")
+			fmt.Printf("  %-26s %-9s %7s %12s %12s %12s %10s\n",
+				"MODEL", "INSTANCE", "CALLS", "INPUT", "CACHED", "OUTPUT", "EST. COST")
 			var estTotal float64
 			var anyUnpriced bool
 			for _, t := range totals {
-				est := ""
-				if r, ok := rateFor(t.Model); ok {
-					// Cache reads bill at roughly a tenth of fresh input.
-					c := (float64(t.InputTokens)/1e6)*r.in +
-						(float64(t.CacheRead)/1e6)*r.in*0.1 +
-						(float64(t.CacheWrite)/1e6)*r.in*1.25 +
-						(float64(t.OutputTokens)/1e6)*r.out
+				est := "—"
+				if c, ok := cost.Estimate(cost.Usage{
+					Model: t.Model, InputTokens: t.InputTokens, OutputTokens: t.OutputTokens,
+					CacheRead: t.CacheRead, CacheWrite: t.CacheWrite,
+				}); ok {
 					estTotal += c
 					est = fmt.Sprintf("$%.2f", c)
 				} else {
 					anyUnpriced = true
-					est = "—"
 				}
 				fmt.Printf("  %-26s %-9s %7d %12d %12d %12d %10s\n",
 					truncModel(t.Model, 26), t.Kind, t.Calls, t.InputTokens, t.CacheRead, t.OutputTokens, est)
 			}
-			fmt.Printf("\n  estimated total: $%.2f", estTotal)
-			if days > 0 {
-				fmt.Printf("   (~$%.2f/month at this rate)", estTotal*30/float64(days))
+
+			if daily {
+				if err := printDailyCost(s, since); err != nil {
+					return err
+				}
 			}
-			fmt.Println()
+
+			budget := cost.Budget{Spent: estTotal, Days: cost.WindowDays(since)}
+			if cfg, cerr := config.Load(findConfig()); cerr == nil {
+				budget.MonthlyUSD = cfg.Karmax.BudgetUSDPerMonth
+			}
+			fmt.Printf("\n  estimated total: $%.2f   (~$%.2f/month at this rate)\n",
+				estTotal, budget.Projected())
+			if budget.MonthlyUSD > 0 {
+				fmt.Printf("  budget:          $%.2f/month — %s", budget.MonthlyUSD, budget.Status())
+				if h := budget.Headroom(); h < 0 {
+					fmt.Printf(" by $%.2f", -h)
+				} else {
+					fmt.Printf(", $%.2f/month to spare", h)
+				}
+				fmt.Println()
+			} else {
+				fmt.Println("  budget:          none set (karmax.budget_usd_per_month)")
+			}
 			if anyUnpriced {
 				fmt.Println("  (— means no published rate is known for that model)")
 			}
@@ -104,7 +94,37 @@ func costCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&days, "days", 7, "how many days back to total")
+	cmd.Flags().BoolVar(&daily, "daily", false, "break the total down by day")
 	return cmd
+}
+
+// printDailyCost shows spend per day, so a step change is visible as one.
+func printDailyCost(s *store.Store, since time.Time) error {
+	rows, err := s.UsageByDay(since)
+	if err != nil {
+		return err
+	}
+	byDay := map[string]float64{}
+	callsByDay := map[string]int{}
+	for _, r := range rows {
+		c, _ := cost.Estimate(cost.Usage{
+			Model: r.Model, InputTokens: r.InputTokens, OutputTokens: r.OutputTokens,
+			CacheRead: r.CacheRead, CacheWrite: r.CacheWrite,
+		})
+		byDay[r.Day] += c
+		callsByDay[r.Day] += r.Calls
+	}
+	days := make([]string, 0, len(byDay))
+	for d := range byDay {
+		days = append(days, d)
+	}
+	sort.Strings(days)
+
+	fmt.Printf("\n  %-12s %7s %10s\n", "DAY", "CALLS", "EST. COST")
+	for _, d := range days {
+		fmt.Printf("  %-12s %7d %10s\n", d, callsByDay[d], fmt.Sprintf("$%.2f", byDay[d]))
+	}
+	return nil
 }
 
 func truncModel(s string, n int) string {
