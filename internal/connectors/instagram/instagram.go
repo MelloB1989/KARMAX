@@ -21,6 +21,7 @@ package instagram
 
 import (
 	"context"
+	"encoding/base32"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Davincible/goinsta/v3"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
@@ -138,7 +140,13 @@ func (c *Connector) connect(cr connectorkit.Credentials) (*goinsta.Instagram, er
 	var insta *goinsta.Instagram
 	seed := strings.TrimSpace(cr.Get("totp_seed"))
 	if seed != "" {
-		insta = goinsta.New(user, pass, seed)
+		normalized, err := normalizeTOTPSeed(seed)
+		if err != nil {
+			return nil, fmt.Errorf("instagram: the 2FA seed is not usable — %w. "+
+				"Paste the base32 secret from the authenticator setup screen "+
+				"(behind \"can't scan the QR code\"); spaces and case do not matter", err)
+		}
+		insta = goinsta.New(user, pass, normalized)
 	} else {
 		insta = goinsta.New(user, pass)
 	}
@@ -252,4 +260,50 @@ func signInError(err error, hadSeed bool) error {
 		return fmt.Errorf("instagram: the username or password was rejected: %w", err)
 	}
 	return fmt.Errorf("instagram: sign-in failed: %w", err)
+}
+
+// normalizeTOTPSeed turns what Instagram shows you into what the decoder wants.
+//
+// goinsta hands the seed to base32.StdEncoding.DecodeString, which rejects
+// spaces and REQUIRES padding to a multiple of eight. Instagram presents the
+// secret lowercase in space-separated groups of four and never pads it — so
+// copying it exactly as displayed fails, and the error names a byte offset
+// rather than the space or the missing padding that caused it.
+//
+// Case is already handled upstream; whitespace, separators and padding are not.
+func normalizeTOTPSeed(seed string) (string, error) {
+	var b strings.Builder
+	for _, r := range seed {
+		switch {
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '-' || r == '_':
+			continue // grouping, not content
+		case r == '=':
+			continue // re-added below, so a partly-padded seed still works
+		default:
+			b.WriteRune(unicode.ToUpper(r))
+		}
+	}
+	cleaned := b.String()
+	if cleaned == "" {
+		return "", fmt.Errorf("the seed is empty once spaces are removed")
+	}
+
+	// Named before decoding, because "illegal base32 data at input byte 7" does
+	// not tell anyone that their secret contains a 0 or a 1.
+	for i, r := range cleaned {
+		if (r >= 'A' && r <= 'Z') || (r >= '2' && r <= '7') {
+			continue
+		}
+		return "", fmt.Errorf("character %q (position %d) is not valid base32 — a seed uses only "+
+			"letters A-Z and digits 2-7, so 0, 1, 8 and 9 never appear in one", r, i+1)
+	}
+
+	// StdEncoding demands padding; Instagram never shows any.
+	if pad := len(cleaned) % 8; pad != 0 {
+		cleaned += strings.Repeat("=", 8-pad)
+	}
+	if _, err := base32.StdEncoding.DecodeString(cleaned); err != nil {
+		return "", fmt.Errorf("the seed is not decodable base32: %w", err)
+	}
+	return cleaned, nil
 }
