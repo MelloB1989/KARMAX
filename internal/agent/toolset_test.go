@@ -135,3 +135,41 @@ func TestIndexIsMuchSmallerThanSchemas(t *testing.T) {
 		t.Errorf("index (%d chars) is not meaningfully smaller than schemas (%d chars)", idx, full)
 	}
 }
+
+func TestPreloadPromotesToolsTheBriefNames(t *testing.T) {
+	held := toolSet("comms.send")
+	indexed := toolSet("whatsapp_list_groups", "whatsapp_get_chat", "google_workspace")
+
+	brief := "Use whatsapp_list_groups to list groups, then whatsapp.get_chat on 12345@lid."
+	held, indexed = preloadNamedInBrief(brief, held, indexed)
+
+	gotHeld := manifestNames(held)
+	if len(gotHeld) != 3 {
+		t.Fatalf("both named tools should be promoted, held = %v", gotHeld)
+	}
+	// whatsapp.get_chat in the brief must match whatsapp_get_chat in the registry:
+	// a brief written in dotted style is the same request.
+	for _, want := range []string{"whatsapp_list_groups", "whatsapp_get_chat"} {
+		found := false
+		for _, n := range gotHeld {
+			if n == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s named in the brief was not preloaded, held = %v", want, gotHeld)
+		}
+	}
+	if names := manifestNames(indexed); len(names) != 1 || names[0] != "google_workspace" {
+		t.Errorf("unnamed tools should stay indexed, got %v", names)
+	}
+}
+
+func TestPreloadLeavesAnUnrelatedBriefAlone(t *testing.T) {
+	held, indexed := preloadNamedInBrief("Summarise yesterday's calendar.",
+		toolSet("comms.send"), toolSet("whatsapp_list_groups"))
+
+	if len(held) != 1 || len(indexed) != 1 {
+		t.Errorf("held = %v, indexed = %v", manifestNames(held), manifestNames(indexed))
+	}
+}

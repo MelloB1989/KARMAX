@@ -12,6 +12,8 @@ github.com/MelloB1989/karma v1.21.0 h1:VtFC+GOpmxH7DfexrpFdIQZ+Y97U65Z7uMhPBV9TT
 github.com/MelloB1989/karma v1.21.0/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
 github.com/MelloB1989/karma v1.21.1 h1:D8UZiPuqS7r6Wpre7G4bBTutVG/PAy7N3BiFuRBGTEw=
 github.com/MelloB1989/karma v1.21.1/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
+github.com/MelloB1989/karma v1.21.2 h1:5f25QkVUBO2rUuw5fKTmngqK+XZU4FoCoki4sGc0GFQ=
+github.com/MelloB1989/karma v1.21.2/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
 github.com/MelloB1989/wacli v0.3.0 h1:5NPB5YD6H0tlqFf9nCqwzSWWG4sHViluvKvBBaMBVNw=
 github.com/MelloB1989/wacli v0.3.0/go.mod h1:IQVxbDBFsoPPbtAv4PnTnzmVfK7bxuXIKaUecWVnerk=
 github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36 h1:OCI373QkuzXNOoaUBNEwh4uxaaPOfSFYn3ck7WlrqMI=
