@@ -22,8 +22,20 @@ func main() {
 // loadDotEnv loads environment variables from a .env file (working directory
 // first, then ~/.karmax/.env) so ${VAR} references in karmax.yaml expand and
 // provider SDKs pick up credentials. Non-fatal; never overrides the real env.
+// loadDotEnv loads the environment the daemon runs with.
+//
+// The .env beside the config matters as much as the one in the working
+// directory: the daemon is started from its own checkout and finds both, while
+// the operator runs the CLI from wherever they are and would otherwise find
+// neither. godotenv never overwrites a variable that is already set, so a real
+// environment variable still wins over every file.
 func loadDotEnv() {
 	_ = godotenv.Load()
+	if cfg := findConfig(); cfg != "" {
+		if dir := filepath.Dir(cfg); dir != "" && dir != "." {
+			_ = godotenv.Load(filepath.Join(dir, ".env"))
+		}
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		_ = godotenv.Load(filepath.Join(home, ".karmax", ".env"))
 	}

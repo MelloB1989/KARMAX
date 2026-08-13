@@ -19,6 +19,11 @@ func newRootCmd() *cobra.Command {
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Every command, not just `start`. An env-gated integration reported
+		// itself off to `karmax integrations` while the daemon had it on, purely
+		// because the CLI never read the .env the daemon was started with — the
+		// same question answered two ways depending on who you asked.
+		PersistentPreRun: func(*cobra.Command, []string) { loadDotEnv() },
 	}
 	root.PersistentFlags().StringVarP(&cfgPath, "config", "c", "",
 		"path to karmax.yaml (default: ./karmax.yaml then ~/.karmax/karmax.yaml)")
