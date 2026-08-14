@@ -880,6 +880,13 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		rt.publishCritical("", "scheduler start error", map[string]any{"error": err.Error()})
 	}
 
+	// Mounted once agents exist, because the relay answers as one of them.
+	if rt.webhooks != nil {
+		if a, ok := rt.agents.Get(rt.voiceAgentID()); ok {
+			rt.mountVoice(rt.webhooks, a)
+		}
+	}
+
 	if err := rt.agents.StartAll(ctx); err != nil {
 		rt.log.Error("agent start error", zap.Error(err))
 		rt.publishCritical("", "agent start error", map[string]any{"error": err.Error()})
