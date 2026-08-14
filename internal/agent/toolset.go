@@ -195,3 +195,11 @@ func (a *Agent) loadRequestedTools(ctx context.Context, session *MainModelSessio
 	}
 	return response, calls
 }
+
+// NamedTools exposes specific bound tools to other subsystems.
+//
+// The voice brain answers as this agent and must write to the SAME memory —
+// handing it the agent's own bound instances is what keeps one set of facts.
+func (a *Agent) NamedTools(names ...string) []tools.Tool {
+	return a.lendNamed(names)
+}

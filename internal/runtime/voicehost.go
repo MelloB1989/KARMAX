@@ -11,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karma/models"
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/store"
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/voice"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/coder/websocket"
@@ -35,8 +38,14 @@ const voicePrompt = `You are KARMAX, the operator's personal AI assistant, speak
 Reply the way a person on a call does: one or two short sentences, the answer first.
 No lists, no markdown, no URLs read aloud, no preamble.
 If you did not catch something, say so briefly and ask them to repeat.
-If they ask for something you cannot do over the phone, say you will handle it after the call.
-Never invent facts about their life — if you do not know, say you will check.`
+
+A summary of what you remember about them is in your context — answer from it directly.
+For anything it does not cover, call memory.lookup ONCE with a couple of keywords; it is fast.
+When they tell you something worth keeping — a decision, a plan, a preference — save it with
+memory.ingest. After a save, your reply is ONLY the short confirmation ("noted") — do not
+revisit earlier topics.
+If they ask for real work — messages, code, research — say you will handle it after the call.
+Never invent facts about their life. If memory has nothing, say so plainly.`
 
 // voiceBrain answers a call with a dedicated fast session.
 //
@@ -49,7 +58,15 @@ type voiceBrain struct {
 }
 
 func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
-	return "Hey, it's KARMAX. What do you need?"
+	const greeting = "Hey, it's KARMAX. What do you need?"
+	// Seeded into the session as the opening assistant turn. Without it the
+	// model's first exposure is a bare instruction on empty history — and on
+	// exactly those cold first turns it was observed ignoring a save request
+	// entirely while handling the same request fine mid-conversation.
+	b.session.SetHistory(models.AIChatHistory{Messages: []models.AIMessage{{
+		Role: models.Assistant, Message: greeting,
+	}}})
+	return greeting
 }
 
 func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply, error) {
@@ -63,27 +80,156 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 // voiceModel is the model a call speaks with, read once at startup — reading it
 // per call went through the agent's lock, which the agent holds for a whole
 // turn, and a call arriving mid-turn hung before it had done anything.
-type voiceModel struct{ provider, model string }
+type voiceModel struct {
+	provider, model string
+	namespace       string
+	fallbacks       []karmahelper.FallbackModel
+}
 
 func pickVoiceModel(a *agent.Agent) voiceModel {
 	def := a.Snapshot().Def
-	if def.MemoryModelCfg.Model != "" {
-		return voiceModel{def.MemoryModelCfg.Provider, def.MemoryModelCfg.Model}
+	ns := def.Memory.Namespace
+	if ns == "" {
+		ns = def.ID
 	}
-	return voiceModel{def.Provider, def.Model}
+	// The agent's fallbacks, because a transient provider error on a phone call
+	// otherwise becomes an apology: the probe hit two Bedrock hiccups in four
+	// turns, and with no fallback each one reached the caller's ear.
+	var fallbacks []karmahelper.FallbackModel
+	for _, fb := range def.FallbackModels {
+		fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
+	}
+	if def.MemoryModelCfg.Model != "" {
+		return voiceModel{def.MemoryModelCfg.Provider, def.MemoryModelCfg.Model, ns, fallbacks}
+	}
+	return voiceModel{def.Provider, def.Model, ns, fallbacks}
 }
 
-func newVoiceFactory(m voiceModel) voice.Factory {
+func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Factory {
 	return func() voice.Brain {
-		return &voiceBrain{session: karmahelper.NewSession(karmahelper.SessionConfig{
+		// The brain gets the two memory verbs and nothing else. Lookup is a
+		// purpose-built fast read — the agent's own memory.retrieve is a
+		// sub-agent that traverses the index for seconds, which is a fine cost
+		// in a chat and a dead line on a phone. Ingest is the agent's OWN bound
+		// tool, so a fact said on a call lands in the same memory everything
+		// else reads.
+		voiceTools := append(
+			[]tools.Tool{&voiceMemoryLookup{store: rt.store, namespace: m.namespace}},
+			a.NamedTools("memory.ingest")...,
+		)
+		session := karmahelper.NewSession(karmahelper.SessionConfig{
 			Provider:     m.provider,
 			Model:        m.model,
 			SystemPrompt: voicePrompt,
 			// One or two sentences. Also a latency control — the reply cannot
 			// be slow to generate or slow to speak if it cannot be long.
-			MaxTokens: 90,
-		}, nil)}
+			MaxTokens:      90,
+			FallbackModels: m.fallbacks,
+		}, voiceTools)
+		// Synchronous on purpose: a few milliseconds of SQLite before the
+		// greeting buys most questions a zero-lookup answer, and a context set
+		// concurrently with the first turn would race the session.
+		session.SetContext(memoryBrief(rt.store, m.namespace))
+		return &voiceBrain{session: session}
 	}
+}
+
+// memoryBrief is what the brain knows before the caller says anything: the
+// pinned and important facts, one line each.
+func memoryBrief(s *store.Store, namespace string) string {
+	if s == nil {
+		return ""
+	}
+	entries, err := s.ListMemoryEntries(namespace, 80)
+	if err != nil || len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## What you remember about the operator\n")
+	kept := 0
+	for _, e := range entries {
+		if !e.Pinned && e.Importance < 3 {
+			continue
+		}
+		line := strings.Join(strings.Fields(e.Content), " ")
+		if len(line) > 160 {
+			line = line[:160] + "…"
+		}
+		b.WriteString("- " + line + "\n")
+		if kept++; kept >= 14 {
+			break
+		}
+	}
+	if kept == 0 {
+		return ""
+	}
+	return b.String()
+}
+
+// voiceMemoryLookup is memory retrieval at phone speed: a direct search of the
+// memory store, milliseconds, no model in the loop.
+type voiceMemoryLookup struct {
+	store     *store.Store
+	namespace string
+}
+
+func (t *voiceMemoryLookup) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{
+		Name: "memory.lookup",
+		Description: "Search the operator's memory by keyword — fast enough for a phone call. " +
+			"Use a couple of distinctive words (a name, a project), not a sentence.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"query": {"type": "string", "description": "One to three keywords."}
+			},
+			"required": ["query"]
+		}`),
+	}
+}
+
+func (t *voiceMemoryLookup) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
+	query, _ := input["query"].(string)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return tools.ErrorResult(fmt.Errorf("give a keyword to search for")), nil
+	}
+	if t.store == nil {
+		return tools.ErrorResult(fmt.Errorf("memory is not available on this instance")), nil
+	}
+	// Each word searched separately and merged, because the store matches by
+	// substring and a two-word query only hits entries carrying the exact pair.
+	seen := map[string]bool{}
+	var lines []string
+	for _, word := range strings.Fields(query) {
+		entries, err := t.store.SearchMemoryEntries(t.namespace, word, 6)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if seen[e.ID] {
+				continue
+			}
+			seen[e.ID] = true
+			line := strings.Join(strings.Fields(e.Content), " ")
+			if len(line) > 180 {
+				line = line[:180] + "…"
+			}
+			lines = append(lines, line)
+			if len(lines) >= 8 {
+				break
+			}
+		}
+		if len(lines) >= 8 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return tools.SuccessResult(map[string]any{
+			"found": 0, "note": "nothing in memory matches — say so rather than guessing",
+		}), nil
+	}
+	return tools.SuccessResult(map[string]any{"found": len(lines), "memories": lines}), nil
 }
 
 // speakable strips what a synthesiser should not read out. The agent writes for
@@ -179,7 +325,7 @@ func (rt *KarmaxRuntime) mountVoice(wh interface {
 		return
 	}
 
-	factory := newVoiceFactory(pickVoiceModel(a))
+	factory := newVoiceFactory(rt, a, pickVoiceModel(a))
 	wh.AddHandler("/voice", func(w http.ResponseWriter, r *http.Request) {
 		// Loopback only. The brain speaks for the operator and authenticates
 		// nobody — integrations reach it across localhost, and nothing else
