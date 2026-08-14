@@ -42,6 +42,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/tracker"
+	"github.com/MelloB1989/karmax/internal/voice"
 	"github.com/MelloB1989/karmax/internal/wasmloop"
 	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
@@ -104,8 +105,11 @@ type KarmaxRuntime struct {
 	mesh *mesh.Node
 
 	// waChannel is kept so voice can teach it to answer incoming calls once the
-	// relay is up — the channel is built long before the relay is.
+	// brain is up — the channel is built long before the brain is.
 	waChannel *whatsapp.WhatsAppChannel
+
+	// voice holds the voice integrations this instance can place calls through.
+	voice *voice.Registry
 
 	// startedAt is when this process came up. A loop that has not succeeded
 	// yet is judged against this rather than against the epoch, so a restart
@@ -330,6 +334,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		builtin.PushAppNotification(s, waAgentID, "update", "Sent to "+target, body)
 	})
 
+	voiceReg := voice.NewRegistry()
 	toolReg := tools.NewRegistry()
 	registerBuiltinTools(toolReg)
 
@@ -346,10 +351,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
 	toolReg.Register(&builtin.ToolSearchTool{Registry: toolReg})
-	toolReg.Register(&builtin.VoiceCallTool{
-		WacliAPIURL: hostpaths.WacliAPIURL(),
-		RelayURL:    voiceRelayURL(cfg),
-	})
+	toolReg.Register(&builtin.VoiceCallTool{Voice: voiceReg})
 	toolReg.Register(&builtin.CostTool{Store: s, BudgetUSDPerMonth: cfg.Karmax.BudgetUSDPerMonth})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{
@@ -842,6 +844,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		connectors:   connHost,
 		recipeLoops:  map[string]*recipes.Recipe{},
 		waChannel:    waChannel,
+		voice:        voiceReg,
 		routedKinds:  routedKinds,
 		mesh:         meshNode,
 		startedAt:    startedAt,
@@ -893,7 +896,6 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	if rt.webhooks != nil {
 		if a, ok := rt.agents.Get(rt.voiceAgentID()); ok {
 			rt.mountVoice(rt.webhooks, a)
-			rt.wireCallAnswering()
 		}
 	}
 

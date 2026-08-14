@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"io"
 	"net/http"
 	"os"
@@ -14,8 +13,8 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/voice"
-	"github.com/MelloB1989/karmax/internal/voice/sarvam"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/coder/websocket"
 	"go.uber.org/zap"
@@ -23,26 +22,11 @@ import (
 
 // The agent, on the phone.
 //
-// wacli bridges the call to this endpoint and moves the audio; everything about
-// what is actually said happens here, through the same agent that answers
-// WhatsApp — same memory, same tools, same operator. A second brain for voice
-// would be a second set of facts to keep in sync.
-
-// voiceAgent adapts the agent to a spoken conversation.
-//
-// It does NOT use the orchestrator's own session. That session carries the
-// whole nexus persona, thirteen tool schemas and a growing history, and on
-// Sonnet it took nine to ten seconds to answer "hello" — measured, twice. A
-// phone call cannot wait that long: the caller assumes the line is dead and
-// starts talking again.
-//
-// So a call gets its own session — the fast model, a short prompt, no tools —
-// and its own history, which lasts exactly as long as the call.
-type voiceAgent struct {
-	agent   *agent.Agent
-	session *karmahelper.Session
-	log     *zap.Logger
-}
+// Integrations own the audio; this file owns what gets said and which
+// integration says it. The brain is the same agent that answers WhatsApp text —
+// same memory, same operator — because a second brain for voice is a second set
+// of facts to keep in sync. wacli's WhatsApp calling is the first registered
+// integration; anything else that can hold a call registers the same way.
 
 // voicePrompt is the whole brief. Short on purpose: every token here is paid on
 // every turn of the conversation, and the medium does most of the instructing.
@@ -54,17 +38,33 @@ If you did not catch something, say so briefly and ask them to repeat.
 If they ask for something you cannot do over the phone, say you will handle it after the call.
 Never invent facts about their life — if you do not know, say you will check.`
 
-// voiceModel is the model a call speaks with, read once.
+// voiceBrain answers a call with a dedicated fast session.
+//
+// Not the orchestrator's own session: that carries the whole persona, a dozen
+// tool schemas and a growing history, and took nine to ten seconds to answer
+// "hello" — measured. A call gets the fast model, this five-line prompt, no
+// tools, and history that lasts exactly as long as the call.
+type voiceBrain struct {
+	session *karmahelper.Session
+}
+
+func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
+	return "Hey, it's KARMAX. What do you need?"
+}
+
+func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply, error) {
+	text, _, _, err := b.session.Chat(ctx, u.Text)
+	if err != nil {
+		return voice.Reply{}, err
+	}
+	return voice.Reply{Text: speakable(text)}, nil
+}
+
+// voiceModel is the model a call speaks with, read once at startup — reading it
+// per call went through the agent's lock, which the agent holds for a whole
+// turn, and a call arriving mid-turn hung before it had done anything.
 type voiceModel struct{ provider, model string }
 
-// pickVoiceModel reads the model config ONCE, at startup.
-//
-// It used to be read per call, via the agent's Snapshot — which takes the
-// agent's lock, and the agent holds that lock for the length of a turn. A call
-// arriving while the agent was working therefore blocked before it had done
-// anything at all: the relay logged that a call had connected and then nothing,
-// no greeting, no audio, until the caller gave up. None of this config changes
-// while the daemon runs, so none of it belongs in the call path.
 func pickVoiceModel(a *agent.Agent) voiceModel {
 	def := a.Snapshot().Def
 	if def.MemoryModelCfg.Model != "" {
@@ -73,44 +73,22 @@ func pickVoiceModel(a *agent.Agent) voiceModel {
 	return voiceModel{def.Provider, def.Model}
 }
 
-// newVoiceSession builds the conversational half of a call.
-func newVoiceSession(m voiceModel) *karmahelper.Session {
-	provider, model := m.provider, m.model
-	return karmahelper.NewSession(karmahelper.SessionConfig{
-		Provider:     provider,
-		Model:        model,
-		SystemPrompt: voicePrompt,
-		// One or two sentences. Also a latency control — the reply cannot be
-		// slow to generate or slow to speak if it cannot be long.
-		MaxTokens: 90,
-	}, nil)
-}
-
-// Answer asks the agent, with the shape of the reply set by the medium.
-//
-// A phone call cannot be skimmed, re-read, or scrolled back: the same content
-// that reads well in a message is unbearable spoken. So the instruction is part
-// of the prompt rather than a hope — short sentences, no lists, no markdown,
-// and the answer first.
-func (v *voiceAgent) Answer(ctx context.Context, peer, said string) (string, error) {
-	reply, _, _, err := v.session.Chat(ctx, strings.TrimSpace(said))
-	if err != nil {
-		return "", err
+func newVoiceFactory(m voiceModel) voice.Factory {
+	return func() voice.Brain {
+		return &voiceBrain{session: karmahelper.NewSession(karmahelper.SessionConfig{
+			Provider:     m.provider,
+			Model:        m.model,
+			SystemPrompt: voicePrompt,
+			// One or two sentences. Also a latency control — the reply cannot
+			// be slow to generate or slow to speak if it cannot be long.
+			MaxTokens: 90,
+		}, nil)}
 	}
-	return speakable(reply), nil
 }
 
-// Greeting opens the call.
-func (v *voiceAgent) Greeting(ctx context.Context, peer string) string {
-	return "Hey, it's KARMAX. What do you need?"
-}
-
-// speakable strips what a synthesiser should not read out.
-//
-// The agent writes for a screen everywhere else, and its habits come with it:
-// asterisks read as "asterisk", a bare URL is spelled character by character,
-// and a bullet list becomes a monotone. Cheaper to clean here than to hope the
-// model never does it.
+// speakable strips what a synthesiser should not read out. The agent writes for
+// a screen everywhere else and its habits come with it: asterisks read as
+// "asterisk", a bullet list becomes a monotone.
 func speakable(s string) string {
 	s = strings.NewReplacer("**", "", "*", "", "`", "", "#", "", "_", " ").Replace(s)
 	var out []string
@@ -123,35 +101,91 @@ func speakable(s string) string {
 	return strings.Join(out, " ")
 }
 
-// mountVoice serves the relay wacli bridges calls to.
+// wacliVoice is the WhatsApp calling integration, spoken for by wacli.
+type wacliVoice struct {
+	apiURL   string
+	brainURL string
+}
+
+func (w *wacliVoice) Name() string { return "whatsapp" }
+
+func (w *wacliVoice) Place(ctx context.Context, to string, opts voice.CallOptions) error {
+	body := map[string]any{"to": to, "brain_url": w.brainURL}
+	if opts.Language != "" {
+		body["language"] = opts.Language
+	}
+	if opts.Voice != "" {
+		body["voice"] = opts.Voice
+	}
+	if opts.RingFor > 0 {
+		body["ring_for_seconds"] = opts.RingFor
+	}
+	return w.post(ctx, "/calls/spoken", body)
+}
+
+// Answer picks up a ringing call. Not part of the Provider interface — the
+// integration hears its own ring — but the WhatsApp channel delegates the
+// mechanism here.
+func (w *wacliVoice) Answer(ctx context.Context, callID string) error {
+	return w.post(ctx, "/calls/spoken/answer", map[string]any{
+		"call_id": callID, "brain_url": w.brainURL, "language": "en-IN",
+	})
+}
+
+func (w *wacliVoice) post(ctx context.Context, path string, body map[string]any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(w.apiURL, "/")+path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		// The bridge says which half failed, and that is the part worth acting on.
+		return fmt.Errorf("wacli refused (%s): %.300s", resp.Status, raw)
+	}
+	return nil
+}
+
+// brainURL is where integrations hold their conversations, or empty when voice
+// is off. Computed from config so the tool can exist before the runtime does.
+func brainURL(cfg *config.KarmaxConfig) string {
+	if strings.TrimSpace(os.Getenv("SARVAM_API_KEY")) == "" || !cfg.Webhooks.Enabled {
+		return ""
+	}
+	return fmt.Sprintf("ws://127.0.0.1:%d/voice", cfg.Webhooks.Port)
+}
+
+// mountVoice serves the conversation endpoint and registers the integrations.
 func (rt *KarmaxRuntime) mountVoice(wh interface {
 	AddHandler(string, http.HandlerFunc)
 }, a *agent.Agent) {
-	key := strings.TrimSpace(os.Getenv("SARVAM_API_KEY"))
-	if key == "" {
-		rt.log.Info("voice calls are off: SARVAM_API_KEY is not set")
+	url := brainURL(rt.cfg)
+	if url == "" {
+		rt.log.Info("voice is off: SARVAM_API_KEY is not set or webhooks are disabled")
 		return
 	}
 	if a == nil {
-		rt.log.Warn("voice calls are off: no agent to answer them")
+		rt.log.Warn("voice is off: no agent to speak as")
 		return
 	}
 
-	model := pickVoiceModel(a)
-	cfg := voice.Config{
-		Sarvam: sarvam.Config{APIKey: key},
-		NewAnswerer: func() voice.Answerer {
-			return &voiceAgent{agent: a, session: newVoiceSession(model), log: rt.log}
-		},
-		Log: rt.log,
-	}
-
+	factory := newVoiceFactory(pickVoiceModel(a))
 	wh.AddHandler("/voice", func(w http.ResponseWriter, r *http.Request) {
-		// Loopback only. The relay speaks for the operator with their memory and
-		// their tools, and it authenticates nobody — wacli reaches it across
-		// localhost, and nothing else should reach it at all.
+		// Loopback only. The brain speaks for the operator and authenticates
+		// nobody — integrations reach it across localhost, and nothing else
+		// should reach it at all.
 		if !isLoopback(r.RemoteAddr) {
-			http.Error(w, "voice relay is local-only", http.StatusForbidden)
+			http.Error(w, "the voice brain is local-only", http.StatusForbidden)
 			return
 		}
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -159,10 +193,25 @@ func (rt *KarmaxRuntime) mountVoice(wh interface {
 			rt.log.Warn("voice: could not upgrade the connection", zap.Error(err))
 			return
 		}
-		rt.log.Info("voice: a call connected")
-		voice.Serve(r.Context(), conn, cfg)
+		rt.log.Info("voice: an integration connected")
+		voice.ServeConversation(r.Context(), conn, factory, rt.log)
 	})
-	rt.log.Info("voice relay listening", zap.String("path", "/voice"))
+
+	wa := &wacliVoice{apiURL: hostpaths.WacliAPIURL(), brainURL: url}
+	rt.voice.Register(wa)
+	rt.log.Info("voice ready", zap.Strings("integrations", rt.voice.Names()), zap.String("brain", url))
+
+	// Teach the WhatsApp channel to pick up. Answering is mechanical — no model
+	// in the loop, because a pickup that waits on a routing decision is one the
+	// caller gives up on.
+	if rt.waChannel != nil {
+		rt.waChannel.SetAnswerStream(func(callID string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			return wa.Answer(ctx, callID)
+		})
+		rt.log.Info("incoming calls will be answered live")
+	}
 }
 
 // isLoopback reports whether a request came from this machine.
@@ -175,14 +224,8 @@ func isLoopback(addr string) bool {
 	return host == "127.0.0.1" || host == "::1" || host == "localhost"
 }
 
-// VoiceRelayURL is where wacli should bridge a call to.
-func (rt *KarmaxRuntime) VoiceRelayURL() string {
-	return fmt.Sprintf("ws://127.0.0.1:%d/voice", rt.cfg.Webhooks.Port)
-}
-
-// voiceAgentID names the agent that answers calls: the WhatsApp channel's
-// agent, or the first configured one. The caller reached the operator's number,
-// so they should get the agent that already speaks for it.
+// voiceAgentID names the agent that speaks on calls: the WhatsApp channel's
+// agent, or the first configured one.
 func (rt *KarmaxRuntime) voiceAgentID() string {
 	for _, ch := range rt.cfg.Comms.Channels {
 		if strings.EqualFold(ch.Type, "whatsapp") && ch.AgentID != "" {
@@ -193,62 +236,4 @@ func (rt *KarmaxRuntime) voiceAgentID() string {
 		return rt.cfg.Agents[0].ID
 	}
 	return ""
-}
-
-// voiceRelayURL is where wacli bridges a call's audio, or empty when calling is
-// off. Computed from config rather than the runtime so the tool can be built
-// before the runtime exists.
-func voiceRelayURL(cfg *config.KarmaxConfig) string {
-	if strings.TrimSpace(os.Getenv("SARVAM_API_KEY")) == "" || !cfg.Webhooks.Enabled {
-		return ""
-	}
-	return fmt.Sprintf("ws://127.0.0.1:%d/voice", cfg.Webhooks.Port)
-}
-
-// wireCallAnswering teaches the WhatsApp channel to pick up.
-//
-// Ringing KARMAX and having it answer is the other half of calling — placing
-// worked and answering did not exist, so the operator stood listening to their
-// own assistant ring out. The channel does the deciding (it sees the webhook);
-// this supplies the mechanism: bridge the ringing call to our relay.
-//
-// Answering is deliberately mechanical — no model in the loop. A pickup that
-// waits on a routing decision is a pickup the caller gives up on.
-func (rt *KarmaxRuntime) wireCallAnswering() {
-	relay := voiceRelayURL(rt.cfg)
-	if relay == "" || rt.waChannel == nil {
-		return
-	}
-	endpoint := strings.TrimRight(hostpaths.WacliAPIURL(), "/") + "/calls/stream/answer"
-	rt.waChannel.SetAnswerStream(func(callID string) error {
-		body, err := json.Marshal(map[string]any{
-			"call_id":   callID,
-			"relay_url": relay,
-			// The relay is loopback-only and authenticates nobody; the token is
-			// the protocol's field, not a secret.
-			"token":    "local",
-			"language": "en-IN",
-		})
-		if err != nil {
-			return err
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			return fmt.Errorf("answer refused (%s): %.200s", resp.Status, raw)
-		}
-		return nil
-	})
-	rt.log.Info("incoming calls will be answered live", zap.String("relay", relay))
 }
