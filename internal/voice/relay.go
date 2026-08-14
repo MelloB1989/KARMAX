@@ -99,6 +99,10 @@ type session struct {
 	fsm    *turn.Machine
 	agent  Answerer
 	filled int
+	// turns holds at most ONE utterance waiting to be answered, so a caller who
+	// keeps talking gets a reply to their latest thought rather than a queue of
+	// stale ones.
+	turns chan string
 	// speakingSince marks when synthesis was asked for, so the wait before the
 	// first sound can be measured rather than guessed at.
 	speakingSince atomic.Int64
@@ -115,7 +119,7 @@ func Serve(ctx context.Context, conn *websocket.Conn, cfg Config) {
 		log.Error("voice: no answerer configured; refusing the call")
 		return
 	}
-	s := &session{cfg: cfg, conn: conn, log: log, fsm: turn.New(), agent: cfg.NewAnswerer()}
+	s := &session{cfg: cfg, conn: conn, log: log, fsm: turn.New(), agent: cfg.NewAnswerer(), turns: make(chan string, 1)}
 	log.Info("voice: session ready, waiting for the bridge")
 
 	ctx, cancel := context.WithTimeout(ctx, maxCall)
@@ -144,6 +148,7 @@ func Serve(ctx context.Context, conn *websocket.Conn, cfg Config) {
 
 	go s.pumpAudio(ctx)
 	go s.pumpSpeech(ctx)
+	go s.runTurns(ctx)
 	s.readPhone(ctx)
 }
 
@@ -281,8 +286,7 @@ func (s *session) pumpSpeech(ctx context.Context) {
 				if utterance == "" {
 					return
 				}
-				s.log.Info("voice: heard the caller", zap.String("said", utterance))
-				s.answer(ctx, utterance)
+				s.offer(utterance)
 			})
 		}
 	}
@@ -296,6 +300,46 @@ func (s *session) pumpSpeech(ctx context.Context) {
 // second to reach them and buys the whole wait. Varied so a conversation does
 // not sound like a loop.
 var fillers = []string{"Mm-hm.", "Right.", "Okay.", "Sure.", "Got it."}
+
+// offer hands the newest utterance to the turn runner, displacing any older one
+// that has not been started yet.
+//
+// Each utterance used to schedule its own answer, and two spoken close together
+// produced two answers that ran concurrently and came back in completion order.
+// Observed on a call: "Hi", then "Hi" again, then a question — the reply to the
+// first arrived after the second had been said, the reply to the second arrived
+// after the question, and the question was never answered at all. A conversation
+// one turn behind is worse than a slow one.
+func (s *session) offer(utterance string) {
+	select {
+	case <-s.turns:
+		// An utterance was waiting and has now been overtaken. Dropped rather
+		// than queued: the caller has moved on, and answering what they said
+		// before is how the lag becomes permanent.
+		s.log.Info("voice: dropped an utterance the caller talked over")
+	default:
+	}
+	select {
+	case s.turns <- utterance:
+	default:
+	}
+}
+
+// runTurns answers one utterance at a time, in order, newest first.
+func (s *session) runTurns(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case utterance, ok := <-s.turns:
+			if !ok {
+				return
+			}
+			s.log.Info("voice: heard the caller", zap.String("said", utterance))
+			s.answer(ctx, utterance)
+		}
+	}
+}
 
 // answer asks the agent and speaks the reply.
 func (s *session) answer(ctx context.Context, said string) {
