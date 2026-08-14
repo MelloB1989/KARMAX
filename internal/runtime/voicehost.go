@@ -49,13 +49,28 @@ If you did not catch something, say so briefly and ask them to repeat.
 If they ask for something you cannot do over the phone, say you will handle it after the call.
 Never invent facts about their life — if you do not know, say you will check.`
 
-// newVoiceSession builds the conversational half of a call.
-func newVoiceSession(a *agent.Agent) *karmahelper.Session {
+// voiceModel is the model a call speaks with, read once.
+type voiceModel struct{ provider, model string }
+
+// pickVoiceModel reads the model config ONCE, at startup.
+//
+// It used to be read per call, via the agent's Snapshot — which takes the
+// agent's lock, and the agent holds that lock for the length of a turn. A call
+// arriving while the agent was working therefore blocked before it had done
+// anything at all: the relay logged that a call had connected and then nothing,
+// no greeting, no audio, until the caller gave up. None of this config changes
+// while the daemon runs, so none of it belongs in the call path.
+func pickVoiceModel(a *agent.Agent) voiceModel {
 	def := a.Snapshot().Def
-	model, provider := def.MemoryModelCfg.Model, def.MemoryModelCfg.Provider
-	if model == "" {
-		model, provider = def.Model, def.Provider
+	if def.MemoryModelCfg.Model != "" {
+		return voiceModel{def.MemoryModelCfg.Provider, def.MemoryModelCfg.Model}
 	}
+	return voiceModel{def.Provider, def.Model}
+}
+
+// newVoiceSession builds the conversational half of a call.
+func newVoiceSession(m voiceModel) *karmahelper.Session {
+	provider, model := m.provider, m.model
 	return karmahelper.NewSession(karmahelper.SessionConfig{
 		Provider:     provider,
 		Model:        model,
@@ -117,10 +132,11 @@ func (rt *KarmaxRuntime) mountVoice(wh interface {
 		return
 	}
 
+	model := pickVoiceModel(a)
 	cfg := voice.Config{
 		Sarvam: sarvam.Config{APIKey: key},
 		NewAnswerer: func() voice.Answerer {
-			return &voiceAgent{agent: a, session: newVoiceSession(a), log: rt.log}
+			return &voiceAgent{agent: a, session: newVoiceSession(model), log: rt.log}
 		},
 		Log: rt.log,
 	}
