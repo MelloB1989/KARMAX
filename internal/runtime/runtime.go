@@ -342,6 +342,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
 	toolReg.Register(&builtin.ToolSearchTool{Registry: toolReg})
+	toolReg.Register(&builtin.VoiceCallTool{
+		WacliAPIURL: hostpaths.WacliAPIURL(),
+		RelayURL:    voiceRelayURL(cfg),
+	})
 	toolReg.Register(&builtin.CostTool{Store: s, BudgetUSDPerMonth: cfg.Karmax.BudgetUSDPerMonth})
 	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{

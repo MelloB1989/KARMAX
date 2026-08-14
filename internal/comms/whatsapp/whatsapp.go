@@ -186,6 +186,15 @@ func (w *WhatsAppChannel) HandleWebhook(rw http.ResponseWriter, r *http.Request)
 // agent's reply goes back to the exact chat the message came from (which handles
 // the "@lid" vs "@s.whatsapp.net" split transparently).
 func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
+	// Calls first: everything below reads a message body and gives up when there
+	// is none, which a ringing call never has.
+	if strings.HasPrefix(env.Event, "call.") {
+		if env.Event == "call.incoming" {
+			w.routeIncomingCall(env)
+		}
+		return
+	}
+
 	msg := env.Payload.Message
 	chatJID := strings.TrimSpace(env.Payload.Chat.JID)
 	if chatJID == "" {
@@ -465,5 +474,70 @@ func whatsappMediaLabel(t string) string {
 		return "sticker"
 	default:
 		return ""
+	}
+}
+
+// wacliCallPayload is what wacli sends on a call webhook.
+type wacliCallPayload struct {
+	CallID   string `json:"call_id"`
+	PeerJID  string `json:"peer_jid"`
+	PeerName string `json:"peer_name"`
+	Video    bool   `json:"video"`
+}
+
+// routeIncomingCall turns a ringing call into a turn for the agent.
+//
+// wacli cannot bridge an INBOUND call to the relay — only outbound calls stream
+// — so the agent cannot pick this one up and talk. What it can do is ring back
+// immediately with a real conversation, which is why the marker says so rather
+// than leaving the agent to work out that answering is not on the table.
+func (w *WhatsAppChannel) routeIncomingCall(env wacliWebhookEnvelope) {
+	var call wacliCallPayload
+	// The call payload rides in the same envelope slot as a message, so it is
+	// re-read here rather than widening the message struct with call fields
+	// that are empty on every other event.
+	if raw, err := json.Marshal(env.Payload); err == nil {
+		_ = json.Unmarshal(raw, &call)
+	}
+	peer := strings.TrimSpace(call.PeerJID)
+	if peer == "" {
+		return
+	}
+	who := strings.TrimSpace(call.PeerName)
+	if who == "" {
+		who = peer
+	}
+
+	kind := "voice"
+	if call.Video {
+		kind = "video"
+	}
+	body := fmt.Sprintf(
+		"[%s is calling you on WhatsApp right now (%s call). You CANNOT answer an incoming call — "+
+			"the bridge only streams outgoing ones. If it is worth talking, call them straight back with "+
+			"call.start(to=%q) and open with something like \"you rang?\". Otherwise send a message.]",
+		who, kind, peer)
+
+	cm := comms.Message{
+		ID:          uuid.New().String(),
+		ChannelID:   peer,
+		ChannelType: "whatsapp",
+		SenderID:    normalizeJID(peer),
+		SenderName:  who,
+		Content:     body,
+		Direction:   comms.Inbound,
+		Timestamp:   time.Now(),
+		Metadata: map[string]any{
+			"call_id":   call.CallID,
+			"is_call":   true,
+			"chat_name": who,
+		},
+	}
+	select {
+	case w.inbox <- cm:
+		w.log.Info("routed an incoming call to the agent",
+			zap.String("peer", normalizeJID(peer)), zap.String("call_id", call.CallID))
+	default:
+		w.log.Warn("dropped an incoming call: the inbox is full", zap.String("peer", peer))
 	}
 }

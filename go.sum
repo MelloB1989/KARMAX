@@ -8,14 +8,8 @@ github.com/Davincible/goinsta/v3 v3.2.6 h1:+lNIWU6NABWd2VSGe83UQypnef+kzWwjmfgGi
 github.com/Davincible/goinsta/v3 v3.2.6/go.mod h1:jIDhrWZmttL/gtXj/mkCaZyeNdAAqW3UYjasOUW0YEw=
 github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d h1:PCThr0O4B44Y/Mx5Ux+Qz2XCqIMw2NKpifNf6lXaXIY=
 github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d/go.mod h1:jrMQxkBzbSrODP96kW1TAfKnDwLHnkb8rNvm5Fm5s28=
-github.com/MelloB1989/karma v1.21.0 h1:VtFC+GOpmxH7DfexrpFdIQZ+Y97U65Z7uMhPBV9TTVM=
-github.com/MelloB1989/karma v1.21.0/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
-github.com/MelloB1989/karma v1.21.1 h1:D8UZiPuqS7r6Wpre7G4bBTutVG/PAy7N3BiFuRBGTEw=
-github.com/MelloB1989/karma v1.21.1/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
 github.com/MelloB1989/karma v1.21.2 h1:5f25QkVUBO2rUuw5fKTmngqK+XZU4FoCoki4sGc0GFQ=
 github.com/MelloB1989/karma v1.21.2/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
-github.com/MelloB1989/wacli v0.3.0 h1:5NPB5YD6H0tlqFf9nCqwzSWWG4sHViluvKvBBaMBVNw=
-github.com/MelloB1989/wacli v0.3.0/go.mod h1:IQVxbDBFsoPPbtAv4PnTnzmVfK7bxuXIKaUecWVnerk=
 github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36 h1:OCI373QkuzXNOoaUBNEwh4uxaaPOfSFYn3ck7WlrqMI=
 github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36/go.mod h1:yrKnA/812p/Vh84TYQMz36/8SNLF7OOdTmKFr5i7W7g=
 github.com/anthropics/anthropic-sdk-go v1.4.0 h1:fU1jKxYbQdQDiEXCxeW5XZRIOwKevn/PMg8Ay1nnUx0=
@@ -177,8 +171,8 @@ github.com/mailru/easyjson v0.7.7 h1:UGYAvKxe3sBsEDzO8ZeWOSlIQfWFlxbzLZe7hwFURr0
 github.com/mailru/easyjson v0.7.7/go.mod h1:xzfreul335JAWq5oZzymOObrkdz5UnU4kGfJJLY9Nlc=
 github.com/matoous/go-nanoid/v2 v2.1.0 h1:P64+dmq21hhWdtvZfEAofnvJULaRR1Yib0+PnU669bE=
 github.com/matoous/go-nanoid/v2 v2.1.0/go.mod h1:KlbGNQ+FhrUNIHUxZdL63t7tl4LaPkZNpUULS8H4uVM=
-github.com/mattn/go-isatty v0.0.22 h1:j8l17JJ9i6VGPUFUYoTUKPSgKe/83EYU2zBC7YNKMw4=
-github.com/mattn/go-isatty v0.0.22/go.mod h1:ZXfXG4SQHsB/w3ZeOYbR0PrPwLy+n6xiMrJlRFqopa4=
+github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=
+github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/mattn/go-localereader v0.0.1 h1:ygSAOl7ZXTx4RdPYinUpg6W99U8jWvWi9Ye2JC/oIi4=
 github.com/mattn/go-localereader v0.0.1/go.mod h1:8fBrzywKY7BI3czFoHkuzRoWE9C+EiG4R1k4Cjx5p88=
 github.com/mattn/go-runewidth v0.0.19 h1:v++JhqYnZuu5jSKrk9RbgF5v4CGUjqRfBm05byFGLdw=
