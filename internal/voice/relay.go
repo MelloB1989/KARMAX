@@ -52,8 +52,12 @@ type Answerer interface {
 // Config is what a relay needs to run.
 type Config struct {
 	Sarvam sarvam.Config
-	Agent  Answerer
-	Log    *zap.Logger
+	// NewAnswerer builds the brain for ONE call. A factory rather than a single
+	// Answerer because a conversation has its own history, and one shared across
+	// every call would grow without bound and let yesterday's call answer
+	// today's question.
+	NewAnswerer func() Answerer
+	Log         *zap.Logger
 }
 
 // hello is the opening frame wacli sends.
@@ -85,9 +89,10 @@ type session struct {
 	peer string
 	mu   sync.Mutex
 
-	stt *sarvam.STT
-	tts *sarvam.TTS
-	fsm *turn.Machine
+	stt   *sarvam.STT
+	tts   *sarvam.TTS
+	fsm   *turn.Machine
+	agent Answerer
 }
 
 // Serve runs one conversation to completion. It always closes conn.
@@ -97,7 +102,11 @@ func Serve(ctx context.Context, conn *websocket.Conn, cfg Config) {
 	if log == nil {
 		log = zap.NewNop()
 	}
-	s := &session{cfg: cfg, conn: conn, log: log, fsm: turn.New()}
+	if cfg.NewAnswerer == nil {
+		log.Error("voice: no answerer configured; refusing the call")
+		return
+	}
+	s := &session{cfg: cfg, conn: conn, log: log, fsm: turn.New(), agent: cfg.NewAnswerer()}
 
 	ctx, cancel := context.WithTimeout(ctx, maxCall)
 	defer cancel()
@@ -119,7 +128,7 @@ func Serve(ctx context.Context, conn *websocket.Conn, cfg Config) {
 	defer s.tts.Close()
 
 	s.send(ctx, event{Type: "state", State: "connected"})
-	if greeting := strings.TrimSpace(s.cfg.Agent.Greeting(ctx, s.peer)); greeting != "" {
+	if greeting := strings.TrimSpace(s.agent.Greeting(ctx, s.peer)); greeting != "" {
 		s.say(ctx, greeting)
 	}
 
@@ -244,7 +253,7 @@ func (s *session) pumpSpeech(ctx context.Context) {
 // answer asks the agent and speaks the reply.
 func (s *session) answer(ctx context.Context, said string) {
 	s.send(ctx, event{Type: "state", State: "thinking"})
-	reply, err := s.cfg.Agent.Answer(ctx, s.peer, said)
+	reply, err := s.agent.Answer(ctx, s.peer, said)
 	if err != nil {
 		s.log.Warn("voice: the agent could not answer", zap.Error(err))
 		// Said out loud rather than swallowed: silence on a phone call reads as

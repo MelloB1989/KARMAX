@@ -11,6 +11,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/voice"
 	"github.com/MelloB1989/karmax/internal/voice/sarvam"
+	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/coder/websocket"
 	"go.uber.org/zap"
 )
@@ -23,9 +24,46 @@ import (
 // would be a second set of facts to keep in sync.
 
 // voiceAgent adapts the agent to a spoken conversation.
+//
+// It does NOT use the orchestrator's own session. That session carries the
+// whole nexus persona, thirteen tool schemas and a growing history, and on
+// Sonnet it took nine to ten seconds to answer "hello" — measured, twice. A
+// phone call cannot wait that long: the caller assumes the line is dead and
+// starts talking again.
+//
+// So a call gets its own session — the fast model, a short prompt, no tools —
+// and its own history, which lasts exactly as long as the call.
 type voiceAgent struct {
-	agent *agent.Agent
-	log   *zap.Logger
+	agent   *agent.Agent
+	session *karmahelper.Session
+	log     *zap.Logger
+}
+
+// voicePrompt is the whole brief. Short on purpose: every token here is paid on
+// every turn of the conversation, and the medium does most of the instructing.
+const voicePrompt = `You are KARMAX, the operator's personal AI assistant, speaking with them ON THE PHONE.
+
+Reply the way a person on a call does: one or two short sentences, the answer first.
+No lists, no markdown, no URLs read aloud, no preamble.
+If you did not catch something, say so briefly and ask them to repeat.
+If they ask for something you cannot do over the phone, say you will handle it after the call.
+Never invent facts about their life — if you do not know, say you will check.`
+
+// newVoiceSession builds the conversational half of a call.
+func newVoiceSession(a *agent.Agent) *karmahelper.Session {
+	def := a.Snapshot().Def
+	model, provider := def.MemoryModelCfg.Model, def.MemoryModelCfg.Provider
+	if model == "" {
+		model, provider = def.Model, def.Provider
+	}
+	return karmahelper.NewSession(karmahelper.SessionConfig{
+		Provider:     provider,
+		Model:        model,
+		SystemPrompt: voicePrompt,
+		// Two sentences of speech. A cap is also a latency control: the reply
+		// cannot be slow because it is long.
+		MaxTokens: 160,
+	}, nil)
 }
 
 // Answer asks the agent, with the shape of the reply set by the medium.
@@ -35,12 +73,7 @@ type voiceAgent struct {
 // of the prompt rather than a hope — short sentences, no lists, no markdown,
 // and the answer first.
 func (v *voiceAgent) Answer(ctx context.Context, peer, said string) (string, error) {
-	prompt := "You are ON A PHONE CALL with the operator. They just said:\n\n" +
-		strings.TrimSpace(said) + "\n\n" +
-		"Reply as speech: one or two short sentences, the answer first, no lists, no markdown, " +
-		"no URLs read aloud. If you need to do something, do it with your tools and say what you did. " +
-		"If you did not understand, say so briefly and ask them to repeat."
-	reply, err := v.agent.Chat(ctx, prompt)
+	reply, _, _, err := v.session.Chat(ctx, strings.TrimSpace(said))
 	if err != nil {
 		return "", err
 	}
@@ -86,8 +119,10 @@ func (rt *KarmaxRuntime) mountVoice(wh interface {
 
 	cfg := voice.Config{
 		Sarvam: sarvam.Config{APIKey: key},
-		Agent:  &voiceAgent{agent: a, log: rt.log},
-		Log:    rt.log,
+		NewAnswerer: func() voice.Answerer {
+			return &voiceAgent{agent: a, session: newVoiceSession(a), log: rt.log}
+		},
+		Log: rt.log,
 	}
 
 	wh.AddHandler("/voice", func(w http.ResponseWriter, r *http.Request) {
