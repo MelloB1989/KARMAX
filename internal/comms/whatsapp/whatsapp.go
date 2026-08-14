@@ -30,9 +30,35 @@ const (
 
 // wacliWebhookEnvelope is the JSON body wacli POSTs to our webhook endpoint.
 // See wacli service.go buildMessageWebhookPayload / dispatchWebhook.
+//
+// Raw keeps the payload exactly as it arrived. The typed Payload only knows the
+// message shape, and a call event's fields — call_id, peer_jid — are not in it:
+// decoding through the struct silently discarded them, so an incoming call
+// parsed to an empty peer and was dropped without a trace while the phone rang
+// out. Anything that is not message-shaped decodes from Raw instead.
 type wacliWebhookEnvelope struct {
 	Event   string              `json:"event"`
 	Payload wacliWebhookPayload `json:"payload"`
+	Raw     json.RawMessage     `json:"-"`
+}
+
+// UnmarshalJSON keeps both views of the payload.
+func (e *wacliWebhookEnvelope) UnmarshalJSON(data []byte) error {
+	var shadow struct {
+		Event   string          `json:"event"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &shadow); err != nil {
+		return err
+	}
+	e.Event = shadow.Event
+	e.Raw = shadow.Payload
+	if len(shadow.Payload) > 0 {
+		// Message-shaped fields, where present; a call payload simply leaves
+		// them zero.
+		_ = json.Unmarshal(shadow.Payload, &e.Payload)
+	}
+	return nil
 }
 
 type wacliWebhookPayload struct {
@@ -506,14 +532,16 @@ type wacliCallPayload struct {
 // than leaving the agent to work out that answering is not on the table.
 func (w *WhatsAppChannel) routeIncomingCall(env wacliWebhookEnvelope) {
 	var call wacliCallPayload
-	// The call payload rides in the same envelope slot as a message, so it is
-	// re-read here rather than widening the message struct with call fields
-	// that are empty on every other event.
-	if raw, err := json.Marshal(env.Payload); err == nil {
-		_ = json.Unmarshal(raw, &call)
+	if len(env.Raw) > 0 {
+		_ = json.Unmarshal(env.Raw, &call)
 	}
 	peer := strings.TrimSpace(call.PeerJID)
 	if peer == "" {
+		// Loudly: this exact silence is how an unanswered ring went
+		// undiagnosed — the webhook arrived, parsed to nothing, and left no
+		// trace of either fact.
+		w.log.Warn("incoming call event carried no peer; ignoring it",
+			zap.String("payload", string(env.Raw)))
 		return
 	}
 	who := strings.TrimSpace(call.PeerName)
