@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/voice"
 	"github.com/MelloB1989/karmax/internal/voice/sarvam"
 	"github.com/coder/websocket"
@@ -136,4 +137,14 @@ func (rt *KarmaxRuntime) voiceAgentID() string {
 		return rt.cfg.Agents[0].ID
 	}
 	return ""
+}
+
+// voiceRelayURL is where wacli bridges a call's audio, or empty when calling is
+// off. Computed from config rather than the runtime so the tool can be built
+// before the runtime exists.
+func voiceRelayURL(cfg *config.KarmaxConfig) string {
+	if strings.TrimSpace(os.Getenv("SARVAM_API_KEY")) == "" || !cfg.Webhooks.Enabled {
+		return ""
+	}
+	return fmt.Sprintf("ws://127.0.0.1:%d/voice", cfg.Webhooks.Port)
 }
