@@ -330,6 +330,13 @@ func (w *wacliVoice) post(ctx context.Context, path string, body map[string]any)
 // brainURL is where integrations hold their conversations, or empty when voice
 // is off. Computed from config so the tool can exist before the runtime does.
 func brainURL(cfg *config.KarmaxConfig) string {
+	// KARMAX_VOICE=off is the operator's kill switch: no answering, no placing,
+	// no brain endpoint — while the Sarvam key stays in place for when it comes
+	// back. A switch, because "stop all calls" should not mean digging a
+	// credential out of a file later.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("KARMAX_VOICE")), "off") {
+		return ""
+	}
 	if strings.TrimSpace(os.Getenv("SARVAM_API_KEY")) == "" || !cfg.Webhooks.Enabled {
 		return ""
 	}
@@ -342,7 +349,7 @@ func (rt *KarmaxRuntime) mountVoice(wh interface {
 }, a *agent.Agent) {
 	url := brainURL(rt.cfg)
 	if url == "" {
-		rt.log.Info("voice is off: SARVAM_API_KEY is not set or webhooks are disabled")
+		rt.log.Info("voice is off (KARMAX_VOICE=off, no SARVAM_API_KEY, or webhooks disabled) — calls will not be answered or placed")
 		return
 	}
 	if a == nil {
