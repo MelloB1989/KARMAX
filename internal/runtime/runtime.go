@@ -103,6 +103,10 @@ type KarmaxRuntime struct {
 	// no endpoint is configured, which is the single-instance default.
 	mesh *mesh.Node
 
+	// waChannel is kept so voice can teach it to answer incoming calls once the
+	// relay is up — the channel is built long before the relay is.
+	waChannel *whatsapp.WhatsAppChannel
+
 	// startedAt is when this process came up. A loop that has not succeeded
 	// yet is judged against this rather than against the epoch, so a restart
 	// does not report every scheduled loop as dark.
@@ -837,6 +841,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		broker:       brk,
 		connectors:   connHost,
 		recipeLoops:  map[string]*recipes.Recipe{},
+		waChannel:    waChannel,
 		routedKinds:  routedKinds,
 		mesh:         meshNode,
 		startedAt:    startedAt,
@@ -888,6 +893,7 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	if rt.webhooks != nil {
 		if a, ok := rt.agents.Get(rt.voiceAgentID()); ok {
 			rt.mountVoice(rt.webhooks, a)
+			rt.wireCallAnswering()
 		}
 	}
 

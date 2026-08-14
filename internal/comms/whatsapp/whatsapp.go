@@ -83,10 +83,14 @@ type WhatsAppChannel struct {
 	targetChat    string // default send target (e.g. for briefings); not a filter
 	webhookSecret string // optional HMAC secret; must match the wacli webhook's --secret
 	inbox         chan comms.Message
-	log           *zap.Logger
-	ctx           context.Context
-	cancel        context.CancelFunc
-	mu            sync.RWMutex
+	// answerStream, when set, picks up a ringing incoming call and bridges it
+	// to a live conversation. Nil means calls ring through to the agent as a
+	// message instead. Guarded by mu.
+	answerStream func(callID string) error
+	log          *zap.Logger
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.RWMutex
 }
 
 // New creates a WhatsAppChannel. targetChat is only the default send target.
@@ -104,6 +108,15 @@ func New(id, wacliPath, targetChat, webhookSecret string, log *zap.Logger) *What
 		inbox:         make(chan comms.Message, 256),
 		log:           log,
 	}
+}
+
+// SetAnswerStream installs the hook that picks up incoming calls. The runtime
+// sets it once the voice relay is listening; without it a ringing call is
+// described to the agent rather than answered.
+func (w *WhatsAppChannel) SetAnswerStream(fn func(callID string) error) {
+	w.mu.Lock()
+	w.answerStream = fn
+	w.mu.Unlock()
 }
 
 func (w *WhatsAppChannel) ID() string   { return w.id }
@@ -506,6 +519,24 @@ func (w *WhatsAppChannel) routeIncomingCall(env wacliWebhookEnvelope) {
 	who := strings.TrimSpace(call.PeerName)
 	if who == "" {
 		who = peer
+	}
+
+	// Answer it ourselves when the relay is up. This is the whole point of the
+	// voice stack: the operator rings their assistant and it picks up. Only on
+	// failure does the old behaviour run — describe the ring to the agent so it
+	// can ring back.
+	w.mu.RLock()
+	answer := w.answerStream
+	w.mu.RUnlock()
+	if answer != nil {
+		if err := answer(call.CallID); err == nil {
+			w.log.Info("answered an incoming call with a live conversation",
+				zap.String("from", who), zap.String("call_id", call.CallID))
+			return
+		} else {
+			w.log.Warn("could not answer the incoming call; telling the agent instead",
+				zap.String("call_id", call.CallID), zap.Error(err))
+		}
 	}
 
 	kind := "voice"

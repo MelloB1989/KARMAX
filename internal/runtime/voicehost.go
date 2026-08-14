@@ -1,11 +1,16 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"io"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/config"
@@ -198,4 +203,52 @@ func voiceRelayURL(cfg *config.KarmaxConfig) string {
 		return ""
 	}
 	return fmt.Sprintf("ws://127.0.0.1:%d/voice", cfg.Webhooks.Port)
+}
+
+// wireCallAnswering teaches the WhatsApp channel to pick up.
+//
+// Ringing KARMAX and having it answer is the other half of calling — placing
+// worked and answering did not exist, so the operator stood listening to their
+// own assistant ring out. The channel does the deciding (it sees the webhook);
+// this supplies the mechanism: bridge the ringing call to our relay.
+//
+// Answering is deliberately mechanical — no model in the loop. A pickup that
+// waits on a routing decision is a pickup the caller gives up on.
+func (rt *KarmaxRuntime) wireCallAnswering() {
+	relay := voiceRelayURL(rt.cfg)
+	if relay == "" || rt.waChannel == nil {
+		return
+	}
+	endpoint := strings.TrimRight(hostpaths.WacliAPIURL(), "/") + "/calls/stream/answer"
+	rt.waChannel.SetAnswerStream(func(callID string) error {
+		body, err := json.Marshal(map[string]any{
+			"call_id":   callID,
+			"relay_url": relay,
+			// The relay is loopback-only and authenticates nobody; the token is
+			// the protocol's field, not a secret.
+			"token":    "local",
+			"language": "en-IN",
+		})
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			return fmt.Errorf("answer refused (%s): %.200s", resp.Status, raw)
+		}
+		return nil
+	})
+	rt.log.Info("incoming calls will be answered live", zap.String("relay", relay))
 }
