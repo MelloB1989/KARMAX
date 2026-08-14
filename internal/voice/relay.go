@@ -171,6 +171,7 @@ func (s *session) dial(ctx context.Context, h hello) error {
 
 // readPhone forwards the caller's audio to the transcriber until the call ends.
 func (s *session) readPhone(ctx context.Context) {
+	frames := 0
 	for {
 		kind, data, err := s.conn.Read(ctx)
 		if err != nil {
@@ -179,8 +180,13 @@ func (s *session) readPhone(ctx context.Context) {
 		switch kind {
 		case websocket.MessageBinary:
 			if err := s.stt.Send(ctx, data); err != nil {
-				s.log.Debug("voice: could not forward audio", zap.Error(err))
+				s.log.Warn("voice: could not forward audio to transcription", zap.Error(err))
 				return
+			}
+			frames++
+			if frames == 1 || frames%100 == 0 {
+				s.log.Info("voice: caller audio flowing",
+					zap.Int("frames", frames), zap.Int("bytes", len(data)))
 			}
 		case websocket.MessageText:
 			var ev event
@@ -208,6 +214,9 @@ func (s *session) pumpAudio(ctx context.Context) {
 func (s *session) pumpSpeech(ctx context.Context) {
 	var heard strings.Builder
 	for ev := range s.stt.Events() {
+		s.log.Info("voice: transcription event",
+			zap.Int("kind", int(ev.Kind)), zap.Bool("final", ev.Final),
+			zap.Int("text_len", len(ev.Text)))
 		switch ev.Kind {
 		case sarvam.SpeechStart:
 			s.send(ctx, event{Type: "barge_in"})
@@ -223,8 +232,10 @@ func (s *session) pumpSpeech(ctx context.Context) {
 			said := strings.TrimSpace(heard.String())
 			heard.Reset()
 			if said == "" {
+				s.log.Info("voice: they stopped talking but nothing was transcribed")
 				continue
 			}
+			s.log.Info("voice: heard the caller", zap.String("said", said))
 			s.answer(ctx, said)
 		}
 	}
