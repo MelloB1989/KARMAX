@@ -242,52 +242,58 @@ func (s *session) pumpAudio(ctx context.Context) {
 // transcript exists — the point is to stop KARMAX mid-sentence, and waiting for
 // words would talk over them for the length of a phrase.
 func (s *session) pumpSpeech(ctx context.Context) {
-	var heard, pending strings.Builder
+	// The FINAL TRANSCRIPT is the utterance boundary, not SpeechEnd.
+	//
+	// The transcriber's final text arrives ~100–200ms AFTER its own speech-end
+	// event. Flushing on speech-end therefore always flushed an empty buffer,
+	// and the words landed just afterwards — waiting for the NEXT speech-end.
+	// Every utterance was answered exactly one turn late: say "hi", silence;
+	// say "hi" again, get the answer to the first. The end-of-speech signal is
+	// only the VAD; the words are the data, so the words carry the boundary.
+	var pending strings.Builder
+	var mu sync.Mutex
 	var quiet *time.Timer
 	defer func() {
+		mu.Lock()
 		if quiet != nil {
 			quiet.Stop()
 		}
+		mu.Unlock()
 	}()
 	for ev := range s.stt.Events() {
-		s.log.Info("voice: transcription event",
-			zap.Int("kind", int(ev.Kind)), zap.Bool("final", ev.Final),
-			zap.Int("text_len", len(ev.Text)))
 		switch ev.Kind {
 		case sarvam.SpeechStart:
 			s.send(ctx, event{Type: "barge_in"})
 
 		case sarvam.Transcript:
-			if ev.Final {
-				heard.WriteString(ev.Text)
-				heard.WriteByte(' ')
-			}
 			s.send(ctx, event{Type: "transcript", Text: ev.Text, Final: ev.Final})
-
-		case sarvam.SpeechEnd:
-			said := strings.TrimSpace(heard.String())
-			heard.Reset()
-			if said == "" {
-				s.log.Debug("voice: they stopped talking but nothing was transcribed")
+			if !ev.Final || strings.TrimSpace(ev.Text) == "" {
 				continue
 			}
-			// Held briefly instead of answered at once. The transcriber ends a
-			// segment on every short pause, so one sentence arrives as "What",
-			// "What can you", "to see like what are my pending" — and answering
-			// each fragment means talking over somebody who is still mid-thought.
-			pending.WriteString(said)
+			// Settle briefly after each final rather than answering at once:
+			// one sentence arrives as several finals across breaths, and
+			// answering each fragment talks over somebody mid-thought.
+			mu.Lock()
+			pending.WriteString(strings.TrimSpace(ev.Text))
 			pending.WriteByte(' ')
 			if quiet != nil {
 				quiet.Stop()
 			}
 			quiet = time.AfterFunc(settleFor, func() {
+				mu.Lock()
 				utterance := strings.TrimSpace(pending.String())
 				pending.Reset()
+				mu.Unlock()
 				if utterance == "" {
 					return
 				}
 				s.offer(utterance)
 			})
+			mu.Unlock()
+
+		case sarvam.SpeechEnd:
+			// VAD only. The final for this utterance is probably still in
+			// flight; acting here is how replies ran a turn behind.
 		}
 	}
 }
@@ -346,8 +352,14 @@ func (s *session) answer(ctx context.Context, said string) {
 	s.send(ctx, event{Type: "state", State: "thinking"})
 	// Spoken before the model is asked, not after: the point is to fill the
 	// silence, and a filler that arrives with the answer is just noise.
+	//
+	// Flushed immediately, because Speak only QUEUES text — synthesis happens on
+	// Flush. Unflushed, the filler never played during the wait and instead
+	// concatenated into the next reply's flush, so several turns of "Mm-hm."
+	// "Right." piled up and came out fused to an answer as one garbled blob.
 	s.filled++
 	_ = s.tts.Speak(ctx, fillers[s.filled%len(fillers)])
+	_ = s.tts.Flush(ctx)
 	started := time.Now()
 	reply, err := s.agent.Answer(ctx, s.peer, said)
 	s.log.Info("voice: replying",
