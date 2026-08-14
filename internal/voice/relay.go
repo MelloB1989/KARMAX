@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/voice/sarvam"
@@ -32,6 +33,10 @@ const (
 	readLimit = 1 << 20
 	// handshakeTimeout bounds the wait for the opening hello.
 	handshakeTimeout = 10 * time.Second
+	// settleFor is how long to wait for the caller to finish before answering.
+	// Every millisecond here is silence the caller hears after they stop
+	// talking, so it buys only enough to join a sentence split across a breath.
+	settleFor = 280 * time.Millisecond
 	// maxCall bounds a single conversation. A call nobody hangs up costs money
 	// for as long as it runs.
 	maxCall = 10 * time.Minute
@@ -89,10 +94,14 @@ type session struct {
 	peer string
 	mu   sync.Mutex
 
-	stt   *sarvam.STT
-	tts   *sarvam.TTS
-	fsm   *turn.Machine
-	agent Answerer
+	stt    *sarvam.STT
+	tts    *sarvam.TTS
+	fsm    *turn.Machine
+	agent  Answerer
+	filled int
+	// speakingSince marks when synthesis was asked for, so the wait before the
+	// first sound can be measured rather than guessed at.
+	speakingSince atomic.Int64
 }
 
 // Serve runs one conversation to completion. It always closes conn.
@@ -210,6 +219,12 @@ func (s *session) readPhone(ctx context.Context) {
 // pumpAudio forwards synthesised speech to the call.
 func (s *session) pumpAudio(ctx context.Context) {
 	for chunk := range s.tts.Audio() {
+		// The gap the caller actually hears is speech-end to first sound, not
+		// the model's own time — so it is the one worth measuring.
+		if at := s.speakingSince.Swap(0); at != 0 {
+			s.log.Info("voice: first audio out",
+				zap.Duration("after_reply", time.Since(time.UnixMilli(at)).Round(time.Millisecond)))
+		}
 		if err := s.conn.Write(ctx, websocket.MessageBinary, chunk); err != nil {
 			return
 		}
@@ -222,7 +237,13 @@ func (s *session) pumpAudio(ctx context.Context) {
 // transcript exists — the point is to stop KARMAX mid-sentence, and waiting for
 // words would talk over them for the length of a phrase.
 func (s *session) pumpSpeech(ctx context.Context) {
-	var heard strings.Builder
+	var heard, pending strings.Builder
+	var quiet *time.Timer
+	defer func() {
+		if quiet != nil {
+			quiet.Stop()
+		}
+	}()
 	for ev := range s.stt.Events() {
 		s.log.Info("voice: transcription event",
 			zap.Int("kind", int(ev.Kind)), zap.Bool("final", ev.Final),
@@ -242,19 +263,52 @@ func (s *session) pumpSpeech(ctx context.Context) {
 			said := strings.TrimSpace(heard.String())
 			heard.Reset()
 			if said == "" {
-				s.log.Info("voice: they stopped talking but nothing was transcribed")
+				s.log.Debug("voice: they stopped talking but nothing was transcribed")
 				continue
 			}
-			s.log.Info("voice: heard the caller", zap.String("said", said))
-			s.answer(ctx, said)
+			// Held briefly instead of answered at once. The transcriber ends a
+			// segment on every short pause, so one sentence arrives as "What",
+			// "What can you", "to see like what are my pending" — and answering
+			// each fragment means talking over somebody who is still mid-thought.
+			pending.WriteString(said)
+			pending.WriteByte(' ')
+			if quiet != nil {
+				quiet.Stop()
+			}
+			quiet = time.AfterFunc(settleFor, func() {
+				utterance := strings.TrimSpace(pending.String())
+				pending.Reset()
+				if utterance == "" {
+					return
+				}
+				s.log.Info("voice: heard the caller", zap.String("said", utterance))
+				s.answer(ctx, utterance)
+			})
 		}
 	}
 }
 
+// fillers are what it says while the model is still thinking.
+//
+// The model takes over a second and the caller hears nothing in that time, which
+// on a phone reads as the line having dropped — they repeat themselves, and now
+// two turns are in flight. A short acknowledgement costs about a quarter of a
+// second to reach them and buys the whole wait. Varied so a conversation does
+// not sound like a loop.
+var fillers = []string{"Mm-hm.", "Right.", "Okay.", "Sure.", "Got it."}
+
 // answer asks the agent and speaks the reply.
 func (s *session) answer(ctx context.Context, said string) {
 	s.send(ctx, event{Type: "state", State: "thinking"})
+	// Spoken before the model is asked, not after: the point is to fill the
+	// silence, and a filler that arrives with the answer is just noise.
+	s.filled++
+	_ = s.tts.Speak(ctx, fillers[s.filled%len(fillers)])
+	started := time.Now()
 	reply, err := s.agent.Answer(ctx, s.peer, said)
+	s.log.Info("voice: replying",
+		zap.Duration("took", time.Since(started).Round(time.Millisecond)),
+		zap.String("reply", reply), zap.Error(err))
 	if err != nil {
 		s.log.Warn("voice: the agent could not answer", zap.Error(err))
 		// Said out loud rather than swallowed: silence on a phone call reads as
@@ -271,6 +325,7 @@ func (s *session) answer(ctx context.Context, said string) {
 // say synthesises one utterance.
 func (s *session) say(ctx context.Context, text string) {
 	s.send(ctx, event{Type: "state", State: "speaking"})
+	s.speakingSince.Store(time.Now().UnixMilli())
 	if err := s.tts.Speak(ctx, text); err != nil {
 		s.log.Warn("voice: could not speak", zap.Error(err))
 		return

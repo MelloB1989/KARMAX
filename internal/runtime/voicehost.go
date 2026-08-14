@@ -75,9 +75,9 @@ func newVoiceSession(m voiceModel) *karmahelper.Session {
 		Provider:     provider,
 		Model:        model,
 		SystemPrompt: voicePrompt,
-		// Two sentences of speech. A cap is also a latency control: the reply
-		// cannot be slow because it is long.
-		MaxTokens: 160,
+		// One or two sentences. Also a latency control — the reply cannot be
+		// slow to generate or slow to speak if it cannot be long.
+		MaxTokens: 90,
 	}, nil)
 }
 
