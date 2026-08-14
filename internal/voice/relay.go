@@ -107,6 +107,7 @@ func Serve(ctx context.Context, conn *websocket.Conn, cfg Config) {
 		return
 	}
 	s := &session{cfg: cfg, conn: conn, log: log, fsm: turn.New(), agent: cfg.NewAnswerer()}
+	log.Info("voice: session ready, waiting for the bridge")
 
 	ctx, cancel := context.WithTimeout(ctx, maxCall)
 	defer cancel()
