@@ -10,6 +10,8 @@ github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d h1:PCThr0O4
 github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d/go.mod h1:jrMQxkBzbSrODP96kW1TAfKnDwLHnkb8rNvm5Fm5s28=
 github.com/MelloB1989/karma v1.21.2 h1:5f25QkVUBO2rUuw5fKTmngqK+XZU4FoCoki4sGc0GFQ=
 github.com/MelloB1989/karma v1.21.2/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
+github.com/MelloB1989/karma v1.21.3 h1:lHDYIslnjxsDUf7akkMHlvAyjbwQkDXBemr4CnURKXk=
+github.com/MelloB1989/karma v1.21.3/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
 github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36 h1:OCI373QkuzXNOoaUBNEwh4uxaaPOfSFYn3ck7WlrqMI=
 github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36/go.mod h1:yrKnA/812p/Vh84TYQMz36/8SNLF7OOdTmKFr5i7W7g=
 github.com/anthropics/anthropic-sdk-go v1.4.0 h1:fU1jKxYbQdQDiEXCxeW5XZRIOwKevn/PMg8Ay1nnUx0=

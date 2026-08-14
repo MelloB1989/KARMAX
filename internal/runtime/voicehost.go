@@ -55,6 +55,12 @@ Never invent facts about their life. If memory has nothing, say so plainly.`
 // tools, and history that lasts exactly as long as the call.
 type voiceBrain struct {
 	session *karmahelper.Session
+	// lookup and brief power pre-answer retrieval: memory relevant to the
+	// utterance is fetched BEFORE the model runs — a millisecond store search —
+	// so most questions answer in one pass instead of model → tool → model.
+	// The tool stays for what keyword overlap misses.
+	lookup *voiceMemoryLookup
+	brief  string
 }
 
 func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
@@ -70,6 +76,16 @@ func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
 }
 
 func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply, error) {
+	// Retrieval before generation: whatever memory the utterance's own words
+	// reach is in context before the model speaks, so it rarely needs the tool
+	// round-trip — the difference between one model pass and two, which on a
+	// phone is the difference between an answer and a pause.
+	if hits := b.lookup.linesFor(u.Text, 5); len(hits) > 0 {
+		b.session.SetContext(b.brief + "\n## Memory matching what they just said\n- " +
+			strings.Join(hits, "\n- ") + "\n")
+	} else {
+		b.session.SetContext(b.brief)
+	}
 	text, _, _, err := b.session.Chat(ctx, u.Text)
 	if err != nil {
 		return voice.Reply{}, err
@@ -92,12 +108,14 @@ func pickVoiceModel(a *agent.Agent) voiceModel {
 	if ns == "" {
 		ns = def.ID
 	}
-	// The agent's fallbacks, because a transient provider error on a phone call
-	// otherwise becomes an apology: the probe hit two Bedrock hiccups in four
-	// turns, and with no fallback each one reached the caller's ear.
+	// A fallback, because a transient provider error on a phone call otherwise
+	// becomes an apology. NOT the agent's own list verbatim: probing showed it
+	// carries a model this transport 400s on instantly and a duplicate of the
+	// voice primary, so "fallback" meant erroring once and retrying the same
+	// pool. The main model is the one real alternative.
 	var fallbacks []karmahelper.FallbackModel
-	for _, fb := range def.FallbackModels {
-		fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
+	if def.Model != "" && def.MemoryModelCfg.Model != "" && def.Model != def.MemoryModelCfg.Model {
+		fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: def.Provider, Model: def.Model})
 	}
 	if def.MemoryModelCfg.Model != "" {
 		return voiceModel{def.MemoryModelCfg.Provider, def.MemoryModelCfg.Model, ns, fallbacks}
@@ -123,14 +141,21 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 			SystemPrompt: voicePrompt,
 			// One or two sentences. Also a latency control — the reply cannot
 			// be slow to generate or slow to speak if it cannot be long.
-			MaxTokens:      90,
+			MaxTokens:      64,
+			MaxToolPasses:  2,
+			MaxRetries:     1,
 			FallbackModels: m.fallbacks,
 		}, voiceTools)
 		// Synchronous on purpose: a few milliseconds of SQLite before the
 		// greeting buys most questions a zero-lookup answer, and a context set
 		// concurrently with the first turn would race the session.
-		session.SetContext(memoryBrief(rt.store, m.namespace))
-		return &voiceBrain{session: session}
+		brief := memoryBrief(rt.store, m.namespace)
+		session.SetContext(brief)
+		return &voiceBrain{
+			session: session,
+			lookup:  &voiceMemoryLookup{store: rt.store, namespace: m.namespace},
+			brief:   brief,
+		}
 	}
 }
 
@@ -382,4 +407,47 @@ func (rt *KarmaxRuntime) voiceAgentID() string {
 		return rt.cfg.Agents[0].ID
 	}
 	return ""
+}
+
+// linesFor is the lookup's engine without the tool wrapping: memory lines the
+// text's own words reach, deduplicated, newest first.
+func (t *voiceMemoryLookup) linesFor(text string, limit int) []string {
+	if t == nil || t.store == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var lines []string
+	for _, word := range strings.Fields(strings.ToLower(text)) {
+		word = strings.Trim(word, ".,'\"?!()")
+		// Short connectives match everything and retrieve nothing.
+		if len(word) < 4 || voiceStopWords[word] {
+			continue
+		}
+		entries, err := t.store.SearchMemoryEntries(t.namespace, word, 4)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if seen[e.ID] {
+				continue
+			}
+			seen[e.ID] = true
+			line := strings.Join(strings.Fields(e.Content), " ")
+			if len(line) > 170 {
+				line = line[:170] + "…"
+			}
+			lines = append(lines, line)
+			if len(lines) >= limit {
+				return lines
+			}
+		}
+	}
+	return lines
+}
+
+var voiceStopWords = map[string]bool{
+	"what": true, "whats": true, "with": true, "that": true, "this": true,
+	"have": true, "about": true, "tell": true, "know": true, "remember": true,
+	"latest": true, "there": true, "your": true, "just": true, "like": true,
+	"they": true, "them": true, "then": true, "when": true, "will": true,
 }

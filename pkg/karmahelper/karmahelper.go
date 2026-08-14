@@ -39,6 +39,15 @@ type SessionConfig struct {
 	Temperature    float32
 	MaxTokens      int
 	FallbackModels []FallbackModel
+	// MaxToolPasses bounds tool round-trips per turn. Zero keeps the default
+	// (8). A voice turn wants 2: at roughly a second per model pass, an
+	// eight-pass deliberation is a hung-up phone.
+	MaxToolPasses int
+	// MaxRetries bounds same-model retries before falling back. Zero keeps the
+	// default (3). Retries carry one- and two-second backoffs, so on a latency
+	// budget a retry IS the failure — voice wants 1, reaching the fallback
+	// model while a patient caller would still be waiting out the first backoff.
+	MaxRetries int
 }
 
 type Session struct {
@@ -170,7 +179,11 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	}
 
 	// --- Try primary model with retries ---
-	resp, err := chatWithRetry(ctx, kai, &s.history, 3)
+	retries := s.cfg.MaxRetries
+	if retries <= 0 {
+		retries = 3
+	}
+	resp, err := chatWithRetry(ctx, kai, &s.history, retries)
 	if err == nil {
 		// A gateway that pre-prompts the model with its OWN identity sometimes
 		// answers as that identity instead of as this agent. It arrives as a
@@ -570,7 +583,11 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder)
 
 	if len(agentTools) > 0 {
 		options = append(options, ai.WithToolsEnabled())
-		options = append(options, ai.WithMaxToolPasses(8))
+		passes := cfg.MaxToolPasses
+		if passes <= 0 {
+			passes = 8
+		}
+		options = append(options, ai.WithMaxToolPasses(passes))
 
 		for _, t := range agentTools {
 			goTool := karmaxToolToGoFunctionTool(t, rec)
