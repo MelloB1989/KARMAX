@@ -382,6 +382,9 @@ func (rt *KarmaxRuntime) mountVoice(wh interface {
 			return wa.Answer(ctx, callID)
 		})
 		rt.log.Info("incoming calls will be answered live")
+		// In the background: wacli may still be starting, and nothing about
+		// answering should delay the rest of boot.
+		go rt.ensureAnswering(wa)
 	}
 }
 
@@ -450,4 +453,137 @@ var voiceStopWords = map[string]bool{
 	"have": true, "about": true, "tell": true, "know": true, "remember": true,
 	"latest": true, "there": true, "your": true, "just": true, "like": true,
 	"they": true, "them": true, "then": true, "when": true, "will": true,
+}
+
+// ensureAnswering makes "calls get picked up" true continuously, not just on
+// the happy path.
+//
+// Two ways it silently stopped being true. The wacli webhook is managed BY THE
+// AGENT — the system prompt even shows it re-registering with message events
+// only — so one re-registration dropped call.incoming and every call after it
+// rang out with nothing logged anywhere. And a call that rings while KARMAX is
+// restarting is announced to a webhook nobody is serving; by the time the
+// daemon is back the announcement is gone, though the call itself often still
+// rings. So on startup: repair the subscription, then answer anything already
+// ringing.
+func (rt *KarmaxRuntime) ensureAnswering(wa *wacliVoice) {
+	api := strings.TrimRight(wa.apiURL, "/")
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// wacli may still be coming up alongside us.
+	var hooks struct {
+		Webhooks []map[string]any `json:"webhooks"`
+	}
+	for attempt := 0; attempt < 6; attempt++ {
+		resp, err := client.Get(api + "/webhooks")
+		if err == nil {
+			err = json.NewDecoder(resp.Body).Decode(&hooks)
+			resp.Body.Close()
+			if err == nil {
+				break
+			}
+		}
+		if attempt == 5 {
+			rt.log.Warn("could not reach wacli to verify call answering", zap.Error(err))
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	for _, h := range hooks.Webhooks {
+		url, _ := h["url"].(string)
+		if !strings.Contains(url, "/comms/whatsapp") {
+			continue
+		}
+		if missing := missingCallEvents(h["events"]); len(missing) > 0 {
+			rt.repairWebhook(client, api, h, missing)
+		}
+	}
+
+	// Anything mid-ring right now.
+	var calls struct {
+		Calls []struct {
+			CallID    string `json:"call_id"`
+			Direction string `json:"direction"`
+			State     string `json:"state"`
+		} `json:"calls"`
+	}
+	if resp, err := client.Get(api + "/calls?active=true"); err == nil {
+		_ = json.NewDecoder(resp.Body).Decode(&calls)
+		resp.Body.Close()
+	}
+	for _, c := range calls.Calls {
+		if c.Direction != "incoming" || c.State != "ringing" {
+			continue
+		}
+		rt.log.Info("a call was already ringing at startup; answering it", zap.String("call_id", c.CallID))
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := wa.Answer(ctx, c.CallID); err != nil {
+			rt.log.Warn("could not answer the in-progress ring", zap.Error(err))
+		}
+		cancel()
+	}
+}
+
+// missingCallEvents names the call events a webhook subscription lacks.
+func missingCallEvents(events any) []string {
+	have := map[string]bool{}
+	if list, ok := events.([]any); ok {
+		for _, e := range list {
+			if s, ok := e.(string); ok {
+				have[s] = true
+			}
+		}
+	}
+	var missing []string
+	for _, want := range []string{"call.incoming", "call.ended"} {
+		if !have[want] {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+// repairWebhook re-creates the subscription with call events restored,
+// preserving everything else it carried. Create first, delete second, so a
+// failure leaves the working subscription in place.
+func (rt *KarmaxRuntime) repairWebhook(client *http.Client, api string, h map[string]any, missing []string) {
+	body := map[string]any{}
+	for _, k := range []string{"url", "scope", "chat_jids", "secret", "include_mentions",
+		"message_types", "context_limit", "max_attempts", "timeout_seconds"} {
+		if v, ok := h[k]; ok && v != nil {
+			body[k] = v
+		}
+	}
+	events := []any{}
+	if list, ok := h["events"].([]any); ok {
+		events = list
+	}
+	for _, m := range missing {
+		events = append(events, m)
+	}
+	body["events"] = events
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return
+	}
+	resp, err := client.Post(api+"/webhooks", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		rt.log.Warn("could not repair the call-event subscription", zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		rt.log.Warn("wacli refused the repaired subscription", zap.String("body", string(raw)))
+		return
+	}
+	if id, ok := h["id"].(float64); ok {
+		req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/webhooks/%d", api, int(id)), nil)
+		if _, err := client.Do(req); err != nil {
+			rt.log.Warn("replaced the subscription but could not remove the old one", zap.Error(err))
+		}
+	}
+	rt.log.Info("restored call events on the wacli webhook", zap.Strings("restored", missing))
 }
