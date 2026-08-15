@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -123,12 +124,16 @@ ORDER BY started_at DESC`, olderThan)
 	// A turn that has already burned its attempts is dead, not retryable —
 	// otherwise a poisonous event resurrects itself on every boot forever.
 	for i := range out {
-		status := TurnInterrupted
+		status, reason := TurnInterrupted, "the daemon stopped mid-turn; it will be retried"
 		if out[i].Attempt >= maxAttempts {
 			status = TurnDead
+			reason = fmt.Sprintf("abandoned after %d attempts across restarts", out[i].Attempt)
 		}
-		if _, err := s.db.Exec(`UPDATE agent_turns SET status = ?, finished_at = ? WHERE event_id = ?`,
-			status, time.Now(), out[i].EventID); err != nil {
+		// The reason is written, not just the status. A row reading "dead" with
+		// an empty error tells whoever finds it months later only that
+		// something was lost — which is how 97 of them sat unexplained.
+		if _, err := s.db.Exec(`UPDATE agent_turns SET status = ?, finished_at = ?, error = ? WHERE event_id = ?`,
+			status, time.Now(), reason, out[i].EventID); err != nil {
 			return nil, err
 		}
 		out[i].Status = status
