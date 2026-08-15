@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -163,6 +164,9 @@ type ChatSummary struct {
 	Status        string `json:"status"`
 }
 
+// traceLoop names the loop whose host calls are logged, from KARMAX_LOOP_TRACE.
+var traceLoop = strings.TrimSpace(os.Getenv("KARMAX_LOOP_TRACE"))
+
 // Runner executes one loop's module.
 type Runner struct {
 	name      string
@@ -177,6 +181,10 @@ type Runner struct {
 	// tool call passes. The Broker is the second.
 	tools map[string]bool
 	hosts []string // http allowlist derived from capabilities
+
+	// emptyOperatorsOnce rate-limits the empty-operator-chats warning to one
+	// per runner.
+	emptyOperatorsOnce sync.Once
 
 	// trigger is what started the current run, readable by the guest.
 	mu2         sync.Mutex
@@ -354,6 +362,17 @@ func (r *Runner) call(ctx context.Context, m api.Module,
 	name, ok := readString(m, namePtr, nameLen)
 	if !ok {
 		return errBadRequest
+	}
+	// Tracing one loop's host calls, opt-in via KARMAX_LOOP_TRACE. A guest that
+	// returns early tells you nothing — no log, no error, just a short run — so
+	// the only way to see where it stopped is the sequence of host calls it made
+	// before it did.
+	if traceLoop != "" && traceLoop == r.name {
+		r.mu2.Lock()
+		kind, payloadKeys := r.triggerKind, len(r.trigger)
+		r.mu2.Unlock()
+		r.log.Info("wasm loop host call", zap.String("loop", r.name), zap.String("function", name),
+			zap.String("trigger_kind", kind), zap.Int("trigger_payload_keys", payloadKeys))
 	}
 	// Declared in the signed manifest, or it does not exist for this module.
 	// Refused, not logged — a capability system that logs violations and
@@ -622,7 +641,17 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 		// os.Getenv, which the sandbox removed — and having it explicit is
 		// better than having it ambient, since the daemon's environment holds
 		// rather more than this.
-		return json.Marshal(map[string]any{"chats": r.kit.OperatorChats()})
+		chats := r.kit.OperatorChats()
+		if len(chats) == 0 {
+			// Said once and loudly. An empty answer here is not neutral: the
+			// monitor loop cannot tell the operator's chats from a third
+			// party's, defaults to "operator" for safety, and drops EVERY
+			// monitored message — including a direct @-mention — with no log
+			// line of its own. That silence is what made a missed mention look
+			// like a model failure instead of a missing setting.
+			r.warnEmptyOperatorsOnce()
+		}
+		return json.Marshal(map[string]any{"chats": chats})
 	}
 	return nil, fmt.Errorf("no host function %q", name)
 }
@@ -757,4 +786,14 @@ func trunc(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
+}
+
+// warnEmptyOperatorsOnce logs the empty operator-chat set one time per runner,
+// so the warning is unmissable without becoming a flood on a busy chat.
+func (r *Runner) warnEmptyOperatorsOnce() {
+	r.emptyOperatorsOnce.Do(func() {
+		r.log.Warn("operator_chats is EMPTY — the monitor loop will ignore every message, including @-mentions; "+
+			"set WHATSAPP_OPERATOR_CHATS in the daemon's environment",
+			zap.String("loop", r.name))
+	})
 }

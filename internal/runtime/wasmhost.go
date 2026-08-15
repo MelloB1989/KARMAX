@@ -89,8 +89,19 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 			Name:    e.Name,
 			Webhook: a.Manifest.Webhook,
 			Events:  a.Manifest.Events,
-			Run: func(c context.Context, _ loopkit.Kit) error {
-				return runner.Run(c, loopRunTimeout)
+			Run: func(c context.Context, kit loopkit.Kit) error {
+				// The kit carries WHY this run happened. Dropping it and calling
+				// Run() meant every signed loop read its trigger as "manual"
+				// with an empty payload — so an event-driven loop, which starts
+				// by checking for "event", returned immediately on every real
+				// message and logged nothing. It looked like a loop choosing
+				// silence; it was a loop that never saw the message.
+				t := kit.Trigger()
+				kind := t.Kind
+				if kind == "" {
+					kind = loopkit.TriggerManual
+				}
+				return runner.RunTriggered(c, loopRunTimeout, kind, t.Payload)
 			},
 		}
 		if a.Manifest.Schedule != "" {

@@ -582,6 +582,18 @@ var migrations = []string{
 		started_at  DATETIME NOT NULL,
 		finished_at DATETIME
 	)`,
+
+	// How far a comms channel has processed its source, so a restart resumes
+	// instead of starting from "now". Without it, every message that arrived
+	// while the daemon was down was simply never seen: the webhook POST failed
+	// against a dead port, wacli exhausted its ~15s of retries, and nothing on
+	// either side ever went looking again.
+	`CREATE TABLE IF NOT EXISTS comms_cursors (
+		channel_id      TEXT PRIMARY KEY,
+		last_seen_at    DATETIME NOT NULL,
+		last_message_id TEXT NOT NULL DEFAULT '',
+		updated_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
 	`CREATE INDEX IF NOT EXISTS idx_subagent_parent ON subagent_runs(parent_id, started_at DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_subagent_status ON subagent_runs(status)`,
 }
