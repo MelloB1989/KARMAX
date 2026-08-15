@@ -114,9 +114,11 @@ type WhatsAppChannel struct {
 	// message instead. Guarded by mu.
 	answerStream func(callID string) error
 	log          *zap.Logger
-	ctx          context.Context
-	cancel       context.CancelFunc
-	mu           sync.RWMutex
+	// cursors, when set, makes restarts non-lossy: see replay.go.
+	cursors CursorStore
+	ctx     context.Context
+	cancel  context.CancelFunc
+	mu      sync.RWMutex
 }
 
 // New creates a WhatsAppChannel. targetChat is only the default send target.
@@ -180,6 +182,10 @@ func (w *WhatsAppChannel) Start(ctx context.Context) error {
 		zap.Bool("hmac", w.webhookSecret != ""),
 		zap.String("wacli_path", w.wacliPath),
 	)
+
+	// In the background: catching up must not delay the channel coming up, and
+	// the replayed messages route through the same inbox as live ones.
+	go w.replayMissed(w.ctx)
 	return nil
 }
 
@@ -238,6 +244,15 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 	chatJID := strings.TrimSpace(env.Payload.Chat.JID)
 	if chatJID == "" {
 		chatJID = strings.TrimSpace(msg.ChatJID)
+	}
+	// Deferred, so it runs down every path this function returns by: an empty
+	// reaction and a real question are equally "seen", and a cursor that only
+	// advanced on messages worth acting on would replay every reaction in the
+	// window after each restart. Deferred rather than immediate so the cursor
+	// moves only once the routing below has actually happened — a crash
+	// mid-route then replays the message instead of skipping it.
+	if env.Event == "incoming_message" && env.Payload.Source != "wacli_api" {
+		defer w.noteProcessed(msg.Timestamp, msg.ID)
 	}
 	body := strings.TrimSpace(msg.Content)
 	// Media (image/PDF/Excel/doc/video/voice) arrives with an empty text body.

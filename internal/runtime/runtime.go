@@ -297,6 +297,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				waAgentID = chCfg.AgentID
 			}
 			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, waWebhookSecret, log)
+			// Makes restarts non-lossy: the channel records how far it has
+			// processed and, on start, replays whatever arrived while the
+			// daemon was down.
+			ch.SetCursorStore(s)
 			waChannel = ch
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
@@ -318,9 +322,20 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// monitored third-party chats (proactive proxy). Comma-separated
 	// phone/JID/@lid in WHATSAPP_OPERATOR_CHATS; falls back to WHATSAPP_TARGET.
 	operatorChats := splitCSV(os.Getenv("WHATSAPP_OPERATOR_CHATS"))
+	operatorFromFallback := false
 	if len(operatorChats) == 0 && waTarget != "" {
 		operatorChats = []string{waTarget}
+		operatorFromFallback = true
 	}
+	// Logged because this one value decides, silently, whether a chat is a
+	// command or something to watch — and the monitor loop reads the SAME
+	// setting from the environment WITHOUT this fallback. When the fallback is
+	// in play the two disagree: the agent hands the message to the loop, and
+	// the loop, seeing an empty set, hands it back. Nobody answers, nothing is
+	// logged.
+	log.Info("operator identity resolved",
+		zap.Int("operator_chats", len(operatorChats)),
+		zap.Bool("from_whatsapp_target_fallback", operatorFromFallback))
 
 	// Act-and-inform: messages KARMAX sends to people OTHER than the operator
 	// don't need approval, but the operator is shown every one via an app push.
