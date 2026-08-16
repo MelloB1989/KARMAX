@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/comms"
 
@@ -23,6 +26,57 @@ type CommsSendTool struct {
 	// Used to catch a channel id passed where a recipient belongs — the two
 	// arrive side by side in every event payload and are easy to swap.
 	KnownChannelID func(string) bool
+
+	// sent remembers who has already been written to recently, so a second
+	// send to the same person can say so.
+	//
+	// A turn is not one model call. The agent answers, asks for a tool, is
+	// re-prompted with the tool available, and answers again — and each pass
+	// decides independently whether to reply, because nothing in the
+	// conversation says the earlier reply actually went out. Observed: one
+	// incoming message, three passes, three replies inside eighty-three
+	// seconds, each a different reading of the same request ("9:30 PM IST",
+	// "9:30 AM EDT", "call set for 9:30 PM IST"). The recipient sees an
+	// assistant arguing with itself.
+	//
+	// This does not forbid the second send. It tells the model the first one
+	// landed and what it said, which is the fact it was missing; deciding
+	// whether there is anything left to add is the model's job.
+	mu   sync.Mutex
+	sent map[string]sentNote
+}
+
+type sentNote struct {
+	at   time.Time
+	text string
+}
+
+// alreadySaidWindow is how long a delivered message stays worth mentioning
+// back to the model. Long enough to span a multi-pass turn, short enough that
+// a genuine follow-up minutes later is not second-guessed.
+const alreadySaidWindow = 3 * time.Minute
+
+// noteSent records a delivery and reports what was said to the same recipient
+// within the window, if anything.
+func (t *CommsSendTool) noteSent(target, content string) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.sent == nil {
+		t.sent = map[string]sentNote{}
+	}
+	key := strings.ToLower(strings.TrimSpace(target))
+	prev, ok := t.sent[key]
+	t.sent[key] = sentNote{at: time.Now(), text: content}
+	// Old entries go, so this cannot grow with every chat ever written to.
+	for k, v := range t.sent {
+		if time.Since(v.at) > alreadySaidWindow {
+			delete(t.sent, k)
+		}
+	}
+	if !ok || time.Since(prev.at) > alreadySaidWindow {
+		return "", false
+	}
+	return prev.text, true
 }
 
 func (t *CommsSendTool) Manifest() tools.ToolManifest {
@@ -108,9 +162,16 @@ func (t *CommsSendTool) Execute(ctx context.Context, input map[string]any) (tool
 		return tools.ErrorResult(fmt.Errorf("failed to send message: %w", err)), nil
 	}
 
-	return tools.SuccessResult(map[string]any{
+	out := map[string]any{
 		"channel_id": channelID,
 		"target":     target,
 		"status":     "sent",
-	}), nil
+	}
+	if previous, repeat := t.noteSent(target, content); repeat {
+		out["already_replied_this_turn"] = true
+		out["previous_message"] = previous
+		out["note"] = "you ALREADY sent this recipient a message moments ago (quoted above) and they have seen it. " +
+			"Do not restate or re-answer it. Send again only if you have something genuinely new to add."
+	}
+	return tools.SuccessResult(out), nil
 }
