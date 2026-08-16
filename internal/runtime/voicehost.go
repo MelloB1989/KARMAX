@@ -8,7 +8,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MelloB1989/karma/models"
@@ -44,7 +47,15 @@ For anything it does not cover, call memory.lookup ONCE with a couple of keyword
 When they tell you something worth keeping — a decision, a plan, a preference — save it with
 memory.ingest. After a save, your reply is ONLY the short confirmation ("noted") — do not
 revisit earlier topics.
-If they ask for real work — messages, code, research — say you will handle it after the call.
+If they ask for real work — send a message, check email or calendar, look something up online,
+write code, research — hand it to KARMAX with orchestrator.send RIGHT AWAY and tell them it is
+being done; you will be told when it finishes and can then say the outcome. KARMAX reaches people
+by name and has every contact, so never ask the caller for a number or an id, and never read a
+number, id or link aloud. Never claim work is done unless you were told so.
+When the conversation is over — they say bye, that's all, hang up, or go quiet after thanking
+you — say a brief goodbye and call call.hangup in the same turn.
+If a turn is marked as interrupting your last reply, they did not hear all of it: do not repeat
+it wholesale, just continue naturally from what they said.
 Never invent facts about their life. If memory has nothing, say so plainly.`
 
 // voiceBrain answers a call with a dedicated fast session.
@@ -61,6 +72,31 @@ type voiceBrain struct {
 	// The tool stays for what keyword overlap misses.
 	lookup *voiceMemoryLookup
 	brief  string
+
+	// notices is what the brain says unprompted — a handed-off task coming
+	// back mid-call. done closes when the call ends, after which results go
+	// to the operator's chat instead of a line nobody is on.
+	notices chan voice.Reply
+	done    chan struct{}
+	endOnce sync.Once
+	// hangup is set by the call.hangup tool and consumed by the next reply.
+	hangup atomic.Bool
+	// delegate runs a request through the orchestrator — the agent with all
+	// the tools — and deliver reaches the operator once the call is over.
+	delegate func(ctx context.Context, request string) (string, error)
+	deliver  func(text string) error
+	inFlight atomic.Int32
+	log      *zap.Logger
+}
+
+// maxDelegations bounds work handed off from one call. A caller who asks for
+// five things gets five; a runaway loop does not get fifty.
+const maxDelegations = 5
+
+func (b *voiceBrain) Notices() <-chan voice.Reply { return b.notices }
+
+func (b *voiceBrain) End() {
+	b.endOnce.Do(func() { close(b.done) })
 }
 
 func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
@@ -86,11 +122,147 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	} else {
 		b.session.SetContext(b.brief)
 	}
-	text, _, _, err := b.session.Chat(ctx, u.Text)
+	if u.Interrupted {
+		b.markLastReplyUnheard()
+	}
+	text, calls, _, err := b.session.Chat(ctx, u.Text)
 	if err != nil {
 		return voice.Reply{}, err
 	}
-	return voice.Reply{Text: speakable(text)}, nil
+	if len(calls) > 0 {
+		names := make([]string, 0, len(calls))
+		for _, c := range calls {
+			names = append(names, c.Name)
+		}
+		b.log.Info("voice: the brain used tools", zap.Strings("tools", names))
+	}
+	return voice.Reply{Text: speakable(text), Hangup: b.hangup.Swap(false)}, nil
+}
+
+// markLastReplyUnheard annotates the previous assistant turn so the model
+// knows the caller cut it off. Without this the history says the reply was
+// delivered in full, and the model builds on words the caller never heard.
+func (b *voiceBrain) markLastReplyUnheard() {
+	h := b.session.GetHistory()
+	for i := len(h.Messages) - 1; i >= 0; i-- {
+		if h.Messages[i].Role != models.Assistant {
+			continue
+		}
+		if !strings.HasPrefix(h.Messages[i].Message, "(the caller interrupted this") {
+			h.Messages[i].Message = "(the caller interrupted this before hearing all of it) " + h.Messages[i].Message
+			b.session.SetHistory(h)
+		}
+		return
+	}
+}
+
+// voiceHangupTool ends the call after the current reply.
+type voiceHangupTool struct{ brain *voiceBrain }
+
+func (t *voiceHangupTool) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{
+		Name: "call.hangup",
+		Description: "End this call once your current reply has been spoken. Call it in the same " +
+			"turn as your goodbye, when the caller has said bye, that's all, hang up, or is clearly done.",
+		Parameters: json.RawMessage(`{"type":"object","properties":{}}`),
+	}
+}
+
+func (t *voiceHangupTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
+	t.brain.hangup.Store(true)
+	return tools.SuccessResult(map[string]any{
+		"status": "will hang up after this reply", "note": "say your goodbye now; keep it to one short sentence",
+	}), nil
+}
+
+// voiceDelegateTool hands real work to the orchestrator without holding the
+// line for it.
+type voiceDelegateTool struct{ brain *voiceBrain }
+
+func (t *voiceDelegateTool) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{
+		Name: "orchestrator.send",
+		Description: "Hand a task or message to KARMAX, the main assistant with all the tools — sending " +
+			"messages, email, calendar, web research, code, anything beyond memory. It runs in the " +
+			"background: you keep talking, and when it finishes you are told the outcome to relay. If the " +
+			"call ends first, the outcome is sent to the operator as a message. Say the request fully, in " +
+			"one message, with every detail the caller gave.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"request": {"type": "string", "description": "The complete task or message, as the caller meant it, with names, times and details."}
+			},
+			"required": ["request"]
+		}`),
+	}
+}
+
+func (t *voiceDelegateTool) Execute(ctx context.Context, input map[string]any) (tools.ToolResult, error) {
+	request, _ := input["request"].(string)
+	request = strings.TrimSpace(request)
+	if request == "" {
+		return tools.ErrorResult(fmt.Errorf("say what to do")), nil
+	}
+	b := t.brain
+	if b.delegate == nil {
+		return tools.ErrorResult(fmt.Errorf("the orchestrator is not available on this instance")), nil
+	}
+	if b.inFlight.Load() >= maxDelegations {
+		return tools.ErrorResult(fmt.Errorf("too many tasks already running from this call; wait for one to finish")), nil
+	}
+	b.inFlight.Add(1)
+	go b.runDelegation(request)
+	return tools.SuccessResult(map[string]any{
+		"status": "handed to KARMAX; it is working on it now",
+		"note":   "tell the caller it is being done and you will say when it is finished — do not claim it is done",
+	}), nil
+}
+
+// runDelegation runs one handed-off request to completion and routes the
+// outcome to wherever the caller is: the call if it is still up, their chat if
+// it is not. That second path is also what keeps the promise "I'll handle it"
+// — before this, nothing did.
+func (b *voiceBrain) runDelegation(request string) {
+	defer b.inFlight.Add(-1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	prompt := "The operator asked for this on a phone call with your voice assistant, which is relaying " +
+		"it to you now. Do it, then reply with the outcome in one or two plain spoken sentences — no " +
+		"markdown, no lists, no links read aloud — because it will be spoken back to them if they are " +
+		"still on the call.\n\nRequest: " + request
+	out, err := b.delegate(ctx, prompt)
+	var text string
+	switch {
+	case err != nil:
+		b.log.Warn("voice: a handed-off task failed", zap.String("request", request), zap.Error(err))
+		text = "The task I handed off did not go through: " + speakable(err.Error())
+	default:
+		text = speakable(out)
+	}
+	if strings.TrimSpace(text) == "" {
+		text = "That task is done."
+	}
+	select {
+	case <-b.done:
+		// The call is over. Their chat is where they will look.
+		if b.deliver != nil {
+			if derr := b.deliver("📞 From your call — " + text); derr != nil {
+				b.log.Warn("voice: could not deliver a task result after the call", zap.Error(derr))
+			}
+		}
+	default:
+		select {
+		case b.notices <- voice.Reply{Text: text}:
+		case <-b.done:
+			if b.deliver != nil {
+				_ = b.deliver("📞 From your call — " + text)
+			}
+		case <-time.After(30 * time.Second):
+			if b.deliver != nil {
+				_ = b.deliver("📞 From your call — " + text)
+			}
+		}
+	}
 }
 
 // voiceModel is the model a call speaks with, read once at startup — reading it
@@ -131,18 +303,42 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		// in a chat and a dead line on a phone. Ingest is the agent's OWN bound
 		// tool, so a fact said on a call lands in the same memory everything
 		// else reads.
+		brain := &voiceBrain{
+			notices: make(chan voice.Reply, 4),
+			done:    make(chan struct{}),
+			log:     rt.log,
+			deliver: rt.messageOperator,
+			// The orchestrator's own turn, with its own tools — the difference
+			// between the brain that talks and the agent that does.
+			delegate: func(ctx context.Context, request string) (string, error) {
+				out, _, err := a.ChatDetailed(ctx, request, nil)
+				return out, err
+			},
+		}
 		voiceTools := append(
-			[]tools.Tool{&voiceMemoryLookup{store: rt.store, namespace: m.namespace}},
+			[]tools.Tool{
+				&voiceMemoryLookup{store: rt.store, namespace: m.namespace},
+				&voiceHangupTool{brain: brain},
+				&voiceDelegateTool{brain: brain},
+			},
 			a.NamedTools("memory.ingest")...,
 		)
 		session := karmahelper.NewSession(karmahelper.SessionConfig{
+			Kind:         "voice",
 			Provider:     m.provider,
 			Model:        m.model,
 			SystemPrompt: voicePrompt,
-			// One or two sentences. Also a latency control — the reply cannot
-			// be slow to generate or slow to speak if it cannot be long.
-			MaxTokens:      64,
-			MaxToolPasses:  2,
+			// Room for a tool call carrying a whole request. Sixty-four was a
+			// latency control, and it truncated orchestrator.send's arguments
+			// mid-JSON — the model saw a broken call, said "let me try that
+			// again", and called it three times in one turn. Reply LENGTH is
+			// held down by the prompt, which is where it belongs.
+			MaxTokens: 300,
+			// Three: a lookup, a hand-off, and the words. The last pass is
+			// answered without tools (karma), so running out is a reply not
+			// an error — but two was too few for the common shape of a
+			// delegation turn and turned it into an apology.
+			MaxToolPasses:  3,
 			MaxRetries:     1,
 			FallbackModels: m.fallbacks,
 		}, voiceTools)
@@ -150,12 +346,15 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		// greeting buys most questions a zero-lookup answer, and a context set
 		// concurrently with the first turn would race the session.
 		brief := memoryBrief(rt.store, m.namespace)
+		// A phone assistant that has to ask what day it is has already lost
+		// the caller. Cheap, and it goes in the per-call brief rather than the
+		// cached prefix, since it changes.
+		brief = "Now: " + time.Now().Format("Monday, 2 January 2006, 3:04 PM MST") + "\n" + brief
 		session.SetContext(brief)
-		return &voiceBrain{
-			session: session,
-			lookup:  &voiceMemoryLookup{store: rt.store, namespace: m.namespace},
-			brief:   brief,
-		}
+		brain.session = session
+		brain.lookup = &voiceMemoryLookup{store: rt.store, namespace: m.namespace}
+		brain.brief = brief
+		return brain
 	}
 }
 
@@ -262,15 +461,30 @@ func (t *voiceMemoryLookup) Execute(ctx context.Context, input map[string]any) (
 // "asterisk", a bullet list becomes a monotone.
 func speakable(s string) string {
 	s = strings.NewReplacer("**", "", "*", "", "`", "", "#", "", "_", " ").Replace(s)
+	// Identifiers are not speech. A JID, a LID, a phone number, a URL: read
+	// aloud they are fifteen seconds of digits nobody wanted, and they arrive
+	// because memory stores them next to the names.
+	s = unspeakable.ReplaceAllString(s, "")
+	// What is left of "his number is 9198…" once the digits go is "his
+	// number is ." — drop the stump too, keeping the punctuation.
+	s = danglingIdentifier.ReplaceAllString(s, "$1")
 	var out []string
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "-•→ "))
+		line = strings.Join(strings.Fields(line), " ")
 		if line != "" {
 			out = append(out, line)
 		}
 	}
 	return strings.Join(out, " ")
 }
+
+// unspeakable matches things that must never be read aloud: WhatsApp ids,
+// long digit runs (phone numbers, LIDs), and URLs.
+var unspeakable = regexp.MustCompile(`(?i)\b\d[\d:]{7,}@[a-z.]+|\bhttps?://\S+|\b\d{9,}\b`)
+
+var danglingIdentifier = regexp.MustCompile(
+	`(?i)\s*[—–-]?\s*\b(?:his|her|their|the|whose)?\s*(?:number|id|jid|lid|phone|link|url)\s+(?:is|:)\s*([.,;!?]|$)`)
 
 // wacliVoice is the WhatsApp calling integration, spoken for by wacli.
 type wacliVoice struct {

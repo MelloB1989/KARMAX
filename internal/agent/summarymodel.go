@@ -34,6 +34,7 @@ const summaryModelSystemPrompt = `You are a conversation summarizer. Given a con
 // NewSummaryModel creates a summary model used to compact long chat histories.
 func NewSummaryModel(cfg SummaryModelConfig, log *zap.Logger) *SummaryModel {
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:           "summary",
 		Provider:       cfg.Provider,
 		Model:          cfg.Model,
 		SystemPrompt:   summaryModelSystemPrompt,

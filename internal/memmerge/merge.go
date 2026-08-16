@@ -128,6 +128,7 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 	}
 
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:           "memory-merge",
 		Provider:       mg.cfg.Provider,
 		Model:          mg.cfg.Model,
 		SystemPrompt:   mergePrompt,

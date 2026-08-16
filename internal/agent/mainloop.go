@@ -47,6 +47,7 @@ type MainModelConfig struct {
 // chat history from the store and resuming token tracking.
 func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.Store, agentID string, log *zap.Logger) (*MainModelSession, error) {
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:           "main",
 		Provider:       cfg.Provider,
 		Model:          cfg.Model,
 		SystemPrompt:   cfg.SystemPrompt,
@@ -155,22 +156,8 @@ func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMess
 		zap.Int("tool_calls", len(toolCalls)),
 	)
 
-	// Filed before the empty-response check below: those tokens were spent
-	// whether or not the turn produced anything usable.
-	if m.store != nil {
-		if err := m.store.RecordModelUsage(store.ModelUsage{
-			AgentID:      m.agentID,
-			Provider:     m.provider,
-			Model:        m.model,
-			Kind:         "main",
-			InputTokens:  tokens.InputTokens,
-			OutputTokens: tokens.OutputTokens,
-			CacheRead:    tokens.CacheReadTokens,
-			CacheWrite:   tokens.CacheWriteTokens,
-		}); err != nil {
-			m.log.Warn("could not record model usage", zap.Error(err))
-		}
-	}
+	// Usage is recorded by the package meter (karmahelper.OnUsage), which sees
+	// every session rather than the handful that remembered to file.
 
 	if strings.TrimSpace(response) == "" {
 		m.log.Warn("main model returned empty response",

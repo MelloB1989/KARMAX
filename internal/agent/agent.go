@@ -1476,6 +1476,7 @@ func (a *Agent) handleEventLegacy(evt bus.Event, userPrompt string) error {
 	allTools := append(a.bindAgentTools(a.tools), a.mcpTools...)
 
 	session := karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:         "agent-aux",
 		Provider:     a.def.Provider,
 		Model:        a.def.Model,
 		SystemPrompt: a.def.SystemPrompt,

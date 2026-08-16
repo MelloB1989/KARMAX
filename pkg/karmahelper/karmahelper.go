@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MelloB1989/karma/ai"
@@ -48,6 +49,59 @@ type SessionConfig struct {
 	// budget a retry IS the failure — voice wants 1, reaching the fallback
 	// model while a patient caller would still be waiting out the first backoff.
 	MaxRetries int
+	// Kind and AgentID label this session's spend. Every session reports its
+	// usage through the package meter (see OnUsage); these say which part of
+	// the system to bill it to. A session that sets neither still reports —
+	// as "unlabelled", which is a bug worth seeing rather than spend worth
+	// losing.
+	Kind    string
+	AgentID string
+}
+
+// Usage is one model call's cost, as reported to the meter.
+type Usage struct {
+	Kind         string
+	AgentID      string
+	Provider     string
+	Model        string
+	InputTokens  int
+	OutputTokens int
+	CacheRead    int
+	CacheWrite   int
+}
+
+// usageMeter receives every model call made through this package.
+//
+// Accounting lives HERE, not at the call sites, because it was at the call
+// sites: three of twelve sessions recorded their spend and the other nine did
+// not, so the tracker reported a fifth of a bill that was five times bigger.
+// A session that forgets to report is the default failure mode of per-site
+// accounting; there is no way to forget from inside the constructor.
+var usageMeter atomic.Pointer[func(Usage)]
+
+// OnUsage installs the meter. Called once at startup.
+func OnUsage(fn func(Usage)) {
+	if fn == nil {
+		usageMeter.Store(nil)
+		return
+	}
+	usageMeter.Store(&fn)
+}
+
+func reportUsage(cfg SessionConfig, provider, model string, t TokenInfo) {
+	fn := usageMeter.Load()
+	if fn == nil || (t.InputTokens == 0 && t.OutputTokens == 0) {
+		return
+	}
+	kind := cfg.Kind
+	if kind == "" {
+		kind = "unlabelled"
+	}
+	(*fn)(Usage{
+		Kind: kind, AgentID: cfg.AgentID, Provider: provider, Model: model,
+		InputTokens: t.InputTokens, OutputTokens: t.OutputTokens,
+		CacheRead: t.CacheReadTokens, CacheWrite: t.CacheWriteTokens,
+	})
 }
 
 type Session struct {
@@ -336,6 +390,9 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 		CacheWriteTokens: resp.CacheWriteTokens,
 	}
 	s.LastTokens = tokens
+	// Every model call, whichever session made it and whether or not the
+	// response is usable — those tokens were bought either way.
+	reportUsage(s.cfg, s.cfg.Provider, s.cfg.Model, tokens)
 	response := CleanContent(resp.AIResponse)
 
 	// Collected before the empty-response check: a turn that ran tools and then
@@ -684,13 +741,16 @@ func karmaxToolToGoFunctionTool(t tools.Tool, rec *callRecorder) ai.GoFunctionTo
 				// nobody read.
 				if result.Output != nil {
 					if details, mErr := json.Marshal(result.Output); mErr == nil {
-						return fmt.Sprintf("Error: %s\n%s", result.Error, details), nil
+						return fmt.Sprintf("Error: %s\n%s", result.Error, capToolOutput(string(details))), nil
 					}
 				}
 				return fmt.Sprintf("Error: %s", result.Error), nil
 			}
 
 			output, err := json.Marshal(result.Output)
+			if err == nil {
+				output = []byte(capToolOutput(string(output)))
+			}
 			if err != nil {
 				return fmt.Sprintf("%v", result.Output), nil
 			}
@@ -772,4 +832,28 @@ func resolveModel(name string) ai.BaseModel {
 		// Pass unknown model names as raw strings — allows custom proxy model IDs
 		return ai.BaseModel(name)
 	}
+}
+
+// maxToolOutputChars bounds what one tool result contributes to the
+// conversation.
+//
+// A tool result is not paid for once. It joins the history and is re-sent with
+// every following turn until compaction drops it — and compaction keeps the
+// most recent fourteen messages, so a single large read is bought fifteen
+// times. Measured on the live agent: turns carrying tool output pushed the
+// per-call context from 13k to 158k tokens, and the tools.load round-trip then
+// bought that context a second time within the same turn. Roughly 8k
+// characters is a couple of thousand tokens: enough to answer from, small
+// enough that carrying it is not the largest line in the bill.
+const maxToolOutputChars = 8000
+
+// capToolOutput trims an oversized tool result and says so, so the model reads
+// a truncation rather than inferring the data simply ended.
+func capToolOutput(s string) string {
+	if len(s) <= maxToolOutputChars {
+		return s
+	}
+	return s[:maxToolOutputChars] + fmt.Sprintf(
+		"\n…[truncated: %d more characters. This result was too large to carry in the "+
+			"conversation. Narrow the query, or ask for the specific field you need.]", len(s)-maxToolOutputChars)
 }

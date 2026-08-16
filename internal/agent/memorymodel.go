@@ -83,6 +83,7 @@ func (mm *MemoryModel) retrievalTools() []tools.Tool {
 // reliable (no cross-question contamination).
 func (mm *MemoryModel) Retrieve(ctx context.Context, query string) (string, error) {
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:           "memory",
 		Provider:       mm.cfg.Provider,
 		Model:          mm.cfg.Model,
 		SystemPrompt:   memoryRetrieverPrompt,
@@ -90,26 +91,10 @@ func (mm *MemoryModel) Retrieve(ctx context.Context, query string) (string, erro
 		FallbackModels: mm.cfg.Fallbacks,
 	}, mm.retrievalTools())
 
-	resp, _, tokens, err := sess.Chat(ctx, query)
-
-	// Recorded even when retrieval failed: a call that 400s after reading the
-	// prompt has still been paid for, and a sub-agent whose spend is invisible
-	// is exactly how a budget gets missed by the amount nobody was counting.
-	if mm.store != nil {
-		if uerr := mm.store.RecordModelUsage(store.ModelUsage{
-			AgentID:      mm.namespace,
-			Provider:     mm.cfg.Provider,
-			Model:        mm.cfg.Model,
-			Kind:         "memory",
-			InputTokens:  tokens.InputTokens,
-			OutputTokens: tokens.OutputTokens,
-			CacheRead:    tokens.CacheReadTokens,
-			CacheWrite:   tokens.CacheWriteTokens,
-		}); uerr != nil {
-			mm.log.Warn("could not record memory model usage", zap.Error(uerr))
-		}
-	}
-
+	// Usage is recorded by the package meter, which sees this call even when it
+	// fails: a request that 400s after reading the prompt has still been paid
+	// for, and spend nobody counts is exactly how a budget is missed.
+	resp, _, _, err := sess.Chat(ctx, query)
 	if err != nil {
 		mm.log.Warn("memory retrieval failed", zap.Error(err))
 		return "", err

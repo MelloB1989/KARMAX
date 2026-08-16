@@ -713,9 +713,28 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 		k.rt.log.Debug("loop lent tools to the gateway",
 			zap.String("loop", k.loopName), zap.Int("tools", len(lentTools)))
 	}
+	// The cheap tier by default, and the main model only when a loop says it
+	// needs it.
+	//
+	// Every monitored WhatsApp message went through here on the main model,
+	// carrying the chat's recent history each time: measured at ~22k input
+	// tokens a call, and it is the single largest line in the bill. What loops
+	// actually ask of it — is this worth answering, what kind of thing is it,
+	// draft an acknowledgement — is classification, which the cheap model does
+	// as well for a fifth of the price. A loop that genuinely needs the big
+	// model sets gateway_model: main in its config, and pays for it knowingly.
+	provider, model := a.SummaryModel.Provider, a.SummaryModel.Model
+	if model == "" {
+		provider, model = a.Provider, a.Model
+	}
+	if strings.EqualFold(strings.TrimSpace(k.Config("gateway_model")), "main") {
+		provider, model = a.Provider, a.Model
+	}
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
-		Provider:       a.Provider,
-		Model:          a.Model,
+		Kind:           "loop-gateway",
+		AgentID:        k.agentID,
+		Provider:       provider,
+		Model:          model,
 		MaxTokens:      2000,
 		FallbackModels: fallbacks,
 	}, lentTools)
@@ -754,6 +773,7 @@ func (k *loopKit) Summarize(ctx context.Context, prompt string) (string, error) 
 		fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: fb.Provider, Model: fb.Model})
 	}
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:           "loop-summarize",
 		Provider:       provider,
 		Model:          model,
 		MaxTokens:      1200,
