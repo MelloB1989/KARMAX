@@ -52,6 +52,7 @@ func (s *Server) cleanupSession(prompt string) *karmahelper.Session {
 		}
 	}
 	return karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:           "cleanup",
 		Provider:       provider,
 		Model:          model,
 		SystemPrompt:   prompt,

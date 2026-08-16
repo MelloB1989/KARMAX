@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +76,19 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", srv.handlePing)
+	// A goroutine dump for the machine's own operator. The alternative was
+	// SIGQUIT, which dumps and then kills the process — a diagnostic that
+	// destroys the state it is diagnosing. Loopback only: a stack trace is a
+	// map of the program.
+	mux.HandleFunc("/debug/goroutines", func(w http.ResponseWriter, r *http.Request) {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			http.Error(w, "loopback only", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_ = pprof.Lookup("goroutine").WriteTo(w, 2)
+	})
 	mux.HandleFunc("/api/chat", srv.auth(srv.handleChat))
 	mux.HandleFunc("/api/messages", srv.auth(srv.handleMessages))
 	mux.HandleFunc("POST /api/conversation/reset", srv.auth(srv.handleResetConversation))

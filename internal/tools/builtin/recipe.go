@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -25,8 +26,24 @@ import (
 // That last part matters most. Writing a file it cannot validate is how an agent
 // produces confident nonsense; the check has to answer back.
 
-// RecipeTool lets the agent read, validate and write its own recipes.
-type RecipeTool struct{}
+// RecipeTool lets the agent read, validate, write and TEST its own recipes.
+//
+// Validation answers "is this well-formed", which is not the question. The
+// question is "does it do the thing", and the only honest answer to that comes
+// from running it. Without a run, an agent asked to automate something writes
+// a file, reports success, and finds out days later — through the operator —
+// that the automation has never once worked. Run closes that loop while the
+// agent is still holding the task.
+type RecipeTool struct {
+	// Run executes an installed recipe once, now, and reports whether it
+	// succeeded. Nil disables the "run" action rather than faking it.
+	//
+	// Synchronous, and it returns the run's OWN error: the agent needs to know
+	// what went wrong, not merely that something was started. A fire-and-forget
+	// trigger would let it report "working" for an automation that failed a
+	// second later, which is the exact failure this action exists to prevent.
+	Run func(ctx context.Context, name string) (found bool, runErr error)
+}
 
 func (t *RecipeTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
@@ -34,12 +51,14 @@ func (t *RecipeTool) Manifest() tools.ToolManifest {
 		Description: "Create, inspect or validate your own recurring workflows (recipes). " +
 			"A recipe is YAML with a trigger (schedule/event/manual) and numbered steps, and it starts running within seconds of being written. " +
 			"Use action 'check' to validate BEFORE 'write' — it returns the exact line and a suggested fix. " +
+			"After writing, use 'run' to actually execute it once and see whether it does the job: a recipe that " +
+			"parses is not a recipe that works, and reporting an untested automation as done is how a task quietly fails. " +
 			"Use 'list' to see what already exists and 'read' to see how one is written. " +
 			"Write a recipe when the operator asks for something recurring; use scheduler.add for a one-off.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"action": {"type": "string", "enum": ["list", "read", "check", "write", "delete"], "description": "'check' validates without saving; 'write' validates AND saves."},
+				"action": {"type": "string", "enum": ["list", "read", "check", "write", "run", "delete"], "description": "'check' validates without saving; 'write' validates AND saves; 'run' executes an installed recipe once, now, and reports what happened."},
 				"name": {"type": "string", "description": "Recipe name, e.g. 'morning-brief'. Becomes <name>.yaml."},
 				"content": {"type": "string", "description": "For 'check' and 'write': the full recipe YAML."}
 			},
@@ -114,6 +133,59 @@ func (t *RecipeTool) Execute(ctx context.Context, input map[string]any) (tools.T
 			"status": "saved", "name": r.Name, "steps": len(r.Steps),
 			"trigger": describeTrigger(r),
 			"note":    "live within a few seconds — the recipe directory is watched",
+		}), nil
+
+	case "run":
+		name := strings.TrimSpace(fmt.Sprintf("%v", input["name"]))
+		if name == "" {
+			return tools.ErrorResult(errors.New("name is required: which recipe to run")), nil
+		}
+		if t.Run == nil {
+			return tools.ErrorResult(errors.New("running recipes is not available on this instance")), nil
+		}
+		// The watcher picks a new file up within about three seconds, so a
+		// recipe written a moment ago is not registered yet. Waiting here is
+		// the difference between "run it" and "run it, once it exists".
+		// Recipes register under a "recipe:" prefix, which is an implementation
+		// detail the agent should not have to know: it wrote a file with
+		// name: X and asks to run X.
+		candidates := []string{name, "recipe:" + name}
+		if strings.HasPrefix(name, "recipe:") {
+			candidates = []string{name, strings.TrimPrefix(name, "recipe:")}
+		}
+		var found bool
+		var err error
+		for attempt := 0; attempt < 6 && !found; attempt++ {
+			for _, candidate := range candidates {
+				if found, err = t.Run(ctx, candidate); found {
+					break
+				}
+			}
+			if !found {
+				select {
+				case <-ctx.Done():
+					return tools.ErrorResult(ctx.Err()), nil
+				case <-time.After(1200 * time.Millisecond):
+				}
+			}
+		}
+		if !found {
+			return tools.ErrorResult(fmt.Errorf(
+				"no recipe named %q is registered — check the name matches the 'name:' field in the file, "+
+					"and that it was written successfully", name)), nil
+		}
+		if err != nil {
+			// Returned as a result, not an error: what the run did wrong is the
+			// most useful thing the agent can be told, and it needs to reach
+			// the model rather than becoming a failed tool call.
+			return tools.SuccessResult(map[string]any{
+				"ran": true, "ok": false, "error": err.Error(),
+				"note": "the recipe ran and failed — fix the cause and run it again before reporting it as working",
+			}), nil
+		}
+		return tools.SuccessResult(map[string]any{
+			"ran": true, "ok": true,
+			"note": "the recipe ran without error; it is installed and will now run on its own schedule",
 		}), nil
 
 	case "delete":

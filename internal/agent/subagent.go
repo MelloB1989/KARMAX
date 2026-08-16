@@ -72,6 +72,7 @@ func (a *Agent) spawnChild(ctx context.Context, childID, brief string, grant []t
 	}
 
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:           "subagent",
 		Provider:       a.def.Provider,
 		Model:          a.def.Model,
 		SystemPrompt:   a.def.SystemPrompt + childToolNote(held, indexed),
@@ -89,12 +90,8 @@ func (a *Agent) spawnChild(ctx context.Context, childID, brief string, grant []t
 		answer, tokens = a.finishChildLoads(ctx, sess, answer, calls, tokens)
 	}
 
-	// Children spend real money and are invisible in the parent's own usage.
-	if a.store != nil {
-		if uerr := a.store.RecordModelUsage(usageOf(childID, a.def, "subagent", tokens)); uerr != nil {
-			a.log.Warn("could not record sub-agent usage", zap.Error(uerr))
-		}
-	}
+	// Recorded by the package meter; see karmahelper.OnUsage.
+	_ = tokens
 	if err != nil {
 		return "", fmt.Errorf("sub-agent %s: %w", childID, err)
 	}

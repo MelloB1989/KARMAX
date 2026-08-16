@@ -107,6 +107,10 @@ type KarmaxRuntime struct {
 	// waChannel is kept so voice can teach it to answer incoming calls once the
 	// brain is up — the channel is built long before the brain is.
 	waChannel *whatsapp.WhatsAppChannel
+	// messageOperator delivers text to the operator's own chat, for things
+	// that finish after whoever asked for them has gone — a call that ended
+	// before the task it handed off came back. Nil when there is no channel.
+	messageOperator func(text string) error
 
 	// voice holds the voice integrations this instance can place calls through.
 	voice *voice.Registry
@@ -361,7 +365,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Register new builtin tools
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
-	toolReg.Register(&builtin.RecipeTool{})
+	// Wired after construction: the runner belongs to the runtime, which does
+	// not exist yet here. See the assignment further down.
+	recipeTool := &builtin.RecipeTool{}
+	toolReg.Register(recipeTool)
 	toolReg.Register(&builtin.GogTool{DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
@@ -634,6 +641,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				// wolf even when the brain is perfectly healthy. 256 completes the
 				// "OK" reply reliably (verified: 8 & 64 fail, 256 works).
 				sess := karmahelper.NewSession(karmahelper.SessionConfig{
+					Kind:     "runtime",
 					Provider: mainProvider, Model: mainModel, MaxTokens: 256, FallbackModels: fbs,
 				}, nil)
 				resp, _, _, perr := sess.Chat(pctx, "Reply with the single word OK.")
@@ -850,15 +858,22 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 	}
 	rt := &KarmaxRuntime{
-		cfg:          cfg,
-		log:          log,
-		store:        s,
-		bus:          b,
-		clock:        clk,
-		broker:       brk,
-		connectors:   connHost,
-		recipeLoops:  map[string]*recipes.Recipe{},
-		waChannel:    waChannel,
+		cfg:         cfg,
+		log:         log,
+		store:       s,
+		bus:         b,
+		clock:       clk,
+		broker:      brk,
+		connectors:  connHost,
+		recipeLoops: map[string]*recipes.Recipe{},
+		waChannel:   waChannel,
+		messageOperator: func() func(string) error {
+			chID, _ := commsMgr.FindChannelIDByType("whatsapp")
+			if chID == "" || waTarget == "" {
+				return nil
+			}
+			return func(text string) error { return commsMgr.Send(chID, waTarget, text) }
+		}(),
 		voice:        voiceReg,
 		routedKinds:  routedKinds,
 		mesh:         meshNode,
@@ -874,6 +889,32 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		comms:        commsMgr,
 		api:          apiSrv,
 	}
+	// The agent can now run what it writes, not just validate it — and it is
+	// told what the run did, since "started something" is not verification.
+	recipeTool.Run = func(ctx context.Context, name string) (bool, error) {
+		rt.recipeMu.RLock()
+		_, known := rt.recipeLoops[name]
+		rt.recipeMu.RUnlock()
+		if !known {
+			return false, nil
+		}
+		return true, rt.RunRecipe(ctx, name, loopkit.Trigger{Kind: loopkit.TriggerManual})
+	}
+
+	// Every model call in the process reports here, so the tracker measures
+	// the bill rather than the parts of it somebody remembered to record.
+	// Installed once: the meter is package-level in karmahelper because that
+	// is the only place a session cannot avoid passing through.
+	karmahelper.OnUsage(func(u karmahelper.Usage) {
+		if err := s.RecordModelUsage(store.ModelUsage{
+			AgentID: u.AgentID, Provider: u.Provider, Model: u.Model, Kind: u.Kind,
+			InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+			CacheRead: u.CacheRead, CacheWrite: u.CacheWrite,
+		}); err != nil {
+			log.Warn("could not record model usage", zap.Error(err))
+		}
+	})
+
 	// Installed here rather than where the agents are registered, because it
 	// closes over the runtime and the runtime does not exist until now.
 	for _, a := range agentReg.List() {

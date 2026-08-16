@@ -128,3 +128,5 @@ require (
 )
 
 replace github.com/MelloB1989/wacli => /home/nikhil/code/wacli-voicestream
+
+replace github.com/MelloB1989/karma => /home/nikhil/code/karma

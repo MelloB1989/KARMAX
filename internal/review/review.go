@@ -105,6 +105,7 @@ func (r *Reviewer) Tick(ctx context.Context) error {
 		fmt.Fprintf(&list, "%d. [%s | stored %s] %s\n", i, c.kind, humanAge(c.at), oneLine(c.text, 240))
 	}
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
+		Kind:     "review",
 		Provider: r.cfg.Provider, Model: r.cfg.Model, MaxTokens: 400,
 		SystemPrompt: judgePrompt, FallbackModels: r.cfg.Fallbacks,
 	}, nil)

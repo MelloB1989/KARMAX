@@ -23,6 +23,10 @@ type Utterance struct {
 	PeerName string
 	Language string
 	Text     string
+	// Interrupted means the caller said this before the previous reply was
+	// heard in full — they cut it off, or spoke again before it played. A
+	// brain that knows this can pick up rather than assume it landed.
+	Interrupted bool
 }
 
 // Reply is what to do about it.
@@ -41,6 +45,19 @@ type Brain interface {
 	Greeting(ctx context.Context, peer string) string
 	// Answer is called once per settled utterance.
 	Answer(ctx context.Context, u Utterance) (Reply, error)
+}
+
+// Notifier is a Brain with something to say when nobody asked — a task it
+// handed off finishing mid-call. The server speaks whatever arrives on the
+// channel; the brain closes it, or simply stops sending, when the call ends.
+type Notifier interface {
+	Notices() <-chan Reply
+}
+
+// Ender is a Brain that wants to know the call is over — to stop waiting on
+// work, or to route a late result somewhere the caller will still see it.
+type Ender interface {
+	End()
 }
 
 // Factory builds the brain for one call. A conversation has its own history,
