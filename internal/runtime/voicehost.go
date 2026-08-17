@@ -18,6 +18,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/voice"
@@ -315,9 +316,10 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 				return out, err
 			},
 		}
+		mem := rt.memory.For(a.Snapshot().Def.ID, m.namespace)
 		voiceTools := append(
 			[]tools.Tool{
-				&voiceMemoryLookup{store: rt.store, namespace: m.namespace},
+				&voiceMemoryLookup{store: rt.store, mem: mem, namespace: m.namespace},
 				&voiceHangupTool{brain: brain},
 				&voiceDelegateTool{brain: brain},
 			},
@@ -345,14 +347,14 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		// Synchronous on purpose: a few milliseconds of SQLite before the
 		// greeting buys most questions a zero-lookup answer, and a context set
 		// concurrently with the first turn would race the session.
-		brief := memoryBrief(rt.store, m.namespace)
+		brief := memoryBrief(rt.store, mem, m.namespace)
 		// A phone assistant that has to ask what day it is has already lost
 		// the caller. Cheap, and it goes in the per-call brief rather than the
 		// cached prefix, since it changes.
 		brief = "Now: " + time.Now().Format("Monday, 2 January 2006, 3:04 PM MST") + "\n" + brief
 		session.SetContext(brief)
 		brain.session = session
-		brain.lookup = &voiceMemoryLookup{store: rt.store, namespace: m.namespace}
+		brain.lookup = &voiceMemoryLookup{store: rt.store, mem: mem, namespace: m.namespace}
 		brain.brief = brief
 		return brain
 	}
@@ -360,14 +362,32 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 
 // memoryBrief is what the brain knows before the caller says anything: the
 // pinned and important facts, one line each.
-func memoryBrief(s *store.Store, namespace string) string {
+func memoryBrief(s *store.Store, mem *memory.Manager, namespace string) string {
+	// Whichever store is real. Reading the table directly meant the brief was
+	// built from a snapshot frozen on 10 August while the rest of KARMAX had
+	// moved to GitLoom — the call opened already a week out of date.
+	if mem != nil {
+		if entries, err := mem.Recent(80); err == nil && len(entries) > 0 {
+			return renderBrief(entries)
+		}
+	}
 	if s == nil {
 		return ""
 	}
-	entries, err := s.ListMemoryEntries(namespace, 80)
-	if err != nil || len(entries) == 0 {
+	stored, err := s.ListMemoryEntries(namespace, 80)
+	if err != nil || len(stored) == 0 {
 		return ""
 	}
+	entries := make([]memory.MemoryEntry, 0, len(stored))
+	for _, e := range stored {
+		entries = append(entries, memory.MemoryEntry{
+			Content: e.Content, Pinned: e.Pinned, Importance: e.Importance,
+		})
+	}
+	return renderBrief(entries)
+}
+
+func renderBrief(entries []memory.MemoryEntry) string {
 	var b strings.Builder
 	b.WriteString("## What you remember about the operator\n")
 	kept := 0
@@ -395,6 +415,15 @@ func memoryBrief(s *store.Store, namespace string) string {
 type voiceMemoryLookup struct {
 	store     *store.Store
 	namespace string
+	// mem is the memory manager, which knows where memory actually lives.
+	//
+	// This read the store table directly, for speed. That table stopped being
+	// written on 10 August, when GitLoom became the store — so the call was
+	// answering from a frozen snapshot while every other part of KARMAX read
+	// the current one, and confidently said things that had been superseded for
+	// a week. Speed is not worth being wrong; the manager is asked first and the
+	// table is only a fallback for an instance with no remote.
+	mem *memory.Manager
 }
 
 func (t *voiceMemoryLookup) Manifest() tools.ToolManifest {
@@ -418,7 +447,7 @@ func (t *voiceMemoryLookup) Execute(ctx context.Context, input map[string]any) (
 	if query == "" {
 		return tools.ErrorResult(fmt.Errorf("give a keyword to search for")), nil
 	}
-	if t.store == nil {
+	if t.store == nil && t.mem == nil {
 		return tools.ErrorResult(fmt.Errorf("memory is not available on this instance")), nil
 	}
 	// Each word searched separately and merged, because the store matches by
@@ -426,19 +455,11 @@ func (t *voiceMemoryLookup) Execute(ctx context.Context, input map[string]any) (
 	seen := map[string]bool{}
 	var lines []string
 	for _, word := range strings.Fields(query) {
-		entries, err := t.store.SearchMemoryEntries(t.namespace, word, 6)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if seen[e.ID] {
+		for _, line := range t.search(word, 6) {
+			if seen[line] {
 				continue
 			}
-			seen[e.ID] = true
-			line := strings.Join(strings.Fields(e.Content), " ")
-			if len(line) > 180 {
-				line = line[:180] + "…"
-			}
+			seen[line] = true
 			lines = append(lines, line)
 			if len(lines) >= 8 {
 				break
@@ -636,7 +657,7 @@ func (rt *KarmaxRuntime) voiceAgentID() string {
 // linesFor is the lookup's engine without the tool wrapping: memory lines the
 // text's own words reach, deduplicated, newest first.
 func (t *voiceMemoryLookup) linesFor(text string, limit int) []string {
-	if t == nil || t.store == nil {
+	if t == nil || (t.store == nil && t.mem == nil) {
 		return nil
 	}
 	seen := map[string]bool{}
@@ -647,19 +668,11 @@ func (t *voiceMemoryLookup) linesFor(text string, limit int) []string {
 		if len(word) < 4 || voiceStopWords[word] {
 			continue
 		}
-		entries, err := t.store.SearchMemoryEntries(t.namespace, word, 4)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if seen[e.ID] {
+		for _, line := range t.search(word, 4) {
+			if seen[line] {
 				continue
 			}
-			seen[e.ID] = true
-			line := strings.Join(strings.Fields(e.Content), " ")
-			if len(line) > 170 {
-				line = line[:170] + "…"
-			}
+			seen[line] = true
 			lines = append(lines, line)
 			if len(lines) >= limit {
 				return lines
@@ -807,4 +820,42 @@ func (rt *KarmaxRuntime) repairWebhook(client *http.Client, api string, h map[st
 		}
 	}
 	rt.log.Info("restored call events on the wacli webhook", zap.Strings("restored", missing))
+}
+
+// search returns memory lines for a query from wherever memory actually lives.
+func (t *voiceMemoryLookup) search(query string, limit int) []string {
+	var lines []string
+	if t.mem != nil {
+		results, err := t.mem.Search(query, limit)
+		if err == nil {
+			for _, r := range results {
+				if line := memoryLine(r.Excerpt); line != "" {
+					lines = append(lines, line)
+				}
+			}
+			return lines
+		}
+	}
+	if t.store == nil {
+		return nil
+	}
+	entries, err := t.store.SearchMemoryEntries(t.namespace, query, limit)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if line := memoryLine(e.Content); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// memoryLine collapses one memory to a single readable line.
+func memoryLine(s string) string {
+	line := strings.Join(strings.Fields(s), " ")
+	if len(line) > 180 {
+		line = line[:180] + "…"
+	}
+	return line
 }
