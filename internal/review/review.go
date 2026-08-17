@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -131,6 +132,20 @@ func (r *Reviewer) Tick(ctx context.Context) error {
 	dedup := c.dedupKey()
 	if has, _ := r.store.HasReview(ns, dedup); has {
 		return nil // already asked once — never re-ask
+	}
+	// And not the same QUESTION in different words.
+	//
+	// The key above identifies a row. The operator experiences a subject: one
+	// commitment to Shravan, four memory entries about it — two of them
+	// identical, one written by the merge pass — so four different keys, and
+	// they were asked three times in three wordings across two days, about
+	// something a fourth entry already recorded as dropped. Comparing the
+	// questions catches what comparing the rows cannot.
+	if earlier, dup := r.askedRecently(ns, pick.Question); dup {
+		r.log.Info("review: not asking again in different words",
+			zap.String("question", oneLine(pick.Question, 90)),
+			zap.String("already_asked", oneLine(earlier, 90)))
+		return nil
 	}
 
 	opts, _ := json.Marshal(pick.Options)
@@ -307,4 +322,127 @@ func extractJSON(s string) string {
 		return s[i : j+1]
 	}
 	return s
+}
+
+// askedSimilarWithin is how far back to look for the same question in
+// different words. Long enough to cover a memory pass rewriting an entry and
+// the review loop coming round again; short enough that a genuinely recurring
+// commitment can be raised afresh next month.
+const askedSimilarWithin = 21 * 24 * time.Hour
+
+// Two questions are the same question if they overlap heavily, OR if they
+// share at least two distinctive words.
+//
+// The ratio alone is not enough, and the real repeats show why: "Shravan Kumar
+// podcast scripting — you promised this on Jul 12" and "Shravan's
+// scripting/planning work — you committed to this on Jul 12" share exactly
+// "shravan" and "scripting" out of seven and nine significant words. Two out
+// of seven is 0.29, which no honest ratio threshold would catch without also
+// catching unrelated pairs. But WHICH two matters: a shared proper noun and a
+// shared project name is the subject itself, while sharing "work" and "days"
+// is nothing. Long words carry subjects, so two shared long words is the
+// signal, and one is not — "did you send Shiva the APK" and "did you set up
+// Shiva's PC" share only the name and remain two different questions.
+//
+// Both rules are heuristics tuned on the messages the operator actually
+// received, and they are deliberately conservative: a missed duplicate is a
+// second nag, while a false match silently swallows a question that was worth
+// asking.
+const (
+	similarEnough     = 0.5
+	minSharedForRatio = 3
+	distinctiveLen    = 5
+	distinctiveNeeds  = 2
+)
+
+// askedRecently reports whether a question of the same substance has already
+// gone out, and which one.
+func (r *Reviewer) askedRecently(ns, question string) (string, bool) {
+	asked, err := r.store.RecentReviewQuestions(ns, time.Now().Add(-askedSimilarWithin), 60)
+	if err != nil || len(asked) == 0 {
+		return "", false
+	}
+	want := significantWords(question)
+	if len(want) < 3 {
+		// Too short to judge by overlap; the exact latch is all there is.
+		return "", false
+	}
+	for _, prev := range asked {
+		if sameQuestion(question, prev) {
+			return prev, true
+		}
+	}
+	return "", false
+}
+
+// sameQuestion reports whether two review questions are asking the same thing.
+func sameQuestion(a, b string) bool {
+	want, have := significantWords(a), significantWords(b)
+	if len(want) < 3 || len(have) == 0 {
+		return false
+	}
+	{
+		shared := 0
+		for w := range want {
+			if have[w] {
+				shared++
+			}
+		}
+		// Against the SMALLER set: one question phrased at length and the same
+		// question phrased briefly are still the same question, and dividing by
+		// the union would let verbosity hide a repeat.
+		smaller := len(want)
+		if len(have) < smaller {
+			smaller = len(have)
+		}
+		// A ratio needs enough words to mean anything. "Did you send Shiva the
+		// APK" and "Did you set up Shiva's laptop" share one word out of two
+		// and score a perfect 0.5 — two different questions about one person,
+		// which is exactly what must not be swallowed.
+		if shared >= minSharedForRatio && smaller > 0 && float64(shared)/float64(smaller) >= similarEnough {
+			return true
+		}
+		distinctive := 0
+		for w := range want {
+			if have[w] && len([]rune(w)) >= distinctiveLen {
+				distinctive++
+			}
+		}
+		if distinctive >= distinctiveNeeds {
+			return true
+		}
+	}
+	return false
+}
+
+// significantWords reduces a question to the words that carry its subject —
+// names, projects, verbs — dropping the scaffolding every review question
+// shares ("still", "should", "reply", "done") which would otherwise make any
+// two of them look alike.
+func significantWords(s string) map[string]bool {
+	out := map[string]bool{}
+	// Split on anything that is not a letter, rather than on spaces. The three
+	// repeated questions wrote the same subject as "Shravan", "Shravan's" and
+	// "scripting/planning": trimming edge punctuation leaves those as three
+	// different tokens and the overlap comes out at zero, which is how the
+	// first cut of this check would have let all three through again.
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r)
+	}) {
+		if len(w) < 4 || reviewStopWords[w] {
+			continue
+		}
+		out[w] = true
+	}
+	return out
+}
+
+var reviewStopWords = map[string]bool{
+	"still": true, "should": true, "reply": true, "done": true, "drop": true,
+	"this": true, "that": true, "with": true, "from": true, "have": true,
+	"your": true, "you": true, "the": true, "and": true, "for": true,
+	"was": true, "did": true, "does": true, "is": true, "it": true,
+	"pending": true, "happening": true, "needed": true, "resolved": true,
+	"progress": true, "planning": true, "there": true, "about": true,
+	"or": true, "on": true, "in": true, "to": true, "a": true,
 }

@@ -123,3 +123,36 @@ func scanReviews(rows *sql.Rows) ([]StoredReview, error) {
 	}
 	return out, rows.Err()
 }
+
+// RecentReviewQuestions returns the questions asked in a namespace since the
+// cutoff, newest first.
+//
+// The exact-key latch answers "have I asked this row before", which is not the
+// question the operator experiences. They have one commitment, memory holds
+// four entries about it — some rewritten by the merge pass, some outright
+// duplicates — and each is a different row with a different key, so each earns
+// its own question. What they see is the same thing asked three times in
+// three wordings. Comparing the QUESTIONS catches that; comparing the rows
+// never can.
+func (s *Store) RecentReviewQuestions(namespace string, since time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 60
+	}
+	rows, err := s.db.Query(`
+		SELECT question FROM reviews
+		WHERE namespace = ? AND created_at >= ?
+		ORDER BY created_at DESC LIMIT ?`, namespace, since.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var q string
+		if err := rows.Scan(&q); err != nil {
+			continue
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
