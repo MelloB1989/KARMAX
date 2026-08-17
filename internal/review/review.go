@@ -75,6 +75,10 @@ const judgePrompt = `You maintain the operator's long-term memory by catching th
 
 Pick the SINGLE item most worth a quick "is this still relevant?" check — strongly prefer items that are TIME-SENSITIVE and now OLD: a past deadline, an unfulfilled commitment ("X will get back by Friday"), a "temporary" plan, an open task, a promised action, an event whose date has passed. Ignore durable identity facts (who someone is, stable preferences) — those don't go stale. If NOTHING is genuinely stale and worth asking, return empty.
 
+Every date word inside an entry — "today", "tomorrow", "this week", "Friday" — was written WHEN THE ENTRY WAS STORED, not now. Work out the real date from the entry's age before you use it, and never repeat a relative word from the entry as if it still holds. Asking "did you make the meeting scheduled for today (Aug 11)?" four days after Aug 11 tells the operator you are not reading the calendar.
+
+Before choosing an item, check whether ANOTHER entry in the list already answers it — a later entry saying the thing was done, dropped, delivered or rescheduled. If one does, that item is resolved: do not ask about it, pick something else or return -1.
+
 Write the question in the operator's second person, short and concrete, referencing the item and its age. Give 2-3 one-tap options that let them resolve it, e.g. ["Done","Still open","Drop it"] or ["Yes still on","Cancelled","Reschedule"].
 
 Respond with ONLY JSON, no prose:
@@ -110,7 +114,11 @@ func (r *Reviewer) Tick(ctx context.Context) error {
 		Provider: r.cfg.Provider, Model: r.cfg.Model, MaxTokens: 400,
 		SystemPrompt: judgePrompt, FallbackModels: r.cfg.Fallbacks,
 	}, nil)
-	resp, _, _, err := sess.Chat(ctx, "Candidates (newest-relevant first):\n\n"+list.String())
+	// Today's date, because the model had none. Entries say "today" and
+	// "tomorrow" meaning the day they were written, and without knowing the
+	// current date the model repeated those words verbatim days later.
+	resp, _, _, err := sess.Chat(ctx, fmt.Sprintf("Today is %s.\n\nCandidates (newest-relevant first):\n\n%s",
+		time.Now().Format("Monday, 2 January 2006"), list.String()))
 	if err != nil {
 		return fmt.Errorf("review judge: %w", err)
 	}

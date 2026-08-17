@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -98,6 +99,20 @@ func PushAppNotification(s *store.Store, agentID, kind, title, body string) {
 	if s == nil || strings.TrimSpace(body) == "" {
 		return
 	}
+	// The same alert, again, is not news.
+	//
+	// An alert names a CONDITION, and a condition seen twenty times is still
+	// one thing wrong. In a single day the operator was told "Google access
+	// expired" thirteen times and "Loop wa-monitor failed 3 times" twelve — a
+	// quarter of everything KARMAX said to them, none of it adding to the
+	// first. Repeats are suppressed by title for a few hours; a genuinely new
+	// condition has a different title and still gets through immediately, and
+	// anything still broken after the window says so again.
+	if repeatableKinds[kind] {
+		if seen, err := s.NotifiedRecently(agentID, kind, title, alertRepeatWindow); err == nil && seen {
+			return
+		}
+	}
 	id := uuid.New().String()
 	if err := s.CreateNotification(store.StoredNotification{
 		ID:      id,
@@ -110,4 +125,22 @@ func PushAppNotification(s *store.Store, agentID, kind, title, body string) {
 	}
 	data := map[string]any{"type": "notification", "notification_id": id}
 	_, _, _ = SendExpoPush(s, title, body, "default", data)
+}
+
+// alertRepeatWindow is how long the same alert stays suppressed. Long enough
+// that an ongoing fault is reported once a session rather than once a minute,
+// short enough that a condition still broken hours later is raised again.
+const alertRepeatWindow = 4 * time.Hour
+
+// repeatableKinds are the notification kinds that describe a condition rather
+// than an event.
+//
+// Deliberately not everything. "Handled — shiva charan" and "Sent to <someone>"
+// share a title across genuinely different messages, and suppressing those
+// would hide real activity rather than noise; they are frequent because KARMAX
+// is busy, which is a different problem with a different fix.
+var repeatableKinds = map[string]bool{
+	"alert":  true,
+	"loop":   true,
+	"update": true,
 }
