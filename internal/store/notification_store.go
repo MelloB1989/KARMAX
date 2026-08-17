@@ -80,3 +80,19 @@ func scanNotifications(rows *sql.Rows) ([]StoredNotification, error) {
 	}
 	return out, rows.Err()
 }
+
+// NotifiedRecently reports whether the same notification has already been
+// raised within the window.
+//
+// An alert describes a CONDITION, and a condition observed twenty times is
+// still one thing wrong. "Google access expired" went to the operator thirteen
+// times in a day and "Loop wa-monitor failed 3 times" twelve — none of which
+// told them anything the first one had not.
+func (s *Store) NotifiedRecently(agentID, kind, title string, within time.Duration) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM notifications
+		WHERE agent_id = ? AND kind = ? AND title = ? AND created_at >= ?`,
+		agentID, kind, title, time.Now().Add(-within).UTC()).Scan(&n)
+	return n > 0, err
+}

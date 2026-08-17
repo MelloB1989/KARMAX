@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/tools"
 )
@@ -92,6 +94,10 @@ func (a *Agent) buildRecentActionsContext() string {
 	for _, act := range actions {
 		b.WriteString(fmt.Sprintf("- %s ago: %s\n", compactSince(act.at), act.line))
 	}
+	// Logged so it is possible to tell "the model ignored this" from "the
+	// model never saw it" — the difference between a prompt problem and a
+	// plumbing one, which is not otherwise visible from outside.
+	a.log.Debug("recent actions in context", zap.Int("actions", len(actions)))
 	return b.String()
 }
 
