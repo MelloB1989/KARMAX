@@ -976,7 +976,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + sessionCtx + commsCtx + retrievedCtx
+	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx
 	if dynamicCtx != "" && a.mainSession == nil {
 		userPrompt = dynamicCtx + userPrompt
 	}
@@ -1192,7 +1192,7 @@ func (a *Agent) ChatDetailed(ctx context.Context, text string, lent []tools.Tool
 
 	// Inject the same dynamic context the event loop uses: active coding
 	// sessions, available comms channels, and retrieved long-term memory.
-	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
+	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
 
 	response, toolCalls, err := session.ProcessMessageWithContextAndTools(ctx, dynamicCtx, text, lent)
 	if err != nil {

@@ -50,19 +50,19 @@ func New(cfg Config, s *store.Store, mem *memory.Manager, log *zap.Logger) *Merg
 	return &Merger{cfg: cfg, store: s, mem: mem, log: log}
 }
 
-const mergePrompt = `You consolidate an operator's long-term memory. Below are memory entries from ONE category, each with an id. Some are DUPLICATES or NEAR-DUPLICATES (the same fact worded differently), or a STALE fact that a newer entry supersedes.
+const mergePrompt = `You consolidate an operator's long-term memory. Below are memory entries from ONE category, each with a NUMBER. Some are DUPLICATES or NEAR-DUPLICATES (the same fact worded differently), or a STALE fact that a newer entry supersedes.
 
 Cluster ONLY entries that genuinely say the same thing, or where one updates/supersedes another. For each cluster of 2+ entries, write the single best merged fact — keep the most recent and accurate information, drop the redundancy, stay compact and standalone. Do NOT merge entries that merely share a topic but carry distinct facts; leave every unique fact untouched.
 
 Respond with ONLY JSON, no prose:
-{"merges":[{"fact":"<merged standalone fact, NO [tag] prefix>","importance":"low|medium|high|critical","replaces":["<id>","<id>", "..."]}]}
-Every "replaces" list MUST have 2+ ids drawn only from the ids shown. If nothing should be merged, respond exactly: {"merges":[]}`
+{"merges":[{"fact":"<merged standalone fact, NO [tag] prefix>","importance":"low|medium|high|critical","replaces":[<number>,<number>]}]}
+Every "replaces" list MUST have 2+ NUMBERS taken from the list above. If nothing should be merged, respond exactly: {"merges":[]}`
 
 type mergeResult struct {
 	Merges []struct {
-		Fact       string   `json:"fact"`
-		Importance string   `json:"importance"`
-		Replaces   []string `json:"replaces"`
+		Fact       string `json:"fact"`
+		Importance string `json:"importance"`
+		Replaces   []int  `json:"replaces"`
 	} `json:"merges"`
 }
 
@@ -70,20 +70,20 @@ type mergeResult struct {
 // and returns how many entries were merged away (deleted). Processing one
 // category per tick keeps each run cheap; successive ticks cover the rest.
 func (mg *Merger) Tick(ctx context.Context) (int, error) {
-	// Nothing to do when the store consolidates by construction.
+	// Read from where memory actually lives, not from where it used to.
 	//
-	// GitLoom files every memory about one subject at one path and folds new
-	// facts in as sections of that file, so "many entries about Siva" is one
-	// document rather than a cluster waiting to be merged. Running anyway would
-	// spend a model call reorganising a local table nothing reads, and delete
-	// rows that are not the memory any more.
-	if mg.mem != nil && mg.mem.HasRemote() {
-		return 0, nil
-	}
-
-	entries, err := mg.store.ListMemoryEntries(mg.cfg.Namespace, 2000)
+	// This returned immediately whenever a remote store was configured, on the
+	// reasoning that GitLoom files every memory about one subject at one path
+	// and therefore consolidates by construction. It does not consolidate
+	// NEAR-duplicates: measured on the live store, "Cold outreach targets
+	// decided July 21, 2026: SNITCH, RetainIQ, Omneky" is filed four times with
+	// little more than a comma and an "and" between the versions, and
+	// seventy-seven such pairs sit above 70% word overlap. Each is a separate
+	// fact to every reader, which is how one commitment to Shravan became three
+	// nags about the same promise.
+	entries, err := mg.listEntries(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("list entries: %w", err)
+		return 0, err
 	}
 
 	// Group non-pinned entries by category (pinned facts are never merged).
@@ -99,6 +99,8 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 		byCat[cat] = append(byCat[cat], e)
 	}
 
+	mg.log.Info("memory-merge: surveyed", zap.Int("entries", len(entries)), zap.Int("categories", len(byCat)))
+
 	// Pick the largest category above the threshold.
 	var bestCat string
 	for cat, es := range byCat {
@@ -110,6 +112,8 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 		}
 	}
 	if bestCat == "" {
+		mg.log.Info("memory-merge: no category is large enough to consolidate",
+			zap.Int("min_category_size", mg.cfg.MinCategorySize))
 		return 0, nil
 	}
 
@@ -120,19 +124,34 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 		batch = batch[:mg.cfg.MaxPerCategory]
 	}
 
-	valid := make(map[string]store.StoredMemoryEntry, len(batch))
+	// Numbered, not identified.
+	//
+	// The entries were listed by their store id and the model was asked to
+	// echo them back. With a local table those were UUIDs and it abbreviated
+	// them; with GitLoom they are paths and it invented hex strings outright —
+	// either way not one of eleven proposed clusters could be matched to a real
+	// entry, and the pass reported success having changed nothing. Asking a
+	// model to transcribe long opaque identifiers is the mistake; a number it
+	// cannot get wrong is the fix.
+	valid := make(map[int]store.StoredMemoryEntry, len(batch))
 	var sb strings.Builder
-	for _, e := range batch {
-		valid[e.ID] = e
-		sb.WriteString(fmt.Sprintf("- %s :: %s\n", e.ID, oneLine(e.Content, 240)))
+	for i, e := range batch {
+		n := i + 1
+		valid[n] = e
+		sb.WriteString(fmt.Sprintf("%d. %s\n", n, oneLine(e.Content, 240)))
 	}
 
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
-		Kind:           "memory-merge",
-		Provider:       mg.cfg.Provider,
-		Model:          mg.cfg.Model,
-		SystemPrompt:   mergePrompt,
-		MaxTokens:      3000,
+		Kind:         "memory-merge",
+		Provider:     mg.cfg.Provider,
+		Model:        mg.cfg.Model,
+		SystemPrompt: mergePrompt,
+		// Room to finish the JSON. Sixty entries can yield a dozen clusters,
+		// each carrying a rewritten fact and its ids; at 3000 the reply was cut
+		// off mid-structure and the whole pass was thrown away as unparseable —
+		// a model call paid for and nothing to show, intermittently, depending
+		// on how much there was to merge.
+		MaxTokens:      8000,
 		FallbackModels: mg.cfg.Fallbacks,
 	}, nil)
 
@@ -153,17 +172,21 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 		// Keep only ids that are real, in this batch, and non-pinned.
 		var ids []string
 		seen := map[string]bool{}
-		for _, id := range m.Replaces {
-			id = strings.TrimSpace(id)
-			if id == "" || seen[id] {
+		for _, n := range m.Replaces {
+			e, ok := valid[n]
+			if !ok || e.ID == "" || seen[e.ID] {
 				continue
 			}
-			if _, ok := valid[id]; ok {
-				ids = append(ids, id)
-				seen[id] = true
-			}
+			ids = append(ids, e.ID)
+			seen[e.ID] = true
 		}
 		if fact == "" || len(ids) < 2 {
+			// Logged, because "the model proposed ten clusters and none applied"
+			// is otherwise indistinguishable from "it found nothing".
+			mg.log.Info("memory-merge: cluster rejected",
+				zap.Int("ids_returned", len(m.Replaces)), zap.Int("ids_matched", len(ids)),
+				zap.Ints("numbers_returned", m.Replaces),
+				zap.String("fact", oneLine(fact, 60)))
 			continue // never let the model invent ids or drop facts on <2 cluster
 		}
 
@@ -181,14 +204,32 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 			continue
 		}
 		for _, id := range ids {
-			if err := mg.store.DeleteMemoryEntry(id); err == nil {
-				deleted++
+			// Through the manager, which deletes from whichever store is real.
+			// This called the local table directly — correct when that table
+			// WAS the memory, and quietly destructive once it was not: the
+			// canonical fact would be written to GitLoom while every duplicate
+			// it replaced stayed exactly where it was, leaving memory worse
+			// than before the pass ran. That is why this pass used to refuse to
+			// run at all with a remote configured.
+			if err := mg.mem.Forget(id); err != nil {
+				mg.log.Warn("memory-merge: could not remove a merged entry",
+					zap.String("id", id), zap.Error(err))
+				continue
 			}
+			deleted++
 		}
 	}
 
 	if deleted > 0 {
 		mg.log.Info("memory-merge consolidated entries", zap.String("category", bestCat), zap.Int("deleted", deleted), zap.Int("clusters", len(res.Merges)))
+	} else {
+		// Said out loud. A pass that surveys, spends a model call and changes
+		// nothing looks identical from the outside to a pass that never ran,
+		// which is how this one sat disabled behind an early return for weeks
+		// while duplicates piled up.
+		mg.log.Info("memory-merge: nothing consolidated",
+			zap.String("category", bestCat), zap.Int("considered", len(batch)),
+			zap.Int("clusters_proposed", len(res.Merges)))
 	}
 	return deleted, nil
 }
@@ -237,3 +278,26 @@ func extractJSONObject(s string) string {
 }
 
 var _ = time.Now // reserved for future rate-limiting between passes
+
+// listEntries reads the memory this instance actually uses.
+func (mg *Merger) listEntries(ctx context.Context) ([]store.StoredMemoryEntry, error) {
+	if mg.mem != nil && mg.mem.HasRemote() {
+		remote, err := mg.mem.Survey(ctx, 2000)
+		if err != nil {
+			return nil, fmt.Errorf("survey memory: %w", err)
+		}
+		out := make([]store.StoredMemoryEntry, 0, len(remote))
+		for _, e := range remote {
+			out = append(out, store.StoredMemoryEntry{
+				ID: e.ID, Content: e.Content, Category: e.Category,
+				Importance: e.Importance, Pinned: e.Pinned,
+			})
+		}
+		return out, nil
+	}
+	entries, err := mg.store.ListMemoryEntries(mg.cfg.Namespace, 2000)
+	if err != nil {
+		return nil, fmt.Errorf("list entries: %w", err)
+	}
+	return entries, nil
+}
