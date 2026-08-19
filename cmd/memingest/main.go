@@ -16,11 +16,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -44,7 +46,25 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
-	mgr := memory.NewFactory(filepath.Join(home, ".karmax"), db, log).For("nexus", ns)
+	factory := memory.NewFactory(filepath.Join(home, ".karmax"), db, log)
+	// Attach GitLoom exactly as the daemon does. Without this the factory hands
+	// back a manager whose remote is nil, and Write falls through to the local
+	// SQLite table — which stopped being the memory in August. The first cut of
+	// this tool did precisely that: thirty-five facts reported "ingested",
+	// every write returned nil, and not one of them was in the store the daemon
+	// reads. A silent write to the wrong store is worse than a failure.
+	if glCfg, ok := memory.GitLoomConfigFromEnv(ns); ok {
+		factory.UseGitLoom(glCfg)
+	} else if os.Getenv("MEMINGEST_ALLOW_LOCAL") == "" {
+		fmt.Fprintln(os.Stderr,
+			"refusing to ingest: GITLOOM_API_KEY is not set, so this would write to the local\n"+
+				"table rather than the store KARMAX reads. Run from the KARMAX directory (its .env\n"+
+				"carries the key), or set MEMINGEST_ALLOW_LOCAL=1 if a local write is genuinely wanted.")
+		os.Exit(1)
+	}
+	mgr := factory.For("nexus", ns)
+	configured, healthy, lastErr := mgr.RemoteStatus()
+	fmt.Fprintf(os.Stderr, "memory backend: remote=%v healthy=%v %s\n", configured, healthy, lastErr)
 
 	type line struct {
 		Content    string   `json:"content"`
@@ -89,6 +109,20 @@ func main() {
 			failed++
 			continue
 		}
+		// Confirm the fact is readable before writing the next one.
+		//
+		// GitLoom keeps ONE document per subject and the fold is a client-side
+		// read-modify-write: read the document, append a section, write it back
+		// whole. Writes are also eventually consistent — a written section takes
+		// ~6-8s to appear in a read. Back-to-back writes about one subject
+		// therefore fold onto a stale document and silently overwrite each
+		// other: measured, 35 facts written with no error, 6 survived. Waiting
+		// for each to read back is what makes the next fold see it.
+		if !confirm(mgr, memory.PathFor(entry, nil), l.Content) {
+			fmt.Fprintf(os.Stderr, "NOT CONFIRMED (likely overwritten): %.80s\n", l.Content)
+			failed++
+			continue
+		}
 		ok++
 		fmt.Printf("  + %.90s\n", l.Content)
 	}
@@ -103,4 +137,26 @@ func nonEmpty(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// confirm polls until the fact is readable at its path, or gives up.
+func confirm(mgr *memory.Manager, path, content string) bool {
+	probe := strings.ToLower(firstWords(content, 9))
+	for attempt := 0; attempt < 45; attempt++ {
+		if e, err := mgr.Load(context.Background(), path); err == nil && e != nil {
+			if strings.Contains(strings.ToLower(e.Content), probe) {
+				return true
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	return false
+}
+
+func firstWords(s string, n int) string {
+	w := strings.Fields(s)
+	if len(w) > n {
+		w = w[:n]
+	}
+	return strings.Join(w, " ")
 }
