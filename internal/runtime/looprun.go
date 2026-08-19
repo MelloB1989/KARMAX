@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -97,9 +98,31 @@ func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, 
 		return
 	}
 
-	// Failure. Schedule a retry unless this loop has had its chances.
+	// Failure. Schedule a retry unless this loop has had its chances — or
+	// unless retrying would repeat something a human already received.
 	status, msg := "failed", runErr.Error()
 	var next *time.Time
+	var partial *partialWorkFailure
+	if errors.As(runErr, &partial) {
+		// The run failed AFTER it had already messaged, called or posted. A
+		// retry re-runs the whole decision and re-sends with fresh wording —
+		// which is how one "call Kartik until he responds" became three calls
+		// and three differently-worded progress reports across the retry
+		// ladder. The failure is reported instead of retried: the operator can
+		// redo what was genuinely lost, which is recoverable, where a triple
+		// send to a third party is not.
+		rt.finishExecution(l.Name, executionID)
+		rt.log.Error("loop failed after acting; NOT retried to avoid repeating its sends",
+			zap.String("loop", l.Name), zap.Int("sends", partial.sends), zap.Error(runErr))
+		builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "alert",
+			fmt.Sprintf("Loop %q failed mid-way", l.Name),
+			fmt.Sprintf("It had already sent %d message(s) before failing, so it was not retried. Error: %s",
+				partial.sends, truncErr(msg, 220)))
+		if err := rt.store.FinishLoopRun(runID, l.Name, "failed", msg, attempt, nil); err != nil {
+			rt.log.Warn("could not record loop failure", zap.String("loop", l.Name), zap.Error(err))
+		}
+		return
+	}
 	if attempt >= maxAttempts {
 		status = "dead"
 		// Nothing will resume this, so the checkpoints are just clutter.
@@ -447,3 +470,15 @@ func truncErr(s string, n int) string {
 
 // hostWacli locates the wacli binary, matching what the rest of the runtime uses.
 func hostWacli() string { return hostpaths.Wacli() }
+
+// partialWorkFailure is a loop failure that happened after the run had already
+// put messages in front of people. Retrying one repeats those sends.
+type partialWorkFailure struct {
+	err   error
+	sends int
+}
+
+func (p *partialWorkFailure) Error() string {
+	return fmt.Sprintf("%v (after %d outbound send(s))", p.err, p.sends)
+}
+func (p *partialWorkFailure) Unwrap() error { return p.err }

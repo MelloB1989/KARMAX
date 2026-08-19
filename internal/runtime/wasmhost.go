@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/broker"
@@ -69,9 +70,10 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 		// audit trail its refusals land in.
 		rt.broker.SetTrust(subject, brokerTrustFor(e.Tier))
 
+		wk := &wasmKit{rt: rt, loop: e.Name}
 		runner, err := wasmloop.NewRunner(ctx, a, wasmloop.Options{
 			Namespace: rt.loopNamespace(),
-			Kit:       &wasmKit{rt: rt, loop: e.Name},
+			Kit:       wk,
 			Grants:    rt.broker.For(subject),
 			Log:       rt.log,
 			CacheDir:  filepath.Join(dir, "cache"),
@@ -101,7 +103,21 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 				if kind == "" {
 					kind = loopkit.TriggerManual
 				}
-				return runner.RunTriggered(c, loopRunTimeout, kind, t.Payload)
+				wk.outbound.Store(0)
+				err := runner.RunTriggered(c, loopRunTimeout, kind, t.Payload)
+				// A failure after the run has already messaged somebody is not
+				// retryable: the retry re-composes and re-sends. Observed as
+				// "call Kartik until he responds" being carried out three
+				// times across the retry ladder, each attempt worded
+				// differently — the caller got three calls and the group three
+				// progress reports, because a timeout at minute twelve threw
+				// away the knowledge that minute one had already acted.
+				if err != nil {
+					if n := wk.outbound.Load(); n > 0 {
+						err = &partialWorkFailure{err: err, sends: int(n)}
+					}
+				}
+				return err
 			},
 		}
 		if a.Manifest.Schedule != "" {
@@ -195,6 +211,11 @@ func (rt *KarmaxRuntime) loopNamespace() string {
 type wasmKit struct {
 	rt   *KarmaxRuntime
 	loop string
+	// outbound counts messages, calls and posts this RUN has already put in
+	// front of another human. Reset at run start; read when a run fails. The
+	// count exists because retrying is only safe for work that has not
+	// happened yet, and the host had no way to know the difference.
+	outbound atomic.Int64
 }
 
 func (w *wasmKit) mem() *loopKit {
@@ -290,6 +311,9 @@ func (w *wasmKit) Tool(ctx context.Context, name string, input map[string]any) (
 	t, ok := w.rt.tools.Get(name)
 	if !ok {
 		return "", fmt.Errorf("no tool named %q", name)
+	}
+	if outboundTools[tools.CanonicalName(name)] {
+		w.outbound.Add(1)
 	}
 	if input == nil {
 		input = map[string]any{}
@@ -453,4 +477,13 @@ func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 		}, true
 	}
 	return loopkit.Tool{}, false
+}
+
+// outboundTools are the tools whose effect lands in front of another human —
+// a message, a call, a public post. Canonical names.
+var outboundTools = map[string]bool{
+	"whatsapp_send_message": true, "whatsapp_bulk_send": true,
+	"comms_send": true, "comms_escalate": true,
+	"whatsapp_place_call": true, "call_start": true,
+	"x_post": true, "linkedin_post": true, "instagram_post": true,
 }
