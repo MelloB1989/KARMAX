@@ -22,3 +22,6 @@ spikes/wasm/guest.wasm
 
 # Built and signed loop artifacts (make loops).
 dist/
+/memingest
+/memverify
+/memread
