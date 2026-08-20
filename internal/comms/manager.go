@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -39,6 +40,7 @@ type Manager struct {
 	bus                 *bus.Log
 	store               *store.Store
 	log                 *zap.Logger
+	guard               *sendGuard
 	mu                  sync.RWMutex
 }
 
@@ -49,6 +51,7 @@ func NewManager(b *bus.Log, s *store.Store, log *zap.Logger) *Manager {
 		lastIncomingTarget:  make(map[string]string),
 		lastIncomingTargets: make(map[string]map[string]string),
 		operatorTargets:     make(map[string]bool),
+		guard:               newSendGuard(),
 		bus:                 b,
 		store:               s,
 		log:                 log,
@@ -448,6 +451,27 @@ func (m *Manager) send(ctx context.Context, channelID, target, content string, a
 		return err
 	}
 
+	// Say a thing once. This is the only place every outbound message passes
+	// through, so it is the only place that can see a repeat regardless of
+	// which loop, tool or recipe produced it.
+	if why, dup := m.recentlySaid(target, content); dup {
+		m.log.Info("refusing a duplicate message",
+			zap.String("target", target),
+			zap.String("reason", why),
+			zap.String("content", truncateForLog(content)),
+		)
+		return fmt.Errorf("%w: %s", ErrDuplicateSend, why)
+	}
+	guardKey := target + "\x00" + normalizeMessage(content)
+	if !m.guard.reserve(guardKey, time.Now()) {
+		m.log.Info("refusing a duplicate message already in flight",
+			zap.String("target", target),
+			zap.String("content", truncateForLog(content)),
+		)
+		return fmt.Errorf("%w: an identical message is being sent right now", ErrDuplicateSend)
+	}
+	defer m.guard.release(guardKey)
+
 	if err := entry.channel.Send(ctx, target, content); err != nil {
 		// A bad address is the caller's mistake and is returned to them to fix.
 		// Alerting on it woke the operator over a tool argument, and — because
@@ -536,4 +560,38 @@ func (m *Manager) publishCritical(agentID, channelID, message string, fields map
 		payload[k] = v
 	}
 	m.bus.Publish(bus.NewEvent(bus.EventSystemCritical, agentID, payload))
+}
+
+// recentlySaid reports whether this message has just gone to this target.
+//
+// The store is the source of truth rather than an in-process cache, so a
+// restart does not wipe the memory of what was said — the daemon restarting
+// between two halves of a duplicate pair is exactly when it is least able to
+// notice.
+func (m *Manager) recentlySaid(target, content string) (string, bool) {
+	if m.store == nil {
+		return "", false
+	}
+	rows, err := m.store.ListChannelMessages(target, 15)
+	if err != nil {
+		// Never block a send because the history could not be read: silence is
+		// worse than a repeat.
+		m.log.Warn("could not check for a duplicate send", zap.Error(err))
+		return "", false
+	}
+	recent := make([]pastMessage, 0, len(rows))
+	for _, r := range rows {
+		if r.Direction != string(Outbound) {
+			continue
+		}
+		recent = append(recent, pastMessage{Content: r.Content, At: r.CreatedAt})
+	}
+	return isRepeat(content, recent, time.Now())
+}
+
+func truncateForLog(s string) string {
+	if len(s) > 120 {
+		return s[:120] + "…"
+	}
+	return s
 }
