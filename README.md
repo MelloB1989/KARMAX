@@ -21,12 +21,155 @@ The core loop: **Sense → Propose → Approve → Act → Remember.**
 
 ## Architecture
 
-- **Agent** (`internal/agent`) — a multi-model orchestrator (main / memory / summary) built on the `karma` lib via a local Anthropic-compatible gateway. The curated `ABOUT_ME` profile is injected into context every turn (identity is never hardcoded).
-- **Memory** (`internal/memory`, `internal/coldscan`) — a page-index tree over long-term memory; **hot** memory from active chats and **cold** per-chat summaries generated in the background (community/promo groups are skipped by participation); and an **agentic retrieval sub-agent** (`memory.retrieve`) that queries memory, the page-index, chat summaries, the profile, and live WhatsApp across multiple steps to return synthesized context. A **cleanup** flow lets the LLM ask you to correct low-confidence memories.
-- **Human-in-the-loop** (`propose` tool + `/api/proposals`) — outward/irreversible actions become proposals you approve in the app before they execute.
-- **Comms** (`internal/comms`) — WhatsApp via `wacli`, Discord; plus Expo push and ntfy.
-- **Loops** (`loops:` in `karmax.yaml`) — declarative scheduled prompts (tech news, hot-sync, profile refresh, daily briefing); the agent decides how to fulfil each.
-- **API** (`internal/api`) — bearer-auth HTTP API + mDNS discovery for the app.
+KARMAX is a Go daemon built around a **durable event log**. Everything that happens — a
+WhatsApp message, a timer firing, a delegation finishing — becomes an event on disk
+*before* any subscriber sees it, and each subscriber records how far it has read. A crash
+resumes where it left off rather than starting blind. Delivery is at-least-once, so every
+handler is written to tolerate seeing an event twice.
+
+```mermaid
+flowchart LR
+    subgraph Senses
+        WA[WhatsApp · wacli]
+        CH[Discord · Slack · Telegram]
+        TR[Issue trackers · code hosts]
+        CL[Clock · scheduler]
+        API[Phone app · CLI]
+    end
+
+    BUS[("Durable event log<br/><i>internal/bus</i><br/>at-least-once · per-subscriber offsets")]
+
+    WA --> BUS
+    CH --> BUS
+    TR --> BUS
+    CL --> BUS
+    API --> BUS
+
+    BUS --> RT["Runtime router<br/><i>internal/runtime</i>"]
+
+    RT --> AG["Orchestrator agent<br/><i>internal/agent</i>"]
+    RT --> LOOPS["Automation tiers"]
+
+    AG --> TOOLS["Tools · memory · comms"]
+    AG -.delegates heavy work.-> HARNESS["Claude Code / Codex"]
+
+    LOOPS --> TOOLS
+    HARNESS --> TOOLS
+
+    TOOLS --> OUT["Actions:<br/>send · remember · schedule · propose"]
+```
+
+The core cycle is **Sense → Propose → Approve → Act → Remember**, though most actions skip
+the approval step by design: outbound messages go straight out and the operator is shown
+what was sent, while only genuinely irreversible things (spending money, posting publicly,
+deleting data) become proposals in the app's inbox.
+
+### The orchestrator is deliberately thin
+
+KARMAX coordinates, remembers and communicates. It does **not** do the heavy work itself —
+coding, research and building are delegated to coding harnesses (**Claude Code** / **Codex**)
+running under their own accounts. This keeps the router's per-turn context small enough to
+be cheap and fast, which matters because the router runs on metered inference.
+
+Models run on **AWS Bedrock** (SigV4, `ap-south-1`) via the Anthropic-compatible path, so
+the whole tool-calling loop is preserved:
+
+| Role | Model | Why |
+| --- | --- | --- |
+| Main / routing | Claude Sonnet 4.6 | judgement, tool use |
+| Memory retrieval | Claude Haiku 4.5 | mostly searching and reading, not judgement |
+| Summary / compaction | Claude Haiku 4.5 | text-only, cheap, reliable |
+| Fallback | Claude Haiku 4.5 | a fallback fires when something is *already* wrong — the worst moment to switch to the most expensive model available |
+
+Every model call is metered (`internal/cost`), so `karmax cost` reports real spend against a
+budget rather than an estimate.
+
+### Three tiers of automation
+
+Anything that runs on your behalf sits in one of three tiers, in order of how much it can do:
+
+```mermaid
+flowchart TD
+    R["<b>Recipes</b><br/>one YAML file<br/>no install, no rebuild"]
+    L["<b>Signed loops</b><br/>WASM in a sandbox<br/>capability-gated"]
+    C["<b>Compiled-in</b><br/>first-party Go<br/>full authority"]
+
+    R -->|"karmax recipe"| BROKER
+    L -->|"karmax wloop"| BROKER
+    C --> BROKER
+
+    BROKER{{"Broker<br/><i>internal/broker</i><br/>decides what each may do,<br/>and meters what it did"}}
+    BROKER --> HOST["Host functions:<br/>log · memory · send · harness · notify"]
+```
+
+A signed loop is a WASM module plus a manifest of what it needs. Installing verifies both
+signatures and the module's digest before any byte is loaded, then grants **exactly** what
+the manifest declared — nothing more. The sandbox has no filesystem, no environment and no
+arguments; a loop reaches the outside world only through host functions the broker has
+granted it. That boundary is real: a loop whose manifest forgets a capability fails at the
+call, which is how a drafted reply once ended up queued nowhere.
+
+### Memory
+
+Long-term memory is a **page-index tree** over subject documents, held remotely in GitLoom
+with SQLite as the local store when no remote is configured.
+
+```mermaid
+flowchart LR
+    EV["An event<br/>happens"] --> ING["Workflow ingests<br/>what it did"]
+    ING --> MEM[("Long-term memory<br/>subject documents<br/>dated sections")]
+
+    MEM --> RECALL["Recall<br/>before deciding"]
+    RECALL --> DEC["The next decision<br/>knows what was<br/>already done"]
+
+    MEM --> MERGE["memmerge<br/>consolidates duplicates"]
+    MEM --> REVIEW["review<br/>asks about stale facts<br/>— once, not repeatedly"]
+    MERGE --> MEM
+    REVIEW --> MEM
+```
+
+A write folds into the document that already holds its subject rather than replacing it, so
+the fortieth fact about a project does not delete the previous thirty-nine. Two properties
+of that store shape everything built on it: a write is a **whole-file overwrite**, and reads
+are **eventually consistent** by several seconds. Bulk writers must read each fact back
+before writing the next, or they silently overwrite themselves.
+
+### Sending
+
+Every outbound message — from the agent, a loop, a recipe, the CLI or an alert — crosses one
+function, which is what makes it possible to say a thing only once regardless of who
+produced it:
+
+```mermaid
+flowchart LR
+    A["Orchestrator<br/>comms.send"] --> S
+    B["wa-monitor loop"] --> S
+    C["chat-sweep outbox"] --> S
+    D["karmax send · recipes"] --> S
+    E["Alerts"] --> S
+
+    S{{"Manager.send<br/><i>internal/comms</i>"}}
+    S --> DUP{"Said this<br/>already?"}
+    DUP -->|"identical &lt; 6h<br/>reworded &lt; 10m"| REF["Refused<br/>ErrDuplicateSend"]
+    DUP -->|no| CHAN["WhatsApp · Discord<br/>Slack · Telegram"]
+    CHAN --> REC["Recorded + operator notified"]
+```
+
+### The rest
+
+- **Human-in-the-loop** (`propose` tool + `/api/proposals`) — irreversible actions become
+  proposals you approve in the app.
+- **Safety** (`internal/safety`) — checks applied to text and requests KARMAX did not write
+  itself, including a privacy guard every social post must pass.
+- **Connectors** (`internal/connectors`, `pkg/connectorkit`) — integrations that mount their
+  own tools, auth and event sources: GitHub, LinkedIn, X.
+- **Mesh** (`internal/mesh`) — lets KARMAX instances find each other, agree to talk, and
+  exchange work, with a hop limit so a chain cannot run away.
+- **Voice** (`internal/voice`) — the interface a voice integration plugs into; WhatsApp calls
+  are answered and spoken through it.
+- **vorg** (`internal/vorg`) — instantiates a virtual organisation of agents from a
+  declarative spec.
+- **API** (`internal/api`) — bearer-auth HTTP API plus mDNS discovery for the app.
 
 ## Install (prebuilt)
 
@@ -84,13 +227,14 @@ runs cleanly either way.
 
 ### Prerequisites
 - Go 1.22+ (CGO enabled — SQLite).
-- An Anthropic-compatible model endpoint (e.g. a local gateway), configured in `.env`.
+- AWS credentials with `bedrock:InvokeModel` on the configured models, or any other
+  Anthropic-compatible endpoint, configured in `.env`.
 - `claude` and/or `codex` CLIs, authenticated with their own accounts (KARMAX runs them with its gateway env stripped so they use that auth).
 - `wacli` (a separate WhatsApp CLI/daemon) for the WhatsApp channel — optional.
 
 ### Configure
 ```bash
-cp .env.example .env                  # ANTHROPIC_BASE_URL / auth, optional GOOGLE_API_KEY, KARMAX_API_TOKEN, etc.
+cp .env.example .env                  # Bedrock/AWS or ANTHROPIC_BASE_URL auth, KARMAX_API_TOKEN, etc.
 cp karmax.yaml.example karmax.yaml    # models, loops, comms channels, target chat
 ```
 
@@ -122,12 +266,20 @@ karmax notify "<title>" "<body>"        # push to the phone app (feed + push)
 karmax send "<target>" "<message>"      # WhatsApp/Discord via the default channel
 karmax ask "<prompt>"                   # ask the orchestrator agent itself
 karmax loops list|run <name>            # inspect / trigger loops
+karmax wloop sign|install|list          # package, verify and install signed WASM loops
+karmax cost                             # what the models have consumed, against the budget
+karmax status                           # what every loop has actually been doing
 ```
 
 Every `claude_code.call` delegation is told about this surface automatically, so executors can pull more context or report back to you mid-task.
 
 ## Models
-Set in `karmax.yaml` (`agents:`) — by default main `claude-opus-4.6`, memory/retrieval `claude-opus-4.6`, summary `claude-sonnet-4.6`, with fallbacks. Endpoints live under `ai.providers`.
+Set in `karmax.yaml` (`agents:`) — main Sonnet 4.6, memory/retrieval and summary Haiku 4.5,
+with a Haiku fallback. Inference runs on AWS Bedrock via SigV4 (`KARMA_ANTHROPIC_BEDROCK=1`,
+`AWS_REGION`), using the *Anthropic* client path rather than a native Bedrock provider — the
+native one carries no tool definitions and would silently break every tool call. Model ids are
+global inference profiles; the bare id is not invokable on demand. See the table under
+[Architecture](#the-orchestrator-is-deliberately-thin) for why each role gets the model it does.
 
 ## Security
 - Secrets live in `.env` (gitignored); `karmax.yaml` is gitignored too — commit only the `.example` templates.
