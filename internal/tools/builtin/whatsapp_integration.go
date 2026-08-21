@@ -46,6 +46,7 @@ func (t *WhatsAppMonitoredTool) Execute(ctx context.Context, _ map[string]any) (
 	var resp struct {
 		Webhooks []struct {
 			URL      string   `json:"url"`
+			Scope    string   `json:"scope"`
 			ChatJIDs []string `json:"chat_jids"`
 			Enabled  bool     `json:"enabled"`
 		} `json:"webhooks"`
@@ -63,6 +64,21 @@ func (t *WhatsAppMonitoredTool) Execute(ctx context.Context, _ map[string]any) (
 		if !wh.Enabled || !strings.Contains(wh.URL, "/comms/whatsapp") {
 			continue
 		}
+		// scope "all_unlocked" carries no chat_jids — it isn't a fixed list, it's
+		// every chat wacli's own access gate currently has open — so the actual
+		// membership has to come from wacli's chat list, not the webhook record.
+		if wh.Scope == "all_unlocked" {
+			unlocked, err := unlockedChatJIDs(ctx)
+			if err != nil {
+				return tools.ErrorResult(err), nil
+			}
+			for _, c := range unlocked {
+				if !operator[NormalizeChatID(c)] {
+					chats = append(chats, c)
+				}
+			}
+			continue
+		}
 		for _, c := range wh.ChatJIDs {
 			if !operator[NormalizeChatID(c)] {
 				chats = append(chats, c)
@@ -70,6 +86,27 @@ func (t *WhatsAppMonitoredTool) Execute(ctx context.Context, _ map[string]any) (
 		}
 	}
 	return tools.SuccessResult(map[string]any{"chats": chats}), nil
+}
+
+// unlockedChatJIDs lists every chat wacli's access gate currently has open.
+func unlockedChatJIDs(ctx context.Context) ([]string, error) {
+	body, err := localGet(ctx, hostpaths.WacliAPIURL()+"/chats?filter=unlocked")
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Chats []struct {
+			JID string `json:"jid"`
+		} `json:"chats"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(resp.Chats))
+	for _, c := range resp.Chats {
+		out = append(out, c.JID)
+	}
+	return out, nil
 }
 
 // OperatorChats is which chats are the operator's own rather than a third

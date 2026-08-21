@@ -779,6 +779,11 @@ func resolveProvider(name string) ai.Provider {
 		return ai.OpenRouter
 	case "bedrock":
 		return ai.Bedrock
+	case "azure_openai":
+		// Not a built-in karma provider — routed through the CustomProvider
+		// registry (see internal/runtime.go), which karma's dispatch switch
+		// falls back to for any provider name it doesn't recognize.
+		return ai.Provider("azure_openai")
 	default:
 		return ai.OpenAI
 	}
