@@ -126,7 +126,3 @@ require (
 	google.golang.org/grpc v1.70.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/MelloB1989/wacli => /home/nikhil/code/wacli-voicestream
-
-replace github.com/MelloB1989/karma => /home/nikhil/code/karma

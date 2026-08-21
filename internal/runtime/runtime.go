@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	karmaai "github.com/MelloB1989/karma/ai"
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/broker"
@@ -187,6 +188,19 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		if p.APIKey != "" {
 			os.Setenv("GOOGLE_API_KEY", p.APIKey)
 		}
+	}
+
+	// Azure OpenAI (and any other OpenAI-Chat-Completions-compatible backend)
+	// has no built-in provider in karma, so it's registered as a custom
+	// provider instead — karma's dispatch switch routes any provider name it
+	// doesn't recognize through the shared OpenAI-compatible handlers.
+	if p, ok := cfg.AI.Providers["azure_openai"]; ok && p.BaseURL != "" && p.APIKey != "" {
+		karmaai.RegisterCustomProvider(karmaai.CustomProvider{
+			Provider:       karmaai.Provider("azure_openai"),
+			DefaultBaseURL: p.BaseURL,
+			APIKey:         p.APIKey,
+			SupportsMCP:    true,
+		})
 	}
 
 	mcpBridge := mcp.NewBridge(log)
