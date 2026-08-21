@@ -31,6 +31,9 @@ type Kit interface {
 	// etc.). Consumes the agent's model budget, so prefer Harness for pure
 	// web/text work.
 	Ask(ctx context.Context, prompt string) (string, error)
+	// Observe is Ask with every outbound tool withheld, for passes that read
+	// and remember but must not put a message in anybody's chat.
+	Observe(ctx context.Context, prompt string) (string, error)
 
 	// Harness runs a prompt directly through the Claude Code CLI (web search,
 	// file, and shell tools) and returns its text output. It runs on the Claude

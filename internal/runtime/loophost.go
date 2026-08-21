@@ -423,6 +423,20 @@ func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
 	return k.AskWithTools(ctx, prompt, nil)
 }
 
+// Observe is Ask with every way of speaking taken away for the turn.
+//
+// The list is the outbound tool set the runtime already maintains for deciding
+// whether a loop run has spoken, so a new way to send cannot be added in one
+// place and forgotten in this one.
+func (k *loopKit) Observe(ctx context.Context, prompt string) (string, error) {
+	ag, ok := k.rt.agents.Get(k.agentID)
+	if !ok || ag == nil {
+		return "", fmt.Errorf("agent %q unavailable", k.agentID)
+	}
+	out, _, err := ag.ChatDetailedWithheld(ctx, prompt, nil, outboundTools)
+	return out, err
+}
+
 // AskWithTools is Ask with tools lent to the agent for that turn — the way a
 // WASM workflow hands the agent its own tools to answer with.
 func (k *loopKit) AskWithTools(ctx context.Context, prompt string, lent []tools.Tool) (string, error) {

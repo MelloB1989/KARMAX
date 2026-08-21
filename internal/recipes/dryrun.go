@@ -56,6 +56,11 @@ func (d *DryRun) Ask(_ context.Context, prompt string) (string, error) {
 	return "[the agent's answer would appear here]", nil
 }
 
+func (d *DryRun) Observe(_ context.Context, prompt string) (string, error) {
+	d.record("ask the agent, with no way to send a message: %s", oneLine(prompt))
+	return "[the agent's answer would appear here]", nil
+}
+
 func (d *DryRun) Harness(_ context.Context, prompt string) (string, error) {
 	d.record("run the harness on: %s", oneLine(prompt))
 	return "[the harness output would appear here]", nil

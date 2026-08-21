@@ -87,7 +87,7 @@ func emitStep(b *strings.Builder, s Step, id string, depth int) {
 	}
 
 	switch s.Verb {
-	case VerbAsk, VerbHarness, VerbGateway:
+	case VerbAsk, VerbObserve, VerbHarness, VerbGateway:
 		call := map[string]string{VerbAsk: "k.Ask(ctx, %s)", VerbHarness: "k.Harness(ctx, %s)",
 			VerbGateway: "k.Gateway(ctx, %s)"}[s.Verb]
 		fmt.Fprintf(b, "%s%s, err := k.Step(%q, func() (string, error) {\n%s\treturn "+call+"\n%s})\n",

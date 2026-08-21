@@ -19,6 +19,7 @@ import (
 // which is the honest 80%.
 const (
 	VerbAsk      = "ask"      // the operator's agent, with tools and judgement
+	VerbObserve  = "observe"  // the same agent with every way to speak withheld
 	VerbHarness  = "harness"  // a coding harness, for research and shell work
 	VerbGateway  = "gateway"  // the main model, no agent loop — cheapest
 	VerbHTTP     = "http"     // fetch something
@@ -34,23 +35,23 @@ const (
 )
 
 var verbs = []string{
-	VerbAsk, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall, VerbRemember,
+	VerbAsk, VerbObserve, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall, VerbRemember,
 	VerbNotify, VerbPropose, VerbRemind, VerbSend, VerbSleep, VerbLog,
 }
 
 // Recipe is one YAML file.
 type Recipe struct {
-	Name    string   `yaml:"name"`
-	Enabled *bool    `yaml:"enabled"`
-	On      Trigger  `yaml:"on"`
+	Name    string  `yaml:"name"`
+	Enabled *bool   `yaml:"enabled"`
+	On      Trigger `yaml:"on"`
 	// Steps is walked by hand (parseSteps) so each keeps its line number, and
 	// is skipped here so the generic decode never sees it. It used to be
 	// decoded twice: the first attempt failed on anything malformed with
 	// "cannot unmarshal !!map into []recipes.Step" — a Go type name, shown to
 	// someone writing YAML — and returned before the walker could say "steps
 	// must be a list" and point at the line.
-	Steps []Step `yaml:"-"`
-	Grants  []string `yaml:"grants"`
+	Steps  []Step   `yaml:"-"`
+	Grants []string `yaml:"grants"`
 
 	// Path is where it was loaded from, for error messages.
 	Path string `yaml:"-"`
@@ -302,7 +303,7 @@ func (s Step) validate(path string) error {
 
 func storesResult(verb string) bool {
 	switch verb {
-	case VerbAsk, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall:
+	case VerbAsk, VerbObserve, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall:
 		return true
 	}
 	return false

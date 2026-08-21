@@ -129,6 +129,12 @@ func (m *MainModelSession) ProcessMessage(ctx context.Context, userMessage strin
 // Used by WASM workflows, which provide tools that belong only on the turns
 // they caused. They are not registered anywhere and do not survive the call.
 func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMessage string, lent []tools.Tool) (string, []karmahelper.ToolCallRecord, error) {
+	return m.ProcessMessageWithheld(ctx, userMessage, lent, nil)
+}
+
+// ProcessMessageWithheld is ProcessMessageWithTools with named tools taken away
+// for this turn, so an observation pass cannot send whatever it concludes.
+func (m *MainModelSession) ProcessMessageWithheld(ctx context.Context, userMessage string, lent []tools.Tool, withhold map[string]bool) (string, []karmahelper.ToolCallRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -140,7 +146,7 @@ func (m *MainModelSession) ProcessMessageWithTools(ctx context.Context, userMess
 		zap.Int("lent_tools", len(lent)),
 	)
 
-	response, toolCalls, tokens, err := m.session.ChatWithExtraTools(ctx, userMessage, lent)
+	response, toolCalls, tokens, err := m.session.ChatWithTurnTools(ctx, userMessage, lent, withhold)
 	if err != nil {
 		return "", nil, fmt.Errorf("main model chat: %w", err)
 	}
@@ -329,6 +335,15 @@ func (m *MainModelSession) ProcessMessageWithContext(ctx context.Context, dynami
 
 // ProcessMessageWithContextAndTools is the full form: dynamic context and
 // tools lent for this turn, both applied without releasing the lock between.
+// SetTurnContext installs the per-turn context block before a call.
+func (m *MainModelSession) SetTurnContext(dynamicContext string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if dynamicContext != "" {
+		m.session.SetContext(dynamicContext)
+	}
+}
+
 func (m *MainModelSession) ProcessMessageWithContextAndTools(ctx context.Context, dynamicContext, userMessage string, lent []tools.Tool) (string, []karmahelper.ToolCallRecord, error) {
 	m.mu.Lock()
 	if dynamicContext != "" {
