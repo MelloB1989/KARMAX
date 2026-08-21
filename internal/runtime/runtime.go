@@ -1344,6 +1344,23 @@ func (rt *KarmaxRuntime) resumeInterruptedTurns() {
 		if !ok {
 			continue
 		}
+		// A turn that already spoke is finished, whatever the journal says.
+		//
+		// Resuming exists so a turn interrupted mid-flight is not lost. It
+		// cannot tell "died before doing anything" from "died after replying",
+		// and replaying the second kind is what put four near-identical
+		// messages in one contact's chat, answered the operator's message a
+		// second time in different words an hour later, and created five
+		// overlapping reminder jobs from a single request. The loop tier
+		// already refuses to retry a run that has messaged somebody; agent
+		// turns must refuse for the same reason. A person can repeat
+		// themselves; they cannot un-receive a duplicate.
+		if rt.turnAlreadySpoke(t) {
+			rt.log.Info("not resuming a turn that already replied",
+				zap.String("event", t.EventID), zap.String("kind", t.EventKind))
+			_ = rt.store.FinishAgentTurn(t.EventID, store.TurnOK, "")
+			continue
+		}
 		rt.log.Info("resuming a turn the daemon died during",
 			zap.String("event", t.EventID), zap.String("kind", t.EventKind), zap.Int("attempt", t.Attempt+1))
 		if rt.openTurn(evt) {
@@ -1600,6 +1617,41 @@ func unconfiguredChannel(log *zap.Logger, id, kind string, tokens ...string) boo
 			zap.String("id", id), zap.String("type", kind),
 			zap.String("next", "karmax login "+id))
 		return true
+	}
+	return false
+}
+
+// turnAlreadySpoke reports whether this turn put a message in the chat it was
+// answering before the daemon died.
+//
+// The comms store is the evidence: every outbound message is recorded there
+// with its target and time, so an outbound message to the triggering chat
+// timestamped after the turn began can only have come from this turn.
+//
+// Only chat-shaped turns can be judged this way. A scheduled job or a timer
+// has no chat to check, and those are safe to retry — nobody has heard them.
+func (rt *KarmaxRuntime) turnAlreadySpoke(t store.AgentTurn) bool {
+	if t.EventKind != string(bus.EventCommsMessage) {
+		return false
+	}
+	var evt bus.Event
+	if json.Unmarshal([]byte(t.EventJSON), &evt) != nil {
+		return false
+	}
+	chatID, _ := evt.Payload["channel_id"].(string)
+	if strings.TrimSpace(chatID) == "" {
+		return false
+	}
+	msgs, err := rt.store.ListChannelMessages(chatID, 20)
+	if err != nil {
+		// Unreadable history is not evidence of silence, but it is not evidence
+		// of speech either. Resuming is the behaviour that loses nothing.
+		return false
+	}
+	for _, m := range msgs {
+		if m.Direction == string(comms.Outbound) && !m.CreatedAt.Before(t.StartedAt) {
+			return true
+		}
 	}
 	return false
 }
