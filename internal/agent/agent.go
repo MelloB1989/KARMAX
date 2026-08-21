@@ -1172,6 +1172,11 @@ func (a *Agent) ChatWithTools(ctx context.Context, text string, lent []tools.Too
 // does. Guessing from timing would misattribute the moment two workflows ask
 // anything at once.
 func (a *Agent) ChatDetailed(ctx context.Context, text string, lent []tools.Tool) (string, []karmahelper.ToolCallRecord, error) {
+	return a.ChatDetailedWithheld(ctx, text, lent, nil)
+}
+
+// ChatDetailedWithheld is ChatDetailed with named tools withheld for the turn.
+func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []tools.Tool, withhold map[string]bool) (string, []karmahelper.ToolCallRecord, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", nil, fmt.Errorf("empty message")
@@ -1194,7 +1199,8 @@ func (a *Agent) ChatDetailed(ctx context.Context, text string, lent []tools.Tool
 	// sessions, available comms channels, and retrieved long-term memory.
 	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
 
-	response, toolCalls, err := session.ProcessMessageWithContextAndTools(ctx, dynamicCtx, text, lent)
+	session.SetTurnContext(dynamicCtx)
+	response, toolCalls, err := session.ProcessMessageWithheld(ctx, text, lent, withhold)
 	if err != nil {
 		return "", nil, fmt.Errorf("chat: %w", err)
 	}

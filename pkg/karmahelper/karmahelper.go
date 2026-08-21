@@ -209,10 +209,23 @@ func (s *Session) Chat(ctx context.Context, userMessage string) (string, []ToolC
 // which is what makes "this turn only" true even if the call fails partway.
 // buildKarmaAI is pure construction, so it is cheap enough to do per turn.
 func (s *Session) ChatWithExtraTools(ctx context.Context, userMessage string, extra []tools.Tool) (string, []ToolCallRecord, TokenInfo, error) {
-	if len(extra) == 0 {
+	return s.ChatWithTurnTools(ctx, userMessage, extra, nil)
+}
+
+// ChatWithTurnTools is one turn with tools added and tools withheld.
+//
+// Withholding is what a prompt cannot do. The hot-sync pass is told, at length
+// and in capitals, that it does not speak — "do not call comms.send, do not
+// call wacli send, and do not delegate a send" — and it answered a question in
+// the operator's chat anyway, an hour and a half after the question had already
+// been answered. A capability the model holds is a capability it will
+// eventually use, whatever the instructions around it say. A pass that must not
+// speak is handed no way to speak.
+func (s *Session) ChatWithTurnTools(ctx context.Context, userMessage string, extra []tools.Tool, withhold map[string]bool) (string, []ToolCallRecord, TokenInfo, error) {
+	if len(extra) == 0 && len(withhold) == 0 {
 		return s.chat(ctx, userMessage, s.kai, s.tools)
 	}
-	turnTools := append(append([]tools.Tool{}, s.tools...), extra...)
+	turnTools := turnToolSet(s.tools, extra, withhold)
 	return s.chat(ctx, userMessage, buildKarmaAI(s.cfg, turnTools, s.rec), turnTools)
 }
 
@@ -856,4 +869,18 @@ func capToolOutput(s string) string {
 	return s[:maxToolOutputChars] + fmt.Sprintf(
 		"\n…[truncated: %d more characters. This result was too large to carry in the "+
 			"conversation. Narrow the query, or ask for the specific field you need.]", len(s)-maxToolOutputChars)
+}
+
+// turnToolSet is the tools one turn may use: the session's own, plus anything
+// lent, minus anything withheld. A lent tool is subject to the withhold too —
+// otherwise a caller could hand back the very capability it just removed.
+func turnToolSet(base, extra []tools.Tool, withhold map[string]bool) []tools.Tool {
+	out := make([]tools.Tool, 0, len(base)+len(extra))
+	for _, t := range append(append([]tools.Tool{}, base...), extra...) {
+		if withhold[tools.CanonicalName(t.Manifest().Name)] {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
