@@ -425,17 +425,36 @@ func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
 
 // Observe is Ask with every way of speaking taken away for the turn.
 //
-// The list is the outbound tool set the runtime already maintains for deciding
-// whether a loop run has spoken, so a new way to send cannot be added in one
-// place and forgotten in this one.
+// Withholding just the send tools was tried first and lost twice in one night.
+// The model asked the deferred-tool loader for comms.send by name and was
+// handed it; and even with the loader fixed, a pass holding shell.exec can run
+// `wacli send` itself and one holding claude_code.call can delegate the send
+// to a harness. Every indirection that can end in a message is withheld, not
+// only the messages themselves.
 func (k *loopKit) Observe(ctx context.Context, prompt string) (string, error) {
 	ag, ok := k.rt.agents.Get(k.agentID)
 	if !ok || ag == nil {
 		return "", fmt.Errorf("agent %q unavailable", k.agentID)
 	}
-	out, _, err := ag.ChatDetailedWithheld(ctx, prompt, nil, outboundTools)
+	out, _, err := ag.ChatDetailedWithheld(ctx, prompt, nil, observeWithheld)
 	return out, err
 }
+
+// observeWithheld is what an observe pass may not touch: everything outbound,
+// plus every tool that can run or spawn something which sends on its own —
+// a shell can call wacli, a harness and a sub-agent take instructions, and a
+// scheduled job or reminder is a message with a delay on it.
+var observeWithheld = func() map[string]bool {
+	m := map[string]bool{
+		"shell_exec": true, "claude_code_call": true, "codex_call": true,
+		"subagent_spawn": true, "scheduler_add": true, "self_remind": true,
+		"reminder_add": true, "whatsapp_send_media": true,
+	}
+	for name := range outboundTools {
+		m[name] = true
+	}
+	return m
+}()
 
 // AskWithTools is Ask with tools lent to the agent for that turn — the way a
 // WASM workflow hands the agent its own tools to answer with.

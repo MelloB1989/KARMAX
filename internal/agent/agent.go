@@ -1006,7 +1006,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		//
 		// Bounded because a model that keeps asking instead of acting would
 		// otherwise loop; after the last round it continues with what it has.
-		response, toolCalls = a.loadRequestedTools(a.ctx, a.mainSession, response, toolCalls)
+		response, toolCalls = a.loadRequestedTools(a.ctx, a.mainSession, response, toolCalls, nil)
 
 		// Act-evidence guard: weak models fabricate "done" — they claim they
 		// sent/removed/scheduled something while calling zero tools. If the reply
@@ -1209,7 +1209,7 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 	// turn could ask for a tool, be told it was available, and then call
 	// something the model never actually held — which surfaces as an error from
 	// deep inside the provider rather than as the missing capability it is.
-	response, toolCalls = a.loadRequestedTools(ctx, session, response, toolCalls)
+	response, toolCalls = a.loadRequestedTools(ctx, session, response, toolCalls, withhold)
 	response = cleanOutboundResponse(response)
 
 	// Act-evidence guard (same as the event path): re-prompt once if the reply

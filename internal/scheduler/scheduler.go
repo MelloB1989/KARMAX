@@ -66,6 +66,28 @@ func (s *Scheduler) AddJob(j ScheduledJob) error {
 		j.ID = uuid.New().String()
 	}
 
+	// A job's identity is its agent and its NAME, not its uuid. Every add used
+	// to mint a fresh id, so a model that restated a plan restated the jobs:
+	// one request for a daily practice nudge became six rows under three
+	// spellings, and the 8 AM job fired three times in the same millisecond —
+	// three differently-worded copies of one nudge, in one chat, inside forty
+	// seconds. Re-adding a job someone already has must refresh it, not breed.
+	for id, existing := range s.jobs {
+		if id != j.ID && existing.job.AgentID == j.AgentID && sameJobName(existing.job.Name, j.Name) {
+			s.cron.Remove(existing.entryID)
+			delete(s.jobs, id)
+			if s.store != nil {
+				_ = s.store.DeleteJob(id)
+			}
+			// Keep the old identity and history: the refreshed job is the same
+			// job to everything that remembers it.
+			j.ID = id
+			if j.RunCount == 0 {
+				j.RunCount = existing.job.RunCount
+			}
+		}
+	}
+
 	// Remove existing if replacing
 	if existing, ok := s.jobs[j.ID]; ok {
 		s.cron.Remove(existing.entryID)
@@ -232,4 +254,25 @@ func (s *Scheduler) fireJob(id string) {
 	}
 
 	s.store.UpdateJobRun(id, now, nextRun)
+}
+
+// sameJobName compares job names the way a model re-writes them: case and the
+// choice between dashes, underscores and spaces do not make a different job.
+// "leetcode-daily-nudge", "leetcode_daily_nudge" and "Leetcode Daily Nudge"
+// are one job three ways.
+func sameJobName(a, b string) bool {
+	return normalizeJobName(a) == normalizeJobName(b)
+}
+
+func normalizeJobName(s string) string {
+	var out []rune
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		switch r {
+		case '-', '_', ' ':
+			out = append(out, '_')
+		default:
+			out = append(out, r)
+		}
+	}
+	return string(out)
 }
