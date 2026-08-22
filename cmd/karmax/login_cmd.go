@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -207,7 +206,7 @@ func openIntegrations() (*integration.Registry, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	db, err := store.New(filepath.Join(cfg.Karmax.DataDir, "db", "karmax.db"), zap.NewNop())
+	db, err := store.New(cfg.DatabaseDSN(), zap.NewNop())
 	if err != nil {
 		return nil, nil, err
 	}

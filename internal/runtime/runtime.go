@@ -127,8 +127,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	os.MkdirAll(filepath.Join(dataDir, "memory"), 0755)
 	os.MkdirAll(filepath.Join(dataDir, "db"), 0755)
 
-	dbPath := filepath.Join(dataDir, "db", "karmax.db")
-	s, err := store.New(dbPath, log)
+	s, err := store.New(cfg.DatabaseDSN(), log)
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
@@ -485,7 +484,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			Namespace: glCfg.Namespace, Model: model,
 		}, log)
 	} else {
-		log.Info("memory: GitLoom not configured; long-term memory is local SQLite only")
+		log.Info("memory: GitLoom not configured; long-term memory stays in the local database")
 	}
 
 	// Memory upkeep (the forgetting curve: TTL pruning + capacity cap) is a
@@ -1437,9 +1436,9 @@ func (rt *KarmaxRuntime) printBanner() {
 	commsCount := len(rt.comms.List())
 
 	fmt.Println()
-	fmt.Println("  karmax v0.2.0  |  data:", rt.cfg.Karmax.DataDir, " |  db: karmax.db")
+	fmt.Println("  karmax v0.2.0  |  data:", rt.cfg.Karmax.DataDir, " |  db:", rt.store.Kind())
 	fmt.Println("  -------------------------------------------------")
-	fmt.Println("  + SQLite store    (migrations applied)")
+	fmt.Printf("  + %s store    (migrations applied)\n", rt.store.Kind())
 	fmt.Printf("  + MCP bridge      (%d servers)\n", len(rt.cfg.MCPs))
 	fmt.Printf("  + Tool registry   (%d built-in + %d MCP tools)\n", toolCount, totalMCPTools)
 	fmt.Printf("  + Memory manager  (%d namespaces)\n", len(rt.memory.List()))

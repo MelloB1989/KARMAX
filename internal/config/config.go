@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -31,6 +32,22 @@ func Load(path string) (*KarmaxConfig, error) {
 	return &cfg, nil
 }
 
+// DatabaseDSN is what every store.New call site should pass. It is the one
+// place the default SQLite path is computed, so a configured Database.URL
+// actually takes effect everywhere the store gets opened.
+func (c *KarmaxConfig) DatabaseDSN() string {
+	// The env is read here too, not only in applyDefaults: `karmax doctor` has
+	// to answer "which database?" even when the config file is the thing that
+	// is broken, which is exactly when somebody is asking.
+	if u := strings.TrimSpace(os.Getenv("KARMAX_DB_URL")); u != "" {
+		return u
+	}
+	if c.Database.URL != "" {
+		return c.Database.URL
+	}
+	return filepath.Join(c.Karmax.DataDir, "db", "karmax.db")
+}
+
 func expandEnvVars(s string) string {
 	return os.Expand(s, func(key string) string {
 		if val, ok := os.LookupEnv(key); ok {
@@ -56,6 +73,12 @@ func applyDefaults(cfg *KarmaxConfig) {
 	if strings.HasPrefix(cfg.Karmax.DataDir, "~/") {
 		home, _ := os.UserHomeDir()
 		cfg.Karmax.DataDir = home + cfg.Karmax.DataDir[1:]
+	}
+	// KARMAX_DB_URL wins over the file, same reasoning as KARMAX_DATA_DIR: it
+	// lets deployment config (a Postgres URL from a secrets manager) override
+	// whatever karmax.yaml happens to say.
+	if u := strings.TrimSpace(os.Getenv("KARMAX_DB_URL")); u != "" {
+		cfg.Database.URL = u
 	}
 	if cfg.Karmax.LogLevel == "" {
 		cfg.Karmax.LogLevel = "info"

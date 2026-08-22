@@ -55,7 +55,36 @@ func (s *Store) StartAgentTurn(t AgentTurn) (bool, error) {
 	if t.StartedAt.IsZero() {
 		t.StartedAt = time.Now()
 	}
-	res, err := s.db.Exec(`
+	res, err := s.exec(startTurnSQL(s.Kind()),
+		t.ID, t.AgentID, t.EventID, t.EventKind, t.EventJSON, t.Attempt, t.StartedAt)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// startTurnSQL resumes a turn only from a state that has stopped.
+//
+// The guard is a compare-and-set, and MySQL has no WHERE on ON DUPLICATE KEY
+// UPDATE — so it moves into every assignment, with status written LAST because
+// MySQL evaluates them left to right and status is what the others test.
+func startTurnSQL(k Kind) string {
+	if k == MySQL {
+		return `
+INSERT INTO agent_turns (id, agent_id, event_id, event_kind, event_json, status, attempt, started_at)
+VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
+ON CONFLICT(event_id) DO UPDATE SET
+	attempt     = CASE WHEN agent_turns.status IN ('interrupted', 'failed') THEN agent_turns.attempt + 1 ELSE agent_turns.attempt END,
+	started_at  = CASE WHEN agent_turns.status IN ('interrupted', 'failed') THEN excluded.started_at ELSE agent_turns.started_at END,
+	finished_at = CASE WHEN agent_turns.status IN ('interrupted', 'failed') THEN NULL ELSE agent_turns.finished_at END,
+	error       = CASE WHEN agent_turns.status IN ('interrupted', 'failed') THEN '' ELSE agent_turns.error END,
+	status      = CASE WHEN agent_turns.status IN ('interrupted', 'failed') THEN 'running' ELSE agent_turns.status END`
+	}
+	return `
 INSERT INTO agent_turns (id, agent_id, event_id, event_kind, event_json, status, attempt, started_at)
 VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
 ON CONFLICT(event_id) DO UPDATE SET
@@ -68,16 +97,7 @@ ON CONFLICT(event_id) DO UPDATE SET
 	-- complete" from that timestamp got the wrong answer.
 	finished_at = NULL,
 	error       = ''
-WHERE agent_turns.status IN ('interrupted', 'failed')`,
-		t.ID, t.AgentID, t.EventID, t.EventKind, t.EventJSON, t.Attempt, t.StartedAt)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+WHERE agent_turns.status IN ('interrupted', 'failed')`
 }
 
 // FinishAgentTurn closes a turn.
@@ -86,7 +106,7 @@ func (s *Store) FinishAgentTurn(eventID, status, errMsg string) error {
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 UPDATE agent_turns SET status = ?, finished_at = ?, error = ? WHERE event_id = ?`,
 		status, now, errMsg, eventID)
 	return err
@@ -99,7 +119,7 @@ func (s *Store) ReapStaleTurns(olderThan time.Time, maxAttempts int) ([]AgentTur
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, agent_id, event_id, event_kind, event_json, attempt
 FROM agent_turns
 WHERE status = 'running' AND started_at < ?
@@ -132,7 +152,7 @@ ORDER BY started_at DESC`, olderThan)
 		// The reason is written, not just the status. A row reading "dead" with
 		// an empty error tells whoever finds it months later only that
 		// something was lost — which is how 97 of them sat unexplained.
-		if _, err := s.db.Exec(`UPDATE agent_turns SET status = ?, finished_at = ?, error = ? WHERE event_id = ?`,
+		if _, err := s.exec(`UPDATE agent_turns SET status = ?, finished_at = ?, error = ? WHERE event_id = ?`,
 			status, time.Now(), reason, out[i].EventID); err != nil {
 			return nil, err
 		}
@@ -149,7 +169,7 @@ func (s *Store) RecentTurns(agentID string, limit int) ([]AgentTurn, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, agent_id, event_id, event_kind, status, attempt, started_at, finished_at, error
 FROM agent_turns WHERE agent_id = ? ORDER BY started_at DESC LIMIT ?`, agentID, limit)
 	if err != nil {
@@ -179,7 +199,7 @@ func (s *Store) PruneAgentTurns(before time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res, err := s.db.Exec(`
+	res, err := s.exec(`
 DELETE FROM agent_turns WHERE started_at < ? AND status NOT IN ('running', 'dead')`, before)
 	if err != nil {
 		return 0, err

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,10 +14,35 @@ import (
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/runtime"
+	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
+
+// redactDSN drops the password from a connection string, keeping the user.
+//
+// A DSN is operator-supplied config, and config gets printed — doctor, logs,
+// error messages. The user is worth showing; the password never is.
+func redactDSN(raw string) string {
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil || u.User == nil {
+			return raw
+		}
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.User(u.User.Username())
+		}
+		return u.String()
+	}
+	// go-sql-driver form: user:pass@tcp(host:port)/db
+	if at := strings.Index(raw, "@"); at > 0 {
+		if colon := strings.Index(raw[:at], ":"); colon >= 0 {
+			return raw[:colon] + ":***" + raw[at:]
+		}
+	}
+	return raw
+}
 
 func newStartCmd() *cobra.Command {
 	return &cobra.Command{
@@ -224,8 +250,9 @@ func newDoctorCmd() *cobra.Command {
 
 			cfgFile := findConfig()
 			fmt.Printf("Config file: %s ", cfgFile)
-			if _, err := config.Load(cfgFile); err != nil {
-				fmt.Printf("FAIL (%v)\n", err)
+			cfg, cfgErr := config.Load(cfgFile)
+			if cfgErr != nil {
+				fmt.Printf("FAIL (%v)\n", cfgErr)
 			} else {
 				fmt.Println("OK")
 			}
@@ -239,12 +266,38 @@ func newDoctorCmd() *cobra.Command {
 				fmt.Println("MISSING (run 'karmax init')")
 			}
 
-			dbPath := filepath.Join(dataDir, "db", "karmax.db")
-			fmt.Printf("SQLite DB:   %s ", dbPath)
-			if _, err := os.Stat(dbPath); err == nil {
-				fmt.Println("OK")
+			probe := &config.KarmaxConfig{}
+			probe.Karmax.DataDir = dataDir
+			if cfgErr == nil {
+				probe = cfg
+			}
+			dsn := probe.DatabaseDSN()
+			if target, err := store.ParseDSN(dsn); err != nil {
+				fmt.Printf("Database:    %s FAIL (%v)\n", redactDSN(dsn), err)
+			} else if target.Kind == store.SQLite {
+				path := target.Conn
+				if i := strings.IndexByte(path, '?'); i >= 0 {
+					path = path[:i]
+				}
+				fmt.Printf("SQLite DB:   %s ", path)
+				info, statErr := os.Stat(path)
+				// Opened, not just stat'd: a CGO_ENABLED=0 build carries a
+				// SQLite driver that only fails when you use it, and a present
+				// file said nothing about that.
+				if err := store.Ping(dsn, 5*time.Second); err != nil {
+					fmt.Printf("FAIL (%v)\n", err)
+				} else if statErr == nil {
+					fmt.Printf("OK (%d bytes)\n", info.Size())
+				} else {
+					fmt.Println("MISSING (will be created on first start)")
+				}
 			} else {
-				fmt.Println("MISSING (will be created on first start)")
+				fmt.Printf("Database:    %s (%s) ", redactDSN(dsn), target.Kind)
+				if err := store.Ping(dsn, 5*time.Second); err != nil {
+					fmt.Printf("FAIL (%v)\n", err)
+				} else {
+					fmt.Println("OK")
+				}
 			}
 
 			for _, v := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "WHATSAPP_TARGET"} {

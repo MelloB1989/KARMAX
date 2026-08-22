@@ -23,7 +23,7 @@ func (s *Store) SaveAgentSnapshot(snap AgentSnapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 		INSERT INTO agent_snapshots (id, name, status, restarts, started_at, last_event, last_err, def_json, state_json, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(id) DO UPDATE SET
@@ -40,7 +40,7 @@ func (s *Store) GetAgentSnapshot(id string) (*AgentSnapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	row := s.db.QueryRow(`SELECT id, name, status, restarts, started_at, last_event, last_err, def_json, state_json, updated_at FROM agent_snapshots WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, name, status, restarts, started_at, last_event, last_err, def_json, state_json, updated_at FROM agent_snapshots WHERE id = ?`, id)
 	var snap AgentSnapshot
 	err := row.Scan(&snap.ID, &snap.Name, &snap.Status, &snap.Restarts, &snap.StartedAt, &snap.LastEvent, &snap.LastErr, &snap.DefJSON, &snap.StateJSON, &snap.UpdatedAt)
 	if err != nil {
@@ -53,7 +53,7 @@ func (s *Store) ListAgentSnapshots() ([]AgentSnapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, name, status, restarts, started_at, last_event, last_err, def_json, state_json, updated_at FROM agent_snapshots ORDER BY name`)
+	rows, err := s.query(`SELECT id, name, status, restarts, started_at, last_event, last_err, def_json, state_json, updated_at FROM agent_snapshots ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (s *Store) ListAgentSnapshots() ([]AgentSnapshot, error) {
 func (s *Store) DeleteAgentSnapshot(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM agent_snapshots WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM agent_snapshots WHERE id = ?`, id)
 	return err
 }
 
@@ -84,7 +84,7 @@ func (s *Store) SaveAgentState(id string, state any) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err = s.db.Exec(`UPDATE agent_snapshots SET state_json = ?, updated_at = datetime('now') WHERE id = ?`, string(data), id)
+	_, err = s.exec(`UPDATE agent_snapshots SET state_json = ?, updated_at = datetime('now') WHERE id = ?`, string(data), id)
 	return err
 }
 
@@ -92,6 +92,6 @@ func (s *Store) LoadAgentState(id string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var state string
-	err := s.db.QueryRow(`SELECT COALESCE(state_json, '{}') FROM agent_snapshots WHERE id = ?`, id).Scan(&state)
+	err := s.queryRow(`SELECT COALESCE(state_json, '{}') FROM agent_snapshots WHERE id = ?`, id).Scan(&state)
 	return state, err
 }

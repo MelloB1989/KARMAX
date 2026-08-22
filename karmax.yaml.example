@@ -7,6 +7,17 @@ karmax:
   log_level: "info"            # Options: debug, info, warn, error
   log_format: "pretty"         # Options: pretty, json
 
+# Database — where KARMAX's durable state lives. Leave url empty for the
+# default: a SQLite file under data_dir/db, which is what every existing
+# install has and needs nothing further. Set url to run against a managed
+# Postgres or MySQL instead, so state outlives the box and gets backed up by
+# somebody else. Still one daemon per database: crash recovery at startup
+# assumes no other process is reading the same rows. KARMAX_DB_URL, if set,
+# overrides whatever is here.
+# database:
+#   url: "postgres://user:pass@host:5432/karmax?sslmode=require"
+#   # url: "mysql://user:pass@host:3306/karmax"
+
 # Webhooks — HTTP server for external trigger integrations
 webhooks:
   enabled: true

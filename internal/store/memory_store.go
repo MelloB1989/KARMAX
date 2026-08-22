@@ -57,7 +57,7 @@ func (s *Store) InsertMemoryEntry(e StoredMemoryEntry) error {
 	if e.Importance == 0 {
 		e.Importance = 2 // medium
 	}
-	_, err := s.db.Exec(`INSERT INTO memory_entries
+	_, err := s.exec(`INSERT INTO memory_entries
 		(id, agent_id, namespace, role, content, tags, category, importance, pinned, access_count, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.AgentID, e.Namespace, e.Role, e.Content, e.Tags, e.Category,
@@ -69,7 +69,7 @@ func (s *Store) ListMemoryEntries(namespace string, limit int) ([]StoredMemoryEn
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT `+memColumns+` FROM memory_entries WHERE namespace = ? ORDER BY created_at DESC LIMIT ?`, namespace, limit)
+	rows, err := s.query(`SELECT `+memColumns+` FROM memory_entries WHERE namespace = ? ORDER BY created_at DESC LIMIT ?`, namespace, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func (s *Store) SearchMemoryEntries(namespace, query string, limit int) ([]Store
 	defer s.mu.RUnlock()
 
 	pattern := "%" + query + "%"
-	rows, err := s.db.Query(`SELECT `+memColumns+` FROM memory_entries WHERE namespace = ? AND (content LIKE ? OR tags LIKE ? OR category LIKE ?) ORDER BY created_at DESC LIMIT ?`,
+	rows, err := s.query(`SELECT `+memColumns+` FROM memory_entries WHERE namespace = ? AND (content LIKE ? OR tags LIKE ? OR category LIKE ?) ORDER BY created_at DESC LIMIT ?`,
 		namespace, pattern, pattern, pattern, limit)
 	if err != nil {
 		return nil, err
@@ -96,21 +96,21 @@ func (s *Store) CountMemoryEntries(namespace string) (int, error) {
 	defer s.mu.RUnlock()
 
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM memory_entries WHERE namespace = ?`, namespace).Scan(&count)
+	err := s.queryRow(`SELECT COUNT(*) FROM memory_entries WHERE namespace = ?`, namespace).Scan(&count)
 	return count, err
 }
 
 func (s *Store) DeleteMemoryEntry(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM memory_entries WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM memory_entries WHERE id = ?`, id)
 	return err
 }
 
 func (s *Store) UpdateMemoryEntry(id, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE memory_entries SET content = ? WHERE id = ?`, content, id)
+	_, err := s.exec(`UPDATE memory_entries SET content = ? WHERE id = ?`, content, id)
 	return err
 }
 
@@ -118,7 +118,14 @@ func (s *Store) DeleteOldMemoryEntries(namespace string, keepLast int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`DELETE FROM memory_entries WHERE namespace = ? AND id NOT IN (SELECT id FROM memory_entries WHERE namespace = ? ORDER BY created_at DESC LIMIT ?)`,
+	// The inner SELECT is wrapped in a derived table because MySQL rejects a
+	// LIMIT inside IN(...), and rejects reading the table a DELETE targets
+	// unless the read is materialised first. SQLite and Postgres are content
+	// either way, so the portable form is the one everything runs.
+	_, err := s.exec(`DELETE FROM memory_entries WHERE namespace = ? AND id NOT IN (
+		SELECT id FROM (
+			SELECT id FROM memory_entries WHERE namespace = ? ORDER BY created_at DESC LIMIT ?
+		) AS keep)`,
 		namespace, namespace, keepLast)
 	return err
 }
@@ -136,7 +143,7 @@ func (s *Store) TouchMemoryEntries(ids []string) error {
 		if id == "" {
 			continue
 		}
-		_, _ = s.db.Exec(`UPDATE memory_entries SET access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?`, id)
+		_, _ = s.exec(`UPDATE memory_entries SET access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?`, id)
 	}
 	return nil
 }
@@ -145,7 +152,7 @@ func (s *Store) TouchMemoryEntries(ids []string) error {
 func (s *Store) SetMemoryPinned(id string, pinned bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE memory_entries SET pinned = ? WHERE id = ?`, boolToInt(pinned), id)
+	_, err := s.exec(`UPDATE memory_entries SET pinned = ? WHERE id = ?`, boolToInt(pinned), id)
 	return err
 }
 
@@ -153,7 +160,7 @@ func (s *Store) SetMemoryPinned(id string, pinned bool) error {
 func (s *Store) UpdateMemoryImportance(id string, importance int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE memory_entries SET importance = ? WHERE id = ?`, importance, id)
+	_, err := s.exec(`UPDATE memory_entries SET importance = ? WHERE id = ?`, importance, id)
 	return err
 }
 
@@ -162,7 +169,7 @@ func (s *Store) UpdateMemoryImportance(id string, importance int) error {
 func (s *Store) PruneExpiredMemories(namespace string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM memory_entries WHERE namespace = ? AND expires_at IS NOT NULL AND expires_at <= datetime('now')`, namespace)
+	res, err := s.exec(`DELETE FROM memory_entries WHERE namespace = ? AND expires_at IS NOT NULL AND expires_at <= datetime('now')`, namespace)
 	if err != nil {
 		return 0, err
 	}
@@ -180,11 +187,14 @@ func (s *Store) ForgetLeastValuable(namespace string, count int) (int, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM memory_entries WHERE id IN (
-		SELECT id FROM memory_entries
-		WHERE namespace = ? AND pinned = 0
-		ORDER BY importance ASC, access_count ASC, COALESCE(last_accessed_at, created_at) ASC
-		LIMIT ?)`, namespace, count)
+	// Derived table for the same reason as DeleteOldMemoryEntries above.
+	res, err := s.exec(`DELETE FROM memory_entries WHERE id IN (
+		SELECT id FROM (
+			SELECT id FROM memory_entries
+			WHERE namespace = ? AND pinned = 0
+			ORDER BY importance ASC, access_count ASC, COALESCE(last_accessed_at, created_at) ASC
+			LIMIT ?
+		) AS victims)`, namespace, count)
 	if err != nil {
 		return 0, err
 	}
@@ -205,7 +215,7 @@ func (s *Store) SavePageIndexTree(namespace, treeJSON, tocJSON string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 		INSERT INTO pageindex_trees (namespace, tree_blob, toc_blob, updated_at)
 		VALUES (?, ?, ?, datetime('now'))
 		ON CONFLICT(namespace) DO UPDATE SET tree_blob=excluded.tree_blob, toc_blob=excluded.toc_blob, updated_at=datetime('now')`,
@@ -217,7 +227,7 @@ func (s *Store) LoadPageIndexTree(namespace string) (treeJSON, tocJSON string, e
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	err = s.db.QueryRow(`SELECT tree_blob, COALESCE(toc_blob, '') FROM pageindex_trees WHERE namespace = ?`, namespace).Scan(&treeJSON, &tocJSON)
+	err = s.queryRow(`SELECT tree_blob, COALESCE(toc_blob, '') FROM pageindex_trees WHERE namespace = ?`, namespace).Scan(&treeJSON, &tocJSON)
 	return
 }
 
@@ -225,7 +235,7 @@ func (s *Store) SavePageIndexNodes(namespace string, nodes []PageIndexNode) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	tx, err := s.db.Begin()
+	tx, err := s.begin()
 	if err != nil {
 		return err
 	}
@@ -257,7 +267,7 @@ func (s *Store) SearchPageIndexNodes(namespace, query string, limit int) ([]Page
 	defer s.mu.RUnlock()
 
 	pattern := "%" + query + "%"
-	rows, err := s.db.Query(`SELECT id, namespace, node_id, parent_id, path, title, summary, search_text, raw_json FROM pageindex_nodes WHERE namespace = ? AND (title LIKE ? OR summary LIKE ? OR search_text LIKE ?) LIMIT ?`,
+	rows, err := s.query(`SELECT id, namespace, node_id, parent_id, path, title, summary, search_text, raw_json FROM pageindex_nodes WHERE namespace = ? AND (title LIKE ? OR summary LIKE ? OR search_text LIKE ?) LIMIT ?`,
 		namespace, pattern, pattern, pattern, limit)
 	if err != nil {
 		return nil, err
@@ -294,7 +304,7 @@ func (s *Store) PageIndexChildren(namespace, parentID string) ([]PageIndexNode, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, namespace, node_id, parent_id, path, title, summary, search_text, raw_json FROM pageindex_nodes WHERE namespace = ? AND parent_id = ? ORDER BY title`,
+	rows, err := s.query(`SELECT id, namespace, node_id, parent_id, path, title, summary, search_text, raw_json FROM pageindex_nodes WHERE namespace = ? AND parent_id = ? ORDER BY title`,
 		namespace, parentID)
 	if err != nil {
 		return nil, err
@@ -317,7 +327,7 @@ func (s *Store) GetPageIndexNode(namespace, nodeID string) (node PageIndexNode, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	row := s.db.QueryRow(`SELECT id, namespace, node_id, parent_id, path, title, summary, search_text, raw_json FROM pageindex_nodes WHERE namespace = ? AND node_id = ? LIMIT 1`,
+	row := s.queryRow(`SELECT id, namespace, node_id, parent_id, path, title, summary, search_text, raw_json FROM pageindex_nodes WHERE namespace = ? AND node_id = ? LIMIT 1`,
 		namespace, nodeID)
 	if err := row.Scan(&node.ID, &node.Namespace, &node.NodeID, &node.ParentID, &node.Path, &node.Title, &node.Summary, &node.SearchText, &node.RawJSON); err != nil {
 		if err == sql.ErrNoRows {
@@ -350,7 +360,7 @@ func (s *Store) SaveWebhookEvent(e StoredWebhookEvent) error {
 	}
 
 	headersJSON, _ := json.Marshal(e.Headers)
-	_, err := s.db.Exec(`INSERT INTO webhook_events (id, route, method, headers, body, dispatched) VALUES (?, ?, ?, ?, ?, ?)`,
+	_, err := s.exec(`INSERT INTO webhook_events (id, route, method, headers, body, dispatched) VALUES (?, ?, ?, ?, ?, ?)`,
 		e.ID, e.Route, e.Method, string(headersJSON), e.Body, dispatched)
 	return err
 }
@@ -359,7 +369,7 @@ func (s *Store) ListWebhookEvents(limit int) ([]StoredWebhookEvent, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, route, method, headers, body, received_at, dispatched FROM webhook_events ORDER BY received_at DESC LIMIT ?`, limit)
+	rows, err := s.query(`SELECT id, route, method, headers, body, received_at, dispatched FROM webhook_events ORDER BY received_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

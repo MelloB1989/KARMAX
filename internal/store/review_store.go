@@ -33,7 +33,7 @@ func (s *Store) CreateReview(r StoredReview) error {
 	if r.Status == "" {
 		r.Status = "open"
 	}
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`INSERT INTO reviews (id, namespace, target_kind, target_id, dedup_key, question, options, context, status)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.Namespace, r.TargetKind, r.TargetID, r.DedupKey, r.Question, r.Options, r.Context, r.Status,
@@ -45,7 +45,7 @@ func (s *Store) CreateReview(r StoredReview) error {
 // namespace (in ANY status) — so a resolved/dismissed item is never re-asked.
 func (s *Store) HasReview(namespace, dedupKey string) (bool, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM reviews WHERE namespace = ? AND dedup_key = ?`, namespace, dedupKey).Scan(&n)
+	err := s.queryRow(`SELECT COUNT(*) FROM reviews WHERE namespace = ? AND dedup_key = ?`, namespace, dedupKey).Scan(&n)
 	return n > 0, err
 }
 
@@ -53,7 +53,7 @@ func (s *Store) HasReview(namespace, dedupKey string) (bool, error) {
 // used to cap concurrent questions so "aggressive" never becomes spam.
 func (s *Store) CountOpenReviews(namespace string) (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM reviews WHERE namespace = ? AND status = 'open'`, namespace).Scan(&n)
+	err := s.queryRow(`SELECT COUNT(*) FROM reviews WHERE namespace = ? AND status = 'open'`, namespace).Scan(&n)
 	return n, err
 }
 
@@ -62,7 +62,7 @@ func (s *Store) ListOpenReviews(namespace string, limit int) ([]StoredReview, er
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(
+	rows, err := s.query(
 		`SELECT id, namespace, target_kind, target_id, dedup_key, question, options, context, status, answer, resolution, created_at, resolved_at
 		 FROM reviews WHERE namespace = ? AND status = 'open' ORDER BY created_at ASC LIMIT ?`,
 		namespace, limit,
@@ -76,7 +76,7 @@ func (s *Store) ListOpenReviews(namespace string, limit int) ([]StoredReview, er
 
 // GetReview loads one review by id.
 func (s *Store) GetReview(id string) (*StoredReview, error) {
-	rows, err := s.db.Query(
+	rows, err := s.query(
 		`SELECT id, namespace, target_kind, target_id, dedup_key, question, options, context, status, answer, resolution, created_at, resolved_at
 		 FROM reviews WHERE id = ?`, id)
 	if err != nil {
@@ -98,7 +98,7 @@ func (s *Store) ResolveReview(id, status, answer, resolution string) error {
 	if status == "" {
 		status = "resolved"
 	}
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE reviews SET status = ?, answer = ?, resolution = ?, resolved_at = datetime('now')
 		 WHERE id = ? AND status = 'open'`,
 		status, answer, resolution, id,
@@ -138,7 +138,7 @@ func (s *Store) RecentReviewQuestions(namespace string, since time.Time, limit i
 	if limit <= 0 {
 		limit = 60
 	}
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 		SELECT question FROM reviews
 		WHERE namespace = ? AND created_at >= ?
 		ORDER BY created_at DESC LIMIT ?`, namespace, since.UTC(), limit)

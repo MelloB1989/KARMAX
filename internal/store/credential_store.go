@@ -32,14 +32,14 @@ func (s *Store) SaveCredential(c Credential) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err = s.db.Exec(`
+	_, err = s.exec(`
 INSERT INTO connector_credentials (connector, config, access_token, refresh_token, expires_at, enabled, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(connector) DO UPDATE SET
   config = excluded.config, access_token = excluded.access_token,
   refresh_token = excluded.refresh_token, expires_at = excluded.expires_at,
   enabled = excluded.enabled, updated_at = excluded.updated_at`,
-		c.Connector, string(cfg), c.AccessToken, c.RefreshToken, c.ExpiresAt, c.Enabled, time.Now())
+		c.Connector, string(cfg), c.AccessToken, c.RefreshToken, c.ExpiresAt, boolToInt(c.Enabled), time.Now())
 	return err
 }
 
@@ -47,7 +47,7 @@ ON CONFLICT(connector) DO UPDATE SET
 func (s *Store) SaveTokens(connector, access, refresh string, expiresAt *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 UPDATE connector_credentials
 SET access_token = ?, refresh_token = COALESCE(NULLIF(?, ''), refresh_token),
     expires_at = ?, updated_at = ?
@@ -64,11 +64,13 @@ func (s *Store) Credential(connector string) (*Credential, error) {
 		c       Credential
 		cfg     string
 		expires sql.NullTime
+		enabled int
 	)
-	err := s.db.QueryRow(`
+	err := s.queryRow(`
 SELECT connector, config, access_token, refresh_token, expires_at, enabled, updated_at
 FROM connector_credentials WHERE connector = ?`, connector).
-		Scan(&c.Connector, &cfg, &c.AccessToken, &c.RefreshToken, &expires, &c.Enabled, &c.UpdatedAt)
+		Scan(&c.Connector, &cfg, &c.AccessToken, &c.RefreshToken, &expires, &enabled, &c.UpdatedAt)
+	c.Enabled = enabled != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		// Nothing stored is the normal state of an integration nobody has
 		// logged into yet, not a failure. Returning ErrNoRows made every
@@ -92,7 +94,7 @@ func (s *Store) EnabledConnectors() ([]Credential, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT connector, config, access_token, refresh_token, expires_at, enabled, updated_at
 FROM connector_credentials WHERE enabled = 1 ORDER BY connector`)
 	if err != nil {
@@ -106,11 +108,13 @@ FROM connector_credentials WHERE enabled = 1 ORDER BY connector`)
 			c       Credential
 			cfg     string
 			expires sql.NullTime
+			enabled int
 		)
 		if err := rows.Scan(&c.Connector, &cfg, &c.AccessToken, &c.RefreshToken,
-			&expires, &c.Enabled, &c.UpdatedAt); err != nil {
+			&expires, &enabled, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
+		c.Enabled = enabled != 0
 		_ = json.Unmarshal([]byte(cfg), &c.Config)
 		if expires.Valid {
 			at := expires.Time
@@ -125,7 +129,7 @@ FROM connector_credentials WHERE enabled = 1 ORDER BY connector`)
 func (s *Store) SetConnectorEnabled(connector string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`UPDATE connector_credentials SET enabled = ?, updated_at = ? WHERE connector = ?`,
 		enabled, time.Now(), connector)
 	if err != nil {
@@ -141,7 +145,7 @@ func (s *Store) SetConnectorEnabled(connector string, enabled bool) error {
 func (s *Store) DeleteCredential(connector string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM connector_credentials WHERE connector = ?`, connector)
+	_, err := s.exec(`DELETE FROM connector_credentials WHERE connector = ?`, connector)
 	return err
 }
 
@@ -150,7 +154,7 @@ func (s *Store) SourceCursor(connector, source string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var cursor string
-	err := s.db.QueryRow(
+	err := s.queryRow(
 		`SELECT cursor FROM connector_cursors WHERE connector = ? AND source = ?`,
 		connector, source).Scan(&cursor)
 	if err == sql.ErrNoRows {
@@ -164,7 +168,7 @@ func (s *Store) SourceCursor(connector, source string) (string, error) {
 func (s *Store) SetSourceCursor(connector, source, cursor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO connector_cursors (connector, source, cursor, updated_at) VALUES (?, ?, ?, ?)
 ON CONFLICT(connector, source) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at`,
 		connector, source, cursor, time.Now())

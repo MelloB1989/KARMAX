@@ -97,7 +97,7 @@ func migrationDeps(namespace string, needClient bool) (*store.Store, *gitloom.Cl
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("load config: %w", err)
 	}
-	db, err := store.New(filepath.Join(cfg.Karmax.DataDir, "db", "karmax.db"), zap.NewNop())
+	db, err := store.New(cfg.DatabaseDSN(), zap.NewNop())
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("open store: %w", err)
 	}

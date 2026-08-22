@@ -36,7 +36,7 @@ func (s *Store) StartSubagentRun(r SubagentRun) error {
 	if r.Depth < 1 {
 		r.Depth = 1
 	}
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO subagent_runs (id, parent_id, child_id, task, status, depth, started_at)
 VALUES (?, ?, ?, ?, 'running', ?, ?)`,
 		r.ID, r.ParentID, r.ChildID, r.Task, r.Depth, r.StartedAt)
@@ -49,7 +49,7 @@ func (s *Store) FinishSubagentRun(id, status, result string) error {
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 UPDATE subagent_runs SET status = ?, result = ?, finished_at = ? WHERE id = ?`,
 		status, result, now, id)
 	return err
@@ -62,7 +62,7 @@ func (s *Store) RunningSubagents(parentID string) (int, error) {
 	defer s.mu.RUnlock()
 
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM subagent_runs WHERE parent_id = ? AND status = 'running'`, parentID).Scan(&n)
+	err := s.queryRow(`SELECT COUNT(*) FROM subagent_runs WHERE parent_id = ? AND status = 'running'`, parentID).Scan(&n)
 	return n, err
 }
 
@@ -74,7 +74,7 @@ func (s *Store) SubagentRuns(parentID string, limit int) ([]SubagentRun, error) 
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, parent_id, child_id, task, status, result, depth, started_at, finished_at
 FROM subagent_runs WHERE parent_id = ? ORDER BY started_at DESC LIMIT ?`, parentID, limit)
 	if err != nil {
@@ -105,7 +105,7 @@ func (s *Store) AbandonRunningSubagents() (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res, err := s.db.Exec(`
+	res, err := s.exec(`
 UPDATE subagent_runs SET status = 'abandoned', finished_at = ?, result = 'the daemon stopped while this was running'
 WHERE status = 'running'`, time.Now())
 	if err != nil {

@@ -36,7 +36,7 @@ func (s *Store) SaveJob(j StoredJob) error {
 		catchUp = 1
 	}
 
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 		INSERT INTO scheduled_jobs (id, name, cron, agent_id, payload, enabled, last_run, next_run, run_count, catch_up)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -52,7 +52,7 @@ func (s *Store) ListJobs() ([]StoredJob, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, name, cron, agent_id, payload, enabled, last_run, next_run, run_count, catch_up, created_at FROM scheduled_jobs ORDER BY name`)
+	rows, err := s.query(`SELECT id, name, cron, agent_id, payload, enabled, last_run, next_run, run_count, catch_up, created_at FROM scheduled_jobs ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -75,14 +75,14 @@ func (s *Store) ListJobs() ([]StoredJob, error) {
 func (s *Store) DeleteJob(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM scheduled_jobs WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM scheduled_jobs WHERE id = ?`, id)
 	return err
 }
 
 func (s *Store) UpdateJobRun(id string, lastRun time.Time, nextRun *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE scheduled_jobs SET last_run = ?, next_run = ?, run_count = run_count + 1 WHERE id = ?`, lastRun, nextRun, id)
+	_, err := s.exec(`UPDATE scheduled_jobs SET last_run = ?, next_run = ?, run_count = run_count + 1 WHERE id = ?`, lastRun, nextRun, id)
 	return err
 }
 
@@ -90,7 +90,7 @@ func (s *Store) GetJob(id string) (*StoredJob, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	row := s.db.QueryRow(`SELECT id, name, cron, agent_id, payload, enabled, last_run, next_run, run_count, catch_up, created_at FROM scheduled_jobs WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, name, cron, agent_id, payload, enabled, last_run, next_run, run_count, catch_up, created_at FROM scheduled_jobs WHERE id = ?`, id)
 	var j StoredJob
 	var enabled, catchUp int
 	err := row.Scan(&j.ID, &j.Name, &j.Cron, &j.AgentID, &j.Payload, &enabled, &j.LastRun, &j.NextRun, &j.RunCount, &catchUp, &j.CreatedAt)

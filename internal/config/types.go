@@ -6,6 +6,7 @@ import (
 
 type KarmaxConfig struct {
 	Karmax   KarmaxCoreConfig      `yaml:"karmax"`
+	Database DatabaseConfig        `yaml:"database"`
 	Webhooks WebhooksConfig        `yaml:"webhooks"`
 	API      APIConfig             `yaml:"api"`
 	AI       AIConfig              `yaml:"ai"`
@@ -14,6 +15,14 @@ type KarmaxConfig struct {
 	Agents   []AgentDefConfig      `yaml:"agents"`
 	Loops    []LoopConfig          `yaml:"loops"`
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
+}
+
+// DatabaseConfig points the store at a backend. See store.ParseDSN for the
+// accepted forms (postgres://, mysql://, a sqlite path).
+type DatabaseConfig struct {
+	// URL is the connection target. Empty keeps the SQLite file under
+	// data_dir, which is what every existing install has.
+	URL string `yaml:"url"`
 }
 
 // ColdScanConfig is DEPRECATED and ignored: cold-scan is now a marketplace

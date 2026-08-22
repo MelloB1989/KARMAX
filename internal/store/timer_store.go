@@ -44,7 +44,7 @@ func (s *Store) SetTimer(t Timer) error {
 	defer s.mu.Unlock()
 
 	// fired_at resets on conflict, so a stable id can schedule the next occurrence.
-	_, err = s.db.Exec(`
+	_, err = s.exec(`
 INSERT INTO timers (id, workspace, fire_at, kind, agent_id, loop, payload, created_at, fired_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
 ON CONFLICT(id) DO UPDATE SET
@@ -69,7 +69,7 @@ func (s *Store) DueTimers(workspace string, now time.Time, limit int) ([]Timer, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, workspace, fire_at, kind, agent_id, loop, payload, created_at, fired_at
 FROM timers WHERE workspace = ? AND fired_at IS NULL AND fire_at <= ?
 ORDER BY fire_at ASC LIMIT ?`, workspace, now, limit)
@@ -100,7 +100,7 @@ func (s *Store) PendingTimers(workspace string, limit int) ([]Timer, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, workspace, fire_at, kind, agent_id, loop, payload, created_at, fired_at
 FROM timers WHERE workspace = ? AND fired_at IS NULL ORDER BY fire_at ASC LIMIT ?`,
 		workspace, limit)
@@ -125,7 +125,7 @@ func (s *Store) TimerByID(id string) (*Timer, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, workspace, fire_at, kind, agent_id, loop, payload, created_at, fired_at
 FROM timers WHERE id = ?`, id)
 	if err != nil {
@@ -148,7 +148,7 @@ func (s *Store) MarkTimerFired(id string, at time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`UPDATE timers SET fired_at = ? WHERE id = ? AND fired_at IS NULL`, at, id)
 	if err != nil {
 		return false, err
@@ -161,7 +161,7 @@ func (s *Store) MarkTimerFired(id string, at time.Time) (bool, error) {
 func (s *Store) CancelTimer(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM timers WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM timers WHERE id = ?`, id)
 	return err
 }
 
@@ -169,7 +169,7 @@ func (s *Store) CancelTimer(id string) error {
 func (s *Store) CancelLoopTimers(loop string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM timers WHERE loop = ? AND fired_at IS NULL`, loop)
+	res, err := s.exec(`DELETE FROM timers WHERE loop = ? AND fired_at IS NULL`, loop)
 	if err != nil {
 		return 0, err
 	}
@@ -180,7 +180,7 @@ func (s *Store) CancelLoopTimers(loop string) (int64, error) {
 func (s *Store) PruneTimers(before time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`DELETE FROM timers WHERE fired_at IS NOT NULL AND fired_at < ?`, before)
 	if err != nil {
 		return 0, err

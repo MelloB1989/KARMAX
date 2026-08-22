@@ -37,11 +37,16 @@ func (s *Store) KVSet(group, key, value string, ttl time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Formatted to the second, deliberately, and NOT passed as a time.Time.
+	// The reads below compare this column against datetime('now'), and SQLite
+	// compares those as text: a bound time.Time carries fractional seconds and
+	// a zone offset, which sort after the same second and made an expired key
+	// read back as live. Every backend accepts this literal for a timestamp.
 	var expires any
 	if ttl > 0 {
 		expires = time.Now().Add(ttl).UTC().Format("2006-01-02 15:04:05")
 	}
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO kv_memory (grp, key, value, expires_at, created_at, updated_at)
 VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
 ON CONFLICT(grp, key) DO UPDATE SET
@@ -56,7 +61,7 @@ func (s *Store) KVGet(group, key string) (value string, found bool, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	row := s.db.QueryRow(`
+	row := s.queryRow(`
 SELECT value FROM kv_memory
 WHERE grp = ? AND key = ? AND (expires_at IS NULL OR expires_at > datetime('now'))`,
 		strings.TrimSpace(group), strings.TrimSpace(key))
@@ -75,7 +80,7 @@ func (s *Store) KVList(group string) ([]KVEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT grp, key, value, expires_at, updated_at FROM kv_memory
 WHERE grp = ? AND (expires_at IS NULL OR expires_at > datetime('now'))
 ORDER BY updated_at DESC`, strings.TrimSpace(group))
@@ -106,7 +111,7 @@ ORDER BY updated_at DESC`, strings.TrimSpace(group))
 func (s *Store) KVDelete(group, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM kv_memory WHERE grp = ? AND key = ?`,
+	_, err := s.exec(`DELETE FROM kv_memory WHERE grp = ? AND key = ?`,
 		strings.TrimSpace(group), strings.TrimSpace(key))
 	return err
 }
@@ -115,7 +120,7 @@ func (s *Store) KVDelete(group, key string) error {
 func (s *Store) KVClearGroup(group string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM kv_memory WHERE grp = ?`, strings.TrimSpace(group))
+	_, err := s.exec(`DELETE FROM kv_memory WHERE grp = ?`, strings.TrimSpace(group))
 	return err
 }
 
@@ -124,7 +129,7 @@ func (s *Store) KVClearGroup(group string) error {
 func (s *Store) KVPurgeExpired() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM kv_memory WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')`)
+	res, err := s.exec(`DELETE FROM kv_memory WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')`)
 	if err != nil {
 		return 0, err
 	}

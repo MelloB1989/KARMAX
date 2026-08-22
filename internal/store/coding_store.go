@@ -22,7 +22,7 @@ func (s *Store) SaveCodingSession(cs StoredCodingSession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 		INSERT INTO coding_sessions (id, tool_type, session_id, description, status, agent_id, output, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(id) DO UPDATE SET
@@ -58,7 +58,7 @@ func (s *Store) ListCodingSessions(agentID string) ([]StoredCodingSession, error
 		args = nil
 	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list coding sessions: %w", err)
 	}
@@ -80,7 +80,7 @@ func (s *Store) GetCodingSession(id string) (*StoredCodingSession, error) {
 	defer s.mu.RUnlock()
 
 	var cs StoredCodingSession
-	err := s.db.QueryRow(`SELECT id, tool_type, session_id, description, status, agent_id, output, created_at, updated_at FROM coding_sessions WHERE id = ?`, id).
+	err := s.queryRow(`SELECT id, tool_type, session_id, description, status, agent_id, output, created_at, updated_at FROM coding_sessions WHERE id = ?`, id).
 		Scan(&cs.ID, &cs.ToolType, &cs.SessionID, &cs.Description, &cs.Status, &cs.AgentID, &cs.Output, &cs.CreatedAt, &cs.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -95,7 +95,7 @@ func (s *Store) UpdateCodingSessionStatus(id, status, output string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`UPDATE coding_sessions SET status = ?, output = ?, updated_at = datetime('now') WHERE id = ?`, status, output, id)
+	_, err := s.exec(`UPDATE coding_sessions SET status = ?, output = ?, updated_at = datetime('now') WHERE id = ?`, status, output, id)
 	if err != nil {
 		return fmt.Errorf("update coding session status: %w", err)
 	}

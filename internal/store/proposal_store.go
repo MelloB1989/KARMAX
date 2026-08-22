@@ -32,7 +32,7 @@ const proposalCols = `id, agent_id, COALESCE(kind,''), title, COALESCE(summary,'
 // duplicate "Decision — <same person>" approvals on every re-scan.
 func (s *Store) HasSimilarProposal(title string, within time.Duration) (bool, error) {
 	var n int
-	err := s.db.QueryRow(
+	err := s.queryRow(
 		`SELECT COUNT(*) FROM proposals
 		 WHERE title = ? AND (status = 'pending' OR created_at >= datetime('now', ?))`,
 		title, fmt.Sprintf("-%d seconds", int(within.Seconds())),
@@ -44,7 +44,7 @@ func (s *Store) CreateProposal(p StoredProposal) error {
 	if p.Status == "" {
 		p.Status = "pending"
 	}
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`INSERT INTO proposals (id, agent_id, kind, title, summary, context, proposed_action, status)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.AgentID, p.Kind, p.Title, p.Summary, p.Context, p.ProposedAction, p.Status,
@@ -61,9 +61,9 @@ func (s *Store) ListProposals(status string, limit int) ([]StoredProposal, error
 		err  error
 	)
 	if status != "" {
-		rows, err = s.db.Query(`SELECT `+proposalCols+` FROM proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?`, status, limit)
+		rows, err = s.query(`SELECT `+proposalCols+` FROM proposals WHERE status = ? ORDER BY created_at DESC LIMIT ?`, status, limit)
 	} else {
-		rows, err = s.db.Query(`SELECT `+proposalCols+` FROM proposals ORDER BY created_at DESC LIMIT ?`, limit)
+		rows, err = s.query(`SELECT `+proposalCols+` FROM proposals ORDER BY created_at DESC LIMIT ?`, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -72,7 +72,7 @@ func (s *Store) ListProposals(status string, limit int) ([]StoredProposal, error
 }
 
 func (s *Store) GetProposal(id string) (*StoredProposal, error) {
-	rows, err := s.db.Query(`SELECT `+proposalCols+` FROM proposals WHERE id = ?`, id)
+	rows, err := s.query(`SELECT `+proposalCols+` FROM proposals WHERE id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func (s *Store) GetProposal(id string) (*StoredProposal, error) {
 
 // DecideProposal records the user's approve/reject decision.
 func (s *Store) DecideProposal(id, status, note string) error {
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE proposals SET status = ?, decision_note = ?, decided_at = datetime('now') WHERE id = ?`,
 		status, note, id,
 	)
@@ -94,7 +94,7 @@ func (s *Store) DecideProposal(id, status, note string) error {
 
 // SetProposalResult records the outcome after execution.
 func (s *Store) SetProposalResult(id, status, result string) error {
-	_, err := s.db.Exec(`UPDATE proposals SET status = ?, result = ? WHERE id = ?`, status, result, id)
+	_, err := s.exec(`UPDATE proposals SET status = ?, result = ? WHERE id = ?`, status, result, id)
 	return err
 }
 

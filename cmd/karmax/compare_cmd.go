@@ -76,7 +76,7 @@ func runCompare(ctx context.Context, namespace string, limit int, verbose bool) 
 	if err != nil {
 		return err
 	}
-	db, err := store.New(filepath.Join(cfg.Karmax.DataDir, "db", "karmax.db"), zap.NewNop())
+	db, err := store.New(cfg.DatabaseDSN(), zap.NewNop())
 	if err != nil {
 		return err
 	}

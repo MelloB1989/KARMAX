@@ -40,7 +40,11 @@ func main() {
 		ns = "nexus"
 	}
 	log, _ := zap.NewDevelopment()
-	db, err := store.New(filepath.Join(home, ".karmax", "db", "karmax.db"), log)
+	dsn := filepath.Join(home, ".karmax", "db", "karmax.db")
+	if u := strings.TrimSpace(os.Getenv("KARMAX_DB_URL")); u != "" {
+		dsn = u
+	}
+	db, err := store.New(dsn, log)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "store:", err)
 		os.Exit(1)

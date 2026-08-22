@@ -1,6 +1,9 @@
 package store
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 var migrations = []string{
 	// 001_agents
@@ -598,15 +601,31 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_subagent_status ON subagent_runs(status)`,
 }
 
+// schema is the translated form of `migrations` for the backend in use, built
+// once per Store.
 func (s *Store) migrate() error {
+	sch := buildSchema(migrations)
 	for _, stmt := range migrations {
-		if _, err := s.db.Exec(stmt); err != nil {
-			// ALTER TABLE ADD COLUMN is not idempotent; tolerate re-runs.
-			if strings.Contains(err.Error(), "duplicate column name") {
+		out := s.d.DDL(stmt, sch)
+		if strings.TrimSpace(out) == "" {
+			continue
+		}
+		if _, err := s.db.Exec(out); err != nil {
+			// The list is replayed on every boot. ADD COLUMN and, on MySQL,
+			// CREATE INDEX have no IF NOT EXISTS to lean on, so the backend
+			// saying "already there" is the expected outcome, not a failure.
+			if s.d.Redundant(err) {
 				continue
 			}
-			return err
+			return fmt.Errorf("%s: %w", firstLine(out), err)
 		}
 	}
 	return nil
+}
+
+func firstLine(stmt string) string {
+	if i := strings.IndexByte(stmt, '\n'); i >= 0 {
+		return strings.TrimSpace(stmt[:i])
+	}
+	return strings.TrimSpace(stmt)
 }

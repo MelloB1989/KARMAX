@@ -23,7 +23,7 @@ type SocialPost struct {
 func (s *Store) RecordPost(p SocialPost) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`INSERT INTO social_posts (platform, status, post_id, text, detail) VALUES (?,?,?,?,?)`,
 		p.Platform, p.Status, p.PostID, p.Text, p.Detail)
 	return err
@@ -38,7 +38,7 @@ func (s *Store) CountPostsSince(platform string, since time.Time) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var n int
-	err := s.db.QueryRow(
+	err := s.queryRow(
 		`SELECT COUNT(*) FROM social_posts WHERE platform = ? AND status = 'posted' AND posted_at >= ?`,
 		platform, since.UTC()).Scan(&n)
 	return n, err
@@ -49,7 +49,7 @@ func (s *Store) LastPostAt(platform string) (time.Time, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t sql.NullTime
-	err := s.db.QueryRow(
+	err := s.queryRow(
 		`SELECT MAX(posted_at) FROM social_posts WHERE platform = ? AND status = 'posted'`,
 		platform).Scan(&t)
 	if err != nil || !t.Valid {
@@ -65,7 +65,7 @@ func (s *Store) RecentPosts(limit int) ([]SocialPost, error) {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows, err := s.db.Query(
+	rows, err := s.query(
 		`SELECT platform, posted_at, status, post_id, text, detail
 		 FROM social_posts ORDER BY posted_at DESC, id DESC LIMIT ?`, limit)
 	if err != nil {

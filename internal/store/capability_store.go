@@ -45,7 +45,7 @@ func (s *Store) SaveGrant(g Grant) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO capability_grants (subject, capability, value, granted_by, granted_at, expires_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(subject, capability, value) DO UPDATE SET
@@ -58,7 +58,7 @@ ON CONFLICT(subject, capability, value) DO UPDATE SET
 func (s *Store) RevokeGrant(subject, capability, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`DELETE FROM capability_grants WHERE subject = ? AND capability = ? AND value = ?`,
 		subject, capability, value)
 	return err
@@ -69,7 +69,7 @@ func (s *Store) RevokeGrant(subject, capability, value string) error {
 func (s *Store) RevokeSubject(subject string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM capability_grants WHERE subject = ?`, subject)
+	res, err := s.exec(`DELETE FROM capability_grants WHERE subject = ?`, subject)
 	if err != nil {
 		return 0, err
 	}
@@ -82,7 +82,7 @@ func (s *Store) Grants(subject string) ([]Grant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT subject, capability, value, granted_by, granted_at, expires_at
 FROM capability_grants
 WHERE (subject = ? OR subject = ?) AND (expires_at IS NULL OR expires_at > ?)
@@ -99,7 +99,7 @@ func (s *Store) AllGrants() ([]Grant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT subject, capability, value, granted_by, granted_at, expires_at
 FROM capability_grants ORDER BY subject, capability, value`)
 	if err != nil {
@@ -136,7 +136,7 @@ func (s *Store) MeterCapability(subject, capability string, allowed bool, units 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO capability_meter (subject, capability, day, allowed, refused, units)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(subject, capability, day) DO UPDATE SET
@@ -163,7 +163,7 @@ func (s *Store) UsageToday(subject, capability string) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var units sql.NullInt64
-	err := s.db.QueryRow(`
+	err := s.queryRow(`
 SELECT units FROM capability_meter WHERE subject = ? AND capability = ? AND day = ?`,
 		subject, capability, time.Now().UTC().Format("2006-01-02")).Scan(&units)
 	if err == sql.ErrNoRows {
@@ -180,7 +180,7 @@ func (s *Store) Meter(since time.Time, limit int) ([]MeterReading, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT subject, capability, day, allowed, refused, units FROM capability_meter
 WHERE day >= ? ORDER BY day DESC, subject, capability LIMIT ?`,
 		since.UTC().Format("2006-01-02"), limit)
@@ -204,7 +204,7 @@ WHERE day >= ? ORDER BY day DESC, subject, capability LIMIT ?`,
 func (s *Store) PruneMeter(before time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM capability_meter WHERE day < ?`,
+	res, err := s.exec(`DELETE FROM capability_meter WHERE day < ?`,
 		before.UTC().Format("2006-01-02"))
 	if err != nil {
 		return 0, err

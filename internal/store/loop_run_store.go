@@ -60,15 +60,16 @@ func (s *Store) AcquireLoopLease(loop, owner string, ttl time.Duration) (bool, e
 	now := time.Now()
 	until := now.Add(ttl)
 
-	// INSERT ... ON CONFLICT DO UPDATE ... WHERE is atomic in SQLite: the WHERE
-	// on the upsert branch is what makes this a compare-and-set rather than a
-	// blind overwrite.
-	res, err := s.db.Exec(`
-INSERT INTO loop_state (loop, lease_until, lease_owner)
-VALUES (?, ?, ?)
-ON CONFLICT(loop) DO UPDATE SET lease_until = excluded.lease_until, lease_owner = excluded.lease_owner
-WHERE loop_state.lease_until IS NULL OR loop_state.lease_until < ?`,
-		loop, until, owner, now)
+	// INSERT ... ON CONFLICT DO UPDATE ... WHERE is one atomic statement: the
+	// WHERE on the upsert branch is what makes this a compare-and-set rather
+	// than a blind overwrite. Rows affected is therefore the answer — zero
+	// means the condition was false and somebody else holds the lease.
+	// The MySQL form spends the guard twice, once per assignment.
+	args := []any{loop, until, owner, now}
+	if s.Kind() == MySQL {
+		args = append(args, now)
+	}
+	res, err := s.exec(leaseSQL(s.Kind()), args...)
 	if err != nil {
 		return false, err
 	}
@@ -79,13 +80,36 @@ WHERE loop_state.lease_until IS NULL OR loop_state.lease_until < ?`,
 	return n > 0, nil
 }
 
+// leaseSQL is the compare-and-set behind AcquireLoopLease.
+//
+// MySQL has no WHERE on ON DUPLICATE KEY UPDATE, so the guard moves into the
+// assignments — and lease_owner is written first, because MySQL evaluates them
+// left to right and updating lease_until would falsify its own condition.
+func leaseSQL(k Kind) string {
+	if k == MySQL {
+		return `
+INSERT INTO loop_state (loop, lease_until, lease_owner)
+VALUES (?, ?, ?)
+ON CONFLICT(loop) DO UPDATE SET
+  lease_owner = CASE WHEN loop_state.lease_until IS NULL OR loop_state.lease_until < ?
+                     THEN excluded.lease_owner ELSE loop_state.lease_owner END,
+  lease_until = CASE WHEN loop_state.lease_until IS NULL OR loop_state.lease_until < ?
+                     THEN excluded.lease_until ELSE loop_state.lease_until END`
+	}
+	return `
+INSERT INTO loop_state (loop, lease_until, lease_owner)
+VALUES (?, ?, ?)
+ON CONFLICT(loop) DO UPDATE SET lease_until = excluded.lease_until, lease_owner = excluded.lease_owner
+WHERE loop_state.lease_until IS NULL OR loop_state.lease_until < ?`
+}
+
 // ReleaseLoopLease frees the lease so the next scheduled tick can run.
 func (s *Store) ReleaseLoopLease(loop, owner string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Scoped to the owner: a run that overran its lease must not release the
 	// lease a different run has since taken.
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE loop_state SET lease_until = NULL, lease_owner = '' WHERE loop = ? AND lease_owner = ?`,
 		loop, owner)
 	return err
@@ -95,7 +119,7 @@ func (s *Store) ReleaseLoopLease(loop, owner string) error {
 func (s *Store) StartLoopRun(r LoopRun) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO loop_runs (id, loop, trigger_kind, status, attempt, started_at)
 VALUES (?, ?, ?, 'running', ?, ?)`,
 		r.ID, r.Loop, r.Trigger, r.Attempt, r.StartedAt)
@@ -111,7 +135,7 @@ func (s *Store) FinishLoopRun(id, loop, status, errMsg string, attempt int, next
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	tx, err := s.db.Begin()
+	tx, err := s.begin()
 	if err != nil {
 		return err
 	}
@@ -120,7 +144,7 @@ func (s *Store) FinishLoopRun(id, loop, status, errMsg string, attempt int, next
 	if _, err := tx.Exec(`
 UPDATE loop_runs
 SET status = ?, finished_at = ?, error = ?,
-    duration_ms = CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)
+    duration_ms = `+millisBetween(s.Kind(), "started_at", "?")+`
 WHERE id = ?`, status, now, errMsg, now, id); err != nil {
 		return err
 	}
@@ -155,7 +179,7 @@ ON CONFLICT(loop) DO UPDATE SET
 func (s *Store) DueLoopRetries(now time.Time) ([]LoopState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT loop, retry_attempt, COALESCE(last_error, '')
 FROM loop_state
 WHERE next_retry_at IS NOT NULL AND next_retry_at <= ?`, now)
@@ -180,7 +204,7 @@ WHERE next_retry_at IS NOT NULL AND next_retry_at <= ?`, now)
 func (s *Store) ClearLoopRetry(loop string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE loop_state SET next_retry_at = NULL WHERE loop = ?`, loop)
+	_, err := s.exec(`UPDATE loop_state SET next_retry_at = NULL WHERE loop = ?`, loop)
 	return err
 }
 
@@ -188,7 +212,7 @@ func (s *Store) ClearLoopRetry(loop string) error {
 func (s *Store) LoopStates() ([]LoopState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT loop, lease_until, COALESCE(lease_owner,''), last_success_at, last_failure_at,
        consec_fails, next_retry_at, retry_attempt, COALESCE(last_error,'')
 FROM loop_state ORDER BY loop`)
@@ -217,7 +241,7 @@ func (s *Store) DeadLoopRuns(limit int) ([]LoopRun, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, loop, trigger_kind, status, attempt, started_at, finished_at, COALESCE(error,'')
 FROM loop_runs WHERE status = 'dead' ORDER BY started_at DESC LIMIT ?`, limit)
 	if err != nil {
@@ -256,7 +280,7 @@ func (s *Store) RecentLoopRuns(loop string, limit int) ([]LoopRun, error) {
 	q += ` ORDER BY started_at DESC LIMIT ?`
 	args = append(args, limit)
 
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +304,7 @@ func (s *Store) RecentLoopRuns(loop string, limit int) ([]LoopRun, error) {
 func (s *Store) PruneLoopRuns(before time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`DELETE FROM loop_runs WHERE started_at < ? AND status != 'dead'`, before)
 	if err != nil {
 		return 0, err
@@ -297,7 +321,7 @@ func (s *Store) ReapStaleLoopRuns(olderThan time.Time) ([]LoopRun, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, loop, trigger_kind, attempt, started_at FROM loop_runs
 WHERE status = 'running' AND started_at < ?`, olderThan)
 	if err != nil {
@@ -322,7 +346,7 @@ WHERE status = 'running' AND started_at < ?`, olderThan)
 		return nil, nil
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.exec(`
 UPDATE loop_runs SET status = 'interrupted', finished_at = ?,
   error = 'interrupted: the daemon stopped while this run was in progress'
 WHERE status = 'running' AND started_at < ?`, time.Now(), olderThan)

@@ -24,7 +24,7 @@ const notificationCols = `id, agent_id, COALESCE(kind,''), COALESCE(title,''), `
 
 // CreateNotification persists a notification for the app feed.
 func (s *Store) CreateNotification(n StoredNotification) error {
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`INSERT INTO notifications (id, agent_id, kind, title, body, data)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		n.ID, n.AgentID, n.Kind, n.Title, n.Body, n.Data,
@@ -37,7 +37,7 @@ func (s *Store) ListNotifications(limit int) ([]StoredNotification, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`SELECT `+notificationCols+` FROM notifications ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := s.query(`SELECT `+notificationCols+` FROM notifications ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -47,19 +47,19 @@ func (s *Store) ListNotifications(limit int) ([]StoredNotification, error) {
 // CountUnreadNotifications returns the number of unread notifications.
 func (s *Store) CountUnreadNotifications() (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT count(*) FROM notifications WHERE read_at IS NULL`).Scan(&n)
+	err := s.queryRow(`SELECT count(*) FROM notifications WHERE read_at IS NULL`).Scan(&n)
 	return n, err
 }
 
 // MarkNotificationRead marks a single notification read.
 func (s *Store) MarkNotificationRead(id string) error {
-	_, err := s.db.Exec(`UPDATE notifications SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL`, id)
+	_, err := s.exec(`UPDATE notifications SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL`, id)
 	return err
 }
 
 // MarkAllNotificationsRead marks every unread notification read.
 func (s *Store) MarkAllNotificationsRead() error {
-	_, err := s.db.Exec(`UPDATE notifications SET read_at = datetime('now') WHERE read_at IS NULL`)
+	_, err := s.exec(`UPDATE notifications SET read_at = datetime('now') WHERE read_at IS NULL`)
 	return err
 }
 
@@ -90,7 +90,7 @@ func scanNotifications(rows *sql.Rows) ([]StoredNotification, error) {
 // told them anything the first one had not.
 func (s *Store) NotifiedRecently(agentID, kind, title string, within time.Duration) (bool, error) {
 	var n int
-	err := s.db.QueryRow(`
+	err := s.queryRow(`
 		SELECT COUNT(*) FROM notifications
 		WHERE agent_id = ? AND kind = ? AND title = ? AND created_at >= ?`,
 		agentID, kind, title, time.Now().Add(-within).UTC()).Scan(&n)
