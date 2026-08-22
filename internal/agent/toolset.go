@@ -168,25 +168,56 @@ const maxToolLoadRounds = 2
 // that only appears on one of them is worse than not having it, because the
 // model is told the tool exists and then cannot call it.
 func (a *Agent) loadRequestedTools(ctx context.Context, session *MainModelSession,
-	response string, calls []karmahelper.ToolCallRecord) (string, []karmahelper.ToolCallRecord) {
+	response string, calls []karmahelper.ToolCallRecord, withhold map[string]bool) (string, []karmahelper.ToolCallRecord) {
 
 	for round := 0; round < maxToolLoadRounds; round++ {
 		want := requestedTools(calls)
 		if len(want) == 0 {
 			return response, calls
 		}
-		lent := a.lendNamed(want)
-		if len(lent) == 0 {
+
+		// The loader honours the turn's withhold. It did not, and that was the
+		// hole: an observe pass, finding no send tool in its set, simply ASKED
+		// for comms.send by name and was handed it — the log reads "loading
+		// tools the model asked for: comms.send" one line after the pass was
+		// built without it. A capability removed from a turn must be removed
+		// from every round of that turn, or removing it only adds a step.
+		var grantable, refused []string
+		for _, name := range want {
+			if withhold[tools.CanonicalName(name)] {
+				refused = append(refused, name)
+			} else {
+				grantable = append(grantable, name)
+			}
+		}
+		if len(refused) > 0 {
+			a.log.Info("refusing to lend withheld tools",
+				zap.String("agent", a.def.ID), zap.Strings("tools", refused))
+		}
+
+		lent := a.lendNamed(grantable)
+		if len(lent) == 0 && len(refused) == 0 {
 			a.log.Warn("the model asked for tools this agent cannot bind",
 				zap.String("agent", a.def.ID), zap.Strings("tools", want))
 			return response, calls
 		}
+
+		followUp := "The tools you requested are now available. Use them to finish the task."
+		if len(refused) > 0 {
+			followUp = "Withheld on this pass, not loadable: " + strings.Join(refused, ", ") +
+				". This pass cannot send messages or speak in any chat, and asking again will not change that. "
+			if len(lent) > 0 {
+				followUp += "The rest of what you asked for is available. Finish the task without the withheld tools."
+			} else {
+				followUp += "Finish the task without them and report what you did."
+			}
+		}
+
 		a.log.Info("loading tools the model asked for",
-			zap.String("agent", a.def.ID), zap.Strings("tools", want))
+			zap.String("agent", a.def.ID), zap.Strings("granted", grantable), zap.Strings("refused", refused))
 
 		lctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-		resp2, tc2, err := session.ProcessMessageWithTools(lctx,
-			"The tools you requested are now available. Use them to finish the task.", lent)
+		resp2, tc2, err := session.ProcessMessageWithheld(lctx, followUp, lent, withhold)
 		cancel()
 		if err != nil || strings.TrimSpace(resp2) == "" {
 			return response, calls
