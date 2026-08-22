@@ -32,7 +32,7 @@ func (s *Store) SaveChannel(ch StoredChannel) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 		INSERT INTO communication_channels (id, type, agent_id, config_json, status, updated_at)
 		VALUES (?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(id) DO UPDATE SET
@@ -52,7 +52,7 @@ func (s *Store) ListChannels() ([]StoredChannel, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, type, agent_id, config_json, status, created_at, updated_at FROM communication_channels ORDER BY created_at DESC`)
+	rows, err := s.query(`SELECT id, type, agent_id, config_json, status, created_at, updated_at FROM communication_channels ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list channels: %w", err)
 	}
@@ -73,7 +73,7 @@ func (s *Store) UpdateChannelStatus(id, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`UPDATE communication_channels SET status = ?, updated_at = datetime('now') WHERE id = ?`, status, id)
+	_, err := s.exec(`UPDATE communication_channels SET status = ?, updated_at = datetime('now') WHERE id = ?`, status, id)
 	if err != nil {
 		return fmt.Errorf("update channel status: %w", err)
 	}
@@ -84,7 +84,7 @@ func (s *Store) SaveChannelMessage(msg StoredChannelMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`INSERT INTO channel_messages (id, channel_id, channel_type, sender_id, sender_name, direction, content, reply_to_id, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := s.exec(`INSERT INTO channel_messages (id, channel_id, channel_type, sender_id, sender_name, direction, content, reply_to_id, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.ChannelID, msg.ChannelType, msg.SenderID, msg.SenderName, msg.Direction, msg.Content, msg.ReplyToID, msg.Metadata)
 	if err != nil {
 		return fmt.Errorf("save channel message: %w", err)
@@ -96,7 +96,7 @@ func (s *Store) ListChannelMessages(channelID string, limit int) ([]StoredChanne
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, channel_id, channel_type, sender_id, sender_name, direction, content, reply_to_id, metadata, created_at FROM channel_messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?`,
+	rows, err := s.query(`SELECT id, channel_id, channel_type, sender_id, sender_name, direction, content, reply_to_id, metadata, created_at FROM channel_messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?`,
 		channelID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list channel messages: %w", err)

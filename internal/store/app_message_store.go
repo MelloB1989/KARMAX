@@ -17,7 +17,7 @@ type StoredAppMessage struct {
 func (s *Store) AppendAppMessage(m StoredAppMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`INSERT INTO app_messages (id, agent_id, role, content) VALUES (?, ?, ?, ?)`,
 		m.ID, m.AgentID, m.Role, m.Content)
 	return err
@@ -27,7 +27,7 @@ func (s *Store) AppendAppMessage(m StoredAppMessage) error {
 func (s *Store) LoadAppMessages(agentID string, limit int) ([]StoredAppMessage, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 		SELECT id, agent_id, role, content, created_at FROM (
 			SELECT id, agent_id, role, content, created_at
 			FROM app_messages WHERE agent_id = ?
@@ -52,6 +52,6 @@ func (s *Store) LoadAppMessages(agentID string, limit int) ([]StoredAppMessage, 
 func (s *Store) ClearAppMessages(agentID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM app_messages WHERE agent_id = ?`, agentID)
+	_, err := s.exec(`DELETE FROM app_messages WHERE agent_id = ?`, agentID)
 	return err
 }

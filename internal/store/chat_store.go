@@ -23,7 +23,7 @@ func (s *Store) AppendChatMessage(msg StoredChatMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`INSERT INTO chat_history (id, agent_id, role, content, tool_calls, tool_call_id, tokens, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := s.exec(`INSERT INTO chat_history (id, agent_id, role, content, tool_calls, tool_call_id, tokens, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.AgentID, msg.Role, msg.Content, msg.ToolCalls, msg.ToolCallID, msg.Tokens, msg.Metadata)
 	if err != nil {
 		return fmt.Errorf("append chat message: %w", err)
@@ -50,7 +50,7 @@ func (s *Store) LoadChatHistory(agentID string, limit int) ([]StoredChatMessage,
 		args = []interface{}{agentID}
 	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load chat history: %w", err)
 	}
@@ -71,7 +71,7 @@ func (s *Store) ClearChatHistory(agentID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`DELETE FROM chat_history WHERE agent_id = ?`, agentID)
+	_, err := s.exec(`DELETE FROM chat_history WHERE agent_id = ?`, agentID)
 	if err != nil {
 		return fmt.Errorf("clear chat history: %w", err)
 	}
@@ -82,7 +82,7 @@ func (s *Store) ReplaceChatHistory(agentID string, messages []StoredChatMessage)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	tx, err := s.db.Begin()
+	tx, err := s.begin()
 	if err != nil {
 		return fmt.Errorf("begin replace chat history tx: %w", err)
 	}
@@ -114,7 +114,7 @@ func (s *Store) GetChatTokenCount(agentID string) (int64, error) {
 	defer s.mu.RUnlock()
 
 	var total int64
-	err := s.db.QueryRow(`SELECT COALESCE(SUM(tokens), 0) FROM chat_history WHERE agent_id = ?`, agentID).Scan(&total)
+	err := s.queryRow(`SELECT COALESCE(SUM(tokens), 0) FROM chat_history WHERE agent_id = ?`, agentID).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("get chat token count: %w", err)
 	}
@@ -145,7 +145,7 @@ func (s *Store) ConversationStats(agentID string) (ConversationStats, error) {
 
 	out := ConversationStats{ByRole: map[string]int{}}
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 		SELECT role, COUNT(*),
 		       SUM(CASE WHEN tool_calls IS NOT NULL AND tool_calls NOT IN ('', 'null', '[]') THEN 1 ELSE 0 END)
 		FROM chat_history WHERE agent_id = ? GROUP BY role`, agentID)
@@ -167,7 +167,7 @@ func (s *Store) ConversationStats(agentID string) (ConversationStats, error) {
 		return out, fmt.Errorf("conversation stats: %w", err)
 	}
 
-	if err := s.db.QueryRow(`SELECT COALESCE(SUM(tokens), 0) FROM chat_history WHERE agent_id = ?`,
+	if err := s.queryRow(`SELECT COALESCE(SUM(tokens), 0) FROM chat_history WHERE agent_id = ?`,
 		agentID).Scan(&out.Tokens); err != nil {
 		return out, fmt.Errorf("conversation tokens: %w", err)
 	}
@@ -194,7 +194,7 @@ func (s *Store) ConversationStats(agentID string) (ConversationStats, error) {
 // rather than an error — a history with no compaction yet is a normal state.
 func (s *Store) chatTimestamp(query, agentID string) (time.Time, error) {
 	var t sql.NullTime
-	switch err := s.db.QueryRow(query, agentID).Scan(&t); {
+	switch err := s.queryRow(query, agentID).Scan(&t); {
 	case errors.Is(err, sql.ErrNoRows):
 		return time.Time{}, nil
 	case err != nil:

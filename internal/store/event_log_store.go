@@ -60,19 +60,20 @@ func (s *Store) AppendLogEvent(e LogEvent) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res, err := s.db.Exec(`
+	seq, inserted, err := s.insertReturningID(`
 INSERT INTO event_log (event_id, workspace, kind, agent_id, payload, meta, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(event_id) DO NOTHING`,
+ON CONFLICT(event_id) DO NOTHING`, "seq",
 		e.ID, e.Workspace, e.Kind, e.AgentID, string(payload), string(meta), e.CreatedAt)
 	if err != nil {
 		return 0, err
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		return res.LastInsertId()
+	if inserted {
+		return seq, nil
 	}
-	var seq int64
-	err = s.db.QueryRow(`SELECT seq FROM event_log WHERE event_id = ?`, e.ID).Scan(&seq)
+	// Already logged: a redelivery must return the sequence it got the first
+	// time, not a new one.
+	err = s.queryRow(`SELECT seq FROM event_log WHERE event_id = ?`, e.ID).Scan(&seq)
 	return seq, err
 }
 
@@ -101,7 +102,7 @@ FROM event_log WHERE workspace = ? AND seq > ?`
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +140,7 @@ FROM event_log WHERE workspace = ?`
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +168,7 @@ func (s *Store) LogEventsByAgent(workspace, agentID string, limit int) ([]LogEve
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT seq, event_id, workspace, kind, agent_id, payload, meta, created_at
 FROM event_log WHERE workspace = ? AND agent_id = ? ORDER BY seq DESC LIMIT ?`,
 		workspace, agentID, limit)
@@ -216,7 +217,7 @@ func (s *Store) ConsumerOffset(name, workspace string) (seq int64, known bool, e
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	err = s.db.QueryRow(
+	err = s.queryRow(
 		`SELECT seq FROM event_offsets WHERE subscriber = ? AND workspace = ?`,
 		name, workspace).Scan(&seq)
 	if err == sql.ErrNoRows {
@@ -234,7 +235,7 @@ func (s *Store) LogHead(workspace string) (int64, error) {
 	defer s.mu.RUnlock()
 
 	var seq sql.NullInt64
-	err := s.db.QueryRow(`SELECT MAX(seq) FROM event_log WHERE workspace = ?`, workspace).Scan(&seq)
+	err := s.queryRow(`SELECT MAX(seq) FROM event_log WHERE workspace = ?`, workspace).Scan(&seq)
 	return seq.Int64, err
 }
 
@@ -247,7 +248,7 @@ func (s *Store) SetConsumerOffset(name, workspace string, seq int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO event_offsets (subscriber, workspace, seq, updated_at) VALUES (?, ?, ?, ?)
 ON CONFLICT(subscriber, workspace) DO UPDATE SET
   seq = MAX(event_offsets.seq, excluded.seq),
@@ -265,7 +266,7 @@ func (s *Store) SafeSeq(workspace string) (int64, error) {
 	defer s.mu.RUnlock()
 
 	var seq sql.NullInt64
-	err := s.db.QueryRow(
+	err := s.queryRow(
 		`SELECT MIN(seq) FROM event_offsets WHERE workspace = ?`, workspace).Scan(&seq)
 	if err != nil {
 		return 0, err
@@ -278,7 +279,7 @@ func (s *Store) RecordDeadLetter(d DeadLetter) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO event_dead_letters (subscriber, event_seq, event_id, kind, attempts, last_error, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		d.Subscriber, d.EventSeq, d.EventID, d.Kind, d.Attempts, d.LastError, time.Now())
@@ -293,7 +294,7 @@ func (s *Store) DeadLetters(limit int) ([]DeadLetter, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, subscriber, event_seq, event_id, kind, attempts, last_error, created_at
 FROM event_dead_letters ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -327,7 +328,7 @@ func (s *Store) PruneEventLog(workspace string, before time.Time) (int64, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`DELETE FROM event_log WHERE workspace = ? AND created_at < ? AND seq <= ?`,
 		workspace, before, safe)
 	if err != nil {

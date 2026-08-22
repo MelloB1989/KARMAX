@@ -55,7 +55,7 @@ func (s *Store) RecordModelUsage(u ModelUsage) error {
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = time.Now()
 	}
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO model_usage (id, agent_id, provider, model, kind, input_tokens, output_tokens, cache_read, cache_write, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.AgentID, u.Provider, u.Model, u.Kind,
@@ -69,7 +69,7 @@ func (s *Store) UsageSince(since time.Time) ([]UsageTotal, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT model, kind, COUNT(*),
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
        COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
@@ -99,7 +99,7 @@ func (s *Store) PruneModelUsage(before time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res, err := s.db.Exec(`DELETE FROM model_usage WHERE created_at < ?`, before)
+	res, err := s.exec(`DELETE FROM model_usage WHERE created_at < ?`, before)
 	if err != nil {
 		return 0, err
 	}
@@ -123,7 +123,7 @@ func (s *Store) UsageByDay(since time.Time) ([]DailyUsage, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT date(created_at) AS day, model, COUNT(*),
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
        COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)

@@ -11,7 +11,7 @@ type Contact struct {
 func (s *Store) UpsertContacts(cs []Contact) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
+	tx, err := s.begin()
 	if err != nil {
 		return 0, err
 	}
@@ -46,10 +46,10 @@ func (s *Store) LookupContactName(phone string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var name string
-	_ = s.db.QueryRow(`SELECT name FROM contacts WHERE phone = ? LIMIT 1`, phone).Scan(&name)
+	_ = s.queryRow(`SELECT name FROM contacts WHERE phone = ? LIMIT 1`, phone).Scan(&name)
 	if name == "" && len(phone) >= 10 {
 		suffix := phone[len(phone)-10:]
-		_ = s.db.QueryRow(`SELECT name FROM contacts WHERE phone LIKE ? LIMIT 1`, "%"+suffix).Scan(&name)
+		_ = s.queryRow(`SELECT name FROM contacts WHERE phone LIKE ? LIMIT 1`, "%"+suffix).Scan(&name)
 	}
 	return name
 }
@@ -59,7 +59,7 @@ func (s *Store) CountContacts() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var n int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM contacts`).Scan(&n)
+	_ = s.queryRow(`SELECT COUNT(*) FROM contacts`).Scan(&n)
 	return n
 }
 
@@ -71,7 +71,7 @@ func (s *Store) CountContacts() int {
 func (s *Store) ContactNames() ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows, err := s.db.Query(`SELECT name FROM contacts WHERE name != ''`)
+	rows, err := s.query(`SELECT name FROM contacts WHERE name != ''`)
 	if err != nil {
 		return nil, err
 	}

@@ -13,7 +13,7 @@ package store
 func (s *Store) SetGitloomPath(id, path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE memory_entries SET gitloom_path = ? WHERE id = ?`, path, id)
+	_, err := s.exec(`UPDATE memory_entries SET gitloom_path = ? WHERE id = ?`, path, id)
 	return err
 }
 
@@ -26,7 +26,7 @@ func (s *Store) GitloomPaths(ids []string) (map[string]string, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stmt, err := s.db.Prepare(`SELECT gitloom_path FROM memory_entries WHERE id = ? AND gitloom_path != ''`)
+	stmt, err := s.prepare(`SELECT gitloom_path FROM memory_entries WHERE id = ? AND gitloom_path != ''`)
 	if err != nil {
 		return nil, err
 	}

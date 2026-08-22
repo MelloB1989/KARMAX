@@ -32,7 +32,7 @@ func (s *Store) SaveOrgMember(m OrgMember) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO org_members (org, member, name, department, role, namespace, added_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(org, member) DO UPDATE SET
@@ -46,7 +46,7 @@ ON CONFLICT(org, member) DO UPDATE SET
 func (s *Store) RemoveOrgMember(org, member string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM org_members WHERE org = ? AND member = ?`, org, member)
+	_, err := s.exec(`DELETE FROM org_members WHERE org = ? AND member = ?`, org, member)
 	return err
 }
 
@@ -55,7 +55,7 @@ func (s *Store) OrgMembers(org string) ([]OrgMember, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT org, member, name, department, role, namespace, added_at
 FROM org_members WHERE org = ? ORDER BY department, name`, org)
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *Store) OrgMemberByKey(member string) (*OrgMember, error) {
 		m              OrgMember
 		dept, role, ns sql.NullString
 	)
-	err := s.db.QueryRow(`
+	err := s.queryRow(`
 SELECT org, member, name, department, role, namespace, added_at
 FROM org_members WHERE member = ? LIMIT 1`, member).
 		Scan(&m.Org, &m.Member, &m.Name, &dept, &role, &ns, &m.AddedAt)
@@ -90,7 +90,7 @@ func (s *Store) Departments(org string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT DISTINCT department FROM org_members
 WHERE org = ? AND department != '' ORDER BY department`, org)
 	if err != nil {

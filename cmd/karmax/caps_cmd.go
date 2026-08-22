@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -33,7 +32,7 @@ func openStore() (*store.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.New(filepath.Join(cfg.Karmax.DataDir, "db", "karmax.db"), zap.NewNop())
+	return store.New(cfg.DatabaseDSN(), zap.NewNop())
 }
 
 func capsListCmd() *cobra.Command {

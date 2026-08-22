@@ -112,7 +112,8 @@ call, which is how a drafted reply once ended up queued nowhere.
 ### Memory
 
 Long-term memory is a **page-index tree** over subject documents, held remotely in GitLoom
-with SQLite as the local store when no remote is configured.
+with the local SQL store (SQLite by default; see [Configure](#configure)) used when no
+remote is configured.
 
 ```mermaid
 flowchart LR
@@ -237,6 +238,10 @@ runs cleanly either way.
 cp .env.example .env                  # Bedrock/AWS or ANTHROPIC_BASE_URL auth, KARMAX_API_TOKEN, etc.
 cp karmax.yaml.example karmax.yaml    # models, loops, comms channels, target chat
 ```
+
+By default the store is a SQLite file under `data_dir/db` — nothing to configure. Point it
+at Postgres or MySQL instead with `database.url` in `karmax.yaml` or the `KARMAX_DB_URL` env
+var (env wins), e.g. `postgres://user:pass@host:5432/karmax?sslmode=require`.
 
 ### Run the daemon
 ```bash

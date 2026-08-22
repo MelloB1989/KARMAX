@@ -14,7 +14,7 @@ func (s *Store) ReplaceMemoryLinks(links []MemoryLink) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	tx, err := s.db.Begin()
+	tx, err := s.begin()
 	if err != nil {
 		return err
 	}
@@ -42,7 +42,7 @@ func (s *Store) ListMemoryLinks() ([]MemoryLink, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT from_id, to_id, relation FROM memory_links`)
+	rows, err := s.query(`SELECT from_id, to_id, relation FROM memory_links`)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func (s *Store) OldestMemoryLinkAge() time.Duration {
 	defer s.mu.RUnlock()
 
 	var ts string
-	err := s.db.QueryRow(`SELECT MAX(created_at) FROM memory_links`).Scan(&ts)
+	err := s.queryRow(`SELECT MAX(created_at) FROM memory_links`).Scan(&ts)
 	if err != nil || ts == "" {
 		return -1
 	}

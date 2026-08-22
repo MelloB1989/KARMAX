@@ -22,7 +22,7 @@ func (s *Store) CreateDeviceAction(a StoredDeviceAction) error {
 	if a.Status == "" {
 		a.Status = "pending"
 	}
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`INSERT INTO device_actions (id, agent_id, kind, payload, status) VALUES (?, ?, ?, ?, ?)`,
 		a.ID, a.AgentID, a.Kind, a.Payload, a.Status,
 	)
@@ -39,9 +39,9 @@ func (s *Store) ListDeviceActions(status string, limit int) ([]StoredDeviceActio
 		err  error
 	)
 	if status != "" {
-		rows, err = s.db.Query(`SELECT `+cols+` FROM device_actions WHERE status = ? ORDER BY created_at DESC LIMIT ?`, status, limit)
+		rows, err = s.query(`SELECT `+cols+` FROM device_actions WHERE status = ? ORDER BY created_at DESC LIMIT ?`, status, limit)
 	} else {
-		rows, err = s.db.Query(`SELECT `+cols+` FROM device_actions ORDER BY created_at DESC LIMIT ?`, limit)
+		rows, err = s.query(`SELECT `+cols+` FROM device_actions ORDER BY created_at DESC LIMIT ?`, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func (s *Store) ListDeviceActions(status string, limit int) ([]StoredDeviceActio
 }
 
 func (s *Store) CompleteDeviceAction(id, status, result string) error {
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE device_actions SET status = ?, result = ?, done_at = datetime('now') WHERE id = ?`,
 		status, result, id,
 	)

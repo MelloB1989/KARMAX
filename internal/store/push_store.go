@@ -12,7 +12,7 @@ type PushToken struct {
 
 // RegisterPushToken upserts a push token, refreshing its platform and timestamp.
 func (s *Store) RegisterPushToken(token, platform string) error {
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`INSERT INTO push_tokens (token, platform) VALUES (?, ?)
 		 ON CONFLICT(token) DO UPDATE SET platform = excluded.platform, updated_at = datetime('now')`,
 		token, platform,
@@ -22,7 +22,7 @@ func (s *Store) RegisterPushToken(token, platform string) error {
 
 // ListPushTokens returns all registered push tokens, most recently updated first.
 func (s *Store) ListPushTokens() ([]PushToken, error) {
-	rows, err := s.db.Query(`SELECT token, platform, updated_at FROM push_tokens ORDER BY updated_at DESC`)
+	rows, err := s.query(`SELECT token, platform, updated_at FROM push_tokens ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}

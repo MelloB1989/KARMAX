@@ -24,7 +24,7 @@ func (s *Store) UpsertChatSummary(c ChatSummary) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 		INSERT INTO chat_summaries
 			(chat_jid, chat_name, is_group, summary, message_count, own_message_count, last_message_at, summarized_at, status)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -47,7 +47,7 @@ func (s *Store) GetChatSummary(jid string) (*ChatSummary, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	row := s.db.QueryRow(`
+	row := s.queryRow(`
 		SELECT chat_jid, chat_name, is_group, summary, message_count, own_message_count,
 		       last_message_at, summarized_at, status
 		FROM chat_summaries WHERE chat_jid = ?`, jid)
@@ -67,7 +67,7 @@ func (s *Store) SearchChatSummaries(query string, limit int) ([]ChatSummary, err
 	defer s.mu.RUnlock()
 
 	like := "%" + query + "%"
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 		SELECT chat_jid, chat_name, is_group, summary, message_count, own_message_count,
 		       last_message_at, summarized_at, status
 		FROM chat_summaries
@@ -85,7 +85,7 @@ func (s *Store) ListChatSummaries(limit int) ([]ChatSummary, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 		SELECT chat_jid, chat_name, is_group, summary, message_count, own_message_count,
 		       last_message_at, summarized_at, status
 		FROM chat_summaries WHERE status = 'summarized'

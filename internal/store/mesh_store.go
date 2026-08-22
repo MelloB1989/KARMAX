@@ -55,7 +55,7 @@ type MeshPeer struct {
 func (s *Store) UpsertMeshPeer(p MeshPeer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO mesh_peers (id, name, box_pub, endpoint, state, fingerprint, scopes, direction, note, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -73,7 +73,7 @@ func (s *Store) SetMeshPeerState(id, state string, scopes []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`UPDATE mesh_peers SET state = ?, scopes = ?, decided_at = ? WHERE id = ?`,
 		state, encodeCSV(scopes), now, id)
 	if err != nil {
@@ -89,7 +89,7 @@ func (s *Store) SetMeshPeerState(id, state string, scopes []string) error {
 func (s *Store) MeshPeerByID(id string) (*MeshPeer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row := s.db.QueryRow(`
+	row := s.queryRow(`
 SELECT id, name, box_pub, endpoint, state, fingerprint, scopes, direction, note,
        created_at, decided_at, last_seen_at
 FROM mesh_peers WHERE id = ?`, id)
@@ -113,7 +113,7 @@ func (s *Store) ListMeshPeers(state string) ([]MeshPeer, error) {
 	}
 	q += ` ORDER BY created_at DESC`
 
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func (s *Store) ListMeshPeers(state string) ([]MeshPeer, error) {
 func (s *Store) TouchMeshPeer(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE mesh_peers SET last_seen_at = ? WHERE id = ?`, time.Now(), id)
+	_, err := s.exec(`UPDATE mesh_peers SET last_seen_at = ? WHERE id = ?`, time.Now(), id)
 	return err
 }
 
@@ -168,7 +168,7 @@ type MeshMessage struct {
 func (s *Store) RecordMeshMessage(m MeshMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 INSERT INTO mesh_messages (id, peer_id, peer_name, kind, direction, body, via, origin, received_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING`,
@@ -183,7 +183,7 @@ func (s *Store) RecentMeshMessages(limit int) ([]MeshMessage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`
+	rows, err := s.query(`
 SELECT id, peer_id, peer_name, kind, direction, body, COALESCE(via,''), COALESCE(origin,''), received_at
 FROM mesh_messages ORDER BY received_at DESC LIMIT ?`, limit)
 	if err != nil {
