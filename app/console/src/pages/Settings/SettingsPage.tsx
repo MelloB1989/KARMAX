@@ -72,7 +72,7 @@ export function SettingsPage() {
         <h2 className="mb-3 flex items-center gap-2 text-h2">
           <KeyRound className="h-4 w-4 text-fg-subtle" /> Model credentials
         </h2>
-        <p className="mb-4 text-xs text-fg-subtle">Bring your own key — KARMAX calls these providers directly, on your account.</p>
+        <p className="mb-4 text-xs text-fg-subtle">Bring your own key — oCrew calls these providers directly, on your account.</p>
         <div className="space-y-4">
           {settings.model_providers.map((p) => (
             <div key={p.id} className="rounded-[var(--radius-card)] border border-border p-4">

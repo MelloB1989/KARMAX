@@ -41,7 +41,7 @@ export function Sidebar() {
           <circle cx="15" cy="7" r="2.4" />
           <circle cx="9" cy="17" r="2.4" />
         </svg>
-        <span className="text-[13.5px] font-semibold tracking-tight">KARMAX</span>
+        <span className="text-[13.5px] font-semibold tracking-tight">oCrew</span>
         <span className="ml-auto rounded-[3px] border border-border px-1.5 font-mono text-[9.5px] text-fg-subtle">
           acme
         </span>
