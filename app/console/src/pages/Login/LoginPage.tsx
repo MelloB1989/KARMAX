@@ -40,9 +40,9 @@ export function LoginPage() {
       <Panel className="w-full max-w-sm p-6">
         <div className="mb-5 flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-chip)] bg-brand-500 text-sm font-extrabold text-white">
-            K
+            o
           </div>
-          <span className="text-base font-extrabold tracking-tight">KARMAX Console</span>
+          <span className="text-base font-extrabold tracking-tight">oCrew Console</span>
         </div>
 
         {needsBootstrap ? (

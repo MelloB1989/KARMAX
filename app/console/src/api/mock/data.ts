@@ -222,7 +222,7 @@ export const SANDBOX_RUNS: Record<string, SandboxRun[]> = {
   case_c1: [
     {
       id: "run_a1", case_id: "case_c1", driver: "docker", container_id: "8f2c1a9e4b71",
-      image: "karmax/sandbox:claude-code", status: "running",
+      image: "ocrew/sandbox:claude-code", status: "running",
       repo: "acme/api", branch: "fix/rate-limiter-burst",
       task: "Implement ACME-482: rate limiter drops burst traffic on /v2/orders",
       started_at: hoursAgo(18), finished_at: null, exit_code: 0, error: "",
@@ -235,7 +235,7 @@ export const SANDBOX_RUNS: Record<string, SandboxRun[]> = {
   case_c3: [
     {
       id: "run_a0", case_id: "case_c3", driver: "docker", container_id: "3ad790c2115f",
-      image: "karmax/sandbox:claude-code", status: "exited",
+      image: "ocrew/sandbox:claude-code", status: "exited",
       repo: "acme/api", branch: "fix/webhook-dedupe",
       task: "Fix ACME-1042: nightly cron duplicates webhook deliveries",
       started_at: daysAgo(3), finished_at: daysAgo(2), exit_code: 0, error: "",
@@ -377,7 +377,7 @@ export const RECIPES: RecipeDetail[] = [
       "put reminders on your list",
       "SEND MESSAGES AS YOU",
       "ask for your approval before acting",
-      "write to KARMAX's log",
+      "write to oCrew's log",
     ],
   },
   {
@@ -386,7 +386,7 @@ export const RECIPES: RecipeDetail[] = [
     trigger_label: "every Friday at 16:00", steps: 5, updated_at: daysAgo(30),
     yaml: RELEASE_TRAIN_YAML,
     permissions: [
-      "call KARMAX tools by name",
+      "call oCrew tools by name",
       "hold the grant github:acme/api",
       "hold the grant github:acme/web",
       "hold the grant slack:#releases",
@@ -402,7 +402,7 @@ export const RECIPES: RecipeDetail[] = [
     permissions: [
       "hold the grant slack:#incidents",
       "send you notifications",
-      "write to KARMAX's log",
+      "write to oCrew's log",
     ],
   },
   {
@@ -535,7 +535,7 @@ export const AUDIT_EVENTS: AuditEvent[] = [
 // ---- Connectors -----------------------------------------------------------------
 
 export const CONNECTORS: ConnectorSummary[] = [
-  { id: "slack", name: "Slack", kind: "slack", status: "healthy", detail: "Connected as @karmax to Acme Inc", last_checked_at: minutesAgo(4) },
+  { id: "slack", name: "Slack", kind: "slack", status: "healthy", detail: "Connected as @ocrew to Acme Inc", last_checked_at: minutesAgo(4) },
   { id: "github", name: "GitHub", kind: "github", status: "healthy", detail: "App installed on acme/api, acme/web", last_checked_at: minutesAgo(4) },
   { id: "jira", name: "Jira", kind: "jira", status: "degraded", detail: "Token expires in 3 days", last_checked_at: hoursAgo(1) },
 ];
@@ -545,7 +545,7 @@ export const CONNECTOR_SETUPS: Record<string, ConnectorSetup> = {
     id: "slack",
     steps: [
       { title: "Create your Slack app", body: "Go to api.slack.com/apps -> Create New App -> From an app manifest, and pick your Acme Inc workspace." },
-      { title: "Set the redirect URL", body: "Under OAuth & Permissions, add this exact Redirect URL.", value: "https://karmax.acme.internal/api/console/connectors/slack/oauth/callback" },
+      { title: "Set the redirect URL", body: "Under OAuth & Permissions, add this exact Redirect URL.", value: "https://ocrew.acme.internal/api/console/connectors/slack/oauth/callback" },
       { title: "Grant scopes", body: "Add these Bot Token Scopes: chat:write, channels:read, channels:history, users:read." },
       { title: "Install to workspace", body: "Click Install to Workspace, approve, then copy the Bot User OAuth Token below." },
     ],
@@ -553,14 +553,14 @@ export const CONNECTOR_SETUPS: Record<string, ConnectorSetup> = {
       { key: "bot_token", label: "Bot User OAuth Token", type: "secret", placeholder: "xoxb-...", required: true },
       { key: "signing_secret", label: "Signing Secret", type: "secret", placeholder: "", required: true },
     ],
-    callback_url: "https://karmax.acme.internal/api/console/connectors/slack/oauth/callback",
+    callback_url: "https://ocrew.acme.internal/api/console/connectors/slack/oauth/callback",
   },
   github: {
     id: "github",
     steps: [
       { title: "Create a GitHub App", body: "In your GitHub org settings -> Developer settings -> GitHub Apps -> New GitHub App." },
-      { title: "Set the webhook URL", body: "Paste this as the Webhook URL.", value: "https://karmax.acme.internal/api/webhooks/github" },
-      { title: "Set the callback URL", body: "Paste this as the Setup URL / Callback URL.", value: "https://karmax.acme.internal/api/console/connectors/github/oauth/callback" },
+      { title: "Set the webhook URL", body: "Paste this as the Webhook URL.", value: "https://ocrew.acme.internal/api/webhooks/github" },
+      { title: "Set the callback URL", body: "Paste this as the Setup URL / Callback URL.", value: "https://ocrew.acme.internal/api/console/connectors/github/oauth/callback" },
       { title: "Grant repository permissions", body: "Contents: Read & write, Pull requests: Read & write, Issues: Read & write. Subscribe to the pull_request and push events." },
       { title: "Install the app", body: "Install it on acme/api and acme/web, then paste the App ID, Installation ID and private key below." },
     ],
@@ -569,13 +569,13 @@ export const CONNECTOR_SETUPS: Record<string, ConnectorSetup> = {
       { key: "installation_id", label: "Installation ID", type: "text", required: true },
       { key: "private_key", label: "Private key (PEM)", type: "secret", required: true },
     ],
-    callback_url: "https://karmax.acme.internal/api/console/connectors/github/oauth/callback",
+    callback_url: "https://ocrew.acme.internal/api/console/connectors/github/oauth/callback",
   },
   jira: {
     id: "jira",
     steps: [
       { title: "Create an API token", body: "In your Atlassian account settings -> Security -> Create and manage API tokens -> Create API token." },
-      { title: "Set the webhook URL", body: "In Jira -> Settings -> System -> WebHooks -> Create a WebHook pointing here.", value: "https://karmax.acme.internal/api/webhooks/jira" },
+      { title: "Set the webhook URL", body: "In Jira -> Settings -> System -> WebHooks -> Create a WebHook pointing here.", value: "https://ocrew.acme.internal/api/webhooks/jira" },
       { title: "Scope it to project ACME", body: "Limit the webhook to issue created, updated and deleted events on project ACME, to keep noise down." },
       { title: "Enter your credentials", body: "Your Atlassian site URL, account email, and the API token from step 1." },
     ],
@@ -584,7 +584,7 @@ export const CONNECTOR_SETUPS: Record<string, ConnectorSetup> = {
       { key: "email", label: "Account email", type: "text", placeholder: "you@acme.com", required: true },
       { key: "api_token", label: "API token", type: "secret", required: true },
     ],
-    callback_url: "https://karmax.acme.internal/api/webhooks/jira",
+    callback_url: "https://ocrew.acme.internal/api/webhooks/jira",
   },
 };
 

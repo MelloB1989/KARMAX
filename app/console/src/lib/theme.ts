@@ -1,5 +1,5 @@
 export type ThemePref = "light" | "dark" | "system";
-const KEY = "karmax_console_theme";
+const KEY = "ocrew_console_theme";
 
 export function getThemePref(): ThemePref {
   if (typeof window === "undefined") return "system";

@@ -5,7 +5,7 @@ import { delay } from "./mock/util";
 
 // A single-org, self-hosted console: no signup, no org switching. The very
 // first admin is created once via bootstrap(); after that only login() works.
-const MOCK_BOOTSTRAPPED_KEY = "karmax_console_mock_bootstrapped";
+const MOCK_BOOTSTRAPPED_KEY = "ocrew_console_mock_bootstrapped";
 
 export async function bootstrapStatus(): Promise<BootstrapStatus> {
   if (USE_MOCK) {
