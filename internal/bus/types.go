@@ -51,9 +51,12 @@ func NewEvent(kind EventKind, agentID string, payload map[string]any) Event {
 // rather than strings at the call site — a typo would silently create a second
 // subscriber that replays from the beginning.
 const (
-	SubLoopSchedule   = "loops.schedule"
-	SubLoopEvent      = "loops.event"
-	SubLoopWebhook    = "loops.webhook"
+	SubLoopSchedule = "loops.schedule"
+	SubLoopEvent    = "loops.event"
+	SubLoopWebhook  = "loops.webhook"
+	// SubWaiters watches every kind: what a parked run is waiting on is decided
+	// when the recipe runs, not when the daemon starts.
+	SubWaiters        = "waiters"
 	SubLoopTimer      = "loops.timer"
 	SubRecipeSchedule = "recipes.schedule"
 	SubRecipeTimer    = "recipes.timer"

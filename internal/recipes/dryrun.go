@@ -160,6 +160,89 @@ func (d *DryRun) ShortAll(group string) ([]loopkit.ShortMemory, error)       { r
 func (d *DryRun) ShortForget(group, key string) error                        { return nil }
 func (d *DryRun) ShortClear(group string) error                              { return nil }
 
+func (d *DryRun) CaseOpen(agent, key, title string) (loopkit.Case, error) {
+	if agent == "" {
+		agent = "this loop"
+	}
+	d.record("open the case %q for %s (%q) — or rejoin it, if it already exists", key, agent, oneLine(title))
+	return loopkit.Case{
+		ID: "[a case id would appear here]", Key: key, Title: title, State: "open",
+		ThreadChannel: "[a channel would appear here]", ThreadTS: "[a thread id would appear here]",
+	}, nil
+}
+
+func (d *DryRun) CaseSay(ctx context.Context, caseID, channel, text string) error {
+	where := channel
+	if where == "" {
+		where = "the case's thread"
+	}
+	d.record("say in %s: %q", where, oneLine(text))
+	return nil
+}
+
+func (d *DryRun) CaseGet(key string) (loopkit.Case, bool, error) {
+	d.record("look up the case %q", key)
+	return loopkit.Case{ID: "[a case id would appear here]", Key: key, State: "open"}, true, nil
+}
+
+func (d *DryRun) CaseSetState(caseID, state string) error {
+	d.record("move case %s to state %q", caseID, state)
+	return nil
+}
+
+func (d *DryRun) CaseLog(caseID, kind, payload string) error {
+	d.record("log to case %s — %s: %s", caseID, kind, oneLine(payload))
+	return nil
+}
+
+func (d *DryRun) CaseHistory(caseID string, limit int) ([]string, error) {
+	d.record("read the last %s history line(s) for case %s", plural(limit), caseID)
+	return []string{"[case history would appear here]"}, nil
+}
+
+// Await, in a real run, can park the process for days. A rehearsal that
+// actually waited would never finish, so it reports what it would wait for
+// and moves straight on rather than suspending.
+func (d *DryRun) Await(_ context.Context, id string, spec loopkit.AwaitSpec) (map[string]any, error) {
+	d.record("WAIT for %q matching %v%s", spec.Event, spec.Match, timeoutSuffix(spec.Timeout))
+	return map[string]any{"note": "[the event payload would appear here]"}, nil
+}
+
+func (d *DryRun) SendTo(_ context.Context, channel, thread, content string) error {
+	d.record("SEND to %s%s: %s", channel, threadSuffix(thread), oneLine(content))
+	return nil
+}
+
+func (d *DryRun) ProposeTo(role, title, summary, action string) (string, error) {
+	d.record("ASK APPROVAL from anyone holding %q — %q (%s); on approval it would: %s",
+		role, title, oneLine(summary), oneLine(action))
+	return "[a proposal id would appear here]", nil
+}
+
+func (d *DryRun) Sandbox(_ context.Context, id string, spec loopkit.SandboxSpec) (loopkit.SandboxResult, error) {
+	d.record("RUN CODE in a container against %s@%s: %s", spec.Repo, spec.Branch, oneLine(spec.Task))
+	return loopkit.SandboxResult{
+		RunID: "[a run id would appear here]", Status: "exited", ExitCode: 0,
+		LogTail: "[container output would appear here]",
+	}, nil
+}
+
+func (d *DryRun) Audit(verb, target, decision, detail string) error { return nil }
+
+func timeoutSuffix(d time.Duration) string {
+	if d <= 0 {
+		return " (no timeout)"
+	}
+	return fmt.Sprintf(" (times out after %s)", d)
+}
+
+func threadSuffix(thread string) string {
+	if thread == "" {
+		return ""
+	}
+	return " (thread " + thread + ")"
+}
+
 func oneLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 140 {

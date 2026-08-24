@@ -24,6 +24,64 @@ type ChatSummaryRecord struct {
 // it and passes it to Loop.Run. Loop authors depend ONLY on this interface, not
 // on KARMAX's internal packages — so third-party loops stay decoupled and
 // compile against just this SDK.
+// --- Organisational primitives -------------------------------------------
+//
+// A loop that works inside a company is not a loop that works for one person.
+// It carries a case (the thread of work it belongs to), it waits on things
+// other people do, it speaks into shared channels, and it is answerable for
+// what it did. These types are that difference.
+
+// AwaitSpec describes an event a run is parked on.
+type AwaitSpec struct {
+	// Event is the kind to wait for, e.g. "jira.issue.updated".
+	Event string
+	// Match are payload fields that must all equal these values. An empty map
+	// matches the first event of that kind, which is rarely what you want.
+	Match map[string]string
+	// CaseID scopes the wait, and is what lets the console say which piece of
+	// work is blocked and on what.
+	CaseID string
+	// Timeout gives up after this long. Zero waits forever, which is a real
+	// choice for work that genuinely has no deadline.
+	Timeout time.Duration
+}
+
+// SandboxSpec is a piece of work handed to a container.
+type SandboxSpec struct {
+	CaseID  string
+	Repo    string
+	Branch  string
+	Task    string
+	Image   string
+	Env     map[string]string
+	Timeout time.Duration
+}
+
+// SandboxResult is what the container did. Status is the sandbox package's
+// state vocabulary; a non-zero ExitCode with status "exited" is a failed run
+// that ran, as distinct from one that never started.
+type SandboxResult struct {
+	RunID    string
+	Status   string
+	ExitCode int
+	LogTail  string
+}
+
+// Case is the thread of work a run belongs to.
+type Case struct {
+	ID        string
+	Key       string
+	Agent     string
+	Title     string
+	State     string
+	Namespace string
+	// ThreadChannel and ThreadTS are where this case talks. Every workflow on
+	// the case speaks into the same thread, which is what makes a handful of
+	// separate runs read as one colleague.
+	ThreadChannel string
+	ThreadTS      string
+}
+
 type Kit interface {
 	// Ask runs a prompt through the operator's main agent — full toolset,
 	// long-term memory, and judgement — and returns its reply. Use for tasks
@@ -200,6 +258,75 @@ type Kit interface {
 	ShortAll(group string) ([]ShortMemory, error)
 	ShortForget(group, key string) error
 	ShortClear(group string) error
+
+	// --- Cases ---------------------------------------------------------------
+	//
+	// CaseOpen returns the case for key, creating it if this is the first time
+	// anything has been seen about that piece of work. Idempotent by key, so a
+	// redelivered webhook rejoins the existing case rather than forking it.
+	//
+	// agent is the PACK's name, not this workflow's. Six recipes opening cases
+	// under six different names is six robots; opening them under one is the
+	// colleague the operator thinks they hired. Empty falls back to the loop.
+	CaseOpen(agent, key, title string) (Case, error)
+
+	// CaseSay posts into the case's own thread, starting that thread on the
+	// first message and joining it forever after.
+	//
+	// This is the method that makes a handful of separate workflows read as one
+	// voice, and the only reason cases carry a channel and a timestamp at all.
+	CaseSay(ctx context.Context, caseID, channel, text string) error
+
+	// CaseGet returns an existing case; found is false when nothing has opened
+	// one for that key yet.
+	CaseGet(key string) (Case, bool, error)
+
+	// CaseSetState moves the work along. States are the pack's own vocabulary.
+	CaseSetState(caseID, state string) error
+
+	// CaseLog appends to the case's history — the record later workflows and
+	// the agent's own conversational surface read to know what has happened.
+	CaseLog(caseID, kind, payload string) error
+
+	// CaseHistory returns recent case events, oldest first, rendered as lines.
+	CaseHistory(caseID string, limit int) ([]string, error)
+
+	// --- Waiting on the world ------------------------------------------------
+	//
+	// Await parks the run until a matching event arrives, and returns its
+	// payload. Unlike Sleep this outlives the process: the run ends, the waiter
+	// is a row, and the event revives it — which is what "wait until somebody
+	// prioritises this ticket" actually requires.
+	//
+	// id is the caller's, scoped to the run, and is what makes a resumed run
+	// skip a wait it already finished.
+	Await(ctx context.Context, id string, spec AwaitSpec) (map[string]any, error)
+
+	// --- Speaking ------------------------------------------------------------
+	//
+	// SendTo posts into a channel on whichever comms platform owns it. thread
+	// may be empty for a new top-level message, or a case's thread id to keep
+	// the conversation in one place.
+	SendTo(ctx context.Context, channel, thread, content string) error
+
+	// ProposeTo asks a ROLE rather than one person, and returns the proposal id.
+	// Everyone holding the role is asked; the first decision wins. Use it where
+	// a company, rather than an individual, has to agree.
+	ProposeTo(role, title, summary, action string) (string, error)
+
+	// --- Sandboxed work ------------------------------------------------------
+	//
+	// Sandbox runs a coding task in a container and returns when it finishes or
+	// the spec's timeout elapses. Checkpointed like Step: a retry after a crash
+	// returns the recorded result rather than building twice.
+	Sandbox(ctx context.Context, id string, spec SandboxSpec) (SandboxResult, error)
+
+	// --- Answerability -------------------------------------------------------
+	//
+	// Audit records something the agent did on somebody's behalf. Verbs a loop
+	// calls through Kit are audited automatically; this is for anything a loop
+	// wants on the record itself.
+	Audit(verb, target, decision, detail string) error
 }
 
 // Tool is a capability a loop lends to the model for the duration of one
