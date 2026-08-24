@@ -311,13 +311,19 @@ steps:
 func TestEveryVerbParsesInItsDocumentedForm(t *testing.T) {
 	// The map form for each verb that requires fields, with those fields.
 	mapForms := map[string]string{
-		VerbHTTP:     "url: https://example.com",
-		VerbTool:     "name: whatsapp.read",
-		VerbNotify:   "title: t",
-		VerbPropose:  "title: t\n      action: a",
-		VerbRemind:   "title: t",
-		VerbSend:     "to: x\n      text: y",
-		VerbRemember: "fact: something",
+		VerbHTTP:      "url: https://example.com",
+		VerbTool:      "name: whatsapp.read",
+		VerbNotify:    "title: t",
+		VerbPropose:   "title: t\n      action: a",
+		VerbRemind:    "title: t",
+		VerbSend:      "to: x\n      text: y",
+		VerbRemember:  "fact: something",
+		VerbCaseOpen:  "key: k\n      title: t",
+		VerbCaseGet:   "key: k",
+		VerbCaseState: "case: c\n      state: s",
+		VerbCaseLog:   "case: c\n      kind: note\n      payload: p",
+		VerbAwait:     "event: e",
+		VerbSandbox:   "repo: o/r\n      branch: main\n      task: t",
 	}
 	for verb, fields := range mapForms {
 		t.Run(verb+" as fields", func(t *testing.T) {
@@ -359,5 +365,319 @@ steps:
 	}
 	if len(r.Steps[1].Else) == 0 || r.Steps[1].Else[0].Line != 10 {
 		t.Errorf("nested step line = %+v, want 10", r.Steps[1].Else)
+	}
+}
+
+// case.open binds a Case, and {{ .c.id }} etc. only work if the fields it
+// exposes to the template renderer are literally lower_snake_case — a Go
+// struct's exported fields would not match at all.
+func TestCaseOpenParsesAndBindsLowerCaseFields(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - case.open:
+      key: "jira:{{ .ticket }}"
+      title: "{{ .summary }}"
+    as: c
+`)
+	s := r.Steps[0]
+	if s.Verb != VerbCaseOpen || s.As != "c" {
+		t.Fatalf("parsed as %+v", s)
+	}
+	if s.Args["key"] != "jira:{{ .ticket }}" {
+		t.Errorf("key = %q", s.Args["key"])
+	}
+}
+
+// await's match: is the one field in the language that is a nested block on
+// purpose — several conditions, not one value — so it needs its own parsing
+// path rather than the generic scalar-fields walker.
+func TestAwaitParsesMatchAsAMap(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - await:
+      event: jira.issue.updated
+      match: { key: "{{ .ticket }}", status: Prioritized }
+      timeout: 168h
+    as: moved
+`)
+	s := r.Steps[0]
+	if s.Verb != VerbAwait || s.As != "moved" {
+		t.Fatalf("parsed as %+v", s)
+	}
+	if s.Args["event"] != "jira.issue.updated" || s.Args["timeout"] != "168h" {
+		t.Errorf("scalar fields lost: %+v", s.Args)
+	}
+	if s.Match["key"] != "{{ .ticket }}" || s.Match["status"] != "Prioritized" {
+		t.Errorf("match = %+v", s.Match)
+	}
+}
+
+// A match that is not a set of field: value pairs gets a located error
+// naming what "match" needs, not a generic "block" complaint.
+func TestAwaitMatchNotAMapIsRefused(t *testing.T) {
+	_, err := parse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - await:
+      event: e
+      match:
+        - a
+        - b
+`)
+	if err == nil {
+		t.Fatal("accepted a match: that is a list, not field: value pairs")
+	}
+	re, ok := err.(*Error)
+	if !ok {
+		t.Fatalf("error is not located: %v", err)
+	}
+	if !strings.Contains(re.Message, "match") || re.Fix == "" {
+		t.Errorf("message %q / fix %q does not point at match", re.Message, re.Fix)
+	}
+}
+
+// foreach's steps: is a recipe inside a recipe — the other block-shaped field
+// — and its own steps keep their line numbers just like the top-level list.
+func TestForeachParsesANestedStepsList(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - foreach:
+      in: "{{ .tickets }}"
+      as: t
+      steps:
+        - ask: "summarise {{ .t }}"
+          as: out
+`)
+	s := r.Steps[0]
+	if s.Verb != VerbForeach {
+		t.Fatalf("parsed as %+v", s)
+	}
+	if s.Args["as"] != "t" || s.Args["in"] != "{{ .tickets }}" {
+		t.Errorf("foreach fields = %+v", s.Args)
+	}
+	if len(s.Steps) != 1 || s.Steps[0].Verb != VerbAsk || s.Steps[0].As != "out" {
+		t.Fatalf("nested steps = %+v", s.Steps)
+	}
+}
+
+// in: also accepts a literal list, for a recipe that already knows its items
+// rather than computing them from an earlier step.
+func TestForeachAcceptsALiteralInList(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - foreach:
+      in: ["a", "b", "c"]
+      as: x
+      steps:
+        - log: "{{ .x }}"
+`)
+	s := r.Steps[0]
+	if len(s.In) != 3 || s.In[1] != "b" {
+		t.Errorf("in = %+v", s.In)
+	}
+}
+
+// A foreach missing any of its three required fields is refused by name, not
+// lumped into one generic "foreach is broken" message.
+func TestForeachMissingFieldsAreRefused(t *testing.T) {
+	cases := []struct {
+		name, yaml, wants string
+	}{
+		{
+			name:  "no in",
+			yaml:  "- foreach:\n      as: t\n      steps:\n        - log: hi\n",
+			wants: `"in"`,
+		},
+		{
+			name:  "no as",
+			yaml:  "- foreach:\n      in: \"{{ .xs }}\"\n      steps:\n        - log: hi\n",
+			wants: `"as"`,
+		},
+		{
+			name:  "no steps",
+			yaml:  "- foreach:\n      in: \"{{ .xs }}\"\n      as: t\n",
+			wants: `"steps"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse(t, "name: x\non:\n  manual: true\nsteps:\n  "+tc.yaml)
+			if err == nil {
+				t.Fatal("accepted an incomplete foreach")
+			}
+			re, ok := err.(*Error)
+			if !ok {
+				t.Fatalf("error is not located: %v", err)
+			}
+			if !strings.Contains(re.Message, tc.wants) {
+				t.Errorf("message %q does not mention %s", re.Message, tc.wants)
+			}
+		})
+	}
+}
+
+// A steps: under foreach that is not a list (someone writing a single step
+// without the leading '- ') is refused rather than silently parsed as nothing.
+func TestForeachStepsNotAListIsRefused(t *testing.T) {
+	_, err := parse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - foreach:
+      in: "{{ .xs }}"
+      as: t
+      steps:
+        log: hi
+`)
+	if err == nil {
+		t.Fatal("accepted a steps: that is not a list")
+	}
+	re, ok := err.(*Error)
+	if !ok {
+		t.Fatalf("error is not located: %v", err)
+	}
+	if !strings.Contains(re.Message, "steps") || !strings.Contains(re.Message, "list") {
+		t.Errorf("message does not say steps must be a list: %q", re.Message)
+	}
+}
+
+// send's old to:-only form is untouched: no channel, no thread, same meaning
+// it always had.
+func TestSendBackwardCompatibility(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - send:
+      to: "+911234567890"
+      text: "hi"
+`)
+	s := r.Steps[0]
+	if s.Args["to"] != "+911234567890" || s.Args["channel"] != "" || s.Args["thread"] != "" {
+		t.Errorf("send args = %+v", s.Args)
+	}
+}
+
+// send needs 'to' or 'channel' — omitting both is refused, but a bare 'to'
+// that names a channel (the contract's own example) is accepted.
+func TestSendNeedsToOrChannel(t *testing.T) {
+	_, err := parse(t, "name: x\non:\n  manual: true\nsteps:\n  - send:\n      text: hi\n")
+	if err == nil {
+		t.Fatal("accepted a send with neither to nor channel")
+	}
+	re, ok := err.(*Error)
+	if !ok || !strings.Contains(re.Message, "to") || !strings.Contains(re.Message, "channel") {
+		t.Fatalf("wrong error: %v", err)
+	}
+
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - send: { to: "#eng", thread: "{{ .c.thread_ts }}", text: "PR is up" }
+`)
+	if r.Steps[0].Args["channel"] != "" || r.Steps[0].Args["thread"] == "" {
+		t.Errorf("send args = %+v", r.Steps[0].Args)
+	}
+}
+
+// case.open's agent: is optional — the contract's own examples never set it,
+// and CaseOpen falls back to the loop when it is empty.
+func TestCaseOpenAgentIsOptional(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - case.open: { key: k, title: t }
+    as: c
+`)
+	if r.Steps[0].Args["agent"] != "" {
+		t.Errorf("agent = %q, want empty", r.Steps[0].Args["agent"])
+	}
+	r2 := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - case.open: { agent: ops-pack, key: k, title: t }
+    as: c
+`)
+	if r2.Steps[0].Args["agent"] != "ops-pack" {
+		t.Errorf("agent = %q, want ops-pack", r2.Steps[0].Args["agent"])
+	}
+}
+
+// case.say and case.history round out the case verbs: speaking into the
+// case's own thread, and reading what already happened on it.
+func TestCaseSayAndCaseHistoryParse(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - case.say: { case: "{{ .c.id }}", channel: "#eng", text: "PR is up" }
+  - case.history: { case: "{{ .c.id }}", limit: 10 }
+    as: hist
+`)
+	if r.Steps[0].Verb != VerbCaseSay || r.Steps[0].Args["text"] != "PR is up" {
+		t.Fatalf("case.say parsed as %+v", r.Steps[0])
+	}
+	if r.Steps[1].Verb != VerbCaseHistory || r.Steps[1].As != "hist" {
+		t.Fatalf("case.history parsed as %+v", r.Steps[1])
+	}
+}
+
+// case.say needs a case and something to say; case.history needs a case.
+func TestCaseSayAndCaseHistoryRequiredFields(t *testing.T) {
+	cases := []struct{ name, yaml, wants string }{
+		{"say with no text", "- case.say:\n      case: c\n", `"case.say" needs "text"`},
+		{"say with no case", "- case.say:\n      text: hi\n", `"case.say" needs "case"`},
+		{"history with no case", "- case.history:\n      limit: 5\n", `"case.history" needs "case"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse(t, "name: x\non:\n  manual: true\nsteps:\n  "+tc.yaml)
+			if err == nil {
+				t.Fatal("accepted an incomplete step")
+			}
+			re, ok := err.(*Error)
+			if !ok || !strings.Contains(re.Message, tc.wants) {
+				t.Fatalf("wrong error: %v (want %q)", err, tc.wants)
+			}
+		})
+	}
+}
+
+// propose's old form (no to_role) still parses with nothing extra required.
+func TestProposeBackwardCompatibility(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - propose:
+      title: "Merge?"
+      action: "merge it"
+`)
+	if r.Steps[0].Args["to_role"] != "" {
+		t.Errorf("to_role = %q, want empty", r.Steps[0].Args["to_role"])
 	}
 }

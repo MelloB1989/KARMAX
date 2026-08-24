@@ -296,7 +296,17 @@ func (h *Host) publish(id string, src connectorkit.EventSource, payload map[stri
 	fenced["connector"] = id
 	fenced["source"] = src.ID
 
-	if err := h.bus.Publish(bus.NewEvent(bus.EventKind(src.EventKind), "", fenced)); err != nil {
+	// A source may carry several event kinds down one webhook. GitHub delivers
+	// every event type to a single URL, so the connector cannot mount a path
+	// per kind; it names the kind in the payload instead, and that name wins.
+	// Without this a recipe could only ever await "github.event" and match on a
+	// field, which is a worse thing to write and a worse thing to read.
+	kind := src.EventKind
+	if k, ok := payload["kind"].(string); ok && strings.TrimSpace(k) != "" {
+		kind = k
+	}
+
+	if err := h.bus.Publish(bus.NewEvent(bus.EventKind(kind), "", fenced)); err != nil {
 		h.log.Error("connector event could not be recorded",
 			zap.String("connector", id), zap.Error(err))
 		return err

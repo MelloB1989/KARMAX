@@ -25,6 +25,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
+	jiraconn "github.com/MelloB1989/karmax/internal/connectors/jira"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
@@ -115,6 +116,11 @@ type KarmaxRuntime struct {
 	// voice holds the voice integrations this instance can place calls through.
 	voice *voice.Registry
 
+	// repoTokenMinter narrows a sandbox's git credential to the one repository
+	// its ticket names. Installed by the GitHub connector when an App is
+	// configured; nil means the broader fallback.
+	repoTokenMinter RepoTokenMinter
+
 	// startedAt is when this process came up. A loop that has not succeeded
 	// yet is judged against this rather than against the epoch, so a restart
 	// does not report every scheduled loop as dark.
@@ -150,6 +156,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		connHost.Register(githubconn.New(account))
 	}
 	connHost.Register(notionconn.New())
+	// The tracker the developer agent lives in. Same multi-account shape as
+	// GitHub, because an org with two Jira sites has two of everything.
+	connHost.Register(jiraconn.New(""))
+	for _, account := range splitCSV(os.Getenv("KARMAX_JIRA_ACCOUNTS")) {
+		connHost.Register(jiraconn.New(account))
+	}
 	// Registered so it can be seen and connected, but it stays off until
 	// KARMAX_ENABLE_INSTAGRAM=true: it drives an unofficial API that can get the
 	// operator's personal account restricted, and that is not a default.
@@ -931,6 +943,12 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.wireMesh()
 	rt.startCriticalAlertLoop(ctx)
 	rt.startDeadLetterAlerts()
+
+	// Runs parked on an event, and containers that outlived the last process.
+	// Both are things this daemon is answerable for and would otherwise silently
+	// drop on restart.
+	rt.startWaiters(ctx)
+	go rt.reconcileSandboxes(ctx)
 
 	if err := rt.mcpBridge.StartAll(ctx); err != nil {
 		rt.log.Error("MCP bridge start error", zap.Error(err))
