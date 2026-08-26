@@ -630,7 +630,7 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder)
 
 	options := []ai.Option{
 		ai.WithSystemMessage(cfg.SystemPrompt),
-		ai.WithMaxTokens(cfg.MaxTokens),
+		ai.WithMaxTokens(reasoningTokenFloor(cfg.Model, cfg.MaxTokens)),
 	}
 
 	// Temperature or top_p, never both. Bedrock rejects a request carrying both
@@ -644,7 +644,14 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder)
 	// default of 1, so leaving top_p alone there sends both anyway. That is
 	// exactly how the memory sub-agent kept failing after the main agent was
 	// fixed — it never set a temperature, so the guard never fired.
-	if !strings.Contains(strings.ToLower(cfg.Model), "thinking") {
+	//
+	// Reasoning models (gpt-5 family, same as Claude "thinking" variants)
+	// reject a non-default temperature outright rather than ignoring it —
+	// confirmed against Azure's gpt-5 deployment: "'temperature' does not
+	// support 0.7 with this model. Only the default (1) value is supported."
+	// A config carrying a tuned temperature for Claude must not 400 every
+	// call the moment the model is swapped to gpt-5.
+	if !strings.Contains(strings.ToLower(cfg.Model), "thinking") && !strings.Contains(cfg.Model, "gpt-5") {
 		options = append(options, ai.WithTopP(0))
 		if cfg.Temperature > 0 {
 			options = append(options, ai.WithTemperature(cfg.Temperature))
@@ -776,6 +783,13 @@ func resolveProvider(name string) ai.Provider {
 	switch name {
 	case "openai":
 		return ai.OpenAI
+	case "azure-openai":
+		// Registered at startup (internal/runtime/runtime.go) as a
+		// CustomProvider when ai.providers.azure_openai is configured — this
+		// name has to match ai.RegisterCustomProvider's Provider field
+		// exactly, or it silently falls through to the default case below
+		// and hits real OpenAI instead of the Azure deployment.
+		return ai.Provider("azure-openai")
 	case "anthropic":
 		return ai.Anthropic
 	case "codex":
@@ -883,4 +897,34 @@ func turnToolSet(base, extra []tools.Tool, withhold map[string]bool) []tools.Too
 		out = append(out, t)
 	}
 	return out
+}
+
+// reasoningTokenFloor raises a max-tokens cap that a reasoning model would
+// spend entirely on thinking.
+//
+// On the gpt-5 family the reasoning counts against the completion budget, so a
+// cap sized for the visible answer can be exhausted before a single character
+// is emitted. The result is not an error but an EMPTY completion, which the
+// retry logic reads as "possible quota/rate issue" and retries into the same
+// wall: the memory-review loop failed 204 times in a row this way, on a judge
+// sized at 400 tokens for a one-line verdict. Every session that kept working
+// happened to be sized at 1200 or more.
+//
+// A cap is a ceiling, not a spend — raising it costs nothing on calls that stay
+// small, and is the difference between an answer and silence on the ones that
+// do not.
+func reasoningTokenFloor(model string, want int) int {
+	const floor = 2000
+	if want >= floor || !isReasoningModel(model) {
+		return want
+	}
+	return floor
+}
+
+// isReasoningModel reports models that bill their own thinking to the
+// completion budget.
+func isReasoningModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "gpt-5") || strings.Contains(m, "thinking") ||
+		strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3")
 }
