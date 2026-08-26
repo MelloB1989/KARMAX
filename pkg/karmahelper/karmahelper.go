@@ -645,13 +645,18 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder)
 	// exactly how the memory sub-agent kept failing after the main agent was
 	// fixed — it never set a temperature, so the guard never fired.
 	//
-	// Reasoning models (gpt-5 family, same as Claude "thinking" variants)
-	// reject a non-default temperature outright rather than ignoring it —
-	// confirmed against Azure's gpt-5 deployment: "'temperature' does not
-	// support 0.7 with this model. Only the default (1) value is supported."
-	// A config carrying a tuned temperature for Claude must not 400 every
-	// call the moment the model is swapped to gpt-5.
-	if !strings.Contains(strings.ToLower(cfg.Model), "thinking") && !strings.Contains(cfg.Model, "gpt-5") {
+	// Reasoning models reject a non-default temperature outright rather than
+	// ignoring it — confirmed against Azure's gpt-5 deployment: "'temperature'
+	// does not support 0.7 with this model. Only the default (1) value is
+	// supported." A config carrying a tuned temperature for Claude must not
+	// 400 every call the moment the model is swapped.
+	//
+	// Which models those are is asked ONCE, here and in the token floor. The
+	// two used to be written separately and had already drifted: this test
+	// knew about gpt-5 and "thinking" but not o1 or o3, so an o-series model
+	// would have been sent a temperature and 400d on every call, while the
+	// floor beside it correctly treated the same model as reasoning.
+	if !isReasoningModel(cfg.Model) {
 		options = append(options, ai.WithTopP(0))
 		if cfg.Temperature > 0 {
 			options = append(options, ai.WithTemperature(cfg.Temperature))
