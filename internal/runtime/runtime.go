@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karma/ai"
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/broker"
@@ -186,6 +187,27 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		if p.APIKey != "" {
 			os.Setenv("GOOGLE_API_KEY", p.APIKey)
 		}
+	}
+
+	// Azure OpenAI, for any agent configured with provider "azure-openai" —
+	// registered once here so resolveProvider's case (pkg/karmahelper) has
+	// something to dispatch to. Azure speaks the OpenAI wire format but wants
+	// the DEPLOYMENT name where OpenAI wants the model name, and this
+	// resource's deployments aren't named after their models 1:1 (gpt-5-mini
+	// is deployed as "karmax-gpt-5-mini") — the Models map is what lets a
+	// recipe/agent config say "gpt-5-mini" while the request on the wire
+	// carries the deployment Azure actually knows.
+	if p, ok := cfg.AI.Providers["azure_openai"]; ok && p.BaseURL != "" && p.APIKey != "" {
+		ai.RegisterCustomProvider(ai.CustomProvider{
+			Provider:       ai.Provider("azure-openai"),
+			DefaultBaseURL: p.BaseURL,
+			APIKey:         p.APIKey,
+			Models: map[ai.BaseModel]string{
+				ai.GPT5:     "gpt-5",
+				ai.GPT5Mini: "karmax-gpt-5-mini",
+			},
+			SupportsMCP: true,
+		})
 	}
 
 	mcpBridge := mcp.NewBridge(log)
