@@ -476,7 +476,27 @@ func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 			},
 		}, true
 	}
+
+	// Anything else a loop names is resolved from the registry, read-only ones
+	// only. Without this the WhatsApp proxy could read text and nothing else:
+	// sent three images in a row, it answered "I can't open the image from
+	// here" three times, to a person who could plainly see it had just been
+	// sent one. The tool to read them was registered and working the whole
+	// time — the loop was simply never handed it.
+	if t, ok := rt.tools.Get(name); ok && lendableByName[tools.CanonicalName(name)] {
+		return asLoopkitTool(t), true
+	}
 	return loopkit.Tool{}, false
+}
+
+// lendableByName is what a loop may borrow beyond wacli: reading tools, never
+// ones that act. An outbound tool reaching a loop's gateway would undo the
+// gates the loop itself applies before sending.
+var lendableByName = map[string]bool{
+	"whatsapp_view_media": true,
+	"whatsapp_read":       true,
+	"memory_retrieve":     true,
+	"memory_search":       true,
 }
 
 // outboundTools are the tools whose effect lands in front of another human —
