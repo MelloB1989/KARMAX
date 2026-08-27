@@ -125,6 +125,18 @@ type ProviderConfig struct {
 	APIKey    string `yaml:"api_key"`
 	BaseURL   string `yaml:"base_url"`
 	AuthToken string `yaml:"auth_token"`
+
+	// Deployments maps a model name to the name it is deployed under, for
+	// providers that address a DEPLOYMENT where OpenAI addresses a model —
+	// Azure OpenAI being the one that matters here. Whoever created the
+	// resource chose those names, so they cannot be known at compile time.
+	//
+	//	deployments:
+	//	  gpt-5-mini: my-gpt-5-mini
+	//
+	// Omit it when the deployment is named after the model, which is the
+	// common case and the default.
+	Deployments map[string]string `yaml:"deployments"`
 }
 
 type AgentModelConfig struct {
