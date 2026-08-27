@@ -197,6 +197,20 @@ export interface ConnectorSetup {
   callback_url: string;
 }
 
+/** One employee's authorisation for a per-user connector. Never carries tokens. */
+export interface ConnectorConnection {
+  member: string;
+  account: string;
+  connected_at: string;
+  expires_at: string | null;
+}
+
+export interface ConnectorConnections {
+  connections: ConnectorConnection[];
+  /** Whether the signed-in operator has connected their own account. */
+  self_connected: boolean;
+}
+
 export interface ConnectorHealthCheck {
   status: ConnectorStatus;
   detail: string;

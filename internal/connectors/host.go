@@ -34,7 +34,8 @@ type Host struct {
 
 	// refresh renews an expiring OAuth token before it is used. Nil until the
 	// runtime supplies one.
-	refresh Refresher
+	refresh     Refresher
+	refreshUser UserRefresher
 
 	// unconditional are connectors whose tools exist without credentials.
 	unconditional map[string]bool
@@ -95,6 +96,80 @@ type Refresher func(ctx context.Context, id string) error
 // SetRefresher supplies the token refresh. Optional; without it, tokens are
 // used exactly as stored.
 func (h *Host) SetRefresher(r Refresher) { h.refresh = r }
+
+// UserRefresher renews one employee's OAuth token, returning the credential to
+// use. It is called before every per-user call, and is a no-op unless the token
+// is close to expiring.
+type UserRefresher func(ctx context.Context, connector string, c store.UserCredential) (store.UserCredential, error)
+
+// SetUserRefresher wires per-employee token renewal.
+func (h *Host) SetUserRefresher(r UserRefresher) { h.refreshUser = r }
+
+// credentialsFor resolves the credentials one call should use.
+//
+// For a PerUser connector this is the ACTING EMPLOYEE's authorisation, not the
+// install's. The org's OAuth app config is merged in underneath, because the
+// refresh flow needs the client id and secret that the employee's token was
+// issued against.
+//
+// It refuses rather than falls back. If nobody is being acted for, or that
+// person has not connected their account, there is no safe default: reading
+// whichever mailbox happens to be stored would answer a question about one
+// person's private data with another person's private data.
+func (h *Host) credentialsFor(ctx context.Context, id string) (connectorkit.Credentials, error) {
+	base, err := h.credentials(id)
+	if err != nil {
+		return connectorkit.Credentials{}, err
+	}
+
+	c, ok := h.Get(id)
+	if !ok || !c.Manifest().PerUser {
+		return base, nil
+	}
+
+	member := connectorkit.ActorFrom(ctx)
+	if member == "" {
+		return connectorkit.Credentials{}, fmt.Errorf(
+			"%s acts as an individual person, and this work is not on anyone's behalf — "+
+				"it cannot run from a scheduled loop or a webhook without an acting member", id)
+	}
+
+	uc, err := h.store.UserCredential(id, member)
+	if err != nil {
+		return connectorkit.Credentials{}, err
+	}
+	if uc == nil {
+		return connectorkit.Credentials{}, fmt.Errorf(
+			"%s has not been connected by %s — they need to connect their account in the "+
+				"console before this can act for them", id, member)
+	}
+
+	if h.refreshUser != nil {
+		refreshed, rerr := h.refreshUser(ctx, id, *uc)
+		if rerr != nil {
+			return connectorkit.Credentials{}, fmt.Errorf(
+				"%s's sign-in for %s could not be refreshed: %w", member, id, rerr)
+		}
+		uc = &refreshed
+	}
+
+	// The employee's token wins; the org app's config underneath it is what the
+	// connector needs to talk to the provider at all.
+	return connectorkit.Credentials{
+		Config:      base.Config,
+		AccessToken: uc.AccessToken,
+		ExpiresAt:   derefTime(uc.ExpiresAt),
+		Member:      uc.Member,
+		Account:     uc.Account,
+	}, nil
+}
+
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
 
 func (h *Host) credentials(id string) (connectorkit.Credentials, error) {
 	// Before reading, not after failing. The refresh is a no-op unless this is
@@ -202,7 +277,7 @@ func (t *connectorTool) Execute(ctx context.Context, input map[string]any) (tool
 	if err := t.host.broker.For(subject).Tool(t.tool.Name); err != nil {
 		return tools.ErrorResult(err), nil
 	}
-	cr, err := t.host.credentials(t.connector)
+	cr, err := t.host.credentialsFor(ctx, t.connector)
 	if err != nil {
 		return tools.ErrorResult(err), nil
 	}

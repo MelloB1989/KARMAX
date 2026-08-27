@@ -48,6 +48,12 @@ type Manifest struct {
 	// Config declares what the operator must supply, so setup can be checked
 	// before anything runs rather than failing on the first call.
 	Config []ConfigField
+
+	// PerUser says this connector authenticates as an individual employee, not
+	// as the install. The org supplies one OAuth app; each person authorises
+	// their own account against it, and KARMAX picks the right one from who is
+	// being acted for. Without this the whole company would read one inbox.
+	PerUser bool
 }
 
 // ConfigField is one setting a connector needs.
@@ -100,6 +106,13 @@ type Credentials struct {
 	Config      map[string]string
 	AccessToken string
 	ExpiresAt   time.Time
+
+	// Member is the org member these credentials belong to, for a PerUser
+	// connector. Empty for install-wide credentials.
+	Member string
+	// Account is the external account they name, e.g. an email address, so a
+	// tool can say whose mailbox it read rather than just reading it.
+	Account string
 }
 
 // Get returns a config value.

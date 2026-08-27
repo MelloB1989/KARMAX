@@ -25,6 +25,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
+	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	jiraconn "github.com/MelloB1989/karmax/internal/connectors/jira"
 	kekaconn "github.com/MelloB1989/karmax/internal/connectors/keka"
@@ -50,6 +51,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/voice"
 	"github.com/MelloB1989/karmax/internal/wasmloop"
 	"github.com/MelloB1989/karmax/internal/webhook"
+	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	wacli "github.com/MelloB1989/wacli/tools"
@@ -171,6 +173,37 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	connHost.Register(slackconn.New())
 	// HR: the org chart, leave and attendance, read-only.
 	connHost.Register(kekaconn.New())
+	// Google is PER EMPLOYEE: the org registers one OAuth app and each person
+	// authorises their own account against it. The host resolves whose token to
+	// use from who is being acted for.
+	connHost.Register(googleconn.New())
+
+	// Renew an employee's Google token before it is used, and persist the new
+	// one. Without this every connection would work for an hour and then start
+	// failing with a 401 that reads like a revoked grant.
+	connHost.SetUserRefresher(func(ctx context.Context, connector string, uc store.UserCredential) (store.UserCredential, error) {
+		if connector != "google" || !uc.Expired() {
+			return uc, nil
+		}
+		rec, err := s.Credential(connector)
+		if err != nil || rec == nil {
+			return uc, fmt.Errorf("the %s OAuth app is not configured", connector)
+		}
+		ts, err := googleconn.Refresh(ctx,
+			connectorkit.Credentials{Config: rec.Config}, uc.RefreshToken)
+		if err != nil {
+			return uc, err
+		}
+		uc.AccessToken, uc.ExpiresAt = ts.AccessToken, &ts.Expiry
+		// Google usually omits the refresh token on renewal; SaveUserCredential
+		// keeps the stored one when it arrives empty.
+		uc.RefreshToken = ts.RefreshToken
+		if err := s.SaveUserCredential(uc); err != nil {
+			log.Warn("could not persist a refreshed sign-in",
+				zap.String("connector", connector), zap.String("member", uc.Member), zap.Error(err))
+		}
+		return uc, nil
+	})
 	// The tracker this operator actually uses. Registered alongside Jira rather
 	// than instead of it: an org can run both, and which one a team files into
 	// is not KARMAX's call to make.

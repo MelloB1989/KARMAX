@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Check, ExternalLink, Plug, Stethoscope } from "lucide-react";
-import { getConnectorSetup, listConnectors, runConnectorHealthCheck, saveConnectorCredentials } from "@/api/connectors";
-import type { ConnectorHealthCheck, ConnectorSetup, ConnectorSummary } from "@/api/types";
+import { ArrowLeft, Check, ExternalLink, Plug, Stethoscope, UserCheck, UserPlus } from "lucide-react";
+import { disconnect, getConnectorSetup, listConnections, listConnectors, runConnectorHealthCheck, saveConnectorCredentials, startConnect } from "@/api/connectors";
+import type { ConnectorConnections, ConnectorHealthCheck, ConnectorSetup, ConnectorSummary } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Input";
@@ -21,10 +21,15 @@ export function ConnectorSetupPage() {
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [check, setCheck] = useState<ConnectorHealthCheck | null>(null);
+  const [conns, setConns] = useState<ConnectorConnections | null>(null);
+  const [connectErr, setConnectErr] = useState("");
 
   useEffect(() => {
     void getConnectorSetup(id).then(setSetup);
     void listConnectors().then((cs) => setSummary(cs.find((c) => c.id === id) ?? null));
+    // 404s for an install-wide connector, which is not an error — it just means
+    // there are no per-person accounts to show.
+    void listConnections(id).then(setConns).catch(() => setConns(null));
   }, [id]);
 
   if (setup === undefined) return <PageSpinner />;
@@ -103,6 +108,72 @@ export function ConnectorSetupPage() {
         </Panel>
 
         <div className="space-y-5">
+          {conns && (
+            <Panel className="p-5">
+              <h2 className="mb-1 text-h2">Your account</h2>
+              <p className="mb-3 text-sm text-fg-muted">
+                This connector acts as an individual person. The org sets up the app once below;
+                everyone connects their own account, and the agent uses whichever one it is
+                helping.
+              </p>
+
+              {conns.self_connected ? (
+                <div className="flex items-center justify-between gap-3 rounded-[var(--radius-card)] bg-surface-2 px-3 py-2.5">
+                  <span className="flex min-w-0 items-center gap-2 text-sm">
+                    <UserCheck className="h-4 w-4 shrink-0 text-healthy" />
+                    <span className="truncate">
+                      {conns.connections.find((c) => c.account)?.account ?? "Connected"}
+                    </span>
+                  </span>
+                  <Button
+                    variant="ghost"
+                    onClick={async () => {
+                      await disconnect(id);
+                      setConns(await listConnections(id));
+                    }}
+                  >
+                    Disconnect
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  onClick={async () => {
+                    setConnectErr("");
+                    try {
+                      const { authorize_url } = await startConnect(id);
+                      // Full navigation, not a popup: Google refuses to render
+                      // its consent screen inside one from an unknown opener.
+                      window.location.href = authorize_url;
+                    } catch (e) {
+                      setConnectErr(e instanceof Error ? e.message : String(e));
+                    }
+                  }}
+                >
+                  <UserPlus className="mr-1.5 h-4 w-4" />
+                  Connect my account
+                </Button>
+              )}
+
+              {connectErr && <p className="mt-2 text-sm text-failed">{connectErr}</p>}
+
+              {conns.connections.length > 0 && (
+                <div className="mt-4">
+                  <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-fg-subtle">
+                    Connected ({conns.connections.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {conns.connections.map((c) => (
+                      <li key={c.member} className="flex items-baseline justify-between gap-3 text-sm">
+                        <span className="truncate text-fg">{c.member}</span>
+                        <span className="shrink-0 truncate text-xs text-fg-subtle">{c.account}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </Panel>
+          )}
+
           <Panel className="p-5">
             <h2 className="mb-3 text-h2">Credentials</h2>
             <div className="space-y-3">
