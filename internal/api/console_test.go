@@ -12,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/connectors"
+	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	"github.com/MelloB1989/karmax/internal/store"
 	"go.uber.org/zap"
 )
@@ -358,5 +360,24 @@ func TestTruncateDoesNotSplitCharacters(t *testing.T) {
 	}
 	if short := truncate("fine", 240); short != "fine" {
 		t.Errorf("a short string was altered: %q", short)
+	}
+}
+
+// A connector configured outside the credential store must not be reported as
+// "not configured": a status display that contradicts what the operator can
+// plainly see trains them to ignore it.
+func TestAConnectorConfiguredElsewhereIsNotReportedMissing(t *testing.T) {
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-from-env")
+
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(slackconn.New())
+
+	got := srv.summariseConnector(slackconn.New().Manifest())
+	if got.Status == "not_configured" {
+		t.Error("Slack reported not_configured while its token was present in the environment")
+	}
+	if !strings.Contains(got.Detail, "outside the console") {
+		t.Errorf("the detail does not explain where it came from: %q", got.Detail)
 	}
 }

@@ -77,6 +77,17 @@ func (s *ConsoleServer) summariseConnector(m connectorkit.Manifest) connectorSum
 
 	cred, err := s.store.Credential(m.ID)
 	if err != nil || cred == nil {
+		// A connector may be configured somewhere other than the credential
+		// store — Slack's token has always lived in the daemon's .env — and
+		// reporting "not configured" for a workspace the agent is actively
+		// talking in is a status display contradicting observable reality.
+		if self, ok := s.connectorByID(m.ID); ok {
+			if sc, ok := self.(connectorkit.SelfConfigured); ok && sc.Configured(connectorkit.Credentials{Config: map[string]string{}}) {
+				sum.Status = "degraded"
+				sum.Detail = "Configured outside the console; run a health check to confirm"
+				return sum
+			}
+		}
 		sum.Detail = "No credentials saved yet"
 		return sum
 	}
@@ -323,4 +334,12 @@ func genericSteps(m connectorkit.Manifest, callback string) []setupStep {
 		})
 	}
 	return steps
+}
+
+// connectorByID looks a connector up, tolerating a nil host.
+func (s *ConsoleServer) connectorByID(id string) (connectorkit.Connector, bool) {
+	if s.conns == nil {
+		return nil, false
+	}
+	return s.conns.Get(id)
 }

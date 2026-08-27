@@ -170,3 +170,12 @@ func (c *Connector) Health(ctx context.Context, cr connectorkit.Credentials) err
 }
 
 func (c *Connector) Sources() []connectorkit.EventSource { return nil }
+
+// Configured implements connectorkit.SelfConfigured.
+//
+// This install's bot token lives in the daemon's .env rather than in the
+// credential store, so asking the store alone would report "not configured"
+// for a workspace the agent is actively talking in.
+func (c *Connector) Configured(cr connectorkit.Credentials) bool {
+	return botToken(cr) != ""
+}

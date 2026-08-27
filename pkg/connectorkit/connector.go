@@ -199,3 +199,19 @@ type SetupGuide interface {
 	// that block: a setup screen has to render before anything is configured.
 	SetupSteps(c Credentials, callbackURL string) []SetupStep
 }
+
+// SelfConfigured is implemented by connectors that can be set up somewhere
+// other than KARMAX's credential store.
+//
+// The console decides "configured" by asking the store, which is right for
+// almost everything. Slack is the exception on an install whose bot token has
+// always lived in the daemon's .env: the store holds nothing, so the page said
+// "not configured" beside a bot that was visibly answering in Slack. A status
+// display that contradicts observable reality trains people to ignore it.
+//
+// Implementing this is optional and it must not make network calls — it
+// answers "do I have what I need", not "does it work", which is the health
+// check's job.
+type SelfConfigured interface {
+	Configured(c Credentials) bool
+}
