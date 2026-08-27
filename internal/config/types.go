@@ -91,10 +91,20 @@ type KarmaxCoreConfig struct {
 }
 
 type WebhooksConfig struct {
-	Enabled bool                 `yaml:"enabled"`
-	Port    int                  `yaml:"port"`
-	Host    string               `yaml:"host"`
-	Routes  []WebhookRouteConfig `yaml:"routes"`
+	Enabled bool   `yaml:"enabled"`
+	Port    int    `yaml:"port"`
+	Host    string `yaml:"host"`
+
+	// PublicURL is the address a third party can reach this webhook server at,
+	// used to render the callback URL an operator pastes into GitHub or Jira.
+	//
+	// Separate from console.public_url because they are usually different
+	// addresses: the console is a browser destination and the webhook server is
+	// a machine destination, and on this deployment they are not even the same
+	// port. Falls back to console.public_url when unset, which is right when a
+	// single proxy fronts both.
+	PublicURL string               `yaml:"public_url"`
+	Routes    []WebhookRouteConfig `yaml:"routes"`
 }
 
 // APIConfig configures the HTTP API the phone app talks to. It binds to

@@ -14,6 +14,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/connectors"
+	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -658,5 +659,112 @@ func TestTheOrgContextIsCapped(t *testing.T) {
 	// rather than guessing at it.
 	if !strings.Contains(w.Body.String(), "You work for Zero Moblt") {
 		t.Errorf("the response does not show what the agents will be told: %s", w.Body.String())
+	}
+}
+
+// The callback path used to be invented as "/hooks/"+id. GitHub's real path is
+// /connectors/github, so the wizard printed a URL that had never existed —
+// worse than showing nothing, because it looked finished.
+func TestTheCallbackURLIsTheConnectorsRealPath(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Console.PublicURL = "https://console.example"
+
+	got := srv.callbackURL("github")
+	if got != "https://console.example/connectors/github" {
+		t.Errorf("callback URL is %q — it must match the path the connector actually serves", got)
+	}
+	if strings.Contains(got, "/hooks/") {
+		t.Error("the invented /hooks/ path is back")
+	}
+}
+
+// The webhook server and the console are usually different addresses.
+func TestTheWebhookHostCanDifferFromTheConsole(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Console.PublicURL = "https://console.example"
+	srv.cfg.Webhooks.PublicURL = "https://hooks.example"
+
+	if got := srv.callbackURL("github"); got != "https://hooks.example/connectors/github" {
+		t.Errorf("webhooks.public_url was not preferred: %q", got)
+	}
+}
+
+// A connector with no webhook source has no callback URL, and saying so by
+// omission beats inventing one.
+func TestAConnectorWithoutWebhooksHasNoCallbackURL(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(slackconn.New()) // Sources() returns nil
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Console.PublicURL = "https://console.example"
+
+	if got := srv.callbackURL("slack"); got != "" {
+		t.Errorf("invented a callback URL for a connector with no webhook: %q", got)
+	}
+}
+
+// The setup response must surface it in both places the console reads.
+func TestSetupSurfacesTheCallbackURL(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Console.PublicURL = "https://console.example"
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "GET", "/api/console/connectors/github/setup", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		CallbackURL string `json:"callback_url"`
+		Steps       []struct {
+			Title string `json:"title"`
+			Value string `json:"value"`
+		} `json:"steps"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+
+	want := "https://console.example/connectors/github"
+	if body.CallbackURL != want {
+		t.Errorf("callback_url is %q, want %q", body.CallbackURL, want)
+	}
+	var onAStep bool
+	for _, s := range body.Steps {
+		if s.Value == want {
+			onAStep = true
+		}
+	}
+	if !onAStep {
+		t.Error("no setup step carries the callback URL to copy")
+	}
+}
+
+// Someone about to paste a callback into GitHub should be told it is plaintext
+// at that moment, not left to notice the scheme.
+func TestAPlainHTTPCallbackIsFlagged(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Webhooks.PublicURL = "http://13.207.76.239:9090"
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "GET", "/api/console/connectors/github/setup", token, nil)
+	if !strings.Contains(w.Body.String(), "not HTTPS") {
+		t.Error("a plaintext callback URL was offered with no warning")
+	}
+
+	// And an HTTPS one must not be nagged about.
+	srv.cfg.Webhooks.PublicURL = "https://hooks.example"
+	w = do(t, srv, "GET", "/api/console/connectors/github/setup", token, nil)
+	if strings.Contains(w.Body.String(), "not HTTPS") {
+		t.Error("an HTTPS callback URL was flagged anyway")
 	}
 }
