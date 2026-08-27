@@ -781,6 +781,25 @@ var migrations = []string{
 		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
 		expires_at DATETIME NOT NULL
 	)`,
+
+	// 029_org_profile — who this org IS, as opposed to who is in it.
+	//
+	// org_members is the chart: names, departments, reporting. This is the
+	// standing context an agent needs before it can answer anything usefully —
+	// what the company does, what its products are called, how it refers to
+	// things. Without it every agent starts each conversation knowing nothing
+	// about the company it works for, and asks questions a new hire would only
+	// ask once.
+	`CREATE TABLE IF NOT EXISTS org_profile (
+		org         TEXT PRIMARY KEY,
+		name        TEXT NOT NULL DEFAULT '',
+		domain      TEXT NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		timezone    TEXT NOT NULL DEFAULT '',
+		context     TEXT NOT NULL DEFAULT '',
+		updated_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_by  TEXT NOT NULL DEFAULT ''
+	)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

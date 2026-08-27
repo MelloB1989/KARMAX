@@ -165,6 +165,21 @@ func NewConsole(addr string, distDir string, d ConsoleDeps) *ConsoleServer {
 	// expiring, and the only thing that names the member.
 	mux.HandleFunc("GET /api/console/oauth/{id}/callback", s.handleOAuthCallback)
 
+	// Console accounts. Admin-only: handing out console access hands out the
+	// ability to approve actions and read the org's memory.
+	mux.HandleFunc("GET /api/console/users", s.role("admin", s.handleListUsers))
+	mux.HandleFunc("POST /api/console/users", s.role("admin", s.handleCreateUser))
+	mux.HandleFunc("PUT /api/console/users/{member}", s.role("admin", s.handleUpdateUser))
+	mux.HandleFunc("DELETE /api/console/users/{member}", s.role("admin", s.handleDeleteUser))
+	// Not admin-gated at the route: anyone may change their OWN password, and
+	// the handler enforces the difference.
+	mux.HandleFunc("PUT /api/console/users/{member}/password", s.session(s.handleSetPassword))
+
+	// The organisation the agents work for. Readable by anyone signed in;
+	// writable by admins, because it is injected into every agent's prompt.
+	mux.HandleFunc("GET /api/console/organisation", s.session(s.handleGetOrg))
+	mux.HandleFunc("PUT /api/console/organisation", s.role("admin", s.handleSetOrg))
+
 	mux.HandleFunc("GET /api/console/settings", s.session(s.handleSettings))
 	mux.HandleFunc("PUT /api/console/settings/model/{id}", s.role("admin", s.handleSetModelProvider))
 	mux.HandleFunc("PUT /api/console/settings/sandbox-token", s.role("admin", s.handleSetSandboxToken))

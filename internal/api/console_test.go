@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -498,5 +499,164 @@ func TestConnectRefusesBeforeTheOrgAppExists(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "admin has to set up") {
 		t.Errorf("the error does not say what is missing: %s", w.Body.String())
+	}
+}
+
+// The list said "run a health check to confirm" and the health check answered
+// "no credentials saved yet" — a loop that could never reach healthy, about a
+// bot that was visibly working. The check must ask the CONNECTOR, not just the
+// credential store.
+func TestHealthCheckAsksTheConnectorNotOnlyTheStore(t *testing.T) {
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-from-env")
+	t.Setenv("SLACK_APP_TOKEN", "")
+
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(slackconn.New())
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "POST", "/api/console/connectors/slack/health-check", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var res map[string]any
+	json.Unmarshal(w.Body.Bytes(), &res)
+
+	// It may well fail (no network in a test, or a missing app token) — what it
+	// must NOT do is claim nothing is configured.
+	if res["status"] == "not_configured" {
+		t.Errorf("the health check reported not_configured for a connector whose token is "+
+			"present in the environment: %v", res["detail"])
+	}
+}
+
+// Checking a per-user connector against the org's app config alone would report
+// healthy for something nobody can actually use.
+func TestPerUserHealthIsCheckedAsAPerson(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(googleconn.New())
+	token := bootstrapAdmin(t, srv)
+
+	if err := db.SaveCredential(store.Credential{
+		Connector: "google", Config: map[string]string{"client_id": "cid", "client_secret": "s"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, srv, "POST", "/api/console/connectors/google/health-check", token, nil)
+	var res map[string]any
+	json.Unmarshal(w.Body.Bytes(), &res)
+
+	if res["status"] == "healthy" {
+		t.Error("a per-user connector reported healthy with nobody connected")
+	}
+	if !strings.Contains(fmt.Sprint(res["detail"]), "not connected your own account") {
+		t.Errorf("the detail does not say what is missing: %v", res["detail"])
+	}
+}
+
+// Handing out console access hands out the ability to approve actions and read
+// the org's memory. It is not an operator-level decision.
+func TestUserManagementIsAdminOnly(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	bootstrapAdmin(t, srv)
+	if _, err := db.CreateConsoleUser("ops", "Ops", "operator", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	w := do(t, srv, "POST", "/api/console/auth/login", "",
+		map[string]string{"member": "ops", "password": "correct-horse"})
+	var sess sessionResponse
+	json.Unmarshal(w.Body.Bytes(), &sess)
+
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/console/users"},
+		{"POST", "/api/console/users"},
+		{"PUT", "/api/console/users/nikhil"},
+		{"DELETE", "/api/console/users/nikhil"},
+		{"PUT", "/api/console/organisation"},
+	} {
+		if got := do(t, srv, tc.method, tc.path, sess.Token, map[string]string{"role": "admin"}); got.Code != http.StatusForbidden {
+			t.Errorf("%s %s answered %d for an operator, want 403", tc.method, tc.path, got.Code)
+		}
+	}
+
+	// Reading the org is fine for anyone signed in — an agent's standing
+	// context is not a secret from the people it works alongside.
+	if got := do(t, srv, "GET", "/api/console/organisation", sess.Token, nil); got.Code != http.StatusOK {
+		t.Errorf("an operator could not read the organisation: %d", got.Code)
+	}
+}
+
+// An install with no admin has nobody who can appoint one, and the only way
+// back is editing the database by hand.
+func TestTheLastAdminCannotBeRemovedOrDemoted(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	token := bootstrapAdmin(t, srv)
+
+	if w := do(t, srv, "DELETE", "/api/console/users/nikhil", token, nil); w.Code != http.StatusConflict {
+		t.Errorf("the only admin was deleted: %d", w.Code)
+	}
+	if w := do(t, srv, "PUT", "/api/console/users/nikhil", token, map[string]string{"role": "viewer"}); w.Code != http.StatusConflict {
+		t.Errorf("the only admin was demoted: %d", w.Code)
+	}
+
+	// With a second admin, both become allowed.
+	if w := do(t, srv, "POST", "/api/console/users", token, map[string]string{
+		"member": "second", "name": "Second", "role": "admin", "password": "correct-horse",
+	}); w.Code != http.StatusOK {
+		t.Fatalf("could not create a second admin: %s", w.Body.String())
+	}
+	if w := do(t, srv, "PUT", "/api/console/users/nikhil", token, map[string]string{"role": "viewer"}); w.Code != http.StatusOK {
+		t.Errorf("demotion still refused with two admins: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Changing your own password requires proving you know it, or a walk-up at an
+// unlocked laptop takes the account.
+func TestChangingYourOwnPasswordNeedsTheCurrentOne(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	token := bootstrapAdmin(t, srv)
+
+	if w := do(t, srv, "PUT", "/api/console/users/nikhil/password", token,
+		map[string]string{"password": "brand-new-one"}); w.Code != http.StatusForbidden {
+		t.Errorf("a password change without the current one was allowed: %d", w.Code)
+	}
+	w := do(t, srv, "PUT", "/api/console/users/nikhil/password", token,
+		map[string]string{"current_password": "correct-horse", "password": "brand-new-one"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("a correct password change failed: %s", w.Body.String())
+	}
+	// The session it was made from is gone too, and the response says so.
+	if !strings.Contains(w.Body.String(), "sign_in_again") {
+		t.Error("the response does not warn that the session was revoked")
+	}
+	if got := do(t, srv, "GET", "/api/console/users", token, nil); got.Code != http.StatusUnauthorized {
+		t.Error("the old session survived a password change")
+	}
+}
+
+// The context is added to every message the agents handle, so its length is a
+// running cost, not a one-off.
+func TestTheOrgContextIsCapped(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "PUT", "/api/console/organisation", token,
+		map[string]string{"name": "Acme", "context": strings.Repeat("x", 9000)})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("an oversized context was accepted: %d", w.Code)
+	}
+
+	w = do(t, srv, "PUT", "/api/console/organisation", token, map[string]string{
+		"name": "Zero Moblt", "domain": "zeromoblt.com", "context": "Tickets live in YouTrack.",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("a normal profile was refused: %s", w.Body.String())
+	}
+	// The briefing is returned so whoever writes the context sees the result
+	// rather than guessing at it.
+	if !strings.Contains(w.Body.String(), "You work for Zero Moblt") {
+		t.Errorf("the response does not show what the agents will be told: %s", w.Body.String())
 	}
 }

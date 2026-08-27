@@ -131,3 +131,72 @@ func TestSettingARoleUpdatesAnExistingAccount(t *testing.T) {
 		t.Errorf("account role is %q, settings would show operator", u.Role)
 	}
 }
+
+// A password change that leaves the old sessions alive does not lock anybody
+// out, which is the entire reason people change passwords in a hurry.
+func TestChangingAPasswordRevokesEverySession(t *testing.T) {
+	s := consoleStore(t)
+	if _, err := s.CreateConsoleUser("nikhil", "Nikhil", "admin", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := s.CreateConsoleSession("nikhil", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetConsolePassword("nikhil", "a-brand-new-one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.ConsoleSessionUser(sess.Token); ok {
+		t.Error("a session survived a password change")
+	}
+	if _, err := s.AuthenticateConsoleUser("nikhil", "a-brand-new-one"); err != nil {
+		t.Errorf("the new password does not work: %v", err)
+	}
+	if _, err := s.AuthenticateConsoleUser("nikhil", "correct-horse"); err == nil {
+		t.Error("the old password still works")
+	}
+}
+
+func TestAShortNewPasswordIsRefused(t *testing.T) {
+	s := consoleStore(t)
+	if _, err := s.CreateConsoleUser("nikhil", "Nikhil", "admin", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetConsolePassword("nikhil", "short"); err == nil {
+		t.Error("a 5-character password was accepted")
+	}
+	// And the old one must still work — a refused change must change nothing.
+	if _, err := s.AuthenticateConsoleUser("nikhil", "correct-horse"); err != nil {
+		t.Error("a refused password change disturbed the existing password")
+	}
+}
+
+// An install with no admin has nobody who can appoint one.
+func TestAdminsCanBeCounted(t *testing.T) {
+	s := consoleStore(t)
+	for _, u := range []struct{ m, role string }{{"a", "admin"}, {"b", "operator"}, {"c", "admin"}} {
+		if _, err := s.CreateConsoleUser(u.m, u.m, u.role, "correct-horse"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.CountConsoleAdmins()
+	if err != nil || n != 2 {
+		t.Errorf("counted %d admins, want 2 (%v)", n, err)
+	}
+}
+
+func TestDeletingAUserTakesTheirSessionsWithIt(t *testing.T) {
+	s := consoleStore(t)
+	if _, err := s.CreateConsoleUser("temp", "Temp", "viewer", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := s.CreateConsoleSession("temp", time.Hour)
+
+	if err := s.DeleteConsoleUser("temp"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.ConsoleSessionUser(sess.Token); ok {
+		t.Error("a deleted user's session still resolves")
+	}
+}

@@ -263,3 +263,27 @@ export interface Session {
 export interface BootstrapStatus {
   needs_bootstrap: boolean;
 }
+
+export interface ConsoleUser {
+  member: string;
+  name: string;
+  role: "admin" | "operator" | "viewer";
+  self?: boolean;
+}
+
+export interface ConsoleUsers {
+  users: ConsoleUser[];
+  roles: string[];
+}
+
+export interface OrgProfile {
+  name: string;
+  domain: string;
+  description: string;
+  timezone: string;
+  context: string;
+  updated_at: string;
+  updated_by: string;
+  /** Exactly what the agents are told, rendered server-side. */
+  briefing: string;
+}

@@ -82,7 +82,7 @@ func (s *ConsoleServer) summariseConnector(m connectorkit.Manifest) connectorSum
 		// reporting "not configured" for a workspace the agent is actively
 		// talking in is a status display contradicting observable reality.
 		if self, ok := s.connectorByID(m.ID); ok {
-			if sc, ok := self.(connectorkit.SelfConfigured); ok && sc.Configured(connectorkit.Credentials{Config: map[string]string{}}) {
+			if selfConfigured(self, connectorkit.Credentials{Config: map[string]string{}}) {
 				sum.Status = "degraded"
 				sum.Detail = "Configured outside the console; run a health check to confirm"
 				return sum
@@ -280,31 +280,77 @@ func (s *ConsoleServer) handleConnectorHealthCheck(w http.ResponseWriter, r *htt
 		return
 	}
 
-	cred, err := s.store.Credential(id)
-	if err != nil || cred == nil {
-		res := healthResult{Status: "not_configured", Detail: "No credentials saved yet", CheckedAt: time.Now()}
-		s.setHealth(id, res)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": res.Status, "detail": res.Detail, "checked_at": rfc3339(res.CheckedAt),
+	cred, _ := s.store.Credential(id)
+	known := connectorkit.Credentials{Config: map[string]string{}}
+	if cred != nil {
+		known.Config, known.AccessToken = cred.Config, cred.AccessToken
+		if cred.ExpiresAt != nil {
+			known.ExpiresAt = *cred.ExpiresAt
+		}
+	}
+
+	// Only call it unconfigured when the CONNECTOR agrees it has nothing.
+	//
+	// This used to short-circuit on a missing store row without asking, which
+	// made the state unreachable for anything configured elsewhere: Slack's
+	// token lives in the daemon's .env, so the list said "run a health check to
+	// confirm" and the health check answered "no credentials saved yet" — a
+	// loop that could never arrive at healthy, about a bot that was visibly
+	// working.
+	if cred == nil && !selfConfigured(c, known) {
+		s.reportHealth(w, r, id, healthResult{
+			Status: "not_configured", Detail: "No credentials saved yet", CheckedAt: time.Now(),
 		})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// A per-user connector is checked AS SOMEBODY. Checking the org's app
+	// config alone would report healthy for something nobody can use, and
+	// checking it as whoever happens to be stored would be the wrong person.
+	if c.Manifest().PerUser {
+		member := consoleUser(r).Member
+		uc, err := s.store.UserCredential(id, member)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if uc == nil {
+			s.reportHealth(w, r, id, healthResult{
+				Status:    "degraded",
+				Detail:    "The app is set up, but you have not connected your own account yet",
+				CheckedAt: time.Now(),
+			})
+			return
+		}
+		known.AccessToken, known.Member, known.Account = uc.AccessToken, uc.Member, uc.Account
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
 	res := healthResult{Status: "healthy", Detail: "Reachable", CheckedAt: time.Now()}
-	if err := c.Health(ctx, connectorkit.Credentials{
-		Config: cred.Config, AccessToken: cred.AccessToken,
-	}); err != nil {
+	if err := c.Health(ctx, known); err != nil {
 		res.Status, res.Detail = "failed", err.Error()
+	} else if known.Account != "" {
+		res.Detail = "Connected as " + known.Account
 	}
+	s.reportHealth(w, r, id, res)
+}
+
+// reportHealth caches a verdict and returns it.
+func (s *ConsoleServer) reportHealth(w http.ResponseWriter, r *http.Request, id string, res healthResult) {
 	s.setHealth(id, res)
 	s.audit(r, "human", consoleUser(r).Member, "console.connector.health", id, res.Status, res.Detail)
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": res.Status, "detail": res.Detail, "checked_at": rfc3339(res.CheckedAt),
 	})
+}
+
+// selfConfigured asks a connector whether it has what it needs from somewhere
+// other than the credential store.
+func selfConfigured(c connectorkit.Connector, known connectorkit.Credentials) bool {
+	sc, ok := c.(connectorkit.SelfConfigured)
+	return ok && sc.Configured(known)
 }
 
 // genericSteps is the guide for a connector that does not provide its own.

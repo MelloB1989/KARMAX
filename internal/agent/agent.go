@@ -640,6 +640,35 @@ func looksPassiveStall(s string) bool {
 // deadlines, and staleness instead of guessing or web-searching for the date.
 // This is the anchor that makes "[stored 3 weeks ago]" and "deadline Friday"
 // meaningful.
+// buildOrgContext gives the agent the standing facts about the company it works
+// for: what it is called, what it does, and whatever conventions an admin has
+// written down.
+//
+// Read fresh each turn rather than folded into the system prompt at boot, so
+// editing it in the console takes effect on the next message instead of the
+// next restart. It is one indexed row; the read is cheaper than the round trip
+// that would otherwise be spent asking a human what a product name means.
+//
+// Placed FIRST in the turn context on purpose — who you work for frames
+// everything after it.
+func (a *Agent) buildOrgContext() string {
+	if a.store == nil {
+		return ""
+	}
+	p, err := a.store.OrgProfileFor(store.DefaultOrg)
+	if err != nil {
+		a.log.Warn("could not read the organisation profile", zap.Error(err))
+		return ""
+	}
+	briefing := p.Briefing()
+	if briefing == "" {
+		// Nothing has been filled in. A heading with nothing under it spends
+		// context to tell the model the company has no name.
+		return ""
+	}
+	return "## The organisation you work for\n\n" + briefing + "\n\n"
+}
+
 func (a *Agent) buildTimeContext() string {
 	now := time.Now()
 	return fmt.Sprintf("## Current date & time (your anchor for all time reasoning)\n\n"+
@@ -1002,7 +1031,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx
+	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx
 	if dynamicCtx != "" && a.mainSession == nil {
 		userPrompt = dynamicCtx + userPrompt
 	}
@@ -1228,7 +1257,7 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 
 	// Inject the same dynamic context the event loop uses: active coding
 	// sessions, available comms channels, and retrieved long-term memory.
-	dynamicCtx := a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
+	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + a.buildSessionContext() + a.buildCommsContext() + a.buildProactiveMemoryContext(ctx, evt, text)
 
 	session.SetTurnContext(dynamicCtx)
 	response, toolCalls, err := session.ProcessMessageWithheld(ctx, text, lent, withhold)

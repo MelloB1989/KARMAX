@@ -290,3 +290,71 @@ func isUniqueViolation(err error) bool {
 	return strings.Contains(msg, "unique") || // sqlite, postgres
 		strings.Contains(msg, "duplicate") // mysql
 }
+
+// UpdateConsoleUser changes an account's display name.
+func (s *Store) UpdateConsoleUser(member, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.exec(`UPDATE console_users SET name = ?, updated_at = datetime('now') WHERE member = ?`,
+		name, member)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("no such console user")
+	}
+	return nil
+}
+
+// SetConsolePassword replaces an account's password.
+//
+// Every session that account holds is revoked at the same time. A password
+// change that leaves the old sessions alive does not lock anybody out, which is
+// the entire reason people change passwords in a hurry.
+func (s *Store) SetConsolePassword(member, password string) error {
+	if len(password) < 8 {
+		return errors.New("password must be at least 8 characters")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.exec(`UPDATE console_users SET password_hash = ?, updated_at = datetime('now') WHERE member = ?`,
+		string(hash), member)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("no such console user")
+	}
+	_, err = s.exec(`DELETE FROM console_sessions WHERE member = ?`, member)
+	return err
+}
+
+// DeleteConsoleUser removes an account and every session it holds.
+func (s *Store) DeleteConsoleUser(member string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.exec(`DELETE FROM console_sessions WHERE member = ?`, member); err != nil {
+		return err
+	}
+	_, err := s.exec(`DELETE FROM console_users WHERE member = ?`, member)
+	return err
+}
+
+// CountConsoleAdmins reports how many admin accounts exist.
+//
+// Used to refuse the last one being removed or demoted: an install with no
+// admin has nobody who can appoint one, and the only way back is editing the
+// database by hand.
+func (s *Store) CountConsoleAdmins() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	err := s.queryRow(`SELECT COUNT(*) FROM console_users WHERE role = 'admin'`).Scan(&n)
+	return n, err
+}
