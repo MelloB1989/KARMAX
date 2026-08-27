@@ -282,8 +282,26 @@ func (rt *KarmaxRuntime) applyRecipes(ctx context.Context, loaded []recipes.Load
 	rt.recipeMu.Lock()
 	defer rt.recipeMu.Unlock()
 
+	// `karmax loops disable` governs BOTH tiers, not just loopkit loops.
+	//
+	// It writes a name into loops-disabled.txt and `loops list` reads that file
+	// for every tier — so a disabled recipe printed as "disabled" while this
+	// function went on scheduling it with Enabled: true. The command reported
+	// success, the listing agreed, and the recipe fired on its cron anyway.
+	// A control that lies about what it did is worse than one that is missing.
+	//
+	// The recipe's own `enabled:` key is a separate switch and stays that way:
+	// that one is the AUTHOR saying "this ships off", handled by recipes.Valid.
+	// This one is the OPERATOR saying "not on my install".
+	disabled := loopinstall.LoadDisabledLoops()
+
 	next := map[string]*recipes.Recipe{}
 	for _, r := range recipes.Valid(loaded) {
+		if disabled[r.Name] {
+			rt.log.Info("recipe disabled by operator; not scheduling",
+				zap.String("recipe", r.Name), zap.String("file", r.Path))
+			continue
+		}
 		// A signed loop was installed deliberately and carries a capability
 		// manifest; a recipe is a file someone dropped in a directory. If both
 		// claim a name, the one the operator approved wins and the other is
