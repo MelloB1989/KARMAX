@@ -150,3 +150,8 @@ func TestTheActorIsCarriedInContextNotArguments(t *testing.T) {
 		t.Errorf("an empty actor erased the real one: %q", got)
 	}
 }
+
+// storeCredential is a minimal enabled credential row for a connector.
+func storeCredential(id string) store.Credential {
+	return store.Credential{Connector: id, Config: map[string]string{}, Enabled: true}
+}

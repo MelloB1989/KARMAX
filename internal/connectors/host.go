@@ -289,6 +289,13 @@ func (t *connectorTool) Execute(ctx context.Context, input map[string]any) (tool
 }
 
 // MountWebhooks registers each enabled connector's webhook routes.
+// WebhookPrefix is where connector webhooks are exposed publicly.
+//
+// Chosen because nothing else claims it: the console SPA owns /connectors/:id,
+// the console API owns /api/console/*, and a CDN in front of both has to be
+// able to send a webhook to the daemon without ambiguity.
+const WebhookPrefix = "/hooks"
+
 func (h *Host) MountWebhooks(add func(pattern string, handler http.HandlerFunc)) {
 	for _, c := range h.Enabled() {
 		id := c.Manifest().ID
@@ -296,9 +303,24 @@ func (h *Host) MountWebhooks(add func(pattern string, handler http.HandlerFunc))
 			if src.Kind != connectorkit.SourceWebhook || src.Path == "" {
 				continue
 			}
-			add(src.Path, h.deliveryHandler(id, src))
+			handler := h.deliveryHandler(id, src)
+			add(src.Path, handler)
+
+			// Also mount under /hooks, which is the address an operator is
+			// given. A connector's own path is chosen for readability —
+			// GitHub's is /connectors/github — and that collides head-on with
+			// the console SPA, which already owns /connectors/:id as a PAGE. A
+			// CDN routing rule cannot tell a browser opening that page from
+			// GitHub POSTing to it, so one of the two would break.
+			//
+			// /hooks/* belongs to nothing else, which is what lets a single
+			// HTTPS front door serve both. Both paths stay live: an install
+			// that already told GitHub the unprefixed address keeps working.
+			add(WebhookPrefix+src.Path, handler)
+
 			h.log.Info("connector webhook mounted",
-				zap.String("connector", id), zap.String("path", src.Path))
+				zap.String("connector", id), zap.String("path", src.Path),
+				zap.String("public_path", WebhookPrefix+src.Path))
 		}
 	}
 }

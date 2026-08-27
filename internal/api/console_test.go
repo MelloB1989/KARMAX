@@ -673,11 +673,12 @@ func TestTheCallbackURLIsTheConnectorsRealPath(t *testing.T) {
 	srv.cfg.Console.PublicURL = "https://console.example"
 
 	got := srv.callbackURL("github")
-	if got != "https://console.example/connectors/github" {
-		t.Errorf("callback URL is %q — it must match the path the connector actually serves", got)
-	}
-	if strings.Contains(got, "/hooks/") {
-		t.Error("the invented /hooks/ path is back")
+	// The /hooks-prefixed form of the connector's own path: prefixed because
+	// /connectors/:id is a console PAGE and cannot be routed to the daemon from
+	// the same front door, and the connector's real path because inventing one
+	// is what produced a URL that 404'd.
+	if got != "https://console.example/hooks/connectors/github" {
+		t.Errorf("callback URL is %q", got)
 	}
 }
 
@@ -690,7 +691,7 @@ func TestTheWebhookHostCanDifferFromTheConsole(t *testing.T) {
 	srv.cfg.Console.PublicURL = "https://console.example"
 	srv.cfg.Webhooks.PublicURL = "https://hooks.example"
 
-	if got := srv.callbackURL("github"); got != "https://hooks.example/connectors/github" {
+	if got := srv.callbackURL("github"); got != "https://hooks.example/hooks/connectors/github" {
 		t.Errorf("webhooks.public_url was not preferred: %q", got)
 	}
 }
@@ -731,7 +732,7 @@ func TestSetupSurfacesTheCallbackURL(t *testing.T) {
 	}
 	json.Unmarshal(w.Body.Bytes(), &body)
 
-	want := "https://console.example/connectors/github"
+	want := "https://console.example/hooks/connectors/github"
 	if body.CallbackURL != want {
 		t.Errorf("callback_url is %q, want %q", body.CallbackURL, want)
 	}
