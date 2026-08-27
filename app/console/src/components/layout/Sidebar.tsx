@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
-  KanbanSquare, Bot, Workflow, CircleCheck, ScrollText, Plug, Settings as SettingsIcon,
+  KanbanSquare, Bot, Workflow, CircleCheck, ScrollText, Plug, Building2, Users,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -27,6 +28,16 @@ const GROUPS = [
     label: "Record",
     items: [
       { to: "/audit", label: "Audit", icon: ScrollText },
+    ],
+  },
+  // Who the agents work for, and who may tell them to. Separated from Record
+  // because these change rarely and are read even more rarely — they should not
+  // sit next to the pages an operator opens every day.
+  {
+    label: "Organisation",
+    items: [
+      { to: "/organisation", label: "Organisation", icon: Building2 },
+      { to: "/users", label: "Users", icon: Users },
       { to: "/settings", label: "Settings", icon: SettingsIcon },
     ],
   },
