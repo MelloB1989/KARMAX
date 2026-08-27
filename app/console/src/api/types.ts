@@ -169,7 +169,17 @@ export interface ConnectorSummary {
 export interface ConnectorSetupStep {
   title: string;
   body: string;
+  /** Something to copy — a callback URL, a webhook secret. */
   value?: string;
+  /**
+   * A link to open. Some steps cannot be static text because the address
+   * depends on what was just created: a GitHub App's install page is
+   * /apps/<slug>/installations/new, and the slug does not exist until the app
+   * does.
+   */
+  url?: string;
+  /** Whether this step already looks complete. Absent means "cannot tell". */
+  done?: boolean;
 }
 
 export interface ConnectorField {

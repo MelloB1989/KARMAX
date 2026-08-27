@@ -27,9 +27,12 @@ import (
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	jiraconn "github.com/MelloB1989/karmax/internal/connectors/jira"
+	kekaconn "github.com/MelloB1989/karmax/internal/connectors/keka"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
+	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
+	youtrackconn "github.com/MelloB1989/karmax/internal/connectors/youtrack"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
@@ -158,6 +161,23 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		connHost.Register(githubconn.New(account))
 	}
 	connHost.Register(notionconn.New())
+	// Slack is already wired as a COMMS CHANNEL — the thing that receives
+	// mentions and replies in threads. That is a different subsystem, which is
+	// why Slack never appeared on the Connectors page despite obviously being
+	// connected. Registering it here does not replace the channel; it makes the
+	// workspace visible where an operator looks for it, gives it a health check
+	// that catches a missing app-level token, and adds the few tools that are
+	// about the workspace rather than about a conversation.
+	connHost.Register(slackconn.New())
+	// HR: the org chart, leave and attendance, read-only.
+	connHost.Register(kekaconn.New())
+	// The tracker this operator actually uses. Registered alongside Jira rather
+	// than instead of it: an org can run both, and which one a team files into
+	// is not KARMAX's call to make.
+	connHost.Register(youtrackconn.New(""))
+	for _, account := range splitCSV(os.Getenv("KARMAX_YOUTRACK_ACCOUNTS")) {
+		connHost.Register(youtrackconn.New(account))
+	}
 	// The tracker the developer agent lives in. Same multi-account shape as
 	// GitHub, because an org with two Jira sites has two of everything.
 	connHost.Register(jiraconn.New(""))

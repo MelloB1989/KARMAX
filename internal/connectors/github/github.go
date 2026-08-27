@@ -62,7 +62,8 @@ func (c *Connector) Manifest() connectorkit.Manifest {
 			{Key: "token", Description: "A personal access token with repo scope — used when no App is configured", Secret: true},
 			{Key: "app_id", Description: "The GitHub App's numeric ID, for App auth instead of a token"},
 			{Key: "app_private_key", Description: "The App's PEM private key, for App auth", Secret: true},
-			{Key: "installation_id", Description: "The installation this account authenticates as, for App auth"},
+			{Key: "installation_id", Description: "The installation this account authenticates as, for App auth — the health check finds this for you once the App is installed"},
+			{Key: "app_slug", Description: "The App's URL slug, e.g. karmax-bot — only used to link straight to its install page"},
 			{Key: "webhook_secret", Description: "The secret configured on the GitHub webhook, so deliveries can be verified", Secret: true},
 			{Key: "default_repo", Description: "owner/name used when a tool call omits one"},
 		},
@@ -111,8 +112,25 @@ func healthApp(ctx context.Context, cr connectorkit.Credentials) error {
 	if _, err := parseRSAPrivateKey(cr.Get("app_private_key")); err != nil {
 		return fmt.Errorf("github: app private key: %w", err)
 	}
-	_, err := cachedInstallationToken(ctx, cr)
-	return err
+
+	// The step people miss: an App that has been CREATED but not INSTALLED has
+	// access to no repositories. Every call then succeeds and returns an empty
+	// list, which reads like a permissions bug somewhere else. Ask GitHub where
+	// this App is installed and say so plainly — including the installation_id,
+	// which is otherwise only visible in the URL bar during installation.
+	if strings.TrimSpace(cr.Get("installation_id")) == "" {
+		ins, err := listInstallations(ctx, cr)
+		if err != nil {
+			return fmt.Errorf("github: the App credentials look valid but installation_id is not "+
+				"set, and listing the App's installations failed: %w", err)
+		}
+		return fmt.Errorf("github: %s — set installation_id to continue", describeInstallations(ins))
+	}
+
+	if _, err := cachedInstallationToken(ctx, cr); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Connector) Tools() []connectorkit.Tool {
