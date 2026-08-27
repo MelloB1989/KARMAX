@@ -15,19 +15,29 @@ import (
 // otherwise be missing entirely.
 
 var verbDescriptions = map[string]string{
-	VerbAsk:      "ask your agent to do something, with all of its tools",
-	VerbHarness:  "run a coding harness — shell, files and web research",
-	VerbGateway:  "ask the main model directly",
-	VerbHTTP:     "make HTTP requests",
-	VerbTool:     "call KARMAX tools by name",
-	VerbRecall:   "read your long-term memory",
-	VerbRemember: "WRITE to your long-term memory",
-	VerbNotify:   "send you notifications",
-	VerbPropose:  "ask for your approval before acting",
-	VerbRemind:   "put reminders on your list",
-	VerbSend:     "SEND MESSAGES AS YOU",
-	VerbSleep:    "wait, and resume later",
-	VerbLog:      "write to KARMAX's log",
+	VerbAsk:         "ask your agent to do something, with all of its tools",
+	VerbHarness:     "run a coding harness — shell, files and web research",
+	VerbGateway:     "ask the main model directly",
+	VerbHTTP:        "make HTTP requests",
+	VerbTool:        "call KARMAX tools by name",
+	VerbRecall:      "read your long-term memory",
+	VerbRemember:    "WRITE to your long-term memory",
+	VerbNotify:      "send you notifications",
+	VerbPropose:     "ask for approval before acting — from you, or from anyone holding a role",
+	VerbRemind:      "put reminders on your list",
+	VerbSend:        "SEND MESSAGES AS YOU — to a WhatsApp contact, or into a shared channel",
+	VerbCaseHistory: "read what has already happened on this piece of work",
+	VerbCaseSay:     "speak in this piece of work's own thread, where its people can see it",
+	VerbSleep:       "wait, and resume later",
+	VerbLog:         "write to KARMAX's log",
+
+	VerbCaseOpen:  "open or rejoin a case — a shared thread of work",
+	VerbCaseGet:   "look up a case, without creating one",
+	VerbCaseState: "move a case's state along, visible to everyone on it",
+	VerbCaseLog:   "add a line to a case's shared history",
+	VerbAwait:     "PARK the run — for as long as it takes — until a matching event happens",
+	VerbForeach:   "repeat its steps once per item — whatever those steps do, they do it that many times",
+	VerbSandbox:   "RUN CODE against a real repository in a container, and can push a branch",
 }
 
 // Describe renders what a recipe does, for the operator to approve.
@@ -45,9 +55,10 @@ func Describe(r *Recipe) []string {
 				seen[s.Verb] = true
 				out = append(out, d)
 			}
-			// The else branch of a conditional step is where a recipe would
-			// hide the interesting verb, so it is walked too.
+			// The else branch, and a foreach body, are where a recipe would
+			// hide the interesting verb, so both are walked too.
 			walk(s.Else)
+			walk(s.Steps)
 		}
 	}
 	walk(r.Steps)
@@ -85,6 +96,7 @@ func namedTools(r *Recipe) []string {
 				}
 			}
 			walk(s.Else)
+			walk(s.Steps)
 		}
 	}
 	walk(r.Steps)

@@ -5,9 +5,6 @@ package github
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
 
@@ -61,21 +59,36 @@ func (c *Connector) Manifest() connectorkit.Manifest {
 			"http:api.github.com",
 		},
 		Config: []connectorkit.ConfigField{
-			{Key: "token", Description: "A personal access token with repo scope", Required: true, Secret: true},
+			{Key: "token", Description: "A personal access token with repo scope — used when no App is configured", Secret: true},
+			{Key: "app_id", Description: "The GitHub App's numeric ID, for App auth instead of a token"},
+			{Key: "app_private_key", Description: "The App's PEM private key, for App auth", Secret: true},
+			{Key: "installation_id", Description: "The installation this account authenticates as, for App auth"},
 			{Key: "webhook_secret", Description: "The secret configured on the GitHub webhook, so deliveries can be verified", Secret: true},
 			{Key: "default_repo", Description: "owner/name used when a tool call omits one"},
 		},
 	}
 }
 
-// Auth is a token rather than OAuth because a personal access token is what a
-// self-hosted single operator actually has. The OAuth2 machinery exists in
-// connectorkit for connectors that need it; GitHub does not, for this user.
+// Auth is apikey-shaped either way a token is obtained: a personal access
+// token is one config value, App auth is three (app_id, app_private_key,
+// installation_id). connectorkit.AuthMethod cannot vary per credential and
+// neither path is an OAuth redirect, so which one a call actually takes is
+// decided at call time from what is configured — see tokenFor.
 func (c *Connector) Auth() connectorkit.AuthMethod {
 	return connectorkit.AuthMethod{Kind: connectorkit.AuthAPIKey, APIKeyField: "token"}
 }
 
+// Health distinguishes why a credential is broken rather than reporting one
+// generic failure, because "no token" and "GitHub is down" want different
+// operator reactions.
 func (c *Connector) Health(ctx context.Context, cr connectorkit.Credentials) error {
+	if usesAppAuth(cr) {
+		return healthApp(ctx, cr)
+	}
+	return healthPAT(ctx, cr)
+}
+
+func healthPAT(ctx context.Context, cr connectorkit.Credentials) error {
 	var out struct {
 		Login string `json:"login"`
 	}
@@ -86,6 +99,20 @@ func (c *Connector) Health(ctx context.Context, cr connectorkit.Credentials) err
 		return fmt.Errorf("github: the token did not identify a user")
 	}
 	return nil
+}
+
+// healthApp checks App auth in the order a broken setup actually fails:
+// config present, key parses, then the exchange itself — which is where "not
+// installed" and "GitHub unreachable" separate from each other.
+func healthApp(ctx context.Context, cr connectorkit.Credentials) error {
+	if err := requireAppConfig(cr); err != nil {
+		return err
+	}
+	if _, err := parseRSAPrivateKey(cr.Get("app_private_key")); err != nil {
+		return fmt.Errorf("github: app private key: %w", err)
+	}
+	_, err := cachedInstallationToken(ctx, cr)
+	return err
 }
 
 func (c *Connector) Tools() []connectorkit.Tool {
@@ -130,6 +157,13 @@ func (c *Connector) Tools() []connectorkit.Tool {
 	}
 }
 
+// Sources mounts one webhook: GitHub delivers every subscribed event type to
+// the App's single configured URL, and connectorkit ties one literal event
+// kind to one mounted path — so every delivery here publishes as
+// "github.event" regardless of what actually happened. decodeDelivery adds a
+// "kind" field ("github.pr.opened", "github.pr.merged", ...) naming the
+// specific thing for recipes to match on, since a literal per-payload bus
+// event kind isn't available to a connector with this contract.
 func (c *Connector) Sources() []connectorkit.EventSource {
 	return []connectorkit.EventSource{{
 		ID:        "webhook",
@@ -139,91 +173,6 @@ func (c *Connector) Sources() []connectorkit.EventSource {
 		Verify:    verifyDelivery,
 		Decode:    decodeDelivery,
 	}}
-}
-
-// verifyDelivery checks GitHub's HMAC over the raw body.
-//
-// Refused when no secret is configured rather than accepted: an unverified
-// webhook is an open endpoint that anything can post events into, and those
-// events trigger loops.
-func verifyDelivery(cr connectorkit.Credentials, headers map[string]string, body []byte) bool {
-	secret := cr.Get("webhook_secret")
-	if secret == "" {
-		return false
-	}
-	sig := strings.TrimPrefix(header(headers, "X-Hub-Signature-256"), "sha256=")
-	if sig == "" {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	return hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(sig))
-}
-
-// decodeDelivery turns a delivery into at most one event.
-//
-// Most deliveries are not interesting, and returning nothing is the normal
-// case — a connector that publishes every webhook it receives makes the event
-// log useless for the ones that matter.
-func decodeDelivery(headers map[string]string, body []byte) ([]map[string]any, error) {
-	event := header(headers, "X-GitHub-Event")
-	switch event {
-	case "issues", "pull_request", "issue_comment", "pull_request_review":
-	default:
-		return nil, nil
-	}
-
-	var d struct {
-		Action     string `json:"action"`
-		Repository struct {
-			FullName string `json:"full_name"`
-		} `json:"repository"`
-		Sender struct {
-			Login string `json:"login"`
-		} `json:"sender"`
-		Issue struct {
-			Number int    `json:"number"`
-			Title  string `json:"title"`
-			Body   string `json:"body"`
-			URL    string `json:"html_url"`
-		} `json:"issue"`
-		PullRequest struct {
-			Number int    `json:"number"`
-			Title  string `json:"title"`
-			Body   string `json:"body"`
-			URL    string `json:"html_url"`
-			Draft  bool   `json:"draft"`
-		} `json:"pull_request"`
-		Comment struct {
-			Body string `json:"body"`
-			URL  string `json:"html_url"`
-		} `json:"comment"`
-	}
-	if err := json.Unmarshal(body, &d); err != nil {
-		return nil, fmt.Errorf("github: undecodable %s delivery: %w", event, err)
-	}
-
-	number, title, text, url := d.Issue.Number, d.Issue.Title, d.Issue.Body, d.Issue.URL
-	if d.PullRequest.Number != 0 {
-		number, title, text, url = d.PullRequest.Number, d.PullRequest.Title, d.PullRequest.Body, d.PullRequest.URL
-	}
-	if d.Comment.Body != "" {
-		text, url = d.Comment.Body, d.Comment.URL
-	}
-
-	return []map[string]any{{
-		"event":  event,
-		"action": d.Action,
-		"repo":   d.Repository.FullName,
-		"number": number,
-		"title":  title,
-		"actor":  d.Sender.Login,
-		"url":    url,
-		// Everything below is written by whoever opened the issue, so it is
-		// fenced by the host before it reaches a prompt.
-		"body":  text,
-		"draft": d.PullRequest.Draft,
-	}}, nil
 }
 
 func listIssues(ctx context.Context, cr connectorkit.Credentials, in map[string]any) (any, error) {
@@ -291,8 +240,11 @@ func getIssue(ctx context.Context, cr connectorkit.Credentials, in map[string]an
 	if _, err := call(ctx, cr, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, number), nil, &r); err != nil {
 		return nil, err
 	}
+	// Title and body were written by whoever opened this — anyone can open an
+	// issue or a PR — so they reach the agent fenced, same as a webhook delivery.
+	src := fmt.Sprintf("%s#%d on GitHub, opened by %s", repo, r.Number, r.User.Login)
 	return map[string]any{
-		"repo": repo, "number": r.Number, "title": r.Title, "body": r.Body,
+		"repo": repo, "number": r.Number, "title": safety.Fence(src, r.Title), "body": safety.Fence(src, r.Body),
 		"state": r.State, "url": r.HTMLURL, "comments": r.Comments, "author": r.User.Login,
 	}, nil
 }
@@ -337,12 +289,9 @@ func call(ctx context.Context, cr connectorkit.Credentials, method, path string,
 	if err != nil {
 		return rl, err
 	}
-	token := cr.AccessToken
-	if token == "" {
-		token = cr.Get("token")
-	}
-	if token == "" {
-		return rl, fmt.Errorf("github: no token configured")
+	token, err := tokenFor(ctx, cr)
+	if err != nil {
+		return rl, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")

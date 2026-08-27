@@ -86,6 +86,32 @@ FROM org_members WHERE member = ? LIMIT 1`, member).
 }
 
 // Departments lists the distinct departments in an org.
+// OrgMembersByRole returns everyone holding a role, across departments.
+//
+// An approval is asked of a role rather than a person so it does not wait on
+// whoever happens to be on leave.
+func (s *Store) OrgMembersByRole(role string) ([]OrgMember, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.query(`SELECT org, member, name, department, role, namespace, added_at
+FROM org_members WHERE role = ? ORDER BY member`, role)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []OrgMember
+	for rows.Next() {
+		var m OrgMember
+		if err := rows.Scan(&m.Org, &m.Member, &m.Name, &m.Department, &m.Role, &m.Namespace, &m.AddedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) Departments(org string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

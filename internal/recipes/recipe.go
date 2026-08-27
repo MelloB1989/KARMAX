@@ -32,11 +32,25 @@ const (
 	VerbSend     = "send"     // message someone through WhatsApp
 	VerbSleep    = "sleep"    // durable wait; the run resumes later
 	VerbLog      = "log"      // write a line to KARMAX's log
+
+	// Organisational verbs. A recipe working inside a company needs a thread of
+	// work to belong to, a way to wait on other people, and somewhere to build.
+	VerbCaseOpen    = "case.open"    // open or rejoin the case for a key
+	VerbCaseGet     = "case.get"     // look one up without creating it
+	VerbCaseState   = "case.state"   // move the work along
+	VerbCaseLog     = "case.log"     // append to the case's history
+	VerbCaseHistory = "case.history" // read what has already happened on it
+	VerbCaseSay     = "case.say"     // speak in the case's own thread
+	VerbAwait       = "await"        // park until a matching event arrives
+	VerbForeach     = "foreach"      // run steps once per item
+	VerbSandbox     = "sandbox"      // hand a coding task to a container
 )
 
 var verbs = []string{
 	VerbAsk, VerbObserve, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall, VerbRemember,
 	VerbNotify, VerbPropose, VerbRemind, VerbSend, VerbSleep, VerbLog,
+	VerbCaseOpen, VerbCaseGet, VerbCaseState, VerbCaseLog, VerbCaseHistory, VerbCaseSay,
+	VerbAwait, VerbForeach, VerbSandbox,
 }
 
 // Recipe is one YAML file.
@@ -78,6 +92,17 @@ type Step struct {
 	As   string
 	When string
 	Else []Step
+
+	// Steps is foreach's nested body — the one place a step's value is a list
+	// of steps rather than a set of fields.
+	Steps []Step
+	// Match is await's payload matchers — the one place a step's value has a
+	// field that is itself several field: value pairs rather than one scalar.
+	Match map[string]string
+	// In is foreach's item list when written as a literal YAML sequence rather
+	// than a template that renders one; the template form lands in Args["in"]
+	// like everything else.
+	In []string
 
 	// Line is where this step starts in the file, for errors that point at
 	// something rather than describing it.
@@ -194,17 +219,41 @@ func decodeStep(path string, node *yaml.Node) (Step, error) {
 				s.Args = map[string]string{}
 				for j := 0; j+1 < len(val.Content); j += 2 {
 					name, v := val.Content[j], val.Content[j+1]
+					if v.Kind == yaml.ScalarNode {
+						s.Args[name.Value] = v.Value
+						continue
+					}
 					// A nested block has no scalar value, so it would land here
 					// as an empty string and the step would run as though the
 					// field had never been written. Refused instead: silently
 					// dropping half of what someone wrote is the worst way to
-					// disagree with them.
-					if v.Kind != yaml.ScalarNode {
+					// disagree with them — except the three fields below, which
+					// are blocks on purpose (a match is several conditions, a
+					// foreach body is a nested recipe).
+					switch {
+					case key == VerbAwait && name.Value == "match":
+						m, err := decodeMatch(path, v)
+						if err != nil {
+							return s, err
+						}
+						s.Match = m
+					case key == VerbForeach && name.Value == "steps":
+						nested, err := decodeForeachSteps(path, v)
+						if err != nil {
+							return s, err
+						}
+						s.Steps = nested
+					case key == VerbForeach && name.Value == "in":
+						items, err := decodeForeachIn(path, v)
+						if err != nil {
+							return s, err
+						}
+						s.In = items
+					default:
 						return s, &Error{Path: path, Line: v.Line,
 							Message: fmt.Sprintf("%q under %q is a block, and steps take plain values", name.Value, key),
 							Fix:     nestedFix(key, name.Value)}
 					}
-					s.Args[name.Value] = v.Value
 				}
 			default:
 				return s, &Error{Path: path, Line: val.Line,
@@ -262,19 +311,36 @@ func validateSteps(path string, steps []Step) error {
 		if err := validateSteps(path, s.Else); err != nil {
 			return err
 		}
+		// A foreach body is validated too, or a mistake in it is invisible
+		// until the recipe actually runs and hits that item.
+		if err := validateSteps(path, s.Steps); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 // required names the fields each map-form verb cannot do without.
 var required = map[string][]string{
-	VerbHTTP:     {"url"},
-	VerbTool:     {"name"},
-	VerbNotify:   {"title"},
-	VerbPropose:  {"title", "action"},
-	VerbRemind:   {"title"},
-	VerbSend:     {"to", "text"},
+	VerbHTTP:    {"url"},
+	VerbTool:    {"name"},
+	VerbNotify:  {"title"},
+	VerbPropose: {"title", "action"},
+	VerbRemind:  {"title"},
+	// 'to' is not listed here: it is required unless 'channel' stands in for
+	// it, which is a choice between two fields rather than one field always
+	// being there — checked by hand below.
+	VerbSend:     {"text"},
 	VerbRemember: {"fact"},
+
+	VerbCaseOpen:    {"key", "title"},
+	VerbCaseGet:     {"key"},
+	VerbCaseState:   {"case", "state"},
+	VerbCaseLog:     {"case", "kind", "payload"},
+	VerbCaseHistory: {"case"},
+	VerbCaseSay:     {"case", "text"},
+	VerbAwait:       {"event"},
+	VerbSandbox:     {"repo", "branch", "task"},
 }
 
 func (s Step) validate(path string) error {
@@ -298,12 +364,33 @@ func (s Step) validate(path string) error {
 		return &Error{Path: path, Line: s.Line, Message: "sleep needs a duration",
 			Fix: "'- sleep: 72h' — the run is parked and resumes later, so hours and days are fine"}
 	}
+	// 'to' is required UNLESS 'channel' names the target instead — a bare
+	// 'to: "#eng"' also works, since that IS the channel.
+	if s.Verb == VerbSend && strings.TrimSpace(s.Args["to"]) == "" && strings.TrimSpace(s.Args["channel"]) == "" {
+		return &Error{Path: path, Line: s.Line, Message: "\"send\" needs \"to\" or \"channel\"",
+			Fix: "give a WhatsApp target as 'to', or a channel to post into as 'channel' (or 'to' — \"#eng\" works as either)"}
+	}
+	if s.Verb == VerbForeach {
+		if strings.TrimSpace(s.Args["in"]) == "" && len(s.In) == 0 {
+			return &Error{Path: path, Line: s.Line, Message: "\"foreach\" needs \"in\"",
+				Fix: "give it a list ('in: [\"a\", \"b\"]') or a template that renders one ('in: \"{{ .tickets }}\"')"}
+		}
+		if strings.TrimSpace(s.Args["as"]) == "" {
+			return &Error{Path: path, Line: s.Line, Message: "\"foreach\" needs \"as\"",
+				Fix: "name each item, e.g. 'as: t', so 'steps:' can refer to {{ .t }}"}
+		}
+		if len(s.Steps) == 0 {
+			return &Error{Path: path, Line: s.Line, Message: "\"foreach\" needs \"steps\"",
+				Fix: "add a nested 'steps:' list — the body to run once per item"}
+		}
+	}
 	return nil
 }
 
 func storesResult(verb string) bool {
 	switch verb {
-	case VerbAsk, VerbObserve, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall:
+	case VerbAsk, VerbObserve, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall,
+		VerbCaseOpen, VerbCaseGet, VerbCaseHistory, VerbAwait, VerbSandbox:
 		return true
 	}
 	return false
@@ -346,6 +433,53 @@ func cleanYAMLError(err error) string {
 		msg = msg[i+2:]
 	}
 	return msg
+}
+
+// decodeMatch reads await's match: block — the fields a payload must equal.
+func decodeMatch(path string, v *yaml.Node) (map[string]string, error) {
+	if v.Kind != yaml.MappingNode {
+		return nil, &Error{Path: path, Line: v.Line,
+			Message: "\"match\" under \"await\" must be a set of field: value pairs",
+			Fix:     "write it as:\n    await:\n      event: ...\n      match: { key: value, status: value }"}
+	}
+	out := map[string]string{}
+	for i := 0; i+1 < len(v.Content); i += 2 {
+		name, val := v.Content[i], v.Content[i+1]
+		if val.Kind != yaml.ScalarNode {
+			return nil, &Error{Path: path, Line: val.Line,
+				Message: fmt.Sprintf("%q under %q is a block, and a match compares one value", name.Value, "match"),
+				Fix:     "give it a single value to compare against"}
+		}
+		out[name.Value] = val.Value
+	}
+	return out, nil
+}
+
+// decodeForeachSteps reads foreach's nested steps: — a recipe inside a recipe.
+func decodeForeachSteps(path string, v *yaml.Node) ([]Step, error) {
+	if v.Kind != yaml.SequenceNode {
+		return nil, &Error{Path: path, Line: v.Line, Message: "\"steps\" under \"foreach\" must be a list",
+			Fix: "each nested step starts with '- ', just like the recipe's own steps:"}
+	}
+	return decodeStepList(path, v)
+}
+
+// decodeForeachIn reads a literal in: list. The template form ("{{ .x }}")
+// never reaches here — it is a scalar, so it is caught before this switch.
+func decodeForeachIn(path string, v *yaml.Node) ([]string, error) {
+	if v.Kind != yaml.SequenceNode {
+		return nil, &Error{Path: path, Line: v.Line, Message: "\"in\" under \"foreach\" must be a list",
+			Fix: "write a literal list ('in: [\"a\", \"b\"]'), or a template that renders one ('in: \"{{ .tickets }}\"')"}
+	}
+	out := make([]string, 0, len(v.Content))
+	for _, item := range v.Content {
+		if item.Kind != yaml.ScalarNode {
+			return nil, &Error{Path: path, Line: item.Line, Message: "each item in a literal \"in\" list must be plain text",
+				Fix: "list plain values, or move the structure into an earlier step and pass it as a rendered template"}
+		}
+		out = append(out, item.Value)
+	}
+	return out, nil
 }
 
 // nestedFix suggests the flat form for a field someone nested.

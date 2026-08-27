@@ -38,30 +38,62 @@ type Channel struct {
 	appToken string // xapp-… : opens the Socket Mode connection
 	botToken string // xoxb-… : reads and posts
 	inbox    chan comms.Message
-	log      *zap.Logger
-	cancel   context.CancelFunc
+	// decisions carries Approve/Reject outcomes to the comms manager — the
+	// same shape IncomingMessages already uses to surface inbound things, so
+	// the manager drains this exactly like it drains a message channel.
+	decisions chan comms.Decision
+	log       *zap.Logger
+	cancel    context.CancelFunc
 
 	api    *slack.Client
 	socket *socketmode.Client
 
-	mu    sync.RWMutex
-	botID string // our bot user id, for self/mention detection
+	mu            sync.RWMutex
+	botID         string // our bot user id, for self/mention detection
+	signingSecret string // verifies the HTTP paths; Socket Mode doesn't need it
 	// Slack events carry user IDs, not names. Resolved names are cached so a
 	// busy channel does not cost one users.info call per message.
 	names map[string]string
+
+	// dedup remembers envelope/event ids already processed, so a redelivery
+	// (Slack resends anything not acked within 3s, and recycles connections
+	// routinely) does not double-run a step that isn't safe to repeat.
+	dedup *envelopeDedup
 }
 
 // New creates a Slack channel. appToken opens the socket, botToken does the work.
 func New(id, appToken, botToken string, log *zap.Logger) *Channel {
 	return &Channel{
-		id:       id,
-		appToken: strings.TrimSpace(appToken),
-		botToken: strings.TrimSpace(botToken),
-		inbox:    make(chan comms.Message, 256),
-		log:      log,
-		names:    make(map[string]string),
+		id:        id,
+		appToken:  strings.TrimSpace(appToken),
+		botToken:  strings.TrimSpace(botToken),
+		inbox:     make(chan comms.Message, 256),
+		decisions: make(chan comms.Decision, 64),
+		log:       log,
+		names:     make(map[string]string),
+		dedup:     newEnvelopeDedup(),
 	}
 }
+
+// SetSigningSecret enables request verification on the HTTP paths (Events API
+// and Interactivity webhooks, for installs with ingress). Socket Mode doesn't
+// need it — the app token already authenticates that connection — so a
+// socket-only install can leave this unset.
+func (c *Channel) SetSigningSecret(secret string) {
+	c.mu.Lock()
+	c.signingSecret = strings.TrimSpace(secret)
+	c.mu.Unlock()
+}
+
+func (c *Channel) secret() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.signingSecret
+}
+
+// Decisions implements comms.DecisionSource: an Approve/Reject click, once
+// verified and resolved, lands here for the manager to publish.
+func (c *Channel) Decisions() <-chan comms.Decision { return c.decisions }
 
 func (c *Channel) ID() string                             { return c.id }
 func (c *Channel) Type() string                           { return "slack" }
@@ -92,14 +124,54 @@ func (c *Channel) Start(ctx context.Context) error {
 	c.cancel = cancel
 
 	go c.pump(runCtx)
-	go func() {
-		// Run blocks until the context ends; its own reconnect handling is why
-		// this package no longer has any.
-		if err := c.socket.RunContext(runCtx); err != nil && runCtx.Err() == nil {
-			c.log.Error("slack socket stopped", zap.Error(err))
-		}
-	}()
+	go c.runSocket(runCtx)
 	return nil
+}
+
+// reconnectMinBackoff/reconnectMaxBackoff bound the wait between attempts to
+// restart the socket after RunContext gives up entirely. Slack's own client
+// already retries ordinary drops internally (pings, "please reconnect"
+// disconnects) — RunContext only returns when that internal loop concluded
+// the connection is unrecoverable (or our context was cancelled). Treating
+// that as final was the bug: an auth hiccup or a Slack-side blip then meant
+// this channel never spoke again until the whole process restarted.
+const (
+	reconnectMinBackoff = 2 * time.Second
+	reconnectMaxBackoff = 5 * time.Minute
+	// reconnectResetAfter: a connection that stayed up this long before
+	// failing is a fresh problem, not a continuation of the last one, so the
+	// wait resets instead of climbing forever over the channel's lifetime.
+	reconnectResetAfter = 5 * time.Minute
+)
+
+// runSocket keeps the socket connection alive for as long as ctx lives,
+// re-dialing with backoff whenever RunContext exits early.
+func (c *Channel) runSocket(ctx context.Context) {
+	backoff := reconnectMinBackoff
+	for {
+		started := time.Now()
+		err := c.socket.RunContext(ctx)
+		if ctx.Err() != nil {
+			return // shutting down, not a failure
+		}
+		if time.Since(started) > reconnectResetAfter {
+			backoff = reconnectMinBackoff
+		}
+		c.log.Error("slack socket stopped; reconnecting",
+			zap.String("channel", c.id), zap.Error(err), zap.Duration("wait", backoff))
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < reconnectMaxBackoff {
+			backoff *= 2
+			if backoff > reconnectMaxBackoff {
+				backoff = reconnectMaxBackoff
+			}
+		}
+	}
 }
 
 // pump turns socket events into KARMAX messages.
@@ -124,7 +196,25 @@ func (c *Channel) pump(ctx context.Context) {
 				if evt.Request != nil {
 					c.socket.Ack(*evt.Request)
 				}
+				// Even acked in time, a redelivery still happens (a reconnect
+				// mid-flight, a retried envelope) — the envelope id catches what
+				// the ack window alone cannot.
+				if c.envelopeSeen(evt.Request) {
+					continue
+				}
 				c.handleEvent(ctx, api)
+			case socketmode.EventTypeInteractive:
+				cb, ok := evt.Data.(slack.InteractionCallback)
+				if !ok {
+					continue
+				}
+				if evt.Request != nil {
+					c.socket.Ack(*evt.Request)
+				}
+				if c.envelopeSeen(evt.Request) {
+					continue
+				}
+				c.handleInteraction(ctx, cb)
 			case socketmode.EventTypeConnectionError:
 				c.log.Warn("slack connection error; the client will retry", zap.Any("data", evt.Data))
 			case socketmode.EventTypeInvalidAuth:
@@ -133,6 +223,16 @@ func (c *Channel) pump(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// envelopeSeen reports whether this socket envelope has already been
+// processed. req is nil for event types that don't carry one (hello,
+// connection lifecycle events), which never need deduping.
+func (c *Channel) envelopeSeen(req *socketmode.Request) bool {
+	if req == nil || req.EnvelopeID == "" {
+		return false
+	}
+	return c.dedup.seenBefore(req.EnvelopeID, time.Now())
 }
 
 // handleEvent forwards a user message and ignores everything else.
