@@ -71,7 +71,10 @@ func (c *Connector) SetupSteps(cr connectorkit.Credentials, callbackURL string) 
 			Title: "Optional: send webhooks here",
 			Body: "On the app's General page, set the webhook URL to this address and put the " +
 				"same secret in webhook_secret below. Without it the agent still works, it just " +
-				"learns about pushes and pull requests by asking rather than being told.",
+				"learns about pushes and pull requests by asking rather than being told. " +
+				"NOTE: this address only starts answering once credentials are saved AND KARMAX " +
+				"has been restarted — webhook routes are mounted at startup for connectors that " +
+				"have credentials, so a delivery test run before that restart will 404.",
 			Value: callbackURL,
 		})
 	}
