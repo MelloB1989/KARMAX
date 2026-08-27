@@ -18,13 +18,14 @@ type StoredProposal struct {
 	Status         string // pending | approved | rejected | executed | failed
 	DecisionNote   string
 	Result         string
+	DecidedBy      string
 	CreatedAt      time.Time
 	DecidedAt      *time.Time
 }
 
 const proposalCols = `id, agent_id, COALESCE(kind,''), title, COALESCE(summary,''), ` +
 	`COALESCE(context,''), COALESCE(proposed_action,''), status, COALESCE(decision_note,''), ` +
-	`COALESCE(result,''), created_at, decided_at`
+	`COALESCE(result,''), COALESCE(decided_by,''), created_at, decided_at`
 
 // HasSimilarProposal reports whether a near-identical proposal already exists:
 // still pending with the same title, OR any with the same title created within
@@ -105,7 +106,7 @@ func scanProposals(rows *sql.Rows) ([]StoredProposal, error) {
 		var p StoredProposal
 		var decided sql.NullTime
 		if err := rows.Scan(&p.ID, &p.AgentID, &p.Kind, &p.Title, &p.Summary, &p.Context,
-			&p.ProposedAction, &p.Status, &p.DecisionNote, &p.Result, &p.CreatedAt, &decided); err != nil {
+			&p.ProposedAction, &p.Status, &p.DecisionNote, &p.Result, &p.DecidedBy, &p.CreatedAt, &decided); err != nil {
 			return nil, err
 		}
 		if decided.Valid {
@@ -115,4 +116,18 @@ func scanProposals(rows *sql.Rows) ([]StoredProposal, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// DecideProposalBy records a decision along with the operator who made it.
+//
+// DecideProposal stays as it is for the phone app, which authenticates with a
+// single shared token and genuinely has no name to record. Attributing those
+// to a person would be an invention.
+func (s *Store) DecideProposalBy(id, status, note, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.exec(`
+UPDATE proposals SET status = ?, decision_note = ?, decided_by = ?, decided_at = datetime('now')
+WHERE id = ?`, status, note, by, id)
+	return err
 }

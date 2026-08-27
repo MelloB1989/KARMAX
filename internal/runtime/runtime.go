@@ -67,6 +67,7 @@ type KarmaxRuntime struct {
 	webhooks  *webhook.WebhookServer
 	comms     *comms.Manager
 	api       *api.Server
+	console   *api.ConsoleServer
 
 	// broker decides what each loop, peer and connector may do.
 	broker *broker.Broker
@@ -868,6 +869,19 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		apiSrv = api.New(apiAddr, cfg.API.Port, os.Getenv("KARMAX_API_TOKEN"), agentReg, s, sched, memFactory, cfg, log)
 	}
 
+	// The console is a SEPARATE listener from the API above, and deliberately
+	// so: the API exposes POST /api/tools/{name}, which can invoke shell.exec.
+	// The console is meant to be published; a shell is not. Two ports is what
+	// lets one be exposed without exposing the other.
+	var consoleSrv *api.ConsoleServer
+	if cfg.Console.Enabled {
+		consoleAddr := fmt.Sprintf("%s:%d", cfg.Console.Host, cfg.Console.Port)
+		consoleSrv = api.NewConsole(consoleAddr, consoleDistDir(), api.ConsoleDeps{
+			Store: s, Agents: agentReg, Scheduler: sched, Broker: brk,
+			Conns: connHost, Config: cfg, Log: log,
+		})
+	}
+
 	// Wire bus events to agent inboxes (webhooks, scheduled jobs, user-defined,
 	// and comms messages). Webhook routes may remap their event to a custom
 	// bus_event kind, and agents may declare extra event kinds in
@@ -927,6 +941,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		webhooks:     wh,
 		comms:        commsMgr,
 		api:          apiSrv,
+		console:      consoleSrv,
 	}
 	// The agent can now run what it writes, not just validate it — and it is
 	// told what the run did, since "started something" is not verification.
@@ -1133,6 +1148,16 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		}()
 	}
 
+	if rt.console != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rt.console.Start(ctx); err != nil {
+				errCh <- fmt.Errorf("console server: %w", err)
+			}
+		}()
+	}
+
 	go func() {
 		for {
 			select {
@@ -1159,6 +1184,9 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.webhooks.Stop()
 	if rt.api != nil {
 		rt.api.Stop()
+	}
+	if rt.console != nil {
+		rt.console.Stop()
 	}
 	rt.closeWasmLoops(context.Background())
 	rt.store.Close()
@@ -1720,4 +1748,20 @@ func azureDeployments(p config.ProviderConfig, log *zap.Logger) map[ai.BaseModel
 		models[karmahelper.ResolveModel(model)] = deployment
 	}
 	return models
+}
+
+// consoleDistDir is where the built console lives.
+//
+// Read from disk rather than embedded so the UI can be redeployed without
+// rebuilding the binary, and so a server built without the frontend still
+// starts — it serves the API and says the UI is missing, which beats refusing
+// to boot over a static asset.
+func consoleDistDir() string {
+	if d := strings.TrimSpace(os.Getenv("KARMAX_CONSOLE_DIST")); d != "" {
+		return d
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".karmax", "console")
+	}
+	return "console"
 }

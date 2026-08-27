@@ -75,3 +75,49 @@ func TestQueryAuditOrderAndDefaultLimit(t *testing.T) {
 		t.Fatalf("explicit limit: %+v, %v", limited, err)
 	}
 }
+
+// The console's audit filter is a free-text box, so a partial verb has to
+// match; exact match returns nothing for every half-typed word.
+func TestVerbLikeMatchesASubstring(t *testing.T) {
+	s := newTestStore(t)
+	for _, v := range []string{"pr.merge", "pr.comment", "case.open"} {
+		if err := s.AppendAudit(AuditEvent{Verb: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.QueryAudit(AuditFilter{VerbLike: "merge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Verb != "pr.merge" {
+		t.Errorf("substring filter returned %d rows, want pr.merge only", len(got))
+	}
+
+	pr, err := s.QueryAudit(AuditFilter{VerbLike: "pr."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pr) != 2 {
+		t.Errorf("expected both pr.* verbs, got %d", len(pr))
+	}
+}
+
+// A wildcard typed into the filter box is a character to search for, not an
+// instruction to match everything.
+func TestVerbLikeTreatsWildcardsAsLiteral(t *testing.T) {
+	s := newTestStore(t)
+	for _, v := range []string{"pr.merge", "odd%verb"} {
+		if err := s.AppendAudit(AuditEvent{Verb: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.QueryAudit(AuditFilter{VerbLike: "%"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Verb != "odd%verb" {
+		t.Errorf(`filtering for "%%" should find only the verb containing it, got %d rows`, len(got))
+	}
+}

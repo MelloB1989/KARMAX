@@ -21,8 +21,15 @@ type AuditEvent struct {
 // AuditFilter narrows a QueryAudit call. Zero-value fields are not applied.
 type AuditFilter struct {
 	ActorID, Agent, CaseID, Verb string
-	Since                        time.Time
-	Limit                        int
+
+	// VerbLike matches a substring of the verb instead of the whole thing.
+	// The console's audit filter is a free-text box — someone types "merge"
+	// expecting to see pr.merge — and exact match would return nothing for
+	// every partial word. Applied in addition to Verb, not instead of it.
+	VerbLike string
+
+	Since time.Time
+	Limit int
 }
 
 // AppendAudit records one decision.
@@ -69,6 +76,10 @@ func (s *Store) QueryAudit(f AuditFilter) ([]AuditEvent, error) {
 		conds = append(conds, "verb = ?")
 		args = append(args, f.Verb)
 	}
+	if f.VerbLike != "" {
+		conds = append(conds, `verb LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(f.VerbLike)+"%")
+	}
 	if !f.Since.IsZero() {
 		conds = append(conds, "created_at >= ?")
 		args = append(args, f.Since)
@@ -95,4 +106,11 @@ func (s *Store) QueryAudit(f AuditFilter) ([]AuditEvent, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// escapeLike neutralises the wildcards in a user-supplied LIKE pattern, so a
+// filter of "%" means the literal character rather than "everything".
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+	return r.Replace(s)
 }
