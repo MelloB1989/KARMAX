@@ -154,7 +154,13 @@ export type ConnectorStatus = "healthy" | "degraded" | "failed" | "not_configure
 export interface ConnectorSummary {
   id: string;
   name: string;
-  kind: "slack" | "github" | "jira";
+  /**
+   * The connector's manifest id. Deliberately not a closed union: the server
+   * derives this from whatever connectors are registered, so narrowing it here
+   * would only tell TypeScript a lookup is total when it is not — which is
+   * precisely how ICON[c.kind] came to return undefined and blank the page.
+   */
+  kind: string;
   status: ConnectorStatus;
   detail: string;
   last_checked_at: string | null;
