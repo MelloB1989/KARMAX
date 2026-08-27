@@ -1,0 +1,223 @@
+/* ============================================================================
+   OCREW CONSOLE — SIGNAL
+   ----------------------------------------------------------------------------
+   Dark-first, because this is a room somebody sits in for a shift, not a page
+   they visit. Three rules the whole system hangs off:
+
+   1. Warm type on a cool ground. The neutrals carry the brand's warmth
+      (#E8E6E3 against #0C0D10); the single accent is cool and low-chroma. That
+      tension is the character — it is what stops a dark UI reading as a
+      template — and it leaves green/amber/red free to mean ONLY machine state.
+   2. Monospace is structure, not decoration. Every key, id, count and
+      timestamp is mono and tabular. That is what makes a dense table
+      scannable rather than merely small.
+   3. State is never colour alone. Each one carries a glyph and a stripe too,
+      so the board reads without colour vision and in a screenshot.
+
+   The light theme is a real design, not an inversion — but dark is the one
+   this was drawn for.
+   ========================================================================== */
+
+:root {
+  /* Dark IS the default: an unset preference lands here. */
+  --k-bg: #0c0d10;
+  --k-bg-soft: #0a0b0e;
+  --k-surface: #101216;
+  --k-surface-2: #16191e;
+  --k-elevated: #1b1f25;
+
+  --k-border: #1f242a;
+  --k-border-strong: #2e343c;
+  --k-border-glow: #35586f;
+
+  --k-fg: #e8e6e3;
+  --k-fg-muted: #9ba1a9;
+  --k-fg-subtle: #6b717a;
+
+  --k-accent: #6fa8d6;
+  --k-accent-fg: #0c0d10;
+
+  --k-shadow-color: 0 0 0;
+
+  /* Machine state. Never the accent — a coloured dot on this screen always
+     means how something is doing, never which brand it belongs to. */
+  --k-healthy: #4fb07a;
+  --k-healthy-bg: #12251b;
+  --k-degraded: #d6a34a;
+  --k-degraded-bg: #201a0d;
+  --k-failed: #d9685e;
+  --k-failed-bg: #241412;
+  --k-unknown: #6b717a;
+  --k-unknown-bg: #16191e;
+}
+
+.light {
+  --k-bg: #f4f3f0;
+  --k-bg-soft: #eceae5;
+  --k-surface: #ffffff;
+  --k-surface-2: #f7f6f3;
+  --k-elevated: #ffffff;
+
+  --k-border: #e0ddd6;
+  --k-border-strong: #cbc7be;
+  --k-border-glow: #9dbdd4;
+
+  --k-fg: #23211e;
+  --k-fg-muted: #6e6a62;
+  --k-fg-subtle: #8a867e;
+
+  --k-accent: #2f6f8f;
+  --k-accent-fg: #ffffff;
+
+  --k-shadow-color: 35 33 30;
+
+  --k-healthy: #1f7a4d;
+  --k-healthy-bg: #e6f2ea;
+  --k-degraded: #96701c;
+  --k-degraded-bg: #f7efdc;
+  --k-failed: #a8402f;
+  --k-failed-bg: #f8e7e4;
+  --k-unknown: #6e6a62;
+  --k-unknown-bg: #eceae5;
+}
+
+@theme inline {
+  --color-bg: var(--k-bg);
+  --color-bg-soft: var(--k-bg-soft);
+  --color-surface: var(--k-surface);
+  --color-surface-2: var(--k-surface-2);
+  --color-elevated: var(--k-elevated);
+
+  --color-border: var(--k-border);
+  --color-border-strong: var(--k-border-strong);
+  --color-border-glow: var(--k-border-glow);
+
+  --color-fg: var(--k-fg);
+  --color-fg-muted: var(--k-fg-muted);
+  --color-fg-subtle: var(--k-fg-subtle);
+
+  --color-accent: var(--k-accent);
+  --color-accent-fg: var(--k-accent-fg);
+
+  --color-healthy: var(--k-healthy);
+  --color-healthy-bg: var(--k-healthy-bg);
+  --color-degraded: var(--k-degraded);
+  --color-degraded-bg: var(--k-degraded-bg);
+  --color-failed: var(--k-failed);
+  --color-failed-bg: var(--k-failed-bg);
+  --color-unknown: var(--k-unknown);
+  --color-unknown-bg: var(--k-unknown-bg);
+}
+
+@theme {
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", monospace;
+
+  /* A tight scale. An operator screen earns its density from restraint in the
+     ramp, not from shrinking everything. */
+  --text-h1: 1.25rem;
+  --text-h1--line-height: 1.25;
+  --text-h1--letter-spacing: -0.015em;
+  --text-h1--font-weight: 600;
+
+  --text-h2: 1.0625rem;
+  --text-h2--line-height: 1.35;
+  --text-h2--letter-spacing: -0.01em;
+  --text-h2--font-weight: 600;
+
+  --text-label: 0.625rem;
+  --text-label--line-height: 1;
+  --text-label--letter-spacing: 0.13em;
+
+  /* Brand — the one accent, in steps. Primary actions and links only, and
+     never anywhere a status colour could be read into it. */
+  --color-brand-50: #eef5fb;
+  --color-brand-100: #d8e8f5;
+  --color-brand-200: #b6d3ea;
+  --color-brand-300: #93bcdd;
+  --color-brand-400: #7fb2d9;
+  --color-brand-500: #6fa8d6;
+  --color-brand-600: #5690bf;
+  --color-brand-700: #43759d;
+  --color-brand-800: #35586f;
+  --color-brand-900: #263f50;
+
+  --color-sun-300: #e6c98e;
+  --color-sun-400: #ddb96f;
+  --color-sun-500: #d6a34a;
+  --color-sun-600: #b98a37;
+  --color-sun-700: #96701c;
+
+  /* Sharp, not soft. Rounded-everything is the template look. */
+  --radius-card: 6px;
+  --radius-panel: 8px;
+  --radius-chip: 4px;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-fade: fade 0.15s ease both;
+  --animate-pulse-soft: pulse-soft 1.8s ease-in-out infinite;
+
+  @keyframes fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.45; }
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 13px;
+  }
+  /* Digits that line up in a column are worth more than digits that don't. */
+  .font-mono, code, kbd, samp, pre {
+    font-variant-numeric: tabular-nums;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--color-brand-500) 32%, transparent);
+    color: var(--color-fg);
+  }
+  :focus-visible {
+    outline: 1.5px solid var(--color-brand-500);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+}
+
+@layer components {
+  /* Stepped by tone, not by shadow. A dark UI that leans on drop shadows to
+     separate surfaces ends up looking smeared; tone separation stays crisp. */
+  .panel {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+  }
+  .light .panel {
+    box-shadow:
+      0 1px 2px 0 rgb(var(--k-shadow-color) / 0.04),
+      0 6px 16px -12px rgb(var(--k-shadow-color) / 0.10);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -2,6 +2,8 @@ package recipes
 
 import (
 	"context"
+	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -323,6 +325,371 @@ steps:
 	} {
 		if !strings.Contains(code, want) {
 			t.Errorf("generated code missing %q:\n%s", want, code)
+		}
+	}
+}
+
+// caseGetKit answers CaseGet with a fixed found/not-found result, everything
+// else via DryRun. It exists to test the ONE thing DryRun's own fake CaseGet
+// papers over: what a real "not found" binds to.
+type caseGetKit struct {
+	*DryRun
+	found bool
+}
+
+func (k *caseGetKit) CaseGet(key string) (loopkit.Case, bool, error) {
+	if !k.found {
+		return loopkit.Case{}, false, nil
+	}
+	return loopkit.Case{ID: "case-1", Key: key, State: "open"}, true, nil
+}
+
+// case.get on a key nobody opened is not an error — it binds a Case whose
+// fields are all empty, so 'when: "{{ .c.id }}"' reads as false and a recipe
+// can branch on "does this exist yet" without case.get ever failing the run.
+func TestCaseGetNotFoundBindsEmptyRatherThanErroring(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - case.get: { key: "nope" }
+    as: c
+  - when: "{{ .c.id }}"
+    notify: { title: "FOUND-BRANCH" }
+    else:
+      - notify: { title: "MISSING-BRANCH" }
+`)
+	k := &caseGetKit{DryRun: NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual}), found: false}
+	if err := Run(context.Background(), r, k); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(k.Report(), "MISSING-BRANCH") || strings.Contains(k.Report(), "FOUND-BRANCH") {
+		t.Errorf("a not-found case.get did not read as empty:\n%s", k.Report())
+	}
+
+	k2 := &caseGetKit{DryRun: NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual}), found: true}
+	if err := Run(context.Background(), r, k2); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(k2.Report(), "FOUND-BRANCH") {
+		t.Errorf("a found case.get did not read as present:\n%s", k2.Report())
+	}
+}
+
+// idRecordingKit records every checkpoint name k.Step and k.Once are called
+// with, so a foreach's iterations can be checked for the one thing that
+// matters: no two of them ever ask for the same checkpoint.
+type idRecordingKit struct {
+	*DryRun
+	ids []string
+}
+
+func (k *idRecordingKit) Step(name string, fn func() (string, error)) (string, error) {
+	k.ids = append(k.ids, name)
+	return k.DryRun.Step(name, fn)
+}
+
+func (k *idRecordingKit) Once(name string, fn func() error) error {
+	k.ids = append(k.ids, name)
+	return k.DryRun.Once(name, fn)
+}
+
+// The bug this package's build contract calls out by name: without the
+// iteration index folded into each nested step's checkpoint id, every pass
+// through a foreach reuses iteration zero's ids — so a retry after item
+// three fails would find item one's steps already "done" and skip straight
+// past the rest of the list.
+func TestForeachIterationsGetDistinctCheckpointIDs(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - foreach:
+      in: '["a1", "a2", "a3"]'
+      as: t
+      steps:
+        - ask: "summarise {{ .t }}"
+          as: out
+        - recall: "notes on {{ .t }}"
+          as: notes
+`)
+	k := &idRecordingKit{DryRun: NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual})}
+	if err := Run(context.Background(), r, k); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.ids) != 6 {
+		t.Fatalf("recorded %d checkpoint ids, want 6 (3 items * 2 steps): %v", len(k.ids), k.ids)
+	}
+	seen := map[string]bool{}
+	for _, id := range k.ids {
+		if seen[id] {
+			t.Errorf("checkpoint id %q reused across iterations: %v", id, k.ids)
+		}
+		seen[id] = true
+	}
+}
+
+// foreach accepts a literal in: list too, not only a rendered JSON template.
+func TestForeachOverALiteralInList(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - foreach:
+      in: ["x", "y"]
+      as: item
+      steps:
+        - log: "item {{ .item }}"
+`)
+	d := NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual})
+	if err := Run(context.Background(), r, d); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"item x", "item y"} {
+		if !strings.Contains(d.Report(), want) {
+			t.Errorf("report missing %q:\n%s", want, d.Report())
+		}
+	}
+}
+
+// foreach's in: also accepts a JSON array bound by an earlier step — the
+// common shape, since the list usually comes from an http/tool call rather
+// than being written into the recipe by hand.
+func TestForeachOverAJSONArrayFromAnEarlierBinding(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  event: webhook
+steps:
+  - foreach:
+      in: "{{ .tickets }}"
+      as: t
+      steps:
+        - log: "ticket {{ .t }}"
+`)
+	d := NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: map[string]any{
+		"tickets": `["OPS-1","OPS-2"]`,
+	}})
+	if err := Run(context.Background(), r, d); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ticket OPS-1", "ticket OPS-2"} {
+		if !strings.Contains(d.Report(), want) {
+			t.Errorf("report missing %q:\n%s", want, d.Report())
+		}
+	}
+}
+
+// suspendingKit forces Await to park the run, the way the real Kit does when
+// a waiter is armed and nothing has matched it yet.
+type suspendingKit struct {
+	*DryRun
+}
+
+func (k *suspendingKit) Await(_ context.Context, id string, spec loopkit.AwaitSpec) (map[string]any, error) {
+	return nil, fmt.Errorf("%w: %s", loopkit.ErrSuspended, spec.Event)
+}
+
+// A suspended run is not a failed one: runSteps must hand the error straight
+// up rather than swallowing or reclassifying it, so the runtime — which owns
+// the retry/dead-letter decision — can tell loopkit.Suspended(err) is true
+// and skip both.
+func TestSuspensionPropagatesUnrecognisableAsAFailure(t *testing.T) {
+	r := mustParse(t, `
+name: parks
+on:
+  manual: true
+steps:
+  - notify: { title: "before" }
+  - await:
+      event: jira.issue.updated
+      match: { status: Done }
+    as: moved
+  - notify: { title: "after — must not run while suspended" }
+`)
+	k := &suspendingKit{DryRun: NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual})}
+	err := Run(context.Background(), r, k)
+	if err == nil {
+		t.Fatal("expected the run to end suspended, not succeed")
+	}
+	if !loopkit.Suspended(err) {
+		t.Fatalf("error lost its identity as it propagated: %v", err)
+	}
+	if strings.Contains(k.Report(), "after") {
+		t.Errorf("a step after the suspend point ran anyway:\n%s", k.Report())
+	}
+}
+
+// send's upgrade: the old to:-only shape still means exactly what it always
+// meant, and channel:/thread: route through SendTo instead without disturbing
+// that meaning.
+func TestSendRoutesThroughChannelOrKeepsWhatsApp(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - send: { to: "+911234567890", text: "old form" }
+  - send: { to: "#eng", thread: "t-1", text: "new form" }
+`)
+	d := NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual})
+	if err := Run(context.Background(), r, d); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d.Report(), "SEND WhatsApp to +911234567890: old form") {
+		t.Errorf("the old to:-only form changed meaning:\n%s", d.Report())
+	}
+	if !strings.Contains(d.Report(), "SEND to #eng") || !strings.Contains(d.Report(), "new form") {
+		t.Errorf("channel+thread did not route through SendTo:\n%s", d.Report())
+	}
+}
+
+// propose's upgrade: to_role routes through ProposeTo; leaving it out keeps
+// asking the one operator, exactly as before.
+func TestProposeRoutesThroughRoleOrKeepsTheOperator(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - propose: { title: "old form", action: "a" }
+  - propose: { to_role: senior-dev, title: "new form", action: "a" }
+`)
+	d := NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual})
+	if err := Run(context.Background(), r, d); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d.Report(), `ASK YOUR APPROVAL — "old form"`) {
+		t.Errorf("the old propose form changed meaning:\n%s", d.Report())
+	}
+	if !strings.Contains(d.Report(), `holding "senior-dev"`) {
+		t.Errorf("to_role did not route through ProposeTo:\n%s", d.Report())
+	}
+}
+
+// One recipe, every new verb, dry run end to end — the equivalent of
+// TestADryRunPerformsNothing for the organisational half of the language.
+func TestADryRunCoversEveryOrgVerb(t *testing.T) {
+	r := mustParse(t, `
+name: org-flow
+on:
+  manual: true
+steps:
+  - case.open: { agent: ops-pack, key: "jira:{{ .ticket }}", title: "{{ .summary }}" }
+    as: c
+  - case.state: { case: "{{ .c.id }}", state: prioritized }
+  - case.log:   { case: "{{ .c.id }}", kind: note, payload: "asked for repro" }
+  - case.say:   { case: "{{ .c.id }}", channel: "#eng", text: "starting work" }
+  - case.history: { case: "{{ .c.id }}" }
+    as: hist
+  - await:
+      event: jira.issue.updated
+      match: { key: "{{ .ticket }}", status: Prioritized }
+      timeout: 168h
+    as: moved
+  - sandbox:
+      case: "{{ .c.id }}"
+      repo: acme/api
+      branch: main
+      task: "Implement {{ .ticket }}"
+      timeout: 45m
+    as: build
+  - send: { to: "#eng", thread: "{{ .c.thread_ts }}", text: "PR is up" }
+  - propose: { to_role: senior-dev, title: "Merge?", summary: "s", action: "a" }
+`)
+	d := NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual, Payload: map[string]any{
+		"ticket": "OPS-1", "summary": "fix it",
+	}})
+	if err := Run(context.Background(), r, d); err != nil {
+		t.Fatal(err)
+	}
+	report := d.Report()
+	for _, want := range []string{
+		"open the case", "for ops-pack", "move case", "log to case",
+		"say in #eng", "read the last", "history",
+		"WAIT for", "RUN CODE in a container", "SEND to #eng", "ASK APPROVAL",
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report missing %q:\n%s", want, report)
+		}
+	}
+	if len(d.Actions) != 9 {
+		t.Errorf("recorded %d actions, want 9:\n%s", len(d.Actions), report)
+	}
+}
+
+// The ejected Go for a recipe using every new verb at least PARSES as Go —
+// go/format is a cheap syntax check this package's tests can run without
+// shelling out to the toolchain; the semantic bugs (variable redeclaration,
+// unused locals) that syntax parsing cannot catch were run down by hand with
+// a real `go build` against a temp module, which is how the checkpoint-var
+// collision and the unused foreach loop variable were actually found.
+func TestEjectedGoForEveryNewVerbIsSyntacticallyValid(t *testing.T) {
+	r := mustParse(t, `
+name: org-flow
+on:
+  manual: true
+steps:
+  - case.open: { agent: ops-pack, key: "jira:{{ .ticket }}", title: "{{ .summary }}" }
+    as: c
+  - case.state: { case: "{{ .c.id }}", state: prioritized }
+  - case.log:   { case: "{{ .c.id }}", kind: note, payload: "note" }
+  - case.say:   { case: "{{ .c.id }}", channel: "#eng", text: "starting work" }
+  - case.history: { case: "{{ .c.id }}" }
+    as: hist
+  - case.get: { key: "jira:{{ .ticket }}" }
+    as: c2
+  - await:
+      event: jira.issue.updated
+      match: { key: "{{ .ticket }}", status: Prioritized }
+      timeout: 168h
+    as: moved
+  - foreach:
+      in: ["a", "b"]
+      as: t
+      steps:
+        - ask: "summarise {{ .t }}"
+          as: out
+  - sandbox:
+      case: "{{ .c.id }}"
+      repo: acme/api
+      branch: main
+      task: "Implement {{ .ticket }}"
+      timeout: 45m
+      env.TOKEN: "sekrit"
+    as: build
+  - send: { to: "#eng", thread: "{{ .c.thread_ts }}", text: "PR is up" }
+  - propose: { to_role: senior-dev, title: "Merge?", summary: "s", action: "a" }
+`)
+	code := Eject(r, "")
+	if _, err := format.Source([]byte(code)); err != nil {
+		t.Fatalf("ejected code is not even syntactically valid Go: %v\n\n%s", err, code)
+	}
+}
+
+// Describe surfaces the new verbs' reach honestly — sandbox runs code, await
+// can park for a long time, foreach multiplies whatever it wraps.
+func TestDescribeCoversTheOrgVerbs(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - sandbox: { repo: o/r, branch: main, task: t }
+  - await: { event: e }
+  - foreach:
+      in: '["a"]'
+      as: x
+      steps:
+        - remember: { fact: "{{ .x }}" }
+`)
+	out := strings.Join(Describe(r), " | ")
+	for _, want := range []string{"RUN CODE", "PARK", "repeat its steps", "WRITE to your long-term memory"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Describe missing %q: %s", want, out)
 		}
 	}
 }

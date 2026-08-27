@@ -56,6 +56,16 @@ func retryDelay(attempt int) time.Duration {
 // Replaces the previous fire-and-forget goroutine. The signature keeps the
 // trigger because a retry has to remember what originally caused the work.
 func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, trigger loopkit.Trigger, attempt int) {
+	rt.runLoopOn(parent, l, trigger, attempt, "")
+}
+
+// runLoopOn is runLoopDurable with the execution pinned.
+//
+// A resumed run MUST carry the execution its waiter was armed under. Deriving
+// it from loop_state instead would be wrong the moment one loop has two cases
+// in flight: that column holds a single id per loop, so the ticket that woke up
+// would replay the other ticket's checkpoints.
+func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigger loopkit.Trigger, attempt int, execution string) {
 	runID := uuid.New().String()
 	owner := runID
 
@@ -76,7 +86,10 @@ func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, 
 		}
 	}()
 
-	executionID := rt.executionFor(l.Name, attempt)
+	executionID := execution
+	if executionID == "" {
+		executionID = rt.executionFor(l.Name, attempt)
+	}
 
 	started := time.Now()
 	if err := rt.store.StartLoopRun(store.LoopRun{
@@ -95,6 +108,19 @@ func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, 
 		}
 		rt.log.Info("loopkit loop done",
 			zap.String("loop", l.Name), zap.Duration("took", time.Since(started)))
+		return
+	}
+
+	// Suspended is not failed. The run parked on an event, so its checkpoints
+	// are KEPT — finishExecution would delete exactly the record that lets the
+	// resumed run skip the work it already did — and no retry is scheduled,
+	// because nothing is wrong and the thing it waits for has not happened yet.
+	if loopkit.Suspended(runErr) {
+		if err := rt.store.FinishLoopRun(runID, l.Name, "waiting", runErr.Error(), attempt, nil); err != nil {
+			rt.log.Warn("could not record a suspended run", zap.String("loop", l.Name), zap.Error(err))
+		}
+		rt.log.Info("loop parked, waiting on an event",
+			zap.String("loop", l.Name), zap.String("why", runErr.Error()))
 		return
 	}
 

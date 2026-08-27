@@ -18,6 +18,31 @@ import (
 // EventCommsMessage is the bus event kind for incoming communication messages.
 const EventCommsMessage bus.EventKind = "comms.message"
 
+// EventApprovalDecision is the bus event kind for an interactive approve/
+// reject decision made on a channel's own UI (Slack's Approve/Reject buttons
+// and anything else that reports one the same way).
+const EventApprovalDecision bus.EventKind = "comms.approval_decision"
+
+// Decision is one approve/reject choice a person made on a channel's
+// interactive UI, reported back with who decided — the point of asking a
+// role rather than a person is that the first answer wins, so the decider's
+// identity travels with the decision, not just the outcome.
+type Decision struct {
+	ProposalID  string
+	Approved    bool
+	DeciderID   string // channel-native user id, e.g. a Slack user id
+	DeciderName string
+	ChannelID   string // the KARMAX channel id that reported it
+	At          time.Time
+}
+
+// DecisionSource is implemented by channels that can report interactive
+// decisions. Optional — most channels have no interactive UI — so it's
+// checked with a type assertion rather than added to the Channel interface.
+type DecisionSource interface {
+	Decisions() <-chan Decision
+}
+
 // channelEntry pairs a Channel with its owning agent ID.
 type channelEntry struct {
 	channel Channel
@@ -161,6 +186,9 @@ func (m *Manager) StartAll(ctx context.Context) error {
 		m.log.Info("channel started", zap.String("channel_id", id))
 
 		go m.readLoop(ctx, entry)
+		if ds, ok := entry.channel.(DecisionSource); ok {
+			go m.decisionLoop(ctx, ds)
+		}
 	}
 
 	if len(failures) > 0 {
@@ -269,6 +297,31 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 	}
 }
 
+// decisionLoop drains interactive decisions from a channel (Slack's Approve/
+// Reject buttons and anything reporting the same way) and publishes each one
+// to the bus — the rest of KARMAX learns about a decision the same way it
+// learns about anything else that happened on a channel.
+func (m *Manager) decisionLoop(ctx context.Context, ds DecisionSource) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case d, ok := <-ds.Decisions():
+			if !ok {
+				return
+			}
+			m.bus.Publish(bus.NewEvent(EventApprovalDecision, "", map[string]any{
+				"proposal_id":  d.ProposalID,
+				"approved":     d.Approved,
+				"decider_id":   d.DeciderID,
+				"decider_name": d.DeciderName,
+				"channel_id":   d.ChannelID,
+				"at":           d.At,
+			}))
+		}
+	}
+}
+
 // StopAll stops every registered channel.
 func (m *Manager) StopAll() {
 	m.mu.RLock()
@@ -299,6 +352,30 @@ func (m *Manager) Send(channelID, target, content string) error {
 		notify(target, content)
 	}
 	return nil
+}
+
+// Threader is a channel that understands threads. Slack does; WhatsApp does
+// not, and a channel that cannot thread simply posts.
+type Threader interface {
+	PostThread(ctx context.Context, channel, threadTS, text string) (string, error)
+}
+
+// PostThread posts into a thread and returns the message's own id, which is
+// what lets the FIRST message on a case become the thread every later one joins.
+//
+// A channel that does not thread falls back to an ordinary send and returns an
+// empty id — the caller then simply has no thread to bind, rather than failing.
+func (m *Manager) PostThread(ctx context.Context, channelID, target, thread, content string) (string, error) {
+	m.mu.RLock()
+	entry, ok := m.channels[channelID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("no channel %q", channelID)
+	}
+	if t, canThread := entry.channel.(Threader); canThread {
+		return t.PostThread(ctx, target, thread, content)
+	}
+	return "", m.Send(channelID, target, content)
 }
 
 // HasChannel reports whether id names a registered channel, so callers can

@@ -597,6 +597,113 @@ var migrations = []string{
 		last_message_id TEXT NOT NULL DEFAULT '',
 		updated_at      DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
+	// 025_org — the organisational platform.
+	//
+	// A case is the thread of work an agent is on: one ticket, one onboarding,
+	// one incident. Without it the workflows that make up an agent are
+	// unrelated runs days apart, and the operator sees five robots rather than
+	// one colleague. Everything else here hangs off it.
+	`CREATE TABLE IF NOT EXISTS cases (
+		id             TEXT PRIMARY KEY,
+		org            TEXT NOT NULL DEFAULT '',
+		agent          TEXT NOT NULL DEFAULT '',
+		ckey           TEXT NOT NULL,
+		title          TEXT NOT NULL DEFAULT '',
+		state          TEXT NOT NULL DEFAULT 'open',
+		namespace      TEXT NOT NULL DEFAULT '',
+		thread_channel TEXT NOT NULL DEFAULT '',
+		thread_ts      TEXT NOT NULL DEFAULT '',
+		created_at     DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at     DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_cases_key ON cases(ckey)`,
+	`CREATE INDEX IF NOT EXISTS idx_cases_agent ON cases(agent, state)`,
+
+	`CREATE TABLE IF NOT EXISTS case_events (
+		id         TEXT PRIMARY KEY,
+		case_id    TEXT NOT NULL,
+		kind       TEXT NOT NULL,
+		payload    TEXT NOT NULL DEFAULT '',
+		actor      TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_case_events_case ON case_events(case_id, created_at)`,
+
+	// A run parked on something that has not happened yet. The row is what
+	// makes "wait until the ticket is prioritised" survive a restart: the run
+	// ends, and the event that matches revives it days later.
+	`CREATE TABLE IF NOT EXISTS waiters (
+		id           TEXT PRIMARY KEY,
+		execution_id TEXT NOT NULL,
+		loop         TEXT NOT NULL,
+		step         TEXT NOT NULL,
+		case_id      TEXT NOT NULL DEFAULT '',
+		event_kind   TEXT NOT NULL,
+		match_json   TEXT NOT NULL DEFAULT '{}',
+		expires_at   DATETIME,
+		created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
+		resolved_at  DATETIME,
+		result_json  TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_waiters_pending ON waiters(event_kind, resolved_at)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_waiters_step ON waiters(execution_id, step)`,
+	`CREATE INDEX IF NOT EXISTS idx_waiters_expiry ON waiters(expires_at, resolved_at)`,
+
+	// A container is state the daemon does not hold. Recording the id is what
+	// lets a restart reconcile what is still running instead of leaking it.
+	`CREATE TABLE IF NOT EXISTS sandbox_runs (
+		id           TEXT PRIMARY KEY,
+		case_id      TEXT NOT NULL DEFAULT '',
+		driver       TEXT NOT NULL DEFAULT '',
+		container_id TEXT NOT NULL DEFAULT '',
+		image        TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT 'starting',
+		repo         TEXT NOT NULL DEFAULT '',
+		branch       TEXT NOT NULL DEFAULT '',
+		task         TEXT NOT NULL DEFAULT '',
+		exit_code    INTEGER NOT NULL DEFAULT 0,
+		error        TEXT NOT NULL DEFAULT '',
+		log_tail     TEXT NOT NULL DEFAULT '',
+		started_at   DATETIME NOT NULL,
+		finished_at  DATETIME
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_sandbox_status ON sandbox_runs(status, started_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_sandbox_case ON sandbox_runs(case_id, started_at DESC)`,
+
+	// Who asked for what, and what was done about it. An agent acting inside a
+	// company with real write access is answerable, and this table is the whole
+	// of the answer.
+	`CREATE TABLE IF NOT EXISTS audit_events (
+		id         TEXT PRIMARY KEY,
+		actor_kind TEXT NOT NULL DEFAULT '',
+		actor_id   TEXT NOT NULL DEFAULT '',
+		agent      TEXT NOT NULL DEFAULT '',
+		case_id    TEXT NOT NULL DEFAULT '',
+		recipe     TEXT NOT NULL DEFAULT '',
+		step       TEXT NOT NULL DEFAULT '',
+		verb       TEXT NOT NULL DEFAULT '',
+		target     TEXT NOT NULL DEFAULT '',
+		decision   TEXT NOT NULL DEFAULT '',
+		detail     TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_events(created_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor_id, created_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_case ON audit_events(case_id, created_at DESC)`,
+
+	// Slack user -> org member. An agent acting for an employee has to be able
+	// to name that employee, or the audit trail says only "the agent did it".
+	`CREATE TABLE IF NOT EXISTS directory (
+		external_kind TEXT NOT NULL,
+		external_id   TEXT NOT NULL,
+		member        TEXT NOT NULL,
+		org           TEXT NOT NULL DEFAULT '',
+		name          TEXT NOT NULL DEFAULT '',
+		updated_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (external_kind, external_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_directory_member ON directory(member)`,
+
 	`CREATE INDEX IF NOT EXISTS idx_subagent_parent ON subagent_runs(parent_id, started_at DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_subagent_status ON subagent_runs(status)`,
 }
