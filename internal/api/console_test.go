@@ -483,3 +483,20 @@ func TestConnectionsAreOnlyOfferedForPerUserConnectors(t *testing.T) {
 		t.Errorf("a per-person flow started for an install-wide connector: %d", w.Code)
 	}
 }
+
+// A per-user connector cannot be connected until an admin has set up the org's
+// OAuth app — there is nothing to authorise against.
+func TestConnectRefusesBeforeTheOrgAppExists(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(googleconn.New())
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "POST", "/api/console/connectors/google/connect", token, nil)
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 before the OAuth app is configured, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "admin has to set up") {
+		t.Errorf("the error does not say what is missing: %s", w.Body.String())
+	}
+}
