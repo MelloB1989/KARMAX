@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
+	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"go.uber.org/zap"
 )
@@ -1017,6 +1018,11 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// inbox worker forever (that silently deafens the whole agent). On
 		// timeout the turn fails and the loop moves on to the next message.
 		turnCtx, turnCancel := context.WithTimeout(a.ctx, 3*time.Minute)
+		// Mark whose behalf this turn acts on, for connectors that authenticate
+		// as an individual rather than as the install. Established from WHO SENT
+		// the message, before the model sees anything — never from a tool
+		// argument, or the model could choose whose mailbox it reads.
+		turnCtx = connectorkit.WithActor(turnCtx, a.actingMember(evt))
 		lent := a.lentTools(evt)
 		response, toolCalls, err := a.mainSession.ProcessMessageWithContextAndTools(turnCtx, dynamicCtx, userPrompt, lent)
 		turnCancel()
@@ -1806,4 +1812,39 @@ func truncateStr(s string, maxLen int) string {
 
 func cleanOutboundResponse(s string) string {
 	return karmahelper.CleanContent(s)
+}
+
+// actingMember resolves the org member an event is on behalf of.
+//
+// A chat message names its sender in the channel's own terms — a Slack user id,
+// a WhatsApp number — and the directory is what turns that into a person. No
+// mapping means no member, which is correct: a per-user connector then refuses
+// rather than guessing, and guessing here would read one employee's private
+// data to answer another's question.
+//
+// Events that are nobody's request — a cron tick, a webhook — return "" and are
+// meant to.
+func (a *Agent) actingMember(evt bus.Event) string {
+	if evt.Kind != bus.EventCommsMessage || evt.Payload == nil || a.store == nil {
+		return ""
+	}
+	sender, _ := evt.Payload["sender_id"].(string)
+	if strings.TrimSpace(sender) == "" {
+		return ""
+	}
+	kind, _ := evt.Payload["channel_type"].(string)
+	if kind == "" {
+		return ""
+	}
+
+	m, ok, err := a.store.MemberByExternal(kind, sender)
+	if err != nil {
+		a.log.Warn("could not resolve the sender to an org member",
+			zap.String("channel_type", kind), zap.Error(err))
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return m.Member
 }

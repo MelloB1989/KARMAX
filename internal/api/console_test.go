@@ -13,6 +13,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/connectors"
+	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	"github.com/MelloB1989/karmax/internal/store"
 	"go.uber.org/zap"
@@ -379,5 +380,106 @@ func TestAConnectorConfiguredElsewhereIsNotReportedMissing(t *testing.T) {
 	}
 	if !strings.Contains(got.Detail, "outside the console") {
 		t.Errorf("the detail does not explain where it came from: %q", got.Detail)
+	}
+}
+
+// The member a flow binds to comes from the SESSION. If it came from the
+// request body, one employee could bind their Google account to another's name.
+func TestConnectStartRequiresASession(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	if w := do(t, srv, "POST", "/api/console/connectors/google/connect", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("connect started without a session: %d", w.Code)
+	}
+}
+
+// The callback is opened by a browser with no bearer token, so the state token
+// is the whole of its security.
+func TestTheOAuthCallbackRejectsAnUnknownState(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+
+	w := do(t, srv, "GET", "/api/console/oauth/google/callback?code=x&state=forged", "", nil)
+	if w.Code == http.StatusOK && strings.Contains(w.Body.String(), "Connected") {
+		t.Fatal("a forged state produced a connection")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for an unknown state, got %d", w.Code)
+	}
+}
+
+// A refusal is not a failure; showing a red error page for clicking Cancel is
+// its own small bug.
+func TestCancellingConsentIsNotAnError(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+
+	w := do(t, srv, "GET", "/api/console/oauth/google/callback?error=access_denied", "", nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("cancelling produced %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "cancelled") {
+		t.Errorf("the page does not explain what happened: %s", w.Body.String())
+	}
+}
+
+// Taking away access someone granted is an admin action; disconnecting yourself
+// is not.
+func TestDisconnectingSomeoneElseNeedsAdmin(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	bootstrapAdmin(t, srv)
+	if _, err := db.CreateConsoleUser("ops", "Ops", "operator", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	w := do(t, srv, "POST", "/api/console/auth/login", "",
+		map[string]string{"member": "ops", "password": "correct-horse"})
+	var sess sessionResponse
+	json.Unmarshal(w.Body.Bytes(), &sess)
+
+	if got := do(t, srv, "DELETE", "/api/console/connectors/google/connection?member=nikhil", sess.Token, nil); got.Code != http.StatusForbidden {
+		t.Errorf("an operator disconnected someone else's account: %d", got.Code)
+	}
+	// Their own is fine.
+	if got := do(t, srv, "DELETE", "/api/console/connectors/google/connection", sess.Token, nil); got.Code != http.StatusOK {
+		t.Errorf("an operator could not disconnect themselves: %d", got.Code)
+	}
+}
+
+// A list of names must not carry everybody's tokens.
+func TestConnectionsListingCarriesNoTokens(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(googleconn.New())
+	token := bootstrapAdmin(t, srv)
+	if err := db.SaveUserCredential(store.UserCredential{
+		Connector: "google", Member: "nikhil", Account: "n@acme.com",
+		AccessToken: "at-secret", RefreshToken: "rt-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, srv, "GET", "/api/console/connectors/google/connections", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "secret") {
+		t.Error("the connections listing returned tokens")
+	}
+	if !strings.Contains(w.Body.String(), "n@acme.com") {
+		t.Error("the listing omits the account, which is what the screen shows")
+	}
+}
+
+// The console decides whether to show a "connect your account" panel from this
+// call, so an install-wide connector must not answer with an empty list — that
+// would render the panel on Slack, where it means nothing.
+func TestConnectionsAreOnlyOfferedForPerUserConnectors(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns.Register(slackconn.New())
+	token := bootstrapAdmin(t, srv)
+
+	if w := do(t, srv, "GET", "/api/console/connectors/slack/connections", token, nil); w.Code != http.StatusNotFound {
+		t.Errorf("an install-wide connector offered per-person connections: %d", w.Code)
+	}
+	if w := do(t, srv, "POST", "/api/console/connectors/slack/connect", token, nil); w.Code != http.StatusBadRequest {
+		t.Errorf("a per-person flow started for an install-wide connector: %d", w.Code)
 	}
 }

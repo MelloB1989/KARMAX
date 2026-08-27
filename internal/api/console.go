@@ -154,6 +154,17 @@ func NewConsole(addr string, distDir string, d ConsoleDeps) *ConsoleServer {
 	mux.HandleFunc("POST /api/console/connectors/{id}/credentials", s.role("admin", s.handleConnectorCredentials))
 	mux.HandleFunc("POST /api/console/connectors/{id}/health-check", s.role("operator", s.handleConnectorHealthCheck))
 
+	// Per-employee authorisation. Starting a flow needs a session, because the
+	// member comes from it — never from the request body, or one person could
+	// bind their Google account to another person's name.
+	mux.HandleFunc("POST /api/console/connectors/{id}/connect", s.session(s.handleConnectStart))
+	mux.HandleFunc("GET /api/console/connectors/{id}/connections", s.session(s.handleConnections))
+	mux.HandleFunc("DELETE /api/console/connectors/{id}/connection", s.session(s.handleDisconnect))
+	// The provider redirects a BROWSER here, carrying no bearer token, so this
+	// one cannot require a session. Its security is the state token: single-use,
+	// expiring, and the only thing that names the member.
+	mux.HandleFunc("GET /api/console/oauth/{id}/callback", s.handleOAuthCallback)
+
 	mux.HandleFunc("GET /api/console/settings", s.session(s.handleSettings))
 	mux.HandleFunc("PUT /api/console/settings/model/{id}", s.role("admin", s.handleSetModelProvider))
 	mux.HandleFunc("PUT /api/console/settings/sandbox-token", s.role("admin", s.handleSetSandboxToken))

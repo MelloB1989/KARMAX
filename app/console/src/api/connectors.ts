@@ -1,6 +1,6 @@
 import { USE_MOCK } from "./config";
-import { get, post } from "./client";
-import type { ConnectorHealthCheck, ConnectorSetup, ConnectorSummary } from "./types";
+import { del, get, post } from "./client";
+import type { ConnectorConnections, ConnectorHealthCheck, ConnectorSetup, ConnectorSummary } from "./types";
 import { CONNECTORS, CONNECTOR_SETUPS } from "./mock/data";
 import { delay } from "./mock/util";
 
@@ -40,4 +40,26 @@ export async function runConnectorHealthCheck(id: string): Promise<ConnectorHeal
     return delay(result, 900);
   }
   return post<ConnectorHealthCheck>(`/api/console/connectors/${encodeURIComponent(id)}/health-check`);
+}
+
+/**
+ * Per-employee authorisation.
+ *
+ * The member is never sent: the server takes it from the session, so one person
+ * cannot bind their Google account to somebody else's name.
+ */
+export async function listConnections(id: string): Promise<ConnectorConnections> {
+  if (USE_MOCK) return delay({ connections: [], self_connected: false });
+  return get<ConnectorConnections>(`/api/console/connectors/${encodeURIComponent(id)}/connections`);
+}
+
+export async function startConnect(id: string): Promise<{ authorize_url: string }> {
+  if (USE_MOCK) throw new Error("connecting an account needs a real server");
+  return post<{ authorize_url: string }>(`/api/console/connectors/${encodeURIComponent(id)}/connect`);
+}
+
+export async function disconnect(id: string, member?: string): Promise<void> {
+  if (USE_MOCK) return delay(undefined as unknown as void);
+  const q = member ? `?member=${encodeURIComponent(member)}` : "";
+  await del<void>(`/api/console/connectors/${encodeURIComponent(id)}/connection${q}`);
 }

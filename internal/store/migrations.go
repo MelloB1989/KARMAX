@@ -747,6 +747,40 @@ var migrations = []string{
 	// Added as a migration rather than in the CREATE above so existing installs
 	// pick it up.
 	`ALTER TABLE proposals ADD COLUMN decided_by TEXT`,
+
+	// 028_per_member_credentials — a connector one employee at a time.
+	//
+	// connector_credentials is PRIMARY KEY (connector): one credential for the
+	// whole install. That is right for a bot token and wrong for Google, where
+	// the org registers ONE OAuth app and then every employee authorises their
+	// own mailbox against it. Reading Priya's calendar with Kartik's token is
+	// not a permissions bug to fix later, it is the wrong answer.
+	`CREATE TABLE IF NOT EXISTS connector_user_credentials (
+		connector     TEXT NOT NULL,
+		member        TEXT NOT NULL,
+		account       TEXT NOT NULL DEFAULT '',
+		access_token  TEXT NOT NULL DEFAULT '',
+		refresh_token TEXT NOT NULL DEFAULT '',
+		scopes        TEXT NOT NULL DEFAULT '',
+		expires_at    DATETIME,
+		updated_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (connector, member)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_cuc_connector ON connector_user_credentials(connector)`,
+
+	// Pending OAuth authorisations. A row, not a signed cookie: the callback
+	// arrives on a different request from a different browser tab, and the
+	// state has to be single-use — deleted on redemption — or a leaked
+	// redirect URL can be replayed.
+	`CREATE TABLE IF NOT EXISTS oauth_states (
+		state      TEXT PRIMARY KEY,
+		connector  TEXT NOT NULL,
+		member     TEXT NOT NULL,
+		verifier   TEXT NOT NULL DEFAULT '',
+		redirect   TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		expires_at DATETIME NOT NULL
+	)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built
