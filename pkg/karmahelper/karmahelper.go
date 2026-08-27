@@ -816,6 +816,10 @@ func resolveProvider(name string) ai.Provider {
 	}
 }
 
+// ResolveModel maps a configured model name to its ai.BaseModel. Unknown names
+// pass through unchanged, so a custom proxy's model ID survives intact.
+func ResolveModel(name string) ai.BaseModel { return resolveModel(name) }
+
 func resolveModel(name string) ai.BaseModel {
 	switch name {
 	case "gpt-4o":
