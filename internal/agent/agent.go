@@ -661,6 +661,8 @@ func (a *Agent) buildOrgContext() string {
 		return ""
 	}
 	briefing := p.Briefing()
+	a.log.Debug("org context built",
+		zap.String("name", p.Name), zap.Int("briefing_len", len(briefing)))
 	if briefing == "" {
 		// Nothing has been filled in. A heading with nothing under it spends
 		// context to tell the model the company has no name.
