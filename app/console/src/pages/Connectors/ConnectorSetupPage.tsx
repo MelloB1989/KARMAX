@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Plug, Stethoscope } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, Plug, Stethoscope } from "lucide-react";
 import { getConnectorSetup, listConnectors, runConnectorHealthCheck, saveConnectorCredentials } from "@/api/connectors";
 import type { ConnectorHealthCheck, ConnectorSetup, ConnectorSummary } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
@@ -70,13 +70,32 @@ export function ConnectorSetupPage() {
           <ol className="space-y-4">
             {setup.steps.map((s, i) => (
               <li key={i} className="flex gap-3">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-2 text-xs font-semibold text-fg-muted">
-                  {i + 1}
+                {/* A done step shows a tick instead of its number, so a
+                    half-finished setup says which half. `done` is optional and
+                    absent means "cannot tell" — which stays a plain number
+                    rather than a green tick nobody earned. */}
+                <span
+                  className={
+                    "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold " +
+                    (s.done ? "bg-healthy/15 text-healthy" : "bg-surface-2 text-fg-muted")
+                  }
+                >
+                  {s.done ? <Check className="h-3.5 w-3.5" /> : i + 1}
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-fg">{s.title}</p>
                   <p className="mt-0.5 text-sm text-fg-muted">{s.body}</p>
                   {s.value && <div className="mt-2"><CopyField value={s.value} /></div>}
+                  {s.url && (
+                    <a
+                      href={s.url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-brand hover:underline"
+                    >
+                      Open <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  )}
                 </div>
               </li>
             ))}

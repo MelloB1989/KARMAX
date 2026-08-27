@@ -164,3 +164,38 @@ type RateLimit struct {
 	// over a computed backoff.
 	RetryAfter time.Duration
 }
+
+// SetupStep is one instruction in a connector's setup guide.
+type SetupStep struct {
+	Title string
+	Body  string
+	// Value is something to copy — a callback URL, a webhook secret.
+	Value string
+	// URL is a link to open. Some steps cannot be written as static text
+	// because the address depends on what the operator just created: a GitHub
+	// App's install page is /apps/<slug>/installations/new, and the slug does
+	// not exist until the app does.
+	URL string
+	// Done reports whether this step already looks complete, so a half-finished
+	// setup says which half. Nil means "cannot tell", which renders as neutral
+	// rather than as a green tick nobody earned.
+	Done *bool
+}
+
+// SetupGuide is implemented by connectors whose setup needs more than a list of
+// config fields.
+//
+// The config fields say WHAT to paste. They cannot say that a GitHub App has to
+// be installed on the repositories after it is created — a step with no field
+// attached, which is exactly why people miss it and then wonder why a valid
+// token sees no repos.
+//
+// Implementing this is optional; a connector that does not gets a generic guide
+// built from its manifest.
+type SetupGuide interface {
+	// SetupSteps returns ordered instructions. It is given the credentials
+	// saved so far so it can compute links and mark steps done, and the
+	// callback URL this server is reachable at. It must not make network calls
+	// that block: a setup screen has to render before anything is configured.
+	SetupSteps(c Credentials, callbackURL string) []SetupStep
+}

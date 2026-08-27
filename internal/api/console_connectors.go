@@ -32,6 +32,8 @@ type setupStep struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
 	Value string `json:"value,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Done  *bool  `json:"done,omitempty"`
 }
 
 type setupField struct {
@@ -157,31 +159,25 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 	}
 
 	callback := s.callbackURL(id)
-	steps := []setupStep{
-		{Title: "Create the app", Body: m.Description},
+
+	// A connector that knows its own setup says so itself. GitHub's guide has a
+	// step with no field attached — install the App on your repositories —
+	// which a guide generated from the config list can never mention, and which
+	// is exactly the step people miss.
+	var steps []setupStep
+	if guide, ok := c.(connectorkit.SetupGuide); ok {
+		cred, _ := s.store.Credential(id)
+		known := connectorkit.Credentials{Config: map[string]string{}}
+		if cred != nil {
+			known.Config, known.AccessToken = cred.Config, cred.AccessToken
+		}
+		for _, st := range guide.SetupSteps(known, callback) {
+			steps = append(steps, setupStep{Title: st.Title, Body: st.Body, Value: st.Value, URL: st.URL, Done: st.Done})
+		}
 	}
-	if callback != "" {
-		steps = append(steps, setupStep{
-			Title: "Point it back here",
-			Body:  "Use this as the callback / webhook URL in the app's settings.",
-			Value: callback,
-		})
-	} else {
-		steps = append(steps, setupStep{
-			Title: "Set console.public_url first",
-			Body: "This server does not know its own public address, so it cannot show you a " +
-				"callback URL to copy. Set console.public_url in karmax.yaml and reload.",
-		})
-	}
-	steps = append(steps, setupStep{
-		Title: "Paste the credentials below",
-		Body:  "They are stored by KARMAX, never by the connector, and are never shown again once saved.",
-	})
-	if len(m.Capabilities) > 0 {
-		steps = append(steps, setupStep{
-			Title: "What enabling this grants",
-			Body:  strings.Join(m.Capabilities, ", "),
-		})
+
+	if len(steps) == 0 {
+		steps = genericSteps(m, callback)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -298,4 +294,33 @@ func (s *ConsoleServer) handleConnectorHealthCheck(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": res.Status, "detail": res.Detail, "checked_at": rfc3339(res.CheckedAt),
 	})
+}
+
+// genericSteps is the guide for a connector that does not provide its own.
+func genericSteps(m connectorkit.Manifest, callback string) []setupStep {
+	steps := []setupStep{{Title: "Create the app", Body: m.Description}}
+	if callback != "" {
+		steps = append(steps, setupStep{
+			Title: "Point it back here",
+			Body:  "Use this as the callback / webhook URL in the app's settings.",
+			Value: callback,
+		})
+	} else {
+		steps = append(steps, setupStep{
+			Title: "Set console.public_url first",
+			Body: "This server does not know its own public address, so it cannot show you a " +
+				"callback URL to copy. Set console.public_url in karmax.yaml and reload.",
+		})
+	}
+	steps = append(steps, setupStep{
+		Title: "Paste the credentials below",
+		Body:  "They are stored by KARMAX, never by the connector, and are never shown again once saved.",
+	})
+	if len(m.Capabilities) > 0 {
+		steps = append(steps, setupStep{
+			Title: "What enabling this grants",
+			Body:  strings.Join(m.Capabilities, ", "),
+		})
+	}
+	return steps
 }

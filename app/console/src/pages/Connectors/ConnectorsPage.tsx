@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { LucideIcon } from "lucide-react";
-import { Github, Instagram, Linkedin, MessageCircle, Plug, Ticket, Twitter } from "lucide-react";
+import { Building2, FileText, Github, Instagram, Linkedin, MessageCircle, Plug, Ticket, Twitter } from "lucide-react";
 import { listConnectors } from "@/api/connectors";
 import type { ConnectorSummary } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
@@ -26,6 +26,9 @@ const ICON: Record<string, LucideIcon> = {
   instagram: Instagram,
   linkedin: Linkedin,
   x: Twitter,
+  youtrack: Ticket,
+  keka: Building2,
+  notion: FileText,
 };
 
 // Anything unrecognised still gets an icon rather than taking the page down.
