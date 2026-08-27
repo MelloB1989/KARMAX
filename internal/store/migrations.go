@@ -706,6 +706,47 @@ var migrations = []string{
 
 	`CREATE INDEX IF NOT EXISTS idx_subagent_parent ON subagent_runs(parent_id, started_at DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_subagent_status ON subagent_runs(status)`,
+
+	// 026_console — the web console's own operators.
+	//
+	// Deliberately separate from `directory`: that table maps external
+	// identities (a Slack user, a Jira reporter) onto an org member, and
+	// nobody in it can necessarily sign in. These are accounts with a
+	// password, and the set of people who may log into the console is not the
+	// set of people the agent has ever seen in Slack.
+	`CREATE TABLE IF NOT EXISTS console_users (
+		member       TEXT PRIMARY KEY,
+		name         TEXT NOT NULL,
+		role         TEXT NOT NULL DEFAULT 'viewer',
+		password_hash TEXT NOT NULL,
+		created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at   DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	// Sessions are rows, not JWTs, so that logout actually revokes: a signed
+	// token stays valid until it expires no matter what the server thinks.
+	`CREATE TABLE IF NOT EXISTS console_sessions (
+		token      TEXT PRIMARY KEY,
+		member     TEXT NOT NULL,
+		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		expires_at DATETIME NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_console_sessions_member ON console_sessions(member)`,
+
+	// Roles for directory members who have no console login — the settings
+	// screen lists everyone and lets an admin grant a role before they exist
+	// as an account.
+	`CREATE TABLE IF NOT EXISTS console_roles (
+		member     TEXT PRIMARY KEY,
+		role       TEXT NOT NULL,
+		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	// 027_proposal_attribution — one shared API token cannot tell two operators
+	// apart, but the console has named humans, so record which one decided.
+	// Added as a migration rather than in the CREATE above so existing installs
+	// pick it up.
+	`ALTER TABLE proposals ADD COLUMN decided_by TEXT`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

@@ -1,0 +1,301 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/MelloB1989/karmax/internal/store"
+	"github.com/MelloB1989/karmax/pkg/connectorkit"
+	"go.uber.org/zap"
+)
+
+// Connectors: what is wired up, and what an operator must do to wire up more.
+//
+// Setup is instruction text plus this server's own callback URLs. No
+// third-party call happens until credentials are submitted and a health check
+// is explicitly run — a wizard that starts hitting APIs while you read it is a
+// wizard that leaks a half-typed token.
+
+type connectorSummary struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	Kind          string  `json:"kind"`
+	Status        string  `json:"status"`
+	Detail        string  `json:"detail"`
+	LastCheckedAt *string `json:"last_checked_at"`
+}
+
+type setupStep struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	Value string `json:"value,omitempty"`
+}
+
+type setupField struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Type        string `json:"type"`
+	Placeholder string `json:"placeholder,omitempty"`
+	Required    bool   `json:"required"`
+}
+
+// healthCache remembers the last health result per connector.
+//
+// GET /connectors is a status DISPLAY, not a live poll: re-checking three
+// third-party APIs every time someone opens a page would rate-limit the
+// install and make the page as slow as the slowest vendor.
+type healthResult struct {
+	Status    string
+	Detail    string
+	CheckedAt time.Time
+}
+
+func (s *ConsoleServer) cachedHealth(id string) (healthResult, bool) {
+	s.healthMu.RLock()
+	defer s.healthMu.RUnlock()
+	h, ok := s.health[id]
+	return h, ok
+}
+
+func (s *ConsoleServer) setHealth(id string, h healthResult) {
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	if s.health == nil {
+		s.health = map[string]healthResult{}
+	}
+	s.health[id] = h
+}
+
+// summariseConnector reports a connector's state without calling anyone.
+func (s *ConsoleServer) summariseConnector(m connectorkit.Manifest) connectorSummary {
+	sum := connectorSummary{ID: m.ID, Name: m.Name, Kind: m.ID, Status: "not_configured"}
+
+	cred, err := s.store.Credential(m.ID)
+	if err != nil || cred == nil {
+		sum.Detail = "No credentials saved yet"
+		return sum
+	}
+
+	if h, ok := s.cachedHealth(m.ID); ok {
+		sum.Status, sum.Detail = h.Status, h.Detail
+		sum.LastCheckedAt = rfc3339Ptr(h.CheckedAt)
+		return sum
+	}
+
+	// Configured but never checked. Saying "healthy" here would be a guess
+	// dressed as a fact, so it reports what is actually known.
+	sum.Status = "degraded"
+	sum.Detail = "Credentials saved; not checked yet"
+	sum.LastCheckedAt = rfc3339Ptr(cred.UpdatedAt)
+	return sum
+}
+
+func (s *ConsoleServer) handleConnectors(w http.ResponseWriter, r *http.Request) {
+	out := []connectorSummary{}
+	if s.conns != nil {
+		for _, m := range s.conns.Available() {
+			out = append(out, s.summariseConnector(m))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	writeJSON(w, http.StatusOK, map[string]any{"connectors": out})
+}
+
+// publicBase is the address operators actually reach this server at.
+//
+// Configured explicitly rather than inferred: behind a CDN or a reverse proxy
+// the server cannot know its own public name, and a setup wizard that prints
+// an unreachable callback URL is worse than one that prints none.
+func (s *ConsoleServer) publicBase() string {
+	if s.cfg != nil {
+		if u := strings.TrimRight(strings.TrimSpace(s.cfg.Console.PublicURL), "/"); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+func (s *ConsoleServer) callbackURL(connectorID string) string {
+	base := s.publicBase()
+	if base == "" {
+		return ""
+	}
+	return base + "/hooks/" + connectorID
+}
+
+func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.conns == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such connector"})
+		return
+	}
+	c, ok := s.conns.Get(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such connector"})
+		return
+	}
+	m := c.Manifest()
+
+	// Fields come from the connector's own manifest rather than a table in the
+	// console, so a connector that grows a config key does not need a matching
+	// frontend change to become configurable.
+	fields := make([]setupField, 0, len(m.Config))
+	for _, f := range m.Config {
+		typ := "text"
+		if f.Secret {
+			typ = "secret"
+		} else if strings.Contains(strings.ToLower(f.Key), "url") {
+			typ = "url"
+		}
+		fields = append(fields, setupField{
+			Key: f.Key, Label: labelFor(f.Key), Type: typ,
+			Placeholder: f.Default, Required: f.Required,
+		})
+	}
+
+	callback := s.callbackURL(id)
+	steps := []setupStep{
+		{Title: "Create the app", Body: m.Description},
+	}
+	if callback != "" {
+		steps = append(steps, setupStep{
+			Title: "Point it back here",
+			Body:  "Use this as the callback / webhook URL in the app's settings.",
+			Value: callback,
+		})
+	} else {
+		steps = append(steps, setupStep{
+			Title: "Set console.public_url first",
+			Body: "This server does not know its own public address, so it cannot show you a " +
+				"callback URL to copy. Set console.public_url in karmax.yaml and reload.",
+		})
+	}
+	steps = append(steps, setupStep{
+		Title: "Paste the credentials below",
+		Body:  "They are stored by KARMAX, never by the connector, and are never shown again once saved.",
+	})
+	if len(m.Capabilities) > 0 {
+		steps = append(steps, setupStep{
+			Title: "What enabling this grants",
+			Body:  strings.Join(m.Capabilities, ", "),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": id, "steps": steps, "fields": fields, "callback_url": callback,
+	})
+}
+
+// labelFor turns a config key into something readable: "client_secret" reads
+// as "Client secret".
+func labelFor(key string) string {
+	words := strings.FieldsFunc(key, func(r rune) bool { return r == '_' || r == '-' || r == '.' })
+	if len(words) == 0 {
+		return key
+	}
+	words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
+	return strings.Join(words, " ")
+}
+
+func (s *ConsoleServer) handleConnectorCredentials(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.conns == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such connector"})
+		return
+	}
+	c, ok := s.conns.Get(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such connector"})
+		return
+	}
+
+	var body map[string]string
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	m := c.Manifest()
+	var missing []string
+	for _, f := range m.Config {
+		if f.Required && strings.TrimSpace(body[f.Key]) == "" {
+			missing = append(missing, f.Key)
+		}
+	}
+	if len(missing) > 0 {
+		writeJSON(w, http.StatusUnprocessableEntity,
+			map[string]any{"error": "missing required fields: " + strings.Join(missing, ", ")})
+		return
+	}
+
+	existing, _ := s.store.Credential(id)
+	cred := store.Credential{Connector: id, Config: map[string]string{}, Enabled: true}
+	if existing != nil {
+		cred.AccessToken, cred.RefreshToken, cred.ExpiresAt = existing.AccessToken, existing.RefreshToken, existing.ExpiresAt
+		for k, v := range existing.Config {
+			cred.Config[k] = v
+		}
+	}
+	for k, v := range body {
+		cred.Config[k] = v
+	}
+	if tok := strings.TrimSpace(body["access_token"]); tok != "" {
+		cred.AccessToken = tok
+	}
+
+	if err := s.store.SaveCredential(cred); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	// New credentials invalidate the old verdict — leaving a stale "healthy"
+	// next to a freshly pasted token would be the console vouching for
+	// something it has not tested.
+	s.setHealth(id, healthResult{Status: "degraded", Detail: "Credentials saved; run a health check", CheckedAt: time.Now()})
+	s.audit(r, "human", consoleUser(r).Member, "console.connector.credentials", id, "", "credentials updated")
+	s.log.Info("connector credentials updated", zap.String("connector", id))
+
+	writeJSON(w, http.StatusOK, s.summariseConnector(m))
+}
+
+func (s *ConsoleServer) handleConnectorHealthCheck(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.conns == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such connector"})
+		return
+	}
+	c, ok := s.conns.Get(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such connector"})
+		return
+	}
+
+	cred, err := s.store.Credential(id)
+	if err != nil || cred == nil {
+		res := healthResult{Status: "not_configured", Detail: "No credentials saved yet", CheckedAt: time.Now()}
+		s.setHealth(id, res)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": res.Status, "detail": res.Detail, "checked_at": rfc3339(res.CheckedAt),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	res := healthResult{Status: "healthy", Detail: "Reachable", CheckedAt: time.Now()}
+	if err := c.Health(ctx, connectorkit.Credentials{
+		Config: cred.Config, AccessToken: cred.AccessToken,
+	}); err != nil {
+		res.Status, res.Detail = "failed", err.Error()
+	}
+	s.setHealth(id, res)
+	s.audit(r, "human", consoleUser(r).Member, "console.connector.health", id, res.Status, res.Detail)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": res.Status, "detail": res.Detail, "checked_at": rfc3339(res.CheckedAt),
+	})
+}

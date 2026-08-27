@@ -9,6 +9,7 @@ type KarmaxConfig struct {
 	Database DatabaseConfig        `yaml:"database"`
 	Webhooks WebhooksConfig        `yaml:"webhooks"`
 	API      APIConfig             `yaml:"api"`
+	Console  ConsoleConfig         `yaml:"console"`
 	AI       AIConfig              `yaml:"ai"`
 	MCPs     []mcp.MCPServerConfig `yaml:"mcps"`
 	Comms    CommsConfig           `yaml:"comms"`
@@ -103,6 +104,28 @@ type APIConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Port    int    `yaml:"port"`
 	Host    string `yaml:"host"`
+}
+
+// ConsoleConfig is the web console's own listener.
+//
+// Deliberately a SEPARATE server from APIConfig rather than more routes on the
+// same mux. The API port carries POST /api/tools/{name}, which can invoke
+// shell.exec — that is remote code execution, and it must stay reachable only
+// from an operator's network no matter how the console is exposed. Splitting
+// the listener is what lets the console be published without publishing that.
+type ConsoleConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Port    int    `yaml:"port"`
+	Host    string `yaml:"host"`
+
+	// PublicURL is the address operators actually reach the console at, used
+	// to render connector callback URLs. A setup wizard that prints a callback
+	// URL nobody can reach is worse than no wizard, and the server cannot infer
+	// its own public name from behind a CDN.
+	PublicURL string `yaml:"public_url"`
+
+	// SessionHours is how long a login lasts. 0 means the default (12h).
+	SessionHours int `yaml:"session_hours"`
 }
 
 type WebhookRouteConfig struct {
