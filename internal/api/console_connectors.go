@@ -131,12 +131,44 @@ func (s *ConsoleServer) publicBase() string {
 	return ""
 }
 
+// callbackURL is the address a third party should deliver webhooks to.
+//
+// The PATH comes from the connector itself, via the EventSource it declares.
+// It used to be built as "/hooks/" + id, which was invented: GitHub's real path
+// is /connectors/github and Jira's is a set of three. So the wizard printed a
+// URL that had never existed, and pasting it into GitHub produced deliveries
+// that 404'd — worse than showing nothing, because it looked done.
+//
+// The HOST comes from webhooks.public_url, falling back to console.public_url.
+// They are usually different addresses: a browser destination and a machine
+// destination, on this deployment not even the same port.
 func (s *ConsoleServer) callbackURL(connectorID string) string {
-	base := s.publicBase()
+	base := s.webhookBase()
 	if base == "" {
 		return ""
 	}
-	return base + "/hooks/" + connectorID
+	c, ok := s.connectorByID(connectorID)
+	if !ok {
+		return ""
+	}
+	for _, src := range c.Sources() {
+		if src.Kind == connectorkit.SourceWebhook && src.Path != "" {
+			return base + src.Path
+		}
+	}
+	// A connector with no webhook source has no callback URL, and saying so by
+	// omission beats inventing one.
+	return ""
+}
+
+// webhookBase is where this install's webhook server is reachable from outside.
+func (s *ConsoleServer) webhookBase() string {
+	if s.cfg != nil {
+		if u := strings.TrimRight(strings.TrimSpace(s.cfg.Webhooks.PublicURL), "/"); u != "" {
+			return u
+		}
+	}
+	return s.publicBase()
 }
 
 func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +217,19 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 		for _, st := range guide.SetupSteps(known, callback) {
 			steps = append(steps, setupStep{Title: st.Title, Body: st.Body, Value: st.Value, URL: st.URL, Done: st.Done})
 		}
+	}
+
+	// A webhook URL that is not HTTPS is worth saying out loud at the moment
+	// someone is about to paste it into a third party, rather than leaving them
+	// to notice the scheme.
+	if callback != "" && !strings.HasPrefix(callback, "https://") {
+		steps = append(steps, setupStep{
+			Title: "This callback URL is not HTTPS",
+			Body: "Deliveries to it cross the network in the clear. The signature still proves " +
+				"they are genuine and unmodified, but anyone in between can read the payload. " +
+				"Put a certificate in front of the webhook server when you can.",
+			Value: callback,
+		})
 	}
 
 	if len(steps) == 0 {
