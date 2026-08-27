@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/connectors"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"go.uber.org/zap"
@@ -153,7 +154,11 @@ func (s *ConsoleServer) callbackURL(connectorID string) string {
 	}
 	for _, src := range c.Sources() {
 		if src.Kind == connectorkit.SourceWebhook && src.Path != "" {
-			return base + src.Path
+			// The /hooks-prefixed form, not the connector's own path: that one
+			// collides with the console SPA, so it cannot be served from the
+			// same HTTPS front door. Both are mounted; this is the one to hand
+			// out.
+			return base + connectors.WebhookPrefix + src.Path
 		}
 	}
 	// A connector with no webhook source has no callback URL, and saying so by
