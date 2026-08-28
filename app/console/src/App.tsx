@@ -13,6 +13,7 @@ import { ApprovalsPage } from "@/pages/Approvals/ApprovalsPage";
 import { AuditPage } from "@/pages/Audit/AuditPage";
 import { ConnectorsPage } from "@/pages/Connectors/ConnectorsPage";
 import { ConnectorSetupPage } from "@/pages/Connectors/ConnectorSetupPage";
+import { WebhooksPage } from "@/pages/Webhooks/WebhooksPage";
 import { OrganisationPage } from "@/pages/Organisation/OrganisationPage";
 import { UsersPage } from "@/pages/Users/UsersPage";
 import { SettingsPage } from "@/pages/Settings/SettingsPage";
@@ -36,6 +37,7 @@ export function App() {
             <Route path="/audit" element={<AuditPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
             <Route path="/connectors/:id" element={<ConnectorSetupPage />} />
+            <Route path="/webhooks" element={<WebhooksPage />} />
             <Route path="/organisation" element={<OrganisationPage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/settings" element={<SettingsPage />} />

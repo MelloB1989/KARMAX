@@ -828,6 +828,43 @@ var migrations = []string{
 	// sign-in apart from an employee connecting their mailbox, or a link meant
 	// for one could be redeemed as the other.
 	`ALTER TABLE oauth_states ADD COLUMN purpose TEXT NOT NULL DEFAULT 'connect'`,
+
+	// 032_webhooks — endpoints an operator can create without a restart.
+	//
+	// Config-file routes (webhooks.routes) are mounted once at boot on the
+	// mux, which panics if the same pattern is registered twice — so they can
+	// never be edited while running. These are dispatched from a lookup
+	// instead, which is what lets one be created, re-secreted or deleted from
+	// the console and take effect on the next delivery.
+	`CREATE TABLE IF NOT EXISTS webhook_endpoints (
+		id               TEXT PRIMARY KEY,
+		slug             TEXT NOT NULL,
+		name             TEXT NOT NULL DEFAULT '',
+		description      TEXT NOT NULL DEFAULT '',
+		secret           TEXT NOT NULL DEFAULT '',
+		signature_header TEXT NOT NULL DEFAULT '',
+		event_kind       TEXT NOT NULL,
+		agent_id         TEXT NOT NULL DEFAULT '',
+		enabled          INTEGER NOT NULL DEFAULT 1,
+		created_at       DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at       DATETIME NOT NULL DEFAULT (datetime('now')),
+		created_by       TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_slug ON webhook_endpoints(slug)`,
+
+	// What actually arrived. A webhook that silently does nothing is the most
+	// common integration failure there is, and without a record the only
+	// evidence is on the sender's side where the operator cannot see it.
+	`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+		id          TEXT PRIMARY KEY,
+		endpoint    TEXT NOT NULL,
+		source      TEXT NOT NULL DEFAULT '',
+		status      TEXT NOT NULL,
+		detail      TEXT NOT NULL DEFAULT '',
+		body_sample TEXT NOT NULL DEFAULT '',
+		received_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries ON webhook_deliveries(endpoint, received_at)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

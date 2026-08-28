@@ -152,6 +152,15 @@ func NewConsole(addr string, distDir string, d ConsoleDeps) *ConsoleServer {
 
 	mux.HandleFunc("GET /api/console/audit", s.session(s.handleConsoleAudit))
 
+	// Webhooks: platform ones derived from connectors, custom ones an operator
+	// creates. Reading is open to anyone signed in; creating one is an operator
+	// action because it opens a public endpoint that publishes events.
+	mux.HandleFunc("GET /api/console/webhooks", s.session(s.handleListWebhooks))
+	mux.HandleFunc("GET /api/console/webhooks/deliveries", s.session(s.handleWebhookDeliveries))
+	mux.HandleFunc("POST /api/console/webhooks", s.role("operator", s.handleCreateWebhook))
+	mux.HandleFunc("PUT /api/console/webhooks/{id}", s.role("operator", s.handleUpdateWebhook))
+	mux.HandleFunc("DELETE /api/console/webhooks/{id}", s.role("operator", s.handleDeleteWebhook))
+
 	mux.HandleFunc("GET /api/console/connectors", s.session(s.handleConnectors))
 	mux.HandleFunc("GET /api/console/connectors/{id}/setup", s.session(s.handleConnectorSetup))
 	mux.HandleFunc("POST /api/console/connectors/{id}/credentials", s.role("admin", s.handleConnectorCredentials))

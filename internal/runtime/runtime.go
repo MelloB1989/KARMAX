@@ -904,6 +904,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	connHost.MountWebhooks(wh.AddHandler)
 
+	// Operator-defined webhooks, dispatched from a lookup rather than the mux.
+	// One handler for all of them is what lets an endpoint be created, edited
+	// or deleted from the console and take effect on the next delivery — the
+	// mux-registered routes below can only ever be set up at boot.
+	webhook.NewCustomDispatcher(s, b, log).Mount(wh.AddHandler)
+
 	for _, route := range cfg.Webhooks.Routes {
 		wh.AddRoute(webhook.WebhookRoute{
 			Path:            route.Path,
