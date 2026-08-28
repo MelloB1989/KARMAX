@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Check, ExternalLink, Plug, Stethoscope, Upload, UserCheck, UserPlus } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, KeyRound, Plug, Stethoscope, Upload, UserCheck, UserPlus } from "lucide-react";
 import { disconnect, getConnectorSetup, listConnections, listConnectors, runConnectorHealthCheck, saveConnectorCredentials, startConnect } from "@/api/connectors";
 import type { ConnectorConnections, ConnectorHealthCheck, ConnectorSetup, ConnectorSummary } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
@@ -83,6 +83,22 @@ export function ConnectorSetupPage() {
           <StatusLabel health={connectorHealth(summary.status)}>{summary.status.replace("_", " ")}</StatusLabel>
         )}
       </div>
+
+      {setup.redirect_uri && (
+        <Panel className="mb-5 border-brand/40 p-4">
+          <div className="mb-1.5 flex items-center gap-2">
+            <KeyRound className="h-4 w-4 text-brand" />
+            <h2 className="text-h2">Authorised redirect URI</h2>
+          </div>
+          <p className="mb-2.5 text-sm text-fg-muted">
+            Register this with the provider before anyone tries to connect. It is compared
+            character for character — an unregistered one is refused as{" "}
+            <code className="font-mono text-xs">redirect_uri_mismatch</code>, which reads like a
+            broken app rather than a missing line.
+          </p>
+          <CopyField value={setup.redirect_uri} />
+        </Panel>
+      )}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_360px]">
         <Panel className="p-5">

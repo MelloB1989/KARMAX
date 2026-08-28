@@ -214,6 +214,11 @@ export interface ConnectorSetup {
   steps: ConnectorSetupStep[];
   fields: ConnectorField[];
   callback_url: string;
+  /**
+   * Where an OAuth provider sends people back after consent. Must be
+   * registered with the provider character for character.
+   */
+  redirect_uri?: string;
   /** The ways in. Empty for a connector with only one. */
   methods?: ConnectorAuthMethod[];
   active_method?: string;
