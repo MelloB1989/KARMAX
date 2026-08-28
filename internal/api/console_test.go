@@ -372,11 +372,11 @@ func TestTruncateDoesNotSplitCharacters(t *testing.T) {
 func TestAConnectorConfiguredElsewhereIsNotReportedMissing(t *testing.T) {
 	t.Setenv("SLACK_BOT_TOKEN", "xoxb-from-env")
 
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(slackconn.New())
 
-	got := srv.summariseConnector(slackconn.New().Manifest())
+	got := srv.summariseConnector(slackconn.New().Manifest(), nil)
 	if got.Status == "not_configured" {
 		t.Error("Slack reported not_configured while its token was present in the environment")
 	}
@@ -447,7 +447,7 @@ func TestDisconnectingSomeoneElseNeedsAdmin(t *testing.T) {
 // A list of names must not carry everybody's tokens.
 func TestConnectionsListingCarriesNoTokens(t *testing.T) {
 	srv, db := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(googleconn.New())
 	token := bootstrapAdmin(t, srv)
 	if err := db.SaveUserCredential(store.UserCredential{
@@ -473,8 +473,8 @@ func TestConnectionsListingCarriesNoTokens(t *testing.T) {
 // call, so an install-wide connector must not answer with an empty list — that
 // would render the panel on Slack, where it means nothing.
 func TestConnectionsAreOnlyOfferedForPerUserConnectors(t *testing.T) {
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(slackconn.New())
 	token := bootstrapAdmin(t, srv)
 
@@ -489,8 +489,8 @@ func TestConnectionsAreOnlyOfferedForPerUserConnectors(t *testing.T) {
 // A per-user connector cannot be connected until an admin has set up the org's
 // OAuth app — there is nothing to authorise against.
 func TestConnectRefusesBeforeTheOrgAppExists(t *testing.T) {
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(googleconn.New())
 	token := bootstrapAdmin(t, srv)
 
@@ -511,8 +511,8 @@ func TestHealthCheckAsksTheConnectorNotOnlyTheStore(t *testing.T) {
 	t.Setenv("SLACK_BOT_TOKEN", "xoxb-from-env")
 	t.Setenv("SLACK_APP_TOKEN", "")
 
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(slackconn.New())
 	token := bootstrapAdmin(t, srv)
 
@@ -535,7 +535,7 @@ func TestHealthCheckAsksTheConnectorNotOnlyTheStore(t *testing.T) {
 // healthy for something nobody can actually use.
 func TestPerUserHealthIsCheckedAsAPerson(t *testing.T) {
 	srv, db := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(googleconn.New())
 	token := bootstrapAdmin(t, srv)
 
@@ -666,8 +666,8 @@ func TestTheOrgContextIsCapped(t *testing.T) {
 // /connectors/github, so the wizard printed a URL that had never existed —
 // worse than showing nothing, because it looked finished.
 func TestTheCallbackURLIsTheConnectorsRealPath(t *testing.T) {
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(githubconn.New(""))
 	srv.cfg = &config.KarmaxConfig{}
 	srv.cfg.Console.PublicURL = "https://console.example"
@@ -684,8 +684,8 @@ func TestTheCallbackURLIsTheConnectorsRealPath(t *testing.T) {
 
 // The webhook server and the console are usually different addresses.
 func TestTheWebhookHostCanDifferFromTheConsole(t *testing.T) {
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(githubconn.New(""))
 	srv.cfg = &config.KarmaxConfig{}
 	srv.cfg.Console.PublicURL = "https://console.example"
@@ -699,8 +699,8 @@ func TestTheWebhookHostCanDifferFromTheConsole(t *testing.T) {
 // A connector with no webhook source has no callback URL, and saying so by
 // omission beats inventing one.
 func TestAConnectorWithoutWebhooksHasNoCallbackURL(t *testing.T) {
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(slackconn.New()) // Sources() returns nil
 	srv.cfg = &config.KarmaxConfig{}
 	srv.cfg.Console.PublicURL = "https://console.example"
@@ -712,8 +712,8 @@ func TestAConnectorWithoutWebhooksHasNoCallbackURL(t *testing.T) {
 
 // The setup response must surface it in both places the console reads.
 func TestSetupSurfacesTheCallbackURL(t *testing.T) {
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(githubconn.New(""))
 	srv.cfg = &config.KarmaxConfig{}
 	srv.cfg.Console.PublicURL = "https://console.example"
@@ -750,8 +750,8 @@ func TestSetupSurfacesTheCallbackURL(t *testing.T) {
 // Someone about to paste a callback into GitHub should be told it is plaintext
 // at that moment, not left to notice the scheme.
 func TestAPlainHTTPCallbackIsFlagged(t *testing.T) {
-	srv, _ := consoleTestServer(t)
-	srv.conns = connectors.NewHost(nil, nil, nil, zap.NewNop())
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
 	srv.conns.Register(githubconn.New(""))
 	srv.cfg = &config.KarmaxConfig{}
 	srv.cfg.Webhooks.PublicURL = "http://13.207.76.239:9090"

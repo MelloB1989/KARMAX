@@ -800,6 +800,20 @@ var migrations = []string{
 		updated_at  DATETIME NOT NULL DEFAULT (datetime('now')),
 		updated_by  TEXT NOT NULL DEFAULT ''
 	)`,
+
+	// 030_connector_health — a status that survives a restart.
+	//
+	// It used to live in a map on the console server, which meant it started
+	// empty and only ever filled if a human clicked. Every connector therefore
+	// read "degraded — not checked yet" on a fresh boot, including ones that
+	// were working perfectly. A status display that says "unknown" about
+	// everything is not a status display.
+	`CREATE TABLE IF NOT EXISTS connector_health (
+		connector  TEXT PRIMARY KEY,
+		status     TEXT NOT NULL,
+		detail     TEXT NOT NULL DEFAULT '',
+		checked_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

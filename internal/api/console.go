@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
@@ -50,9 +49,7 @@ type ConsoleServer struct {
 	sessionTTL time.Duration
 	distFS     fs.FS
 
-	mux      *http.ServeMux
-	healthMu sync.RWMutex
-	health   map[string]healthResult
+	mux *http.ServeMux
 
 	// decide executes an approval decision; injected by the runtime so this
 	// package does not import the proposal machinery.
