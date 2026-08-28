@@ -45,64 +45,52 @@ type setupField struct {
 	Required    bool   `json:"required"`
 }
 
-// healthCache remembers the last health result per connector.
-//
-// GET /connectors is a status DISPLAY, not a live poll: re-checking three
-// third-party APIs every time someone opens a page would rate-limit the
-// install and make the page as slow as the slowest vendor.
-type healthResult struct {
-	Status    string
-	Detail    string
-	CheckedAt time.Time
-}
+// Health verdicts come from the store, written by the connector host's
+// background prober. They used to live in a map here, which meant they started
+// empty on every boot and only ever filled if a human clicked — so every
+// connector read "degraded, not checked yet" including the ones working
+// perfectly, and the next restart threw the answer away again.
 
-func (s *ConsoleServer) cachedHealth(id string) (healthResult, bool) {
-	s.healthMu.RLock()
-	defer s.healthMu.RUnlock()
-	h, ok := s.health[id]
-	return h, ok
-}
-
-func (s *ConsoleServer) setHealth(id string, h healthResult) {
-	s.healthMu.Lock()
-	defer s.healthMu.Unlock()
-	if s.health == nil {
-		s.health = map[string]healthResult{}
-	}
-	s.health[id] = h
-}
+// healthStale is how old a verdict may be before the console stops presenting
+// it as current. Comfortably longer than the probe interval, so an ordinary
+// gap between sweeps does not make everything look unknown.
+const healthStale = 3 * connectors.ProbeInterval
 
 // summariseConnector reports a connector's state without calling anyone.
-func (s *ConsoleServer) summariseConnector(m connectorkit.Manifest) connectorSummary {
+//
+// A list view must not health-check: three vendors' round trips on every page
+// load would rate-limit the install and make the page as slow as the slowest of
+// them. It reports the last verdict the prober recorded.
+func (s *ConsoleServer) summariseConnector(m connectorkit.Manifest, health map[string]store.ConnectorHealth) connectorSummary {
 	sum := connectorSummary{ID: m.ID, Name: m.Name, Kind: m.ID, Status: "not_configured"}
 
+	if h, ok := health[m.ID]; ok && h.Status != "" {
+		sum.Status, sum.Detail = h.Status, h.Detail
+		sum.LastCheckedAt = rfc3339Ptr(h.CheckedAt)
+		if h.Stale(healthStale) {
+			// Say it is old rather than quietly presenting a stale verdict as
+			// current — the difference matters when someone is deciding
+			// whether an integration is the cause of a problem.
+			sum.Detail = h.Detail + " (last checked a while ago)"
+		}
+		return sum
+	}
+
+	// Never checked. Report what is knowable without a network call.
 	cred, err := s.store.Credential(m.ID)
 	if err != nil || cred == nil {
-		// A connector may be configured somewhere other than the credential
-		// store — Slack's token has always lived in the daemon's .env — and
-		// reporting "not configured" for a workspace the agent is actively
-		// talking in is a status display contradicting observable reality.
 		if self, ok := s.connectorByID(m.ID); ok {
-			if selfConfigured(self, connectorkit.Credentials{Config: map[string]string{}}) {
+			if connectors.SelfConfigured(self, connectorkit.Credentials{Config: map[string]string{}}) {
 				sum.Status = "degraded"
-				sum.Detail = "Configured outside the console; run a health check to confirm"
+				sum.Detail = "Configured outside the console; checking shortly"
 				return sum
 			}
 		}
 		sum.Detail = "No credentials saved yet"
 		return sum
 	}
-
-	if h, ok := s.cachedHealth(m.ID); ok {
-		sum.Status, sum.Detail = h.Status, h.Detail
-		sum.LastCheckedAt = rfc3339Ptr(h.CheckedAt)
-		return sum
-	}
-
-	// Configured but never checked. Saying "healthy" here would be a guess
-	// dressed as a fact, so it reports what is actually known.
 	sum.Status = "degraded"
-	sum.Detail = "Credentials saved; not checked yet"
+	sum.Detail = "Credentials saved; checking shortly"
 	sum.LastCheckedAt = rfc3339Ptr(cred.UpdatedAt)
 	return sum
 }
@@ -110,8 +98,14 @@ func (s *ConsoleServer) summariseConnector(m connectorkit.Manifest) connectorSum
 func (s *ConsoleServer) handleConnectors(w http.ResponseWriter, r *http.Request) {
 	out := []connectorSummary{}
 	if s.conns != nil {
+		// One query for every verdict, rather than one per connector.
+		health, err := s.store.AllConnectorHealth()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
 		for _, m := range s.conns.Available() {
-			out = append(out, s.summariseConnector(m))
+			out = append(out, s.summariseConnector(m, health))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -310,12 +304,14 @@ func (s *ConsoleServer) handleConnectorCredentials(w http.ResponseWriter, r *htt
 
 	// New credentials invalidate the old verdict — leaving a stale "healthy"
 	// next to a freshly pasted token would be the console vouching for
-	// something it has not tested.
-	s.setHealth(id, healthResult{Status: "degraded", Detail: "Credentials saved; run a health check", CheckedAt: time.Now()})
-	s.audit(r, "human", consoleUser(r).Member, "console.connector.credentials", id, "", "credentials updated")
-	s.log.Info("connector credentials updated", zap.String("connector", id))
+	// something it has not tested. Probe immediately rather than telling the
+	// operator to go and click: they just gave us everything needed to check.
+	verdict := s.conns.Probe(r.Context(), id)
+	s.audit(r, "human", consoleUser(r).Member, "console.connector.credentials", id, verdict.Status, "credentials updated")
+	s.log.Info("connector credentials updated",
+		zap.String("connector", id), zap.String("health", verdict.Status))
 
-	writeJSON(w, http.StatusOK, s.summariseConnector(m))
+	writeJSON(w, http.StatusOK, s.summariseConnector(m, map[string]store.ConnectorHealth{id: verdict}))
 }
 
 func (s *ConsoleServer) handleConnectorHealthCheck(w http.ResponseWriter, r *http.Request) {
@@ -330,33 +326,10 @@ func (s *ConsoleServer) handleConnectorHealthCheck(w http.ResponseWriter, r *htt
 		return
 	}
 
-	cred, _ := s.store.Credential(id)
-	known := connectorkit.Credentials{Config: map[string]string{}}
-	if cred != nil {
-		known.Config, known.AccessToken = cred.Config, cred.AccessToken
-		if cred.ExpiresAt != nil {
-			known.ExpiresAt = *cred.ExpiresAt
-		}
-	}
-
-	// Only call it unconfigured when the CONNECTOR agrees it has nothing.
-	//
-	// This used to short-circuit on a missing store row without asking, which
-	// made the state unreachable for anything configured elsewhere: Slack's
-	// token lives in the daemon's .env, so the list said "run a health check to
-	// confirm" and the health check answered "no credentials saved yet" — a
-	// loop that could never arrive at healthy, about a bot that was visibly
-	// working.
-	if cred == nil && !selfConfigured(c, known) {
-		s.reportHealth(w, r, id, healthResult{
-			Status: "not_configured", Detail: "No credentials saved yet", CheckedAt: time.Now(),
-		})
-		return
-	}
-
-	// A per-user connector is checked AS SOMEBODY. Checking the org's app
-	// config alone would report healthy for something nobody can use, and
-	// checking it as whoever happens to be stored would be the wrong person.
+	// A per-user connector is checked AS THE CALLER when they have connected,
+	// because "does this work" has a different answer per person. Everything
+	// else goes through the same prober the background sweep uses, so the
+	// button and the sweep can never disagree about what healthy means.
 	if c.Manifest().PerUser {
 		member := consoleUser(r).Member
 		uc, err := s.store.UserCredential(id, member)
@@ -364,43 +337,50 @@ func (s *ConsoleServer) handleConnectorHealthCheck(w http.ResponseWriter, r *htt
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		if uc == nil {
-			s.reportHealth(w, r, id, healthResult{
-				Status:    "degraded",
-				Detail:    "The app is set up, but you have not connected your own account yet",
-				CheckedAt: time.Now(),
+		if uc != nil {
+			cred, _ := s.store.Credential(id)
+			known := connectorkit.Credentials{Config: map[string]string{}, AccessToken: uc.AccessToken,
+				Member: uc.Member, Account: uc.Account}
+			if cred != nil {
+				known.Config = cred.Config
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+			defer cancel()
+
+			res := store.ConnectorHealth{Connector: id, Status: "healthy",
+				Detail: "Connected as " + uc.Account, CheckedAt: time.Now()}
+			if err := c.Health(ctx, known); err != nil {
+				res.Status, res.Detail = "failed", err.Error()
+			}
+			s.reportHealth(w, r, id, res)
+			return
+		}
+
+		// They have not connected. Say so about THEM: the background prober
+		// reports on the org ("nobody has connected yet"), which is the right
+		// thing for a list but not an answer to "why does this not work for me".
+		if cred, _ := s.store.Credential(id); cred != nil {
+			s.reportHealth(w, r, id, store.ConnectorHealth{
+				Connector: id, Status: "degraded", CheckedAt: time.Now(),
+				Detail: "The app is set up, but you have not connected your own account yet",
 			})
 			return
 		}
-		known.AccessToken, known.Member, known.Account = uc.AccessToken, uc.Member, uc.Account
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-	defer cancel()
-
-	res := healthResult{Status: "healthy", Detail: "Reachable", CheckedAt: time.Now()}
-	if err := c.Health(ctx, known); err != nil {
-		res.Status, res.Detail = "failed", err.Error()
-	} else if known.Account != "" {
-		res.Detail = "Connected as " + known.Account
-	}
-	s.reportHealth(w, r, id, res)
+	s.reportHealth(w, r, id, s.conns.Probe(r.Context(), id))
 }
 
-// reportHealth caches a verdict and returns it.
-func (s *ConsoleServer) reportHealth(w http.ResponseWriter, r *http.Request, id string, res healthResult) {
-	s.setHealth(id, res)
+// reportHealth persists a verdict and returns it.
+func (s *ConsoleServer) reportHealth(w http.ResponseWriter, r *http.Request, id string, res store.ConnectorHealth) {
+	res.Connector = id
+	if err := s.store.SaveConnectorHealth(res); err != nil {
+		s.log.Warn("could not record a connector's health", zap.Error(err))
+	}
 	s.audit(r, "human", consoleUser(r).Member, "console.connector.health", id, res.Status, res.Detail)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": res.Status, "detail": res.Detail, "checked_at": rfc3339(res.CheckedAt),
 	})
-}
-
-// selfConfigured asks a connector whether it has what it needs from somewhere
-// other than the credential store.
-func selfConfigured(c connectorkit.Connector, known connectorkit.Credentials) bool {
-	sc, ok := c.(connectorkit.SelfConfigured)
-	return ok && sc.Configured(known)
 }
 
 // genericSteps is the guide for a connector that does not provide its own.

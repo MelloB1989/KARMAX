@@ -1034,6 +1034,10 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
 	rt.clock.Start(ctx)
 	rt.connectors.StartPollers(ctx)
+	// Keep the console's health column true without anyone clicking. A status
+	// nobody has established is not a status, and one that resets on every
+	// restart is worse — it teaches people the column means nothing.
+	rt.connectors.StartProbing(ctx)
 	rt.startRecipes(ctx)
 	rt.startAgentRouter(ctx)
 	rt.wireMesh()

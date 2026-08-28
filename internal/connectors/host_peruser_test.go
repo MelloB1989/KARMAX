@@ -155,3 +155,11 @@ func TestTheActorIsCarriedInContextNotArguments(t *testing.T) {
 func storeCredential(id string) store.Credential {
 	return store.Credential{Connector: id, Config: map[string]string{}, Enabled: true}
 }
+
+// userCred is one employee's authorisation for a connector.
+func userCred(connector, member string) store.UserCredential {
+	return store.UserCredential{
+		Connector: connector, Member: member,
+		Account: member + "@acme.com", AccessToken: "at", RefreshToken: "rt",
+	}
+}
