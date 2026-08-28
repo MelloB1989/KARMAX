@@ -80,7 +80,23 @@ func parseRSAPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
+// usesAppAuth reports whether to authenticate as a GitHub App.
+//
+// The RECORDED method wins when there is one. Deciding purely by which fields
+// are non-empty means a half-finished App attempt — an app id typed in and
+// abandoned, with no private key — silently takes precedence over a personal
+// access token that works, and every call then fails complaining about a key
+// the operator never meant to use.
+//
+// Falls back to the old inference for credentials saved before the method was
+// recorded, so existing installs keep behaving exactly as they did.
 func usesAppAuth(cr connectorkit.Credentials) bool {
+	switch strings.TrimSpace(cr.Get("auth_method")) {
+	case "app":
+		return true
+	case "pat":
+		return false
+	}
 	return cr.Get("app_id") != "" || cr.Get("app_private_key") != "" || cr.Get("installation_id") != ""
 }
 

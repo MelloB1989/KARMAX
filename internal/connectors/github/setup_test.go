@@ -91,3 +91,38 @@ func TestNotInstalledIsExplained(t *testing.T) {
 		t.Errorf("the message omits the id or the account: %q", msg)
 	}
 }
+
+// A half-finished App attempt — an app id typed in and abandoned — used to
+// take precedence over a personal access token that works, and every call then
+// failed complaining about a private key the operator never meant to use.
+func TestTheRecordedMethodBeatsLeftoverFields(t *testing.T) {
+	halfFinished := cr(map[string]string{
+		"auth_method": "pat",
+		"token":       "ghp_works",
+		"app_id":      "4736085", // typed in, then abandoned
+	})
+	if usesAppAuth(halfFinished) {
+		t.Error("a leftover app id overrode the recorded token method")
+	}
+
+	// And the reverse: a recorded App method is honoured even with a token
+	// still sitting there.
+	both := cr(map[string]string{
+		"auth_method": "app", "token": "ghp_old",
+		"app_id": "1", "app_private_key": "KEY", "installation_id": "2",
+	})
+	if !usesAppAuth(both) {
+		t.Error("a recorded App method was ignored")
+	}
+}
+
+// Credentials saved before the method was recorded must keep behaving exactly
+// as they did.
+func TestInferenceStillWorksWithNoRecordedMethod(t *testing.T) {
+	if !usesAppAuth(cr(map[string]string{"app_id": "1"})) {
+		t.Error("an app id no longer implies App auth when nothing is recorded")
+	}
+	if usesAppAuth(cr(map[string]string{"token": "ghp_x"})) {
+		t.Error("a token alone was read as App auth")
+	}
+}
