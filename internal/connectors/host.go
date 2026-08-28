@@ -485,6 +485,14 @@ func (h *Host) GrantFromManifest(id string) error {
 	if !ok {
 		return fmt.Errorf("no connector %q", id)
 	}
+	// A host built without a broker cannot grant anything, and there is nothing
+	// to enforce the grants either. Returning rather than panicking keeps a
+	// misconfigured host from taking a request down with it.
+	if h.broker == nil {
+		h.log.Warn("no broker: connector capabilities were not granted",
+			zap.String("connector", id))
+		return nil
+	}
 	subject := broker.ConnectorSubject(id)
 	if err := h.broker.RevokeAll(subject); err != nil {
 		return err
