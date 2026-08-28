@@ -43,6 +43,22 @@ type setupField struct {
 	Type        string `json:"type"`
 	Placeholder string `json:"placeholder,omitempty"`
 	Required    bool   `json:"required"`
+	// Method scopes the field to one auth option. Empty applies to all of them.
+	Method string `json:"method,omitempty"`
+	// Description is what the value is; Help is where to find it.
+	Description string `json:"description,omitempty"`
+	Help        string `json:"help,omitempty"`
+	// Set says a value is already stored. The value itself is never returned,
+	// so without this an operator cannot tell a blank field from a secret one.
+	Set bool `json:"set"`
+}
+
+type setupMethod struct {
+	ID          string      `json:"id"`
+	Name        string      `json:"name"`
+	Summary     string      `json:"summary"`
+	Recommended bool        `json:"recommended"`
+	Steps       []setupStep `json:"steps"`
 }
 
 // Health verdicts come from the store, written by the connector host's
@@ -183,6 +199,12 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 	}
 	m := c.Manifest()
 
+	cred, _ := s.store.Credential(id)
+	known := connectorkit.Credentials{Config: map[string]string{}}
+	if cred != nil {
+		known.Config, known.AccessToken = cred.Config, cred.AccessToken
+	}
+
 	// Fields come from the connector's own manifest rather than a table in the
 	// console, so a connector that grows a config key does not need a matching
 	// frontend change to become configurable.
@@ -197,7 +219,34 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 		fields = append(fields, setupField{
 			Key: f.Key, Label: labelFor(f.Key), Type: typ,
 			Placeholder: f.Default, Required: f.Required,
+			Method: f.Method, Description: f.Description, Help: f.Help,
+			Set: strings.TrimSpace(known.Config[f.Key]) != "",
 		})
+	}
+
+	// The ways in. A connector that offers several has its fields SCOPED to
+	// them, so the form asks for the four a GitHub App needs rather than the
+	// union of every method's nine — of which any operator needs about half,
+	// with nothing saying which half.
+	var methods []setupMethod
+	if chooser, ok := c.(connectorkit.AuthChoices); ok {
+		for _, o := range chooser.AuthOptions() {
+			steps := make([]setupStep, 0, len(o.Steps))
+			for _, st := range o.Steps {
+				steps = append(steps, setupStep{Title: st.Title, Body: st.Body, Value: st.Value, URL: st.URL, Done: st.Done})
+			}
+			methods = append(methods, setupMethod{
+				ID: o.ID, Name: o.Name, Summary: o.Summary,
+				Recommended: o.Recommended, Steps: steps,
+			})
+		}
+	}
+
+	// Which one is already in use, so returning to the page shows what was set
+	// up rather than defaulting back to the recommended option.
+	active := strings.TrimSpace(known.Config["auth_method"])
+	if active == "" && len(methods) > 0 {
+		active = inferMethod(methods, fields, known)
 	}
 
 	callback := s.callbackURL(id)
@@ -208,11 +257,6 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 	// is exactly the step people miss.
 	var steps []setupStep
 	if guide, ok := c.(connectorkit.SetupGuide); ok {
-		cred, _ := s.store.Credential(id)
-		known := connectorkit.Credentials{Config: map[string]string{}}
-		if cred != nil {
-			known.Config, known.AccessToken = cred.Config, cred.AccessToken
-		}
 		for _, st := range guide.SetupSteps(known, callback) {
 			steps = append(steps, setupStep{Title: st.Title, Body: st.Body, Value: st.Value, URL: st.URL, Done: st.Done})
 		}
@@ -237,6 +281,7 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": id, "steps": steps, "fields": fields, "callback_url": callback,
+		"methods": methods, "active_method": active,
 	})
 }
 
@@ -270,15 +315,36 @@ func (s *ConsoleServer) handleConnectorCredentials(w http.ResponseWriter, r *htt
 	}
 
 	m := c.Manifest()
+
+	// Only the chosen method's fields are required. Demanding all of them would
+	// make a working personal-access-token setup fail for want of an App ID it
+	// will never use.
+	method := strings.TrimSpace(body["auth_method"])
+	stored, _ := s.store.Credential(id)
+
 	var missing []string
 	for _, f := range m.Config {
-		if f.Required && strings.TrimSpace(body[f.Key]) == "" {
-			missing = append(missing, f.Key)
+		if !f.Required {
+			continue
 		}
+		if f.Method != "" && method != "" && f.Method != method {
+			continue
+		}
+		if strings.TrimSpace(body[f.Key]) != "" {
+			continue
+		}
+		// A required SECRET already stored counts as supplied. The form cannot
+		// show its value, so an untouched box is not a decision to remove it —
+		// and without this, editing the default repository fails with "still
+		// needed: Token" about a token that is right there.
+		if f.Secret && stored != nil && strings.TrimSpace(stored.Config[f.Key]) != "" {
+			continue
+		}
+		missing = append(missing, labelFor(f.Key))
 	}
 	if len(missing) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity,
-			map[string]any{"error": "missing required fields: " + strings.Join(missing, ", ")})
+			map[string]any{"error": "still needed: " + strings.Join(missing, ", ")})
 		return
 	}
 
@@ -290,7 +356,24 @@ func (s *ConsoleServer) handleConnectorCredentials(w http.ResponseWriter, r *htt
 			cred.Config[k] = v
 		}
 	}
+	// Switching method clears the other one's fields. Leaving them behind means
+	// usesAppAuth() still sees an app id after someone moved to a token, and
+	// the connector authenticates the way they just stopped using.
+	if method != "" {
+		for _, f := range m.Config {
+			if f.Method != "" && f.Method != method {
+				delete(cred.Config, f.Key)
+			}
+		}
+		cred.Config["auth_method"] = method
+	}
 	for k, v := range body {
+		// A secret field left blank means "keep what is stored", not "clear
+		// it" — the form cannot show the current value, so an untouched box is
+		// not a decision to remove it.
+		if strings.TrimSpace(v) == "" && isSecretField(m, k) {
+			continue
+		}
 		cred.Config[k] = v
 	}
 	if tok := strings.TrimSpace(body["access_token"]); tok != "" {
@@ -418,4 +501,44 @@ func (s *ConsoleServer) connectorByID(id string) (connectorkit.Connector, bool) 
 		return nil, false
 	}
 	return s.conns.Get(id)
+}
+
+// inferMethod works out how an existing connector was set up.
+//
+// Only used for credentials saved before auth_method was recorded: whichever
+// method has all of its required fields filled in is the one in use. Guessing
+// beats showing an operator the recommended option next to their own working
+// configuration and implying they have to redo it.
+func inferMethod(methods []setupMethod, fields []setupField, known connectorkit.Credentials) string {
+	for _, m := range methods {
+		complete, any := true, false
+		for _, f := range fields {
+			if f.Method != m.ID || !f.Required {
+				continue
+			}
+			any = true
+			if strings.TrimSpace(known.Config[f.Key]) == "" {
+				complete = false
+			}
+		}
+		if any && complete {
+			return m.ID
+		}
+	}
+	for _, m := range methods {
+		if m.Recommended {
+			return m.ID
+		}
+	}
+	return methods[0].ID
+}
+
+// isSecretField reports whether a key holds a value the form cannot display.
+func isSecretField(m connectorkit.Manifest, key string) bool {
+	for _, f := range m.Config {
+		if f.Key == key {
+			return f.Secret
+		}
+	}
+	return false
 }
