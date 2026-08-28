@@ -97,7 +97,21 @@ func usesAppAuth(cr connectorkit.Credentials) bool {
 	case "pat":
 		return false
 	}
-	return cr.Get("app_id") != "" || cr.Get("app_private_key") != "" || cr.Get("installation_id") != ""
+	appTouched := cr.Get("app_id") != "" || cr.Get("app_private_key") != "" || cr.Get("installation_id") != ""
+	if !appTouched {
+		return false
+	}
+
+	// An App config that cannot possibly work, next to a token that can, means
+	// the token. Choosing the App there produces "app auth needs
+	// app_private_key" about a setup the operator abandoned, while a working
+	// credential sits unused beside it.
+	//
+	// With no token to fall back on, the App is still the answer: the error
+	// then names the field they actually need to finish.
+	appComplete := cr.Get("app_id") != "" && cr.Get("app_private_key") != ""
+	hasToken := cr.AccessToken != "" || cr.Get("token") != ""
+	return appComplete || !hasToken
 }
 
 func requireAppConfig(cr connectorkit.Credentials) error {
