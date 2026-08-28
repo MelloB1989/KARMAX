@@ -426,6 +426,23 @@ func (s *ConsoleServer) handleConnectorCredentials(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Grant the connector the capabilities it declared.
+	//
+	// Without this a connector configured through the console has credentials
+	// and no permissions: its tools resolve, the agent calls one, and the
+	// Broker refuses — which reads as a broken tool rather than a missing
+	// grant. Grants used to land only via `karmax connectors enable`, so
+	// anything set up here was unusable no matter how correct the credentials
+	// were.
+	if err := s.conns.GrantFromManifest(id); err != nil {
+		s.log.Error("could not grant a connector its declared capabilities",
+			zap.String("connector", id), zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "credentials saved, but the connector could not be granted its permissions: " + err.Error(),
+		})
+		return
+	}
+
 	// New credentials invalidate the old verdict — leaving a stale "healthy"
 	// next to a freshly pasted token would be the console vouching for
 	// something it has not tested. Probe immediately rather than telling the

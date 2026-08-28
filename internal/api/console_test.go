@@ -17,11 +17,13 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
+	youtrackconn "github.com/MelloB1989/karmax/internal/connectors/youtrack"
 	"github.com/MelloB1989/karmax/internal/store"
 	"go.uber.org/zap"
 )
@@ -1496,5 +1498,56 @@ func TestTheAdvertisedRedirectIsTheOneUsed(t *testing.T) {
 	if got := u.Query().Get("redirect_uri"); got != s1.RedirectURI {
 		t.Errorf("the page says to register %q but the request sends %q — every consent would "+
 			"be refused with redirect_uri_mismatch", s1.RedirectURI, got)
+	}
+}
+
+// A connector configured through the console used to get credentials and no
+// permissions: its tools resolved, the agent called one, and the Broker
+// refused — which reads as a broken tool rather than a missing grant.
+func TestSavingCredentialsGrantsTheConnectorItsCapabilities(t *testing.T) {
+	db, err := store.New(filepath.Join(t.TempDir(), "g.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	brk := broker.New(db, zap.NewNop())
+	host := connectors.NewHost(db, nil, brk, zap.NewNop())
+	host.Register(youtrackconn.New(""))
+
+	srv := NewConsole("127.0.0.1:0", "", ConsoleDeps{
+		Store: db, Config: &config.KarmaxConfig{}, Log: zap.NewNop(), Conns: host, Broker: brk,
+	})
+	token := bootstrapAdmin(t, srv)
+
+	// Nothing granted before.
+	if before, _ := db.Grants(broker.ConnectorSubject("youtrack")); len(before) != 0 {
+		t.Fatalf("youtrack already had %d grants", len(before))
+	}
+
+	w := do(t, srv, "POST", "/api/console/connectors/youtrack/credentials", token, map[string]string{
+		"base_url": "https://acme.youtrack.cloud", "token": "perm-abc",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+
+	after, err := db.Grants(broker.ConnectorSubject("youtrack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) == 0 {
+		t.Fatal("saving credentials granted nothing — every tool call would be refused")
+	}
+
+	// Its own tools are among them, or the agent cannot call any of them.
+	var toolGrant bool
+	for _, g := range after {
+		if g.Capability == "tool" && strings.HasPrefix(g.Value, "youtrack.") {
+			toolGrant = true
+		}
+	}
+	if !toolGrant {
+		t.Errorf("the connector was not granted its own tools: %+v", after)
 	}
 }
