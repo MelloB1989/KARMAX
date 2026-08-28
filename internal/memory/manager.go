@@ -257,6 +257,15 @@ func (m *Manager) Forget(handle string) error {
 	m.mu.Unlock()
 
 	if remote != nil {
+		// A section path ("file.md#slug") addresses ONE fact inside a subject
+		// document, and it is the form the store hands back for most entries.
+		// Requiring a ".md" suffix rejected every one of them, so the merge pass
+		// could write a consolidated fact and then fail to remove a single
+		// duplicate it replaced — it ADDED a memory on every run and removed
+		// none, which is the opposite of consolidating.
+		if file, slug, ok := splitSectionPath(handle); ok {
+			return remote.forgetSection(context.Background(), file, slug)
+		}
 		if !strings.HasSuffix(handle, ".md") {
 			return fmt.Errorf("memory: %q is not a GitLoom path; recall returns paths ending in .md", handle)
 		}
@@ -962,4 +971,18 @@ func splitIntoChunks(text string) []string {
 		remaining = remaining[idx+2:]
 	}
 	return chunks
+}
+
+// splitSectionPath separates "facts/people/x.md#2026-08-13-some-slug" into its
+// document and its section. Reports false for a plain document path.
+func splitSectionPath(handle string) (file, slug string, ok bool) {
+	i := strings.IndexByte(handle, '#')
+	if i <= 0 || i+1 >= len(handle) {
+		return "", "", false
+	}
+	file, slug = handle[:i], handle[i+1:]
+	if !strings.HasSuffix(file, ".md") || strings.TrimSpace(slug) == "" {
+		return "", "", false
+	}
+	return file, slug, true
 }
