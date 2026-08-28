@@ -18,6 +18,27 @@ type MemoryIngestTool struct {
 	Store     *store.Store
 	MemoryMgr *memory.Manager // set per-agent at registration time
 	AgentID   string
+
+	// Scopes decides which namespace a fact belongs in — the acting member's
+	// while helping somebody, the shared one otherwise. Nil falls back to
+	// MemoryMgr, which is what a single-namespace install has always done.
+	Scopes *memory.Scopes
+}
+
+// managerFor picks the namespace this write belongs in.
+func (t *MemoryIngestTool) managerFor(ctx context.Context, input map[string]any) (*memory.Manager, string) {
+	if t.Scopes == nil {
+		return t.MemoryMgr, ""
+	}
+	// "org" is the deliberate act of filing something as company knowledge.
+	// Anything else — including nothing — keeps it with the person, because a
+	// private remark in the shared namespace is readable by every agent,
+	// recipe and colleague and cannot be taken back.
+	if scope, _ := input["scope"].(string); strings.EqualFold(strings.TrimSpace(scope), "org") {
+		return t.Scopes.Global(), t.Scopes.GlobalNamespace()
+	}
+	m := t.Scopes.Write(ctx)
+	return m, m.Namespace()
 }
 
 func (t *MemoryIngestTool) Manifest() tools.ToolManifest {
@@ -32,7 +53,8 @@ func (t *MemoryIngestTool) Manifest() tools.ToolManifest {
 				"tags": {"type": "string", "description": "Comma-separated tags for organization (e.g., 'preferences,coding')"},
 				"importance": {"type": "string", "description": "Priority: 'critical', 'high', 'medium', 'low' (default 'medium'). Drives recall ranking and what survives forgetting."},
 				"pinned": {"type": "boolean", "description": "If true, this memory is never auto-forgotten and is always front-of-mind (use for core, enduring facts)."},
-				"ttl_days": {"type": "integer", "description": "Optional: auto-expire this memory after N days (use for time-bound facts like a temporary plan or deadline)."}
+				"ttl_days": {"type": "integer", "description": "Optional: auto-expire this memory after N days (use for time-bound facts like a temporary plan or deadline)."},
+				"scope": {"type": "string", "enum": ["person", "org"], "description": "Who this fact belongs to. 'person' (the default) keeps it with whoever you are helping and nobody else can read it. Use 'org' ONLY for facts about the company itself — conventions, decisions, how things are done — which every agent and workflow should know. If in doubt, leave it: a company fact filed under a person is easy to move, a private remark filed for everyone is not."}
 			},
 			"required": ["content", "category"]
 		}`),
@@ -83,7 +105,16 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 	}
 	tags = append(tags, category)
 
-	namespace := t.MemoryMgr.Namespace()
+	// Which namespace this fact belongs in, decided before anything else: the
+	// dedup check below has to run against the SAME memory it will be written
+	// to, or a fact already known about a person would be compared with the
+	// company's memory and saved as new.
+	mgr, scopeNS := t.managerFor(ctx, input)
+	if mgr == nil {
+		mgr = t.MemoryMgr
+	}
+	namespace := mgr.Namespace()
+	_ = scopeNS
 
 	// --- Deduplication check ---
 	searchKey := content
@@ -99,7 +130,7 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 	// could never dedup against another new one, while still matching a stale
 	// legacy row — so the same fact could be saved twice AND a genuinely new
 	// one silently dropped, which is both failure modes at once.
-	existingEntries := existingMemories(t.MemoryMgr, searchKey)
+	existingEntries := existingMemories(mgr, searchKey)
 	for _, e := range existingEntries {
 		sim := wordOverlap(content, e.Content)
 		if sim > 0.7 {
@@ -154,7 +185,7 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 		ExpiresAt:  expiresAt,
 	}
 
-	if err := t.MemoryMgr.Write(entry); err != nil {
+	if err := mgr.Write(entry); err != nil {
 		return tools.ErrorResult(fmt.Errorf("failed to write memory: %w", err)), nil
 	}
 

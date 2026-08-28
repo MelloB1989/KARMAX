@@ -29,8 +29,10 @@ type Agent struct {
 	bus       *bus.Log
 	store     *store.Store
 	memory    *memory.Manager
-	tools     []tools.Tool
-	mcpTools  []tools.Tool
+	// scopes resolves the org's memory and, while helping somebody, theirs.
+	scopes   *memory.Scopes
+	tools    []tools.Tool
+	mcpTools []tools.Tool
 	// boxes routes events to one worker per conversation: ordered within a
 	// chat, concurrent across chats. See mailbox.go.
 	boxes  *mailboxes
@@ -249,6 +251,7 @@ func (a *Agent) initModels() error {
 		Store:     a.store,
 		MemoryMgr: a.memory,
 		AgentID:   a.def.ID,
+		Scopes:    a.scopes,
 	})
 
 	// Add the memory.forget tool so the agent can curate/correct its own memory.
@@ -1435,6 +1438,7 @@ func (a *Agent) ingestMemory(ctx context.Context, content, category, importance 
 	}
 
 	tool := &builtin.MemoryIngestTool{
+		Scopes:    a.scopes,
 		Store:     a.store,
 		MemoryMgr: a.memory,
 		AgentID:   a.def.ID,
@@ -1878,4 +1882,14 @@ func (a *Agent) actingMember(evt bus.Event) string {
 		return ""
 	}
 	return m.Member
+}
+
+// SetScopes gives the agent the two-tier memory view: the organisation's, and
+// — while acting for somebody — theirs. Without it the agent behaves exactly
+// as a single-namespace install always has.
+func (a *Agent) SetScopes(sc *memory.Scopes) {
+	a.scopes = sc
+	if a.memoryModel != nil {
+		a.memoryModel.SetScopes(sc)
+	}
 }

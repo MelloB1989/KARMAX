@@ -810,6 +810,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			continue
 		}
 
+		// Two tiers of memory: the organisation's, shared by every agent,
+		// recipe and workflow, and one per person that is only in play while
+		// acting for them.
+		//
+		// Wired whether or not GitLoom is configured — the separation is about
+		// who may read what, not about where it is stored.
+		a.SetScopes(memory.NewScopes(memFactory, s, def.ID, defaultNamespace(cfg), log))
+
 		// Wire comms send function into the agent
 		a.SetCommsSend(commsMgr.Send)
 		a.SetCommsEscalate(commsMgr.RequestEscalation)

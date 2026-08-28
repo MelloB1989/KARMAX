@@ -22,6 +22,7 @@ type MemoryModel struct {
 	cfg       MemoryModelConfig
 	store     *store.Store
 	memMgr    *memory.Manager
+	scopes    *memory.Scopes
 	namespace string
 	log       *zap.Logger
 }
@@ -55,6 +56,10 @@ Method:
 Output a concise, well-structured context block (short sections or bullets) with ONLY relevant facts, each with a brief source tag (profile / memory / chat / live). Put the most decision-relevant facts first. If you find nothing relevant, reply exactly: "No relevant context found." Never invent facts.`
 
 // NewMemoryModel creates the agentic retrieval sub-agent.
+// SetScopes gives the retrieval sub-agent the two-tier view: the organisation's
+// memory plus, while helping somebody, theirs.
+func (mm *MemoryModel) SetScopes(sc *memory.Scopes) { mm.scopes = sc }
+
 func NewMemoryModel(cfg MemoryModelConfig, s *store.Store, memMgr *memory.Manager, log *zap.Logger) *MemoryModel {
 	return &MemoryModel{
 		cfg:       cfg,
@@ -69,7 +74,7 @@ func NewMemoryModel(cfg MemoryModelConfig, s *store.Store, memMgr *memory.Manage
 func (mm *MemoryModel) retrievalTools() []tools.Tool {
 	return []tools.Tool{
 		&profileReadTool{mem: mm.memMgr},
-		&memSearchTool{mem: mm.memMgr},
+		&memSearchTool{mem: mm.memMgr, scopes: mm.scopes},
 		&memRecentTool{mem: mm.memMgr},
 		&treeNavigateTool{store: mm.store, namespace: mm.namespace},
 		&pageIndexTool{store: mm.store, namespace: mm.namespace},
