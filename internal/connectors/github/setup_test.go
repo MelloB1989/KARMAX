@@ -126,3 +126,26 @@ func TestInferenceStillWorksWithNoRecordedMethod(t *testing.T) {
 		t.Error("a token alone was read as App auth")
 	}
 }
+
+// An App config that cannot possibly work, beside a token that can, means the
+// token. Choosing the App there fails about a setup the operator abandoned
+// while a working credential sits unused next to it.
+func TestAnUnusableAppConfigYieldsToAWorkingToken(t *testing.T) {
+	abandoned := cr(map[string]string{"app_id": "4736085", "token": "ghp_works"})
+	if usesAppAuth(abandoned) {
+		t.Error("an incomplete App config was preferred over a usable token")
+	}
+
+	// Complete App config still wins, token or not.
+	complete := cr(map[string]string{"app_id": "1", "app_private_key": "KEY", "token": "ghp_old"})
+	if !usesAppAuth(complete) {
+		t.Error("a complete App config was ignored")
+	}
+
+	// Incomplete App and NO token: still App, so the error names the field
+	// they actually need rather than "no token configured".
+	stuck := cr(map[string]string{"app_id": "1"})
+	if !usesAppAuth(stuck) {
+		t.Error("with nothing to fall back on, the App path should still be taken")
+	}
+}
