@@ -151,6 +151,7 @@ type TokenSet struct {
 	Expiry       time.Time
 	Scopes       []string
 	Email        string
+	Name         string
 }
 
 // Exchange turns an authorisation code into tokens.
@@ -299,4 +300,113 @@ func snippet(b []byte) string {
 		return s[:300] + "…"
 	}
 	return s
+}
+
+// Signing in is a different request from connecting a mailbox.
+//
+// SignInScopes asks only who you are. Reusing the full connector scopes would
+// put "read and send your email, read your Drive" on a consent screen whose
+// entire job is to establish an identity — which is both alarming and, for
+// someone who only ever needs to sign in, a grant they should never have been
+// asked for.
+var SignInScopes = []string{
+	"openid",
+	"https://www.googleapis.com/auth/userinfo.email",
+	"https://www.googleapis.com/auth/userinfo.profile",
+}
+
+// AuthCodeURLForSignIn builds the consent URL for signing in to the console.
+//
+// No access_type=offline and no prompt=consent: a sign-in needs one access
+// token for one call to userinfo, and asking for offline access would request
+// a refresh token nothing will ever use.
+//
+// prompt=select_account so somebody signed into two Google accounts is asked
+// which one, rather than being silently taken in as whichever is first.
+func AuthCodeURLForSignIn(cr connectorkit.Credentials, redirectURI, state string) (string, error) {
+	clientID := strings.TrimSpace(cr.Get("client_id"))
+	if clientID == "" {
+		return "", fmt.Errorf("google: no client_id configured")
+	}
+	if redirectURI == "" {
+		return "", fmt.Errorf("google: no redirect URI — set console.public_url")
+	}
+
+	q := url.Values{
+		"client_id":     {clientID},
+		"redirect_uri":  {redirectURI},
+		"response_type": {"code"},
+		"scope":         {strings.Join(SignInScopes, " ")},
+		"state":         {state},
+		"prompt":        {"select_account"},
+	}
+	if hd := strings.TrimSpace(cr.Get("hosted_domain")); hd != "" {
+		// A hint to the consent screen, not a guarantee: the caller must still
+		// check the domain of whatever address comes back.
+		q.Set("hd", hd)
+	}
+	return authEndpoint + "?" + q.Encode(), nil
+}
+
+// ExchangeIdentity turns a sign-in code into the account's identity.
+//
+// Unlike Exchange it does NOT insist on a refresh token. Signing in needs one
+// access token for one call; demanding offline access would refuse anybody who
+// has authorised this app before, which is everybody after their first login.
+func ExchangeIdentity(ctx context.Context, cr connectorkit.Credentials, code, redirectURI string) (TokenSet, error) {
+	ts, err := postToken(ctx, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {strings.TrimSpace(cr.Get("client_id"))},
+		"client_secret": {strings.TrimSpace(cr.Get("client_secret"))},
+	})
+	if err != nil {
+		return TokenSet{}, err
+	}
+
+	email, name, verified, err := identity(ctx, ts.AccessToken)
+	if err != nil {
+		return TokenSet{}, err
+	}
+	if !verified {
+		// An unverified address is one Google has not confirmed the holder
+		// controls. Matching an account against it would let someone sign in as
+		// a colleague by claiming their address.
+		return TokenSet{}, fmt.Errorf("google: %s is not a verified address on that account", email)
+	}
+	ts.Email, ts.Name = email, name
+	return ts, nil
+}
+
+// identity reads who an access token belongs to.
+func identity(ctx context.Context, accessToken string) (email, name string, verified bool, err error) {
+	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, userinfoAPI, nil)
+	if rerr != nil {
+		return "", "", false, rerr
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	res, derr := httpClient.Do(req)
+	if derr != nil {
+		return "", "", false, derr
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return "", "", false, fmt.Errorf("google: userinfo returned %d", res.StatusCode)
+	}
+
+	var body struct {
+		Email         string `json:"email"`
+		VerifiedEmail *bool  `json:"verified_email"`
+		Name          string `json:"name"`
+	}
+	if derr := json.NewDecoder(res.Body).Decode(&body); derr != nil {
+		return "", "", false, derr
+	}
+	// Absent means Google did not say. Treated as verified because the v2
+	// userinfo endpoint omits the field for Workspace accounts, where the
+	// domain administrator owns the address anyway.
+	ok := body.VerifiedEmail == nil || *body.VerifiedEmail
+	return body.Email, body.Name, ok, nil
 }

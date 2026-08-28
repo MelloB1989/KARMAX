@@ -9,7 +9,7 @@ import { delay } from "./mock/util";
 export async function listUsers(): Promise<ConsoleUsers> {
   if (USE_MOCK) {
     return delay({
-      users: [{ member: "nikhil", name: "Nikhil", role: "admin", self: true }],
+      users: [{ member: "nikhil", name: "Nikhil", role: "admin", email: "", self: true }],
       roles: ["viewer", "operator", "admin"],
     });
   }
@@ -17,13 +17,18 @@ export async function listUsers(): Promise<ConsoleUsers> {
 }
 
 export async function createUser(input: {
-  member: string; name: string; role: string; password: string;
+  member: string; name: string; role: string; password: string; email?: string;
 }): Promise<ConsoleUser> {
   if (USE_MOCK) throw new Error("adding a user needs a real server");
   return post<ConsoleUser>("/api/console/users", input);
 }
 
-export async function updateUser(member: string, input: { name?: string; role?: string }): Promise<ConsoleUser> {
+export async function updateUser(
+  member: string,
+  // email is sent only when it is being changed: the server treats an absent
+  // field as "leave it alone" and "" as "remove the Google sign-in".
+  input: { name?: string; role?: string; email?: string },
+): Promise<ConsoleUser> {
   if (USE_MOCK) throw new Error("editing a user needs a real server");
   return put<ConsoleUser>(`/api/console/users/${encodeURIComponent(member)}`, input);
 }

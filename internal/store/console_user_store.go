@@ -21,9 +21,12 @@ import (
 
 // ConsoleUser is one console account. PasswordHash never leaves this package.
 type ConsoleUser struct {
-	Member    string
-	Name      string
-	Role      string
+	Member string
+	Name   string
+	Role   string
+	// Email is what a Google sign-in is matched against. Empty means this
+	// account can only be used with a password.
+	Email     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -89,8 +92,8 @@ func (s *Store) CreateConsoleUser(member, name, role, password string) (ConsoleU
 	// INSERT, not upsert: bootstrapping twice must fail loudly rather than
 	// quietly reset the admin's password.
 	if _, err := s.exec(`
-INSERT INTO console_users (member, name, role, password_hash, created_at, updated_at)
-VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))`,
+INSERT INTO console_users (member, name, role, password_hash, email, created_at, updated_at)
+VALUES (?, ?, ?, ?, '', datetime('now'), datetime('now'))`,
 		member, name, role, string(hash)); err != nil {
 		if isUniqueViolation(err) {
 			return ConsoleUser{}, ErrConsoleUserExists
@@ -134,8 +137,8 @@ func (s *Store) ConsoleUserByMember(member string) (ConsoleUser, bool, error) {
 	defer s.mu.RUnlock()
 
 	var u ConsoleUser
-	err := s.queryRow(`SELECT member, name, role FROM console_users WHERE member = ?`, member).
-		Scan(&u.Member, &u.Name, &u.Role)
+	err := s.queryRow(`SELECT member, name, role, COALESCE(email,'') FROM console_users WHERE member = ?`, member).
+		Scan(&u.Member, &u.Name, &u.Role, &u.Email)
 	if err == sql.ErrNoRows {
 		return ConsoleUser{}, false, nil
 	}
@@ -181,10 +184,10 @@ func (s *Store) ConsoleSessionUser(token string) (ConsoleUser, bool, error) {
 
 	var u ConsoleUser
 	err := s.queryRow(`
-SELECT u.member, u.name, u.role
+SELECT u.member, u.name, u.role, COALESCE(u.email,'')
 FROM console_sessions s JOIN console_users u ON u.member = s.member
 WHERE s.token = ? AND s.expires_at > datetime('now')`, token).
-		Scan(&u.Member, &u.Name, &u.Role)
+		Scan(&u.Member, &u.Name, &u.Role, &u.Email)
 	if err == sql.ErrNoRows {
 		return ConsoleUser{}, false, nil
 	}
@@ -262,7 +265,7 @@ func (s *Store) ListConsoleUsers() ([]ConsoleUser, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.query(`SELECT member, name, role FROM console_users ORDER BY member`)
+	rows, err := s.query(`SELECT member, name, role, COALESCE(email,'') FROM console_users ORDER BY member`)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +274,7 @@ func (s *Store) ListConsoleUsers() ([]ConsoleUser, error) {
 	var out []ConsoleUser
 	for rows.Next() {
 		var u ConsoleUser
-		if err := rows.Scan(&u.Member, &u.Name, &u.Role); err != nil {
+		if err := rows.Scan(&u.Member, &u.Name, &u.Role, &u.Email); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -357,4 +360,125 @@ func (s *Store) CountConsoleAdmins() (int, error) {
 	var n int
 	err := s.queryRow(`SELECT COUNT(*) FROM console_users WHERE role = 'admin'`).Scan(&n)
 	return n, err
+}
+
+// ConsoleUserByEmail finds the account a Google identity signs in as.
+//
+// Matched case-insensitively: Google normalises what it returns, but a human
+// typing the address into the users screen will not, and "Priya@acme.com" must
+// not be a different person from "priya@acme.com".
+//
+// An empty email never matches. Otherwise every account without one — which is
+// all of them until an admin fills them in — would answer to a blank identity.
+func (s *Store) ConsoleUserByEmail(email string) (ConsoleUser, bool, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return ConsoleUser{}, false, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var u ConsoleUser
+	err := s.queryRow(`
+SELECT member, name, role, COALESCE(email,'') FROM console_users
+WHERE LOWER(COALESCE(email,'')) = ?`, email).
+		Scan(&u.Member, &u.Name, &u.Role, &u.Email)
+	if err == sql.ErrNoRows {
+		return ConsoleUser{}, false, nil
+	}
+	if err != nil {
+		return ConsoleUser{}, false, err
+	}
+	return u, true, nil
+}
+
+// SetConsoleUserEmail records the address a Google sign-in matches against.
+func (s *Store) SetConsoleUserEmail(member, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// One address, one account. Two accounts sharing an email would make a
+	// sign-in ambiguous, and the tie would be broken by row order.
+	if email != "" {
+		var other string
+		err := s.queryRow(`
+SELECT member FROM console_users WHERE LOWER(COALESCE(email,'')) = ? AND member <> ?`,
+			email, member).Scan(&other)
+		if err == nil {
+			return errors.New(email + " is already the sign-in address for " + other)
+		} else if err != sql.ErrNoRows {
+			return err
+		}
+	}
+
+	res, err := s.exec(`UPDATE console_users SET email = ?, updated_at = datetime('now') WHERE member = ?`,
+		email, member)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("no such console user")
+	}
+	return nil
+}
+
+// CreateConsoleUserWithEmail adds an account that can sign in with Google.
+//
+// The password may be empty, which creates an account with no usable password:
+// a hash no input can produce. That is the point for a Google-only account —
+// "no password" must mean "cannot be signed into with a password", not "signs
+// in with an empty one".
+func (s *Store) CreateConsoleUserWithEmail(member, name, role, password, email string) (ConsoleUser, error) {
+	if password == "" {
+		u, err := s.createConsoleUserUnusablePassword(member, name, role)
+		if err != nil {
+			return u, err
+		}
+		if email != "" {
+			return u, s.SetConsoleUserEmail(member, email)
+		}
+		return u, nil
+	}
+
+	u, err := s.CreateConsoleUser(member, name, role, password)
+	if err != nil {
+		return u, err
+	}
+	if email != "" {
+		return u, s.SetConsoleUserEmail(member, email)
+	}
+	return u, nil
+}
+
+// createConsoleUserUnusablePassword adds an account no password can open.
+func (s *Store) createConsoleUserUnusablePassword(member, name, role string) (ConsoleUser, error) {
+	member = strings.TrimSpace(member)
+	if member == "" {
+		return ConsoleUser{}, errors.New("member is required")
+	}
+	if !ValidConsoleRole(role) {
+		return ConsoleUser{}, fmt.Errorf("unknown role %q", role)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// A bcrypt hash of the right shape that nothing hashes to. Storing "" would
+	// be worse than useless: CompareHashAndPassword rejects it, but a future
+	// reader cannot tell "deliberately unusable" from "we forgot to set it".
+	const unusable = "!google-only-account-no-password"
+
+	if _, err := s.exec(`
+INSERT INTO console_users (member, name, role, password_hash, email, created_at, updated_at)
+VALUES (?, ?, ?, ?, '', datetime('now'), datetime('now'))`,
+		member, name, role, unusable); err != nil {
+		if isUniqueViolation(err) {
+			return ConsoleUser{}, ErrConsoleUserExists
+		}
+		return ConsoleUser{}, err
+	}
+	return ConsoleUser{Member: member, Name: name, Role: role}, nil
 }

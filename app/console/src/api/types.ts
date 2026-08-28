@@ -268,6 +268,8 @@ export interface ConsoleUser {
   member: string;
   name: string;
   role: "admin" | "operator" | "viewer";
+  /** The address a Google sign-in matches. Empty means password-only. */
+  email: string;
   self?: boolean;
 }
 
@@ -286,4 +288,10 @@ export interface OrgProfile {
   updated_by: string;
   /** Exactly what the agents are told, rendered server-side. */
   briefing: string;
+}
+
+export interface GoogleSignIn {
+  enabled: boolean;
+  /** Restricts sign-in to one Workspace domain. Empty means no restriction. */
+  domain: string;
 }

@@ -64,7 +64,7 @@ func (s *ConsoleServer) handleConnectStart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	state, err := s.store.CreateOAuthState(id, member, "", "", oauthStateTTL)
+	state, err := s.store.CreateOAuthStateFor(id, member, "", "", "connect", oauthStateTTL)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -137,6 +137,14 @@ func (s *ConsoleServer) handleOAuthCallback(w http.ResponseWriter, r *http.Reque
 	code := q.Get("code")
 	if code == "" {
 		s.oauthPage(w, http.StatusBadRequest, "That link didn't work", "Google sent no authorisation code.")
+		return
+	}
+
+	// Branch on what the authorisation was started FOR. Without this, a link
+	// generated for signing in could be redeemed as a mailbox connection —
+	// binding a stranger's Google account to whichever member the state named.
+	if pending.Purpose == googleLoginPurpose {
+		s.finishGoogleSignIn(w, r, code)
 		return
 	}
 

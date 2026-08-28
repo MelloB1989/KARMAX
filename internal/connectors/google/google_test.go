@@ -255,3 +255,88 @@ func TestDatesAreAcceptedInBothShapes(t *testing.T) {
 		t.Error("an unparseable date was accepted")
 	}
 }
+
+// An unverified address is one Google has not confirmed the holder controls.
+// Matching an account against it would let someone sign in as a colleague by
+// claiming their address.
+func TestAnUnverifiedAddressCannotSignIn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "token") {
+			w.Write([]byte(`{"access_token":"at","expires_in":3600}`))
+			return
+		}
+		w.Write([]byte(`{"email":"impostor@acme.com","verified_email":false,"name":"Impostor"}`))
+	}))
+	defer srv.Close()
+	oldT, oldU := tokenEndpoint, userinfoAPI
+	tokenEndpoint, userinfoAPI = srv.URL+"/token", srv.URL+"/userinfo"
+	defer func() { tokenEndpoint, userinfoAPI = oldT, oldU }()
+
+	_, err := ExchangeIdentity(context.Background(),
+		creds(map[string]string{"client_id": "c", "client_secret": "s"}), "code", "https://x/cb")
+	if err == nil || !strings.Contains(err.Error(), "not a verified address") {
+		t.Errorf("an unverified address was accepted: %v", err)
+	}
+}
+
+// Signing in must not fail for somebody who has authorised this app before —
+// which is everybody after their first login. Exchange (for connecting) does
+// insist on a refresh token; ExchangeIdentity must not.
+func TestSignInDoesNotRequireARefreshToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "token") {
+			w.Write([]byte(`{"access_token":"at","expires_in":3600}`)) // no refresh_token
+			return
+		}
+		w.Write([]byte(`{"email":"priya@acme.com","verified_email":true,"name":"Priya"}`))
+	}))
+	defer srv.Close()
+	oldT, oldU := tokenEndpoint, userinfoAPI
+	tokenEndpoint, userinfoAPI = srv.URL+"/token", srv.URL+"/userinfo"
+	defer func() { tokenEndpoint, userinfoAPI = oldT, oldU }()
+
+	ts, err := ExchangeIdentity(context.Background(),
+		creds(map[string]string{"client_id": "c", "client_secret": "s"}), "code", "https://x/cb")
+	if err != nil {
+		t.Fatalf("a sign-in with no refresh token was refused: %v", err)
+	}
+	if ts.Email != "priya@acme.com" || ts.Name != "Priya" {
+		t.Errorf("identity not returned: %+v", ts)
+	}
+}
+
+// Workspace accounts omit verified_email; the domain administrator owns the
+// address, so absent must not be read as false.
+func TestAnAbsentVerifiedFlagIsAccepted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "token") {
+			w.Write([]byte(`{"access_token":"at","expires_in":3600}`))
+			return
+		}
+		w.Write([]byte(`{"email":"kartik@zeromoblt.com","name":"Kartik"}`))
+	}))
+	defer srv.Close()
+	oldT, oldU := tokenEndpoint, userinfoAPI
+	tokenEndpoint, userinfoAPI = srv.URL+"/token", srv.URL+"/userinfo"
+	defer func() { tokenEndpoint, userinfoAPI = oldT, oldU }()
+
+	if _, err := ExchangeIdentity(context.Background(),
+		creds(map[string]string{"client_id": "c", "client_secret": "s"}), "code", "https://x/cb"); err != nil {
+		t.Errorf("a Workspace account was refused: %v", err)
+	}
+}
+
+func TestSignInConsentAsksForSelectAccount(t *testing.T) {
+	raw, err := AuthCodeURLForSignIn(creds(map[string]string{"client_id": "cid"}), "https://x/cb", "st")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Somebody signed into two Google accounts should be asked which, not
+	// silently taken in as whichever is first.
+	if !strings.Contains(raw, "prompt=select_account") {
+		t.Error("the sign-in does not ask which account to use")
+	}
+}

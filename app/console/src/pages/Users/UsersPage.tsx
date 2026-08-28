@@ -23,7 +23,7 @@ export function UsersPage() {
   const [data, setData] = useState<ConsoleUsers | null>(null);
   const [err, setErr] = useState("");
   const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState({ member: "", name: "", role: "viewer", password: "" });
+  const [draft, setDraft] = useState({ member: "", name: "", role: "viewer", password: "", email: "" });
   const [pwFor, setPwFor] = useState<ConsoleUser | null>(null);
   const [pw, setPw] = useState({ current_password: "", password: "" });
   const [pwMsg, setPwMsg] = useState("");
@@ -90,18 +90,31 @@ export function UsersPage() {
               </select>
             </div>
             <div className="space-y-1">
-              <Label htmlFor="upw">Password *</Label>
+              <Label htmlFor="upw">Password</Label>
               <Input id="upw" type="password" value={draft.password} placeholder="at least 8 characters"
                 onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
             </div>
+            <div className="space-y-1">
+              <Label htmlFor="uemail">Google sign-in address</Label>
+              <Input id="uemail" value={draft.email} placeholder="priya@acme.com"
+                onChange={(e) => setDraft({ ...draft, email: e.target.value })} />
+            </div>
           </div>
           <p className="mt-2 text-xs text-fg-subtle">{ROLE_HELP[draft.role]}</p>
+          <p className="mt-1 text-xs text-fg-subtle">
+            Give them a password, a Google address, or both — an account with neither has no way
+            in. An address alone means they sign in with Google and have no password to leak.
+          </p>
           <div className="mt-3 flex gap-2">
             <Button
-              disabled={!draft.member || draft.password.length < 8}
+              disabled={
+                !draft.member ||
+                (draft.password.length > 0 && draft.password.length < 8) ||
+                (draft.password.length === 0 && draft.email.trim() === "")
+              }
               onClick={() => run(async () => {
                 await createUser(draft);
-                setDraft({ member: "", name: "", role: "viewer", password: "" });
+                setDraft({ member: "", name: "", role: "viewer", password: "", email: "" });
                 setAdding(false);
               })}
             >
@@ -121,6 +134,7 @@ export function UsersPage() {
               <tr>
                 <th className="px-4 py-2.5 font-medium">Member</th>
                 <th className="px-4 py-2.5 font-medium">Name</th>
+                <th className="px-4 py-2.5 font-medium">Google sign-in</th>
                 <th className="px-4 py-2.5 font-medium">Role</th>
                 <th className="px-4 py-2.5" />
               </tr>
@@ -133,6 +147,16 @@ export function UsersPage() {
                     {u.self && <span className="ml-2 text-fg-subtle">(you)</span>}
                   </td>
                   <td className="px-4 py-2.5 text-fg-muted">{u.name || "—"}</td>
+                  <td className="px-4 py-2.5">
+                    <Input
+                      defaultValue={u.email}
+                      placeholder="—"
+                      className="h-7 w-52 text-xs"
+                      onBlur={(e) => {
+                        if (e.target.value !== u.email) void run(() => updateUser(u.member, { email: e.target.value }));
+                      }}
+                    />
+                  </td>
                   <td className="px-4 py-2.5">
                     <select
                       value={u.role}

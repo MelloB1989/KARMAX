@@ -200,3 +200,74 @@ func TestDeletingAUserTakesTheirSessionsWithIt(t *testing.T) {
 		t.Error("a deleted user's session still resolves")
 	}
 }
+
+// A human typing an address into the users screen will not normalise it, and
+// "Priya@acme.com" must not be a different person from "priya@acme.com".
+func TestEmailMatchingIsCaseInsensitive(t *testing.T) {
+	s := consoleStore(t)
+	if _, err := s.CreateConsoleUserWithEmail("priya", "Priya", "operator", "correct-horse", "Priya@Acme.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, given := range []string{"priya@acme.com", "PRIYA@ACME.COM", "Priya@Acme.com"} {
+		u, ok, err := s.ConsoleUserByEmail(given)
+		if err != nil || !ok {
+			t.Errorf("%q did not match (%v)", given, err)
+			continue
+		}
+		if u.Member != "priya" {
+			t.Errorf("%q matched %q", given, u.Member)
+		}
+	}
+}
+
+// Every account without an email would otherwise answer to a blank identity.
+func TestABlankEmailMatchesNobody(t *testing.T) {
+	s := consoleStore(t)
+	if _, err := s.CreateConsoleUser("nikhil", "Nikhil", "admin", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	for _, given := range []string{"", "   "} {
+		if _, ok, _ := s.ConsoleUserByEmail(given); ok {
+			t.Errorf("a blank address (%q) matched an account", given)
+		}
+	}
+}
+
+// Two accounts sharing an address would make a sign-in ambiguous, and the tie
+// would be broken by row order.
+func TestAnEmailBelongsToOneAccount(t *testing.T) {
+	s := consoleStore(t)
+	if _, err := s.CreateConsoleUserWithEmail("a", "A", "viewer", "correct-horse", "shared@acme.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateConsoleUser("b", "B", "viewer", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetConsoleUserEmail("b", "shared@acme.com"); err == nil {
+		t.Error("two accounts were allowed the same sign-in address")
+	}
+	// Re-setting your own is fine.
+	if err := s.SetConsoleUserEmail("a", "shared@acme.com"); err != nil {
+		t.Errorf("an account could not keep its own address: %v", err)
+	}
+}
+
+// "No password" must mean "cannot be signed into with a password", not "signs
+// in with an empty one".
+func TestAGoogleOnlyAccountHasNoUsablePassword(t *testing.T) {
+	s := consoleStore(t)
+	if _, err := s.CreateConsoleUserWithEmail("gonly", "G Only", "viewer", "", "gonly@acme.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, attempt := range []string{"", " ", "password", "!google-only-account-no-password"} {
+		if _, err := s.AuthenticateConsoleUser("gonly", attempt); err == nil {
+			t.Errorf("a Google-only account accepted the password %q", attempt)
+		}
+	}
+	// But it exists and is findable by email, which is how it signs in.
+	if _, ok, _ := s.ConsoleUserByEmail("gonly@acme.com"); !ok {
+		t.Error("the Google-only account cannot be found by its address")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -767,5 +768,174 @@ func TestAPlainHTTPCallbackIsFlagged(t *testing.T) {
 	w = do(t, srv, "GET", "/api/console/connectors/github/setup", token, nil)
 	if strings.Contains(w.Body.String(), "not HTTPS") {
 		t.Error("an HTTPS callback URL was flagged anyway")
+	}
+}
+
+func googleConsole(t *testing.T, cfg map[string]string) (*ConsoleServer, *store.Store) {
+	t.Helper()
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(googleconn.New())
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Console.PublicURL = "https://console.example"
+	if cfg != nil {
+		if err := db.SaveCredential(store.Credential{Connector: "google", Config: cfg, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return srv, db
+}
+
+// The login page must not offer a button that cannot work.
+func TestGoogleSignInIsOfferedOnlyWhenConfigured(t *testing.T) {
+	srv, _ := googleConsole(t, nil)
+	w := do(t, srv, "GET", "/api/console/auth/google/status", "", nil)
+	if !strings.Contains(w.Body.String(), `"enabled":false`) {
+		t.Errorf("offered before setup: %s", w.Body.String())
+	}
+	if got := do(t, srv, "POST", "/api/console/auth/google/start", "", nil); got.Code != http.StatusConflict {
+		t.Errorf("a sign-in started with no OAuth app: %d", got.Code)
+	}
+
+	srv2, _ := googleConsole(t, map[string]string{"client_id": "cid", "client_secret": "s", "hosted_domain": "acme.com"})
+	w = do(t, srv2, "GET", "/api/console/auth/google/status", "", nil)
+	if !strings.Contains(w.Body.String(), `"enabled":true`) || !strings.Contains(w.Body.String(), "acme.com") {
+		t.Errorf("not offered after setup: %s", w.Body.String())
+	}
+}
+
+// Signing in establishes who you are. It must not ask for the mailbox access
+// the connector needs.
+func TestSignInAsksOnlyForIdentity(t *testing.T) {
+	srv, _ := googleConsole(t, map[string]string{"client_id": "cid", "client_secret": "s"})
+
+	w := do(t, srv, "POST", "/api/console/auth/google/start", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		URL string `json:"authorize_url"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+
+	for _, forbidden := range []string{"gmail", "drive", "calendar", "chat"} {
+		if strings.Contains(body.URL, forbidden) {
+			t.Errorf("the sign-in consent screen asks for %s access", forbidden)
+		}
+	}
+	if !strings.Contains(body.URL, "userinfo.email") {
+		t.Error("the sign-in does not ask for an email address")
+	}
+	// A sign-in needs one token for one call; offline access would request a
+	// refresh token nothing will ever use.
+	if strings.Contains(body.URL, "access_type=offline") {
+		t.Error("the sign-in asks for offline access")
+	}
+}
+
+// A sign-in link redeemed as a connect would bind a stranger's Google account
+// to whichever member the state named.
+func TestASignInStateIsMarkedAsSuch(t *testing.T) {
+	srv, db := googleConsole(t, map[string]string{"client_id": "cid", "client_secret": "s"})
+
+	w := do(t, srv, "POST", "/api/console/auth/google/start", "", nil)
+	var body struct {
+		URL string `json:"authorize_url"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	u, _ := url.Parse(body.URL)
+	state := u.Query().Get("state")
+
+	pending, err := db.RedeemOAuthState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Purpose != "login" {
+		t.Errorf("purpose is %q, want login", pending.Purpose)
+	}
+	// And it names nobody: there is no session to attribute it to yet, and
+	// accepting one from the request would be accepting an identity from an
+	// unauthenticated caller.
+	if pending.Member != "" {
+		t.Errorf("a sign-in state named a member: %q", pending.Member)
+	}
+}
+
+// Connecting a mailbox stays a "connect", so the two cannot be confused.
+func TestConnectingStillUsesTheConnectPurpose(t *testing.T) {
+	srv, db := googleConsole(t, map[string]string{"client_id": "cid", "client_secret": "s"})
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "POST", "/api/console/connectors/google/connect", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		URL string `json:"authorize_url"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	u, _ := url.Parse(body.URL)
+
+	pending, err := db.RedeemOAuthState(u.Query().Get("state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Purpose != "connect" || pending.Member != "nikhil" {
+		t.Errorf("connect state is wrong: %+v", pending)
+	}
+	// And a connect DOES need offline access, or the connection dies in an hour.
+	if !strings.Contains(body.URL, "access_type=offline") {
+		t.Error("connecting a mailbox no longer asks for offline access")
+	}
+}
+
+// Without a hosted domain, "sign in with Google" would mean anybody on earth
+// with a Google account.
+func TestAutoProvisioningRequiresAHostedDomain(t *testing.T) {
+	srv, _ := googleConsole(t, map[string]string{"client_id": "cid", "client_secret": "s"})
+	if _, domain := srv.googleSignInAvailable(); domain != "" {
+		t.Fatalf("expected no domain, got %q", domain)
+	}
+
+	srv2, _ := googleConsole(t, map[string]string{"client_id": "cid", "client_secret": "s", "hosted_domain": "Acme.COM"})
+	_, domain := srv2.googleSignInAvailable()
+	if domain != "acme.com" {
+		t.Errorf("the domain should be normalised for comparison, got %q", domain)
+	}
+}
+
+// A provisioned account gets viewer. Granting operator on the strength of an
+// email domain would let anyone in the company approve an agent's actions.
+func TestAProvisionedAccountIsOnlyAViewer(t *testing.T) {
+	srv, db := googleConsole(t, map[string]string{"client_id": "cid", "client_secret": "s", "hosted_domain": "acme.com"})
+
+	u, err := srv.provisionFromGoogle("priya.s@acme.com", "Priya S")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Role != "viewer" {
+		t.Errorf("provisioned as %q, want viewer", u.Role)
+	}
+	stored, ok, _ := db.ConsoleUserByEmail("priya.s@acme.com")
+	if !ok || stored.Member != u.Member {
+		t.Error("the provisioned account cannot be found by its address")
+	}
+	// And it has no usable password: nobody chose one, so nobody guards one.
+	if _, err := db.AuthenticateConsoleUser(u.Member, ""); err == nil {
+		t.Error("a provisioned account accepted an empty password")
+	}
+}
+
+func TestMemberIDsDerivedFromEmailAreSane(t *testing.T) {
+	for email, want := range map[string]string{
+		"priya.s@acme.com":    "priya-s",
+		"KARTIK@acme.com":     "kartik",
+		"a+tag@acme.com":      "a-tag",
+		"first_last@acme.com": "first-last",
+		"...@acme.com":        "user",
+	} {
+		if got := memberIDFromEmail(email); got != want {
+			t.Errorf("%s -> %q, want %q", email, got, want)
+		}
 	}
 }
