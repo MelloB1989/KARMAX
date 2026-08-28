@@ -253,7 +253,28 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 		active = inferMethod(methods, fields, known)
 	}
 
+	// Two different addresses a third party might need from us, and a
+	// connector needs whichever applies to it:
+	//
+	//   callback — where a service POSTs webhooks. Derived from the connector's
+	//     own EventSource, so a connector with none has no callback at all.
+	//   redirect — where an OAuth provider sends a person back after consent.
+	//
+	// Google has no webhook source, so callback is empty for it. Showing only
+	// that meant the page displayed NOTHING to register, and the consent
+	// request was then refused with redirect_uri_mismatch — a failure whose
+	// cause is a URL the operator was never shown.
 	callback := s.callbackURL(id)
+	redirect := ""
+	if m.PerUser || c.Auth().Kind == connectorkit.AuthOAuth2 {
+		redirect = s.oauthCallbackURL(id)
+	}
+
+	// The guide is handed whichever one it needs.
+	guideURL := callback
+	if guideURL == "" {
+		guideURL = redirect
+	}
 
 	// A connector that knows its own setup says so itself. GitHub's guide has a
 	// step with no field attached — install the App on your repositories —
@@ -261,7 +282,7 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 	// is exactly the step people miss.
 	var steps []setupStep
 	if guide, ok := c.(connectorkit.SetupGuide); ok {
-		for _, st := range guide.SetupSteps(known, callback) {
+		for _, st := range guide.SetupSteps(known, guideURL) {
 			steps = append(steps, setupStep{Title: st.Title, Body: st.Body, Value: st.Value, URL: st.URL, Done: st.Done})
 		}
 	}
@@ -269,23 +290,27 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 	// A webhook URL that is not HTTPS is worth saying out loud at the moment
 	// someone is about to paste it into a third party, rather than leaving them
 	// to notice the scheme.
-	if callback != "" && !strings.HasPrefix(callback, "https://") {
+	if guideURL != "" && !strings.HasPrefix(guideURL, "https://") {
 		steps = append(steps, setupStep{
 			Title: "This callback URL is not HTTPS",
 			Body: "Deliveries to it cross the network in the clear. The signature still proves " +
 				"they are genuine and unmodified, but anyone in between can read the payload. " +
 				"Put a certificate in front of the webhook server when you can.",
-			Value: callback,
+			Value: guideURL,
 		})
 	}
 
 	if len(steps) == 0 {
-		steps = genericSteps(m, callback)
+		steps = genericSteps(m, guideURL)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": id, "steps": steps, "fields": fields, "callback_url": callback,
-		"methods": methods, "active_method": active,
+		// Surfaced separately so the console can feature it: registering this
+		// with the provider is the step that silently breaks everything when
+		// it is skipped.
+		"redirect_uri": redirect,
+		"methods":      methods, "active_method": active,
 	})
 }
 

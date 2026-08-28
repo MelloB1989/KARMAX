@@ -1410,3 +1410,91 @@ func TestAnAppSetupSavesWithoutAnInstallationID(t *testing.T) {
 		}
 	}
 }
+
+// Google has no webhook source, so the page showed no URL at all — and the
+// consent request was then refused with redirect_uri_mismatch, a failure whose
+// cause is a URL the operator was never shown.
+func TestAnOAuthConnectorShowsItsRedirectURI(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(googleconn.New())
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Console.PublicURL = "https://console.example"
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "GET", "/api/console/connectors/google/setup", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		RedirectURI string `json:"redirect_uri"`
+		CallbackURL string `json:"callback_url"`
+		Steps       []struct {
+			Title, Value string
+		} `json:"steps"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+
+	want := "https://console.example/api/console/oauth/google/callback"
+	if body.RedirectURI != want {
+		t.Errorf("redirect_uri is %q, want %q", body.RedirectURI, want)
+	}
+	// Google has no webhook, so that one stays empty rather than being faked.
+	if body.CallbackURL != "" {
+		t.Errorf("a webhook callback was invented for Google: %q", body.CallbackURL)
+	}
+	// And it is on a step, with the value to copy.
+	var onStep bool
+	for _, st := range body.Steps {
+		if st.Value == want {
+			onStep = true
+			if !strings.Contains(strings.ToLower(st.Title), "redirect") {
+				t.Errorf("the step carrying it is titled %q", st.Title)
+			}
+		}
+	}
+	if !onStep {
+		t.Error("no setup step shows the redirect URI to register")
+	}
+}
+
+// The URI KARMAX asks Google to send people back to must be the same one the
+// setup page tells the operator to register, or the two drift and every
+// consent is refused.
+func TestTheAdvertisedRedirectIsTheOneUsed(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(googleconn.New())
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Console.PublicURL = "https://console.example"
+	if err := db.SaveCredential(store.Credential{
+		Connector: "google", Config: map[string]string{"client_id": "cid", "client_secret": "s"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	token := bootstrapAdmin(t, srv)
+
+	setup := do(t, srv, "GET", "/api/console/connectors/google/setup", token, nil)
+	var s1 struct {
+		RedirectURI string `json:"redirect_uri"`
+	}
+	json.Unmarshal(setup.Body.Bytes(), &s1)
+
+	start := do(t, srv, "POST", "/api/console/connectors/google/connect", token, nil)
+	if start.Code != http.StatusOK {
+		t.Fatalf("connect failed: %d %s", start.Code, start.Body.String())
+	}
+	var s2 struct {
+		URL string `json:"authorize_url"`
+	}
+	json.Unmarshal(start.Body.Bytes(), &s2)
+	u, err := url.Parse(s2.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := u.Query().Get("redirect_uri"); got != s1.RedirectURI {
+		t.Errorf("the page says to register %q but the request sends %q — every consent would "+
+			"be refused with redirect_uri_mismatch", s1.RedirectURI, got)
+	}
+}
