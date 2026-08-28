@@ -63,6 +63,48 @@ type ConfigField struct {
 	Required    bool
 	Secret      bool // never logged, never echoed back
 	Default     string
+
+	// Method scopes this field to one way of authenticating. Empty means it
+	// applies whichever is chosen.
+	//
+	// Without this a connector's setup form is the UNION of every method's
+	// fields — GitHub asking for a token AND an app id AND a private key AND
+	// an installation id, of which any given operator needs about half, with
+	// nothing saying which half.
+	Method string
+
+	// Help is where to find this value, in the provider's own words. A field
+	// labelled "App ID" with no help is a question the operator has to take to
+	// a search engine.
+	Help string
+}
+
+// AuthOption is one way to authenticate a connector.
+//
+// Connectors usually support several, and they are not interchangeable: a
+// personal access token acts as a human everywhere that human can reach, while
+// a GitHub App acts only on the repositories it was installed on. Making the
+// choice explicit is what lets the form ask for the right four fields instead
+// of all nine.
+type AuthOption struct {
+	// ID is stored alongside the credentials, so the connector knows which way
+	// it was set up rather than inferring it from which fields are non-empty.
+	ID   string
+	Name string
+	// Summary is the one line that helps somebody choose.
+	Summary string
+	// Recommended marks the option most installs should take.
+	Recommended bool
+	// Steps are the instructions for this method specifically.
+	Steps []SetupStep
+}
+
+// AuthChoices is implemented by connectors that support more than one way in.
+//
+// Optional: a connector with a single method needs no chooser, and gets the
+// plain field list.
+type AuthChoices interface {
+	AuthOptions() []AuthOption
 }
 
 // AuthKind enumerates how credentials are obtained.

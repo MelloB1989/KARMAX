@@ -168,3 +168,74 @@ func describeInstallations(ins []installation) string {
 	}
 	return "installed on " + strings.Join(parts, "; ")
 }
+
+// AuthOptions implements connectorkit.AuthChoices.
+//
+// Two ways in, and they are not interchangeable. A personal access token acts
+// as the HUMAN who made it, everywhere that human can reach — including private
+// repositories of other orgs they happen to belong to. A GitHub App acts only
+// on the repositories it was installed on, and its tokens expire by themselves.
+//
+// GitHub's OAuth Apps are deliberately absent: this connector has no OAuth flow,
+// so offering the option would be a form that cannot work.
+func (c *Connector) AuthOptions() []connectorkit.AuthOption {
+	yes, no := true, false
+	_ = no
+
+	return []connectorkit.AuthOption{
+		{
+			ID: "app", Name: "GitHub App", Recommended: true,
+			Summary: "Scoped to the repositories you install it on, with tokens that expire on " +
+				"their own. The right choice for an organisation.",
+			Steps: []connectorkit.SetupStep{
+				{
+					Title: "Create the App",
+					Body: "Settings → Developer settings → GitHub Apps → New GitHub App. Under " +
+						"Repository permissions give it Contents, Issues and Pull requests " +
+						"(read and write) plus Metadata (read). Leave the webhook box unticked " +
+						"for now — you can add that afterwards.",
+					URL: "https://github.com/settings/apps/new",
+				},
+				{
+					Title: "Generate a private key",
+					Body: "On the App's page, scroll to Private keys and generate one. GitHub " +
+						"downloads a .pem file once and will not show it again. Paste the whole " +
+						"file below, BEGIN and END lines included.",
+				},
+				{
+					Title: "Install it on your repositories",
+					Body: "Sidebar → Install App → choose the account, then All repositories or " +
+						"a selected few. An App that is created but not installed has access to " +
+						"NOTHING: every call succeeds and returns an empty list, which reads like " +
+						"a permissions bug rather than a missing step.",
+				},
+				{
+					Title: "Leave installation ID blank if you are unsure",
+					Body: "Save what you have and run the health check. It asks GitHub where the " +
+						"App is installed and reports the number, which is otherwise only visible " +
+						"in the address bar while installing.",
+					Done: &yes,
+				},
+			},
+		},
+		{
+			ID: "pat", Name: "Personal access token",
+			Summary: "One field, works immediately. Acts as YOU everywhere you have access, and " +
+				"stops working when you leave or rotate it.",
+			Steps: []connectorkit.SetupStep{
+				{
+					Title: "Create a token",
+					Body: "Fine-grained is better: pick only the repositories KARMAX should reach " +
+						"and give it Contents, Issues, Pull requests and Metadata — read and " +
+						"write. A classic token works too and needs the `repo` scope.",
+					URL: "https://github.com/settings/tokens",
+				},
+				{
+					Title: "Paste it below",
+					Body: "GitHub shows the value once. If you lose it, generate another — it " +
+						"cannot be read back.",
+				},
+			},
+		},
+	}
+}

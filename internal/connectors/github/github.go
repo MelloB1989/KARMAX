@@ -59,13 +59,57 @@ func (c *Connector) Manifest() connectorkit.Manifest {
 			"http:api.github.com",
 		},
 		Config: []connectorkit.ConfigField{
-			{Key: "token", Description: "A personal access token with repo scope — used when no App is configured", Secret: true},
-			{Key: "app_id", Description: "The GitHub App's numeric ID, for App auth instead of a token"},
-			{Key: "app_private_key", Description: "The App's PEM private key, for App auth", Secret: true},
-			{Key: "installation_id", Description: "The installation this account authenticates as, for App auth — the health check finds this for you once the App is installed"},
-			{Key: "app_slug", Description: "The App's URL slug, e.g. karmax-bot — only used to link straight to its install page"},
-			{Key: "webhook_secret", Description: "The secret configured on the GitHub webhook, so deliveries can be verified", Secret: true},
-			{Key: "default_repo", Description: "owner/name used when a tool call omits one"},
+			// Personal access token — the quick way.
+			{
+				Key: "token", Method: "pat", Required: true, Secret: true,
+				Description: "Fine-grained or classic personal access token",
+				Help: "github.com/settings/tokens → Generate new token. A fine-grained token " +
+					"needs Contents, Issues, Pull requests and Metadata (read and write) on the " +
+					"repositories you want KARMAX to reach. A classic token needs the `repo` scope.",
+			},
+
+			// GitHub App — the one an org should use.
+			{
+				Key: "app_id", Method: "app", Required: true,
+				Description: "The App's numeric ID",
+				Help: "On the App's page: Settings → Developer settings → GitHub Apps → your app. " +
+					"It is labelled \"App ID\" near the top, and is a number like 1234567.",
+			},
+			{
+				Key: "app_private_key", Method: "app", Required: true, Secret: true,
+				Description: "The App's PEM private key",
+				Help: "Same page, under Private keys → Generate a private key. GitHub downloads a " +
+					".pem file once and never shows it again. Paste the whole file, including the " +
+					"BEGIN and END lines.",
+			},
+			{
+				Key: "installation_id", Method: "app", Required: true,
+				Description: "The installation this account acts as",
+				Help: "You get this by INSTALLING the app (sidebar → Install App). If you have " +
+					"already installed it, leave this blank and run the health check — it asks " +
+					"GitHub where the app is installed and tells you the number.",
+			},
+			{
+				Key: "app_slug", Method: "app",
+				Description: "The App's URL slug",
+				Help: "The last part of its public URL, github.com/apps/<slug>. Only used to link " +
+					"you straight to the install page, so it is safe to leave blank.",
+			},
+
+			// Applies to either method.
+			{
+				Key: "webhook_secret", Secret: true,
+				Description: "Shared secret for verifying webhook deliveries",
+				Help: "Only needed if you point GitHub webhooks at KARMAX. Invent a long random " +
+					"string, put the same one in the webhook's Secret box on GitHub, and create " +
+					"the endpoint under Webhooks.",
+			},
+			{
+				Key:         "default_repo",
+				Description: "owner/name used when a tool call omits one",
+				Help: "For example acme/api. Lets you say \"open an issue\" without naming the " +
+					"repository every time.",
+			},
 		},
 	}
 }

@@ -182,12 +182,27 @@ export interface ConnectorSetupStep {
   done?: boolean;
 }
 
+export interface ConnectorAuthMethod {
+  id: string;
+  name: string;
+  summary: string;
+  recommended: boolean;
+  steps: ConnectorSetupStep[];
+}
+
 export interface ConnectorField {
   key: string;
   label: string;
   type: "text" | "secret" | "url";
   placeholder?: string;
   required: boolean;
+  /** Scopes the field to one auth method. Empty applies to all of them. */
+  method?: string;
+  description?: string;
+  /** Where to find this value, in the provider's own words. */
+  help?: string;
+  /** Whether a value is already stored. The value itself is never sent. */
+  set: boolean;
 }
 
 export interface ConnectorSetup {
@@ -195,6 +210,9 @@ export interface ConnectorSetup {
   steps: ConnectorSetupStep[];
   fields: ConnectorField[];
   callback_url: string;
+  /** The ways in. Empty for a connector with only one. */
+  methods?: ConnectorAuthMethod[];
+  active_method?: string;
 }
 
 /** One employee's authorisation for a per-user connector. Never carries tokens. */

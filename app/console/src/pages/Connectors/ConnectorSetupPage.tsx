@@ -4,6 +4,7 @@ import { ArrowLeft, Check, ExternalLink, Plug, Stethoscope, UserCheck, UserPlus 
 import { disconnect, getConnectorSetup, listConnections, listConnectors, runConnectorHealthCheck, saveConnectorCredentials, startConnect } from "@/api/connectors";
 import type { ConnectorConnections, ConnectorHealthCheck, ConnectorSetup, ConnectorSummary } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Input";
 import { CopyField } from "@/components/ui/CopyField";
@@ -23,9 +24,15 @@ export function ConnectorSetupPage() {
   const [check, setCheck] = useState<ConnectorHealthCheck | null>(null);
   const [conns, setConns] = useState<ConnectorConnections | null>(null);
   const [connectErr, setConnectErr] = useState("");
+  const [method, setMethod] = useState("");
 
   useEffect(() => {
-    void getConnectorSetup(id).then(setSetup);
+    void getConnectorSetup(id).then((s) => {
+      setSetup(s);
+      // Whichever method is already in use, so returning to the page shows the
+      // setup that exists rather than defaulting back to the recommended one.
+      setMethod(s?.active_method ?? s?.methods?.[0]?.id ?? "");
+    });
     void listConnectors().then((cs) => setSummary(cs.find((c) => c.id === id) ?? null));
     // 404s for an install-wide connector, which is not an error — it just means
     // there are no per-person accounts to show.
@@ -39,7 +46,7 @@ export function ConnectorSetupPage() {
     setSaving(true);
     setSavedMsg("");
     try {
-      const updated = await saveConnectorCredentials(id, fields);
+      const updated = await saveConnectorCredentials(id, method ? { ...fields, auth_method: method } : fields);
       setSummary(updated);
       setSavedMsg("Credentials saved.");
     } finally {
@@ -73,7 +80,7 @@ export function ConnectorSetupPage() {
         <Panel className="p-5">
           <h2 className="mb-4 text-h2">Register your own {id} app</h2>
           <ol className="space-y-4">
-            {setup.steps.map((s, i) => (
+            {stepsFor(setup, method).map((s, i) => (
               <li key={i} className="flex gap-3">
                 {/* A done step shows a tick instead of its number, so a
                     half-finished setup says which half. `done` is optional and
@@ -174,19 +181,63 @@ export function ConnectorSetupPage() {
             </Panel>
           )}
 
+          {(setup.methods?.length ?? 0) > 1 && (
+            <Panel className="p-5">
+              <h2 className="mb-1 text-h2">How to connect</h2>
+              <p className="mb-3 text-sm text-fg-muted">
+                These are not interchangeable — pick one and only its fields are asked for.
+              </p>
+              <div className="space-y-2">
+                {setup.methods!.map((m) => (
+                  <label
+                    key={m.id}
+                    className={
+                      "flex cursor-pointer gap-3 rounded-[var(--radius-card)] border p-3 " +
+                      (method === m.id ? "border-brand bg-surface-2" : "border-border")
+                    }
+                  >
+                    <input
+                      type="radio"
+                      name="auth-method"
+                      className="mt-1"
+                      checked={method === m.id}
+                      onChange={() => setMethod(m.id)}
+                    />
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-2 text-sm font-semibold text-fg">
+                        {m.name}
+                        {m.recommended && <Badge tone="brand">recommended</Badge>}
+                      </span>
+                      <span className="mt-0.5 block text-sm text-fg-muted">{m.summary}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </Panel>
+          )}
+
           <Panel className="p-5">
             <h2 className="mb-3 text-h2">Credentials</h2>
             <div className="space-y-3">
-              {setup.fields.map((f) => (
+              {setup.fields
+                // Only the chosen method's fields, plus the ones belonging to
+                // no method. Showing all of them is what made this form ask for
+                // a token AND an app id AND a private key at once.
+                .filter((f) => !f.method || f.method === method)
+                .map((f) => (
                 <div key={f.key} className="space-y-1">
-                  <Label htmlFor={f.key}>{f.label}{f.required && " *"}</Label>
+                  <Label htmlFor={f.key}>
+                    {f.label}{f.required && " *"}
+                    {f.set && <span className="ml-2 font-normal text-fg-subtle">· saved</span>}
+                  </Label>
                   <Input
                     id={f.key}
                     type={f.type === "secret" ? "password" : "text"}
-                    placeholder={f.placeholder}
+                    placeholder={f.set && f.type === "secret" ? "leave blank to keep the saved value" : f.placeholder}
                     value={fields[f.key] ?? ""}
                     onChange={(e) => setFields((prev) => ({ ...prev, [f.key]: e.target.value }))}
                   />
+                  {f.help && <p className="text-xs leading-relaxed text-fg-subtle">{f.help}</p>}
                 </div>
               ))}
               <Button variant="primary" onClick={save} disabled={saving} className="w-full">
@@ -215,4 +266,11 @@ export function ConnectorSetupPage() {
       </div>
     </div>
   );
+}
+
+/** The chosen method's own instructions, falling back to the connector's. */
+function stepsFor(setup: ConnectorSetup, method: string) {
+  const m = setup.methods?.find((x) => x.id === method);
+  if (m && m.steps.length > 0) return m.steps;
+  return setup.steps;
 }

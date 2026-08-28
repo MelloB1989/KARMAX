@@ -1140,3 +1140,154 @@ func TestAnOmittedEventKindGetsAUsefulDefault(t *testing.T) {
 		t.Errorf("event kind defaulted to %q", e.EventKind)
 	}
 }
+
+// A form that asks for the union of every method's fields makes the operator
+// work out which half applies — and GitHub's two halves overlap in nothing.
+func TestGitHubSetupOffersItsAuthMethodsWithScopedFields(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "GET", "/api/console/connectors/github/setup", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		ActiveMethod string `json:"active_method"`
+		Methods      []struct {
+			ID, Name, Summary string
+			Recommended       bool
+			Steps             []struct{ Title, Body, URL string }
+		} `json:"methods"`
+		Fields []struct {
+			Key, Method, Help string
+			Required, Set     bool
+		} `json:"fields"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+
+	if len(body.Methods) != 2 {
+		t.Fatalf("expected two ways in, got %d", len(body.Methods))
+	}
+	byID := map[string]bool{}
+	for _, m := range body.Methods {
+		byID[m.ID] = true
+		if m.Summary == "" || len(m.Steps) == 0 {
+			t.Errorf("%s has no guidance: %+v", m.ID, m)
+		}
+	}
+	if !byID["app"] || !byID["pat"] {
+		t.Errorf("expected app and pat, got %v", byID)
+	}
+	// An org should be pointed at the App, not the token that acts as a person.
+	if body.ActiveMethod != "app" {
+		t.Errorf("unconfigured GitHub should default to the App, got %q", body.ActiveMethod)
+	}
+
+	// Fields carry their method and, crucially, where to find the value.
+	byKey := map[string]string{}
+	for _, f := range body.Fields {
+		byKey[f.Key] = f.Method
+		if f.Key == "app_id" && f.Help == "" {
+			t.Error("App ID has no help — that is a question the operator takes to a search engine")
+		}
+	}
+	if byKey["token"] != "pat" {
+		t.Errorf("token is scoped to %q, want pat", byKey["token"])
+	}
+	if byKey["app_id"] != "app" || byKey["app_private_key"] != "app" {
+		t.Errorf("app fields are not scoped: %v", byKey)
+	}
+	// Shared fields belong to neither.
+	if byKey["default_repo"] != "" || byKey["webhook_secret"] != "" {
+		t.Errorf("shared fields were scoped to a method: %v", byKey)
+	}
+}
+
+// Demanding every method's required fields would make a working token setup
+// fail for want of an App ID it will never use.
+func TestOnlyTheChosenMethodsFieldsAreRequired(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	// A token alone is a complete setup.
+	w := do(t, srv, "POST", "/api/console/connectors/github/credentials", token,
+		map[string]string{"auth_method": "pat", "token": "ghp_x"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("a token-only setup was refused: %d %s", w.Code, w.Body.String())
+	}
+
+	// And an App setup missing its key is refused, naming what is missing.
+	w = do(t, srv, "POST", "/api/console/connectors/github/credentials", token,
+		map[string]string{"auth_method": "app", "app_id": "123"})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an incomplete App setup was accepted: %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "private key") {
+		t.Errorf("the error does not name what is missing: %s", w.Body.String())
+	}
+}
+
+// Leaving an app id behind after moving to a token means usesAppAuth() still
+// sees it, and the connector authenticates the way the operator just stopped
+// using.
+func TestSwitchingMethodClearsTheOtherOnesFields(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	do(t, srv, "POST", "/api/console/connectors/github/credentials", token, map[string]string{
+		"auth_method": "app", "app_id": "123", "app_private_key": "KEY", "installation_id": "9",
+		"default_repo": "acme/api",
+	})
+	do(t, srv, "POST", "/api/console/connectors/github/credentials", token,
+		map[string]string{"auth_method": "pat", "token": "ghp_x"})
+
+	cred, err := db.Credential("github")
+	if err != nil || cred == nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"app_id", "app_private_key", "installation_id"} {
+		if cred.Config[gone] != "" {
+			t.Errorf("%s survived the switch to a token: %q", gone, cred.Config[gone])
+		}
+	}
+	if cred.Config["token"] != "ghp_x" {
+		t.Error("the new token was not saved")
+	}
+	// A field belonging to neither method is kept.
+	if cred.Config["default_repo"] != "acme/api" {
+		t.Error("a shared field was cleared by switching method")
+	}
+}
+
+// The form cannot show a stored secret, so an untouched box is not a decision
+// to remove it.
+func TestABlankSecretFieldKeepsTheStoredValue(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	do(t, srv, "POST", "/api/console/connectors/github/credentials", token,
+		map[string]string{"auth_method": "pat", "token": "ghp_secret", "default_repo": "acme/api"})
+	// Edit only the repo, leaving the token box untouched.
+	do(t, srv, "POST", "/api/console/connectors/github/credentials", token,
+		map[string]string{"auth_method": "pat", "token": "", "default_repo": "acme/web"})
+
+	cred, _ := db.Credential("github")
+	if cred.Config["token"] != "ghp_secret" {
+		t.Errorf("editing another field wiped the token: %q", cred.Config["token"])
+	}
+	if cred.Config["default_repo"] != "acme/web" {
+		t.Error("the repo did not update")
+	}
+}
