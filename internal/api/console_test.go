@@ -2,7 +2,11 @@ package api
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1243,10 +1247,14 @@ func TestSwitchingMethodClearsTheOtherOnesFields(t *testing.T) {
 	srv.cfg = &config.KarmaxConfig{}
 	token := bootstrapAdmin(t, srv)
 
-	do(t, srv, "POST", "/api/console/connectors/github/credentials", token, map[string]string{
-		"auth_method": "app", "app_id": "123", "app_private_key": "KEY", "installation_id": "9",
+	// A real key: the connector validates the shape before storing, so a
+	// placeholder is refused and the save never happens.
+	if w := do(t, srv, "POST", "/api/console/connectors/github/credentials", token, map[string]string{
+		"auth_method": "app", "app_id": "123", "app_private_key": testPEM(t), "installation_id": "9",
 		"default_repo": "acme/api",
-	})
+	}); w.Code != http.StatusOK {
+		t.Fatalf("the App setup was refused: %d %s", w.Code, w.Body.String())
+	}
 	do(t, srv, "POST", "/api/console/connectors/github/credentials", token,
 		map[string]string{"auth_method": "pat", "token": "ghp_x"})
 
@@ -1290,4 +1298,79 @@ func TestABlankSecretFieldKeepsTheStoredValue(t *testing.T) {
 	if cred.Config["default_repo"] != "acme/web" {
 		t.Error("the repo did not update")
 	}
+}
+
+// A wrong .pem must be refused at the moment it is chosen, not stored and left
+// to surface as an authentication error at the first API call.
+func TestABadPrivateKeyIsRefusedBeforeItIsStored(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "POST", "/api/console/connectors/github/credentials", token, map[string]string{
+		"auth_method": "app", "app_id": "123", "installation_id": "9",
+		"app_private_key": "-----BEGIN PUBLIC KEY-----\nMIIB\n-----END PUBLIC KEY-----",
+	})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("the public key was accepted: %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "PUBLIC key") {
+		t.Errorf("the error does not say what went wrong: %s", w.Body.String())
+	}
+
+	// And nothing was stored, so a failed save leaves no half-written state.
+	if cred, _ := db.Credential("github"); cred != nil && cred.Config["app_private_key"] != "" {
+		t.Error("a refused key was written to the store anyway")
+	}
+}
+
+// The field has to tell the form it is a file, or the picker never appears.
+func TestThePrivateKeyFieldAdvertisesUpload(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "GET", "/api/console/connectors/github/setup", token, nil)
+	var body struct {
+		Fields []struct {
+			Key       string `json:"key"`
+			Multiline bool   `json:"multiline"`
+			Accept    string `json:"accept"`
+		} `json:"fields"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+
+	var found bool
+	for _, f := range body.Fields {
+		if f.Key != "app_private_key" {
+			continue
+		}
+		found = true
+		if !f.Multiline {
+			t.Error("a PEM key is not marked multiline — it would render in a one-line box")
+		}
+		if !strings.Contains(f.Accept, ".pem") {
+			t.Errorf("the field does not accept .pem files: %q", f.Accept)
+		}
+	}
+	if !found {
+		t.Error("app_private_key is missing from the setup fields")
+	}
+}
+
+// testPEM is a throwaway RSA key, generated per run so nothing resembling a
+// real credential is committed.
+func testPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}))
 }
