@@ -77,6 +77,7 @@ func (c *Connector) Manifest() connectorkit.Manifest {
 			},
 			{
 				Key: "app_private_key", Method: "app", Required: true, Secret: true,
+				Multiline: true, Accept: ".pem,.key,.txt",
 				Description: "The App's PEM private key",
 				Help: "Same page, under Private keys → Generate a private key. GitHub downloads a " +
 					".pem file once and never shows it again. Paste the whole file, including the " +

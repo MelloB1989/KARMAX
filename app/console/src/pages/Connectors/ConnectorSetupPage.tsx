@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Check, ExternalLink, Plug, Stethoscope, UserCheck, UserPlus } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, Plug, Stethoscope, Upload, UserCheck, UserPlus } from "lucide-react";
 import { disconnect, getConnectorSetup, listConnections, listConnectors, runConnectorHealthCheck, saveConnectorCredentials, startConnect } from "@/api/connectors";
 import type { ConnectorConnections, ConnectorHealthCheck, ConnectorSetup, ConnectorSummary } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
@@ -19,12 +19,14 @@ export function ConnectorSetupPage() {
   const [summary, setSummary] = useState<ConnectorSummary | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [savedMsg, setSavedMsg] = useState("");
+  const [saveErr, setSaveErr] = useState("");
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [check, setCheck] = useState<ConnectorHealthCheck | null>(null);
   const [conns, setConns] = useState<ConnectorConnections | null>(null);
   const [connectErr, setConnectErr] = useState("");
   const [method, setMethod] = useState("");
+  const [fileNames, setFileNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
     void getConnectorSetup(id).then((s) => {
@@ -49,6 +51,12 @@ export function ConnectorSetupPage() {
       const updated = await saveConnectorCredentials(id, method ? { ...fields, auth_method: method } : fields);
       setSummary(updated);
       setSavedMsg("Credentials saved.");
+      setSaveErr("");
+    } catch (e) {
+      // Validation refuses a wrong .pem here, which is the whole point of
+      // checking before storing — showing it is what makes that useful.
+      setSaveErr(e instanceof Error ? e.message : String(e));
+      setSavedMsg("");
     } finally {
       setSaving(false);
     }
@@ -230,13 +238,52 @@ export function ConnectorSetupPage() {
                     {f.label}{f.required && " *"}
                     {f.set && <span className="ml-2 font-normal text-fg-subtle">· saved</span>}
                   </Label>
-                  <Input
-                    id={f.key}
-                    type={f.type === "secret" ? "password" : "text"}
-                    placeholder={f.set && f.type === "secret" ? "leave blank to keep the saved value" : f.placeholder}
-                    value={fields[f.key] ?? ""}
-                    onChange={(e) => setFields((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                  />
+                  {f.multiline ? (
+                    <>
+                      {f.accept && (
+                        <label className="mb-1.5 flex w-fit cursor-pointer items-center gap-1.5 rounded-[var(--radius-field)] border border-border px-2.5 py-1.5 text-xs text-fg-muted hover:border-brand">
+                          <Upload className="h-3.5 w-3.5" />
+                          {fileNames[f.key] ?? "Choose file…"}
+                          <input
+                            type="file"
+                            accept={f.accept}
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              // Read in the browser and put the text straight
+                              // into the field. There is no upload endpoint on
+                              // purpose: a private key that never leaves as a
+                              // file cannot be left behind in a temp directory
+                              // or a request log.
+                              const text = await file.text();
+                              setFields((prev) => ({ ...prev, [f.key]: text.trim() }));
+                              setFileNames((prev) => ({ ...prev, [f.key]: file.name }));
+                            }}
+                          />
+                        </label>
+                      )}
+                      <textarea
+                        id={f.key}
+                        rows={5}
+                        spellCheck={false}
+                        placeholder={
+                          f.set ? "leave blank to keep the saved value" : "-----BEGIN RSA PRIVATE KEY-----"
+                        }
+                        value={fields[f.key] ?? ""}
+                        onChange={(e) => setFields((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                        className="w-full rounded-[var(--radius-field)] border border-border bg-surface px-3 py-2 font-mono text-xs leading-relaxed text-fg outline-none placeholder:text-fg-subtle focus:border-brand"
+                      />
+                    </>
+                  ) : (
+                    <Input
+                      id={f.key}
+                      type={f.type === "secret" ? "password" : "text"}
+                      placeholder={f.set && f.type === "secret" ? "leave blank to keep the saved value" : f.placeholder}
+                      value={fields[f.key] ?? ""}
+                      onChange={(e) => setFields((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                    />
+                  )}
                   {f.help && <p className="text-xs leading-relaxed text-fg-subtle">{f.help}</p>}
                 </div>
               ))}
@@ -244,6 +291,7 @@ export function ConnectorSetupPage() {
                 {saving ? "Saving…" : "Save credentials"}
               </Button>
               {savedMsg && <p className="text-xs text-healthy">{savedMsg}</p>}
+              {saveErr && <p className="text-xs leading-relaxed text-failed">{saveErr}</p>}
             </div>
           </Panel>
 

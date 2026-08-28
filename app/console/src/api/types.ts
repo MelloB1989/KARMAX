@@ -203,6 +203,10 @@ export interface ConnectorField {
   help?: string;
   /** Whether a value is already stored. The value itself is never sent. */
   set: boolean;
+  /** The value does not fit on one line — render a textarea. */
+  multiline?: boolean;
+  /** File extensions this value usually arrives as, for a file picker. */
+  accept?: string;
 }
 
 export interface ConnectorSetup {

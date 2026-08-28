@@ -77,6 +77,27 @@ type ConfigField struct {
 	// labelled "App ID" with no help is a question the operator has to take to
 	// a search engine.
 	Help string
+
+	// Multiline says the value does not fit on one line. A PEM private key in
+	// a single-line box is technically enterable and looks like a mistake.
+	Multiline bool
+
+	// Accept lists file extensions this value usually arrives as, so the form
+	// can offer to read one. GitHub hands you a .pem download and never shows
+	// the key again; asking someone to open it in a text editor and paste it
+	// is a step that exists only because nobody added a file picker.
+	Accept string
+}
+
+// CredentialValidator is implemented by connectors that can tell, without a
+// network call, that what was pasted cannot possibly work.
+//
+// Optional. The point is to say "that is not a private key" at the moment the
+// file is chosen, rather than at the first API call minutes later, where it
+// surfaces as an authentication failure and sends the operator looking at
+// permissions.
+type CredentialValidator interface {
+	ValidateCredentials(c Credentials) error
 }
 
 // AuthOption is one way to authenticate a connector.

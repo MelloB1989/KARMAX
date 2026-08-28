@@ -239,3 +239,65 @@ func (c *Connector) AuthOptions() []connectorkit.AuthOption {
 		},
 	}
 }
+
+// ValidateCredentials implements connectorkit.CredentialValidator.
+//
+// Checks the shape of what was pasted, never the network. The failure this
+// exists for is uploading the wrong file — GitHub's downloads folder also
+// contains the App's public key and, often, an unrelated .pem — which
+// otherwise surfaces at the first API call as an authentication error and
+// sends the operator to look at permissions.
+func (c *Connector) ValidateCredentials(cr connectorkit.Credentials) error {
+	if !usesAppAuth(cr) {
+		if tok := strings.TrimSpace(cr.Get("token")); tok != "" {
+			// A 40-character hex token is the pre-2021 format GitHub revoked
+			// wholesale. It will be rejected, and saying so now beats a
+			// puzzling 401 later.
+			if len(tok) == 40 && isHex(tok) {
+				return fmt.Errorf("this looks like an old-style token — GitHub revoked that " +
+					"format, so it will be rejected. Generate a new one at " +
+					"github.com/settings/tokens")
+			}
+		}
+		return nil
+	}
+
+	key := strings.TrimSpace(cr.Get("app_private_key"))
+	if key == "" {
+		return nil // requiredness is the form's job, not this one's
+	}
+	if strings.Contains(key, "PUBLIC KEY") {
+		return fmt.Errorf("that is the PUBLIC key — GitHub's private key download is the file " +
+			"ending .private-key.pem")
+	}
+	if !strings.Contains(key, "BEGIN") || !strings.Contains(key, "PRIVATE KEY") {
+		return fmt.Errorf("that does not look like a PEM private key — paste or upload the whole " +
+			".pem file, including the BEGIN and END lines")
+	}
+	if _, err := parseRSAPrivateKey(key); err != nil {
+		return fmt.Errorf("the private key could not be read: %w", err)
+	}
+
+	if id := strings.TrimSpace(cr.Get("app_id")); id != "" && !isDigits(id) {
+		return fmt.Errorf("the App ID is the number on the App's page (like 1234567), not its name")
+	}
+	return nil
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}

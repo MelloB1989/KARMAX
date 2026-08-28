@@ -1,6 +1,10 @@
 package github
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"strings"
 	"testing"
 
@@ -148,4 +152,86 @@ func TestAnUnusableAppConfigYieldsToAWorkingToken(t *testing.T) {
 	if !usesAppAuth(stuck) {
 		t.Error("with nothing to fall back on, the App path should still be taken")
 	}
+}
+
+// GitHub's downloads folder also holds the App's PUBLIC key, and often an
+// unrelated .pem. Uploading the wrong one otherwise surfaces at the first API
+// call as an authentication error, sending the operator to look at permissions.
+func TestTheWrongFileIsRefusedAtUploadTime(t *testing.T) {
+	c := New("")
+
+	cases := map[string]struct{ key, want string }{
+		"the public key": {
+			"-----BEGIN PUBLIC KEY-----\nMIIB\n-----END PUBLIC KEY-----", "PUBLIC key",
+		},
+		"not a key at all": {
+			"just some text someone pasted", "does not look like a PEM",
+		},
+		"a truncated pem": {
+			"-----BEGIN RSA PRIVATE KEY-----\nnot-base64!!\n-----END RSA PRIVATE KEY-----",
+			"could not be read",
+		},
+	}
+	for name, tc := range cases {
+		err := c.ValidateCredentials(cr(map[string]string{
+			"auth_method": "app", "app_id": "1", "app_private_key": tc.key,
+		}))
+		if err == nil {
+			t.Errorf("%s was accepted", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: message does not say what is wrong: %v", name, err)
+		}
+	}
+}
+
+// An App ID is the number on the App's page, and people paste the name.
+func TestANamedAppIDIsRefused(t *testing.T) {
+	c := New("")
+	err := c.ValidateCredentials(cr(map[string]string{
+		"auth_method": "app", "app_id": "my-karmax-bot", "app_private_key": validTestKey(t),
+	}))
+	if err == nil || !strings.Contains(err.Error(), "number") {
+		t.Errorf("a named App ID was accepted: %v", err)
+	}
+}
+
+// A real key must pass, or the check is just an obstacle.
+func TestAValidKeyIsAccepted(t *testing.T) {
+	c := New("")
+	if err := c.ValidateCredentials(cr(map[string]string{
+		"auth_method": "app", "app_id": "1234567", "app_private_key": validTestKey(t),
+	})); err != nil {
+		t.Errorf("a valid App setup was refused: %v", err)
+	}
+}
+
+// The pre-2021 40-hex format was revoked wholesale, so it will be rejected by
+// GitHub — saying so now beats a puzzling 401 later.
+func TestAnOldStyleTokenIsFlagged(t *testing.T) {
+	c := New("")
+	err := c.ValidateCredentials(cr(map[string]string{
+		"auth_method": "pat", "token": strings.Repeat("a1b2", 10), // 40 hex chars
+	}))
+	if err == nil || !strings.Contains(err.Error(), "old-style") {
+		t.Errorf("an old-format token was not flagged: %v", err)
+	}
+	// A modern one passes.
+	if err := c.ValidateCredentials(cr(map[string]string{
+		"auth_method": "pat", "token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+	})); err != nil {
+		t.Errorf("a modern token was refused: %v", err)
+	}
+}
+
+func validTestKey(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}))
 }

@@ -51,6 +51,9 @@ type setupField struct {
 	// Set says a value is already stored. The value itself is never returned,
 	// so without this an operator cannot tell a blank field from a secret one.
 	Set bool `json:"set"`
+	// Multiline renders a textarea; Accept offers a file picker for it.
+	Multiline bool   `json:"multiline,omitempty"`
+	Accept    string `json:"accept,omitempty"`
 }
 
 type setupMethod struct {
@@ -220,6 +223,7 @@ func (s *ConsoleServer) handleConnectorSetup(w http.ResponseWriter, r *http.Requ
 			Key: f.Key, Label: labelFor(f.Key), Type: typ,
 			Placeholder: f.Default, Required: f.Required,
 			Method: f.Method, Description: f.Description, Help: f.Help,
+			Multiline: f.Multiline, Accept: f.Accept,
 			Set: strings.TrimSpace(known.Config[f.Key]) != "",
 		})
 	}
@@ -378,6 +382,18 @@ func (s *ConsoleServer) handleConnectorCredentials(w http.ResponseWriter, r *htt
 	}
 	if tok := strings.TrimSpace(body["access_token"]); tok != "" {
 		cred.AccessToken = tok
+	}
+
+	// Ask the connector whether this can possibly work, before storing it. The
+	// failure being prevented is the wrong .pem: otherwise it surfaces at the
+	// first API call as an authentication error and sends the operator to look
+	// at permissions.
+	if v, ok := c.(connectorkit.CredentialValidator); ok {
+		check := connectorkit.Credentials{Config: cred.Config, AccessToken: cred.AccessToken}
+		if err := v.ValidateCredentials(check); err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error()})
+			return
+		}
 	}
 
 	if err := s.store.SaveCredential(cred); err != nil {
