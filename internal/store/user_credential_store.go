@@ -161,10 +161,21 @@ type OAuthState struct {
 	Member    string
 	Verifier  string
 	Redirect  string
+	// Purpose is what the authorisation was started FOR: "connect" for an
+	// employee linking their mailbox, "login" for signing in. The callback has
+	// to tell them apart, or a link meant for one could be redeemed as the
+	// other — and a sign-in link redeemed as a connect would bind a stranger's
+	// Google account to an employee's name.
+	Purpose string
 }
 
 // CreateOAuthState records a pending authorisation and returns its state token.
 func (s *Store) CreateOAuthState(connector, member, verifier, redirect string, ttl time.Duration) (string, error) {
+	return s.CreateOAuthStateFor(connector, member, verifier, redirect, "connect", ttl)
+}
+
+// CreateOAuthStateFor records a pending authorisation with an explicit purpose.
+func (s *Store) CreateOAuthStateFor(connector, member, verifier, redirect, purpose string, ttl time.Duration) (string, error) {
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
@@ -175,9 +186,9 @@ func (s *Store) CreateOAuthState(connector, member, verifier, redirect string, t
 	defer s.mu.Unlock()
 
 	_, err := s.exec(`
-INSERT INTO oauth_states (state, connector, member, verifier, redirect, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, datetime('now'), ?)`,
-		state, connector, member, verifier, redirect,
+INSERT INTO oauth_states (state, connector, member, verifier, redirect, purpose, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
+		state, connector, member, verifier, redirect, purpose,
 		time.Now().UTC().Add(ttl).Format("2006-01-02 15:04:05"))
 	if err != nil {
 		return "", err
@@ -201,8 +212,9 @@ func (s *Store) RedeemOAuthState(state string) (*OAuthState, error) {
 	var out OAuthState
 	var expires time.Time
 	err := s.queryRow(`
-SELECT state, connector, member, verifier, redirect, expires_at FROM oauth_states WHERE state = ?`, state).
-		Scan(&out.State, &out.Connector, &out.Member, &out.Verifier, &out.Redirect, &expires)
+SELECT state, connector, member, verifier, redirect, COALESCE(purpose,'connect'), expires_at
+FROM oauth_states WHERE state = ?`, state).
+		Scan(&out.State, &out.Connector, &out.Member, &out.Verifier, &out.Redirect, &out.Purpose, &expires)
 	if err == sql.ErrNoRows {
 		return nil, errors.New("this authorisation link is unknown or has already been used")
 	}

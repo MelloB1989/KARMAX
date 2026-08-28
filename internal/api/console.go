@@ -124,6 +124,12 @@ func NewConsole(addr string, distDir string, d ConsoleDeps) *ConsoleServer {
 	mux.HandleFunc("GET /api/console/auth/bootstrap-status", s.handleBootstrapStatus)
 	mux.HandleFunc("POST /api/console/auth/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("POST /api/console/auth/login", s.handleLogin)
+	// Signing in with Google. Both unauthenticated by necessity — the caller
+	// has no session yet, which is the point — so neither accepts an identity
+	// from the request. Who you are is decided at the callback, from what
+	// Google says.
+	mux.HandleFunc("GET /api/console/auth/google/status", s.handleGoogleSignInStatus)
+	mux.HandleFunc("POST /api/console/auth/google/start", s.handleGoogleSignInStart)
 	mux.HandleFunc("GET /api/console/auth/me", s.session(s.handleMe))
 	mux.HandleFunc("POST /api/console/auth/logout", s.session(s.handleLogout))
 

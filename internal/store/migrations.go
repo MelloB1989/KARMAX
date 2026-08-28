@@ -814,6 +814,20 @@ var migrations = []string{
 		detail     TEXT NOT NULL DEFAULT '',
 		checked_at DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
+
+	// 031_google_signin — sign in with the account you already have.
+	//
+	// An email on the console account is what a Google identity is matched
+	// against. Deliberately NOT reusing `directory`: that table records every
+	// external identity the agent has ever seen, and being visible in a Slack
+	// channel must never be the same thing as being allowed to sign in.
+	`ALTER TABLE console_users ADD COLUMN email TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX IF NOT EXISTS idx_console_users_email ON console_users(email)`,
+
+	// An authorisation is started for a reason. The callback has to tell a
+	// sign-in apart from an employee connecting their mailbox, or a link meant
+	// for one could be redeemed as the other.
+	`ALTER TABLE oauth_states ADD COLUMN purpose TEXT NOT NULL DEFAULT 'connect'`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

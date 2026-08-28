@@ -21,7 +21,10 @@ type consoleUserRow struct {
 	Member string `json:"member"`
 	Name   string `json:"name"`
 	Role   string `json:"role"`
-	Self   bool   `json:"self"`
+	// Email is the address a Google sign-in matches against. Empty means this
+	// account can only be opened with a password.
+	Email string `json:"email"`
+	Self  bool   `json:"self"`
 }
 
 func (s *ConsoleServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +39,7 @@ func (s *ConsoleServer) handleListUsers(w http.ResponseWriter, r *http.Request) 
 	for _, u := range users {
 		// No password hash, ever — not even its shape. This list is read by a
 		// browser and copied into support threads.
-		out = append(out, consoleUserRow{Member: u.Member, Name: u.Name, Role: u.Role, Self: u.Member == me})
+		out = append(out, consoleUserRow{Member: u.Member, Name: u.Name, Role: u.Role, Email: u.Email, Self: u.Member == me})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": out, "roles": store.ConsoleRoles})
 }
@@ -47,6 +50,7 @@ func (s *ConsoleServer) handleCreateUser(w http.ResponseWriter, r *http.Request)
 		Name     string `json:"name"`
 		Role     string `json:"role"`
 		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
@@ -61,7 +65,17 @@ func (s *ConsoleServer) handleCreateUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	u, err := s.store.CreateConsoleUser(req.Member, req.Name, req.Role, req.Password)
+	// An account may have a password, a Google address, or both — but not
+	// neither, or it would exist with no way in at all.
+	if strings.TrimSpace(req.Password) == "" && strings.TrimSpace(req.Email) == "" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "give the account a password, a Google sign-in address, or both — " +
+				"otherwise there is no way to sign into it",
+		})
+		return
+	}
+
+	u, err := s.store.CreateConsoleUserWithEmail(req.Member, req.Name, req.Role, req.Password, req.Email)
 	if err != nil {
 		if err == store.ErrConsoleUserExists {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "that member already has an account"})
@@ -72,14 +86,15 @@ func (s *ConsoleServer) handleCreateUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	s.audit(r, "human", consoleUser(r).Member, "console.user.create", u.Member, u.Role, "")
-	writeJSON(w, http.StatusOK, consoleUserRow{Member: u.Member, Name: u.Name, Role: u.Role})
+	writeJSON(w, http.StatusOK, consoleUserRow{Member: u.Member, Name: u.Name, Role: u.Role, Email: req.Email})
 }
 
 func (s *ConsoleServer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	member := r.PathValue("member")
 	var req struct {
-		Name string `json:"name"`
-		Role string `json:"role"`
+		Name  string  `json:"name"`
+		Role  string  `json:"role"`
+		Email *string `json:"email"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
@@ -122,9 +137,20 @@ func (s *ConsoleServer) handleUpdateUser(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// A pointer, so "" clears the address and omitting the field leaves it
+	// alone. Without that distinction there would be no way to remove somebody's
+	// Google sign-in without also removing their name.
+	if req.Email != nil {
+		if err := s.store.SetConsoleUserEmail(member, *req.Email); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		}
+		s.audit(r, "human", consoleUser(r).Member, "console.user.email", member, "", *req.Email)
+	}
+
 	updated, _, _ := s.store.ConsoleUserByMember(member)
 	writeJSON(w, http.StatusOK, consoleUserRow{
-		Member: updated.Member, Name: updated.Name, Role: updated.Role,
+		Member: updated.Member, Name: updated.Name, Role: updated.Role, Email: updated.Email,
 		Self: member == consoleUser(r).Member,
 	})
 }
