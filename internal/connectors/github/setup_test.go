@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -234,4 +235,51 @@ func validTestKey(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{
 		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),
 	}))
+}
+
+// Marking a field required while telling the operator to leave it blank is a
+// form arguing with its own instructions.
+func TestInstallationIDIsNotRequired(t *testing.T) {
+	for _, f := range New("").Manifest().Config {
+		if f.Key != "installation_id" {
+			continue
+		}
+		if f.Required {
+			t.Error("installation_id is required, but the help says to leave it blank " +
+				"and let the health check find it")
+		}
+		if !strings.Contains(strings.ToLower(f.Help), "blank") {
+			t.Errorf("the help no longer explains it is optional: %q", f.Help)
+		}
+		return
+	}
+	t.Fatal("installation_id is missing from the manifest")
+}
+
+// Completion must stay silent unless it can be certain: with several
+// installations, picking one is a guess about which account was meant.
+func TestCompletionOnlyActsWhenItIsCertain(t *testing.T) {
+	c := New("")
+
+	// Nothing to authenticate a lookup with.
+	got, err := c.CompleteCredentials(context.Background(), cr(map[string]string{"auth_method": "app"}))
+	if err != nil || len(got) != 0 {
+		t.Errorf("tried to look up with no App credentials: %v %v", got, err)
+	}
+
+	// Already set: nothing to do, and no call made.
+	got, err = c.CompleteCredentials(context.Background(), cr(map[string]string{
+		"auth_method": "app", "app_id": "1", "app_private_key": "k", "installation_id": "42",
+	}))
+	if err != nil || len(got) != 0 {
+		t.Errorf("overwrote an installation id that was already set: %v %v", got, err)
+	}
+
+	// A token setup is none of its business.
+	got, err = c.CompleteCredentials(context.Background(), cr(map[string]string{
+		"auth_method": "pat", "token": "ghp_x",
+	}))
+	if err != nil || len(got) != 0 {
+		t.Errorf("acted on a token setup: %v %v", got, err)
+	}
 }

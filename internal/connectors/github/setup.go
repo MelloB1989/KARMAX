@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -300,4 +301,31 @@ func isDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// CompleteCredentials implements connectorkit.CredentialCompleter.
+//
+// Fills in installation_id by asking GitHub where the App is installed. That
+// number is only visible in the address bar during installation, and hunting
+// for it afterwards is a step the software can take instead.
+//
+// Silent when it cannot tell: with several installations, choosing one would be
+// a guess about which account was meant, and the health check lists them so a
+// human can decide.
+func (c *Connector) CompleteCredentials(ctx context.Context, cr connectorkit.Credentials) (map[string]string, error) {
+	if !usesAppAuth(cr) || strings.TrimSpace(cr.Get("installation_id")) != "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(cr.Get("app_id")) == "" || strings.TrimSpace(cr.Get("app_private_key")) == "" {
+		return nil, nil // nothing to authenticate the lookup with
+	}
+
+	ins, err := listInstallations(ctx, cr)
+	if err != nil {
+		return nil, err
+	}
+	if len(ins) != 1 {
+		return nil, nil
+	}
+	return map[string]string{"installation_id": strconv.FormatInt(ins[0].ID, 10)}, nil
 }

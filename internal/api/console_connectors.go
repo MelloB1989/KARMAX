@@ -467,7 +467,67 @@ func (s *ConsoleServer) handleConnectorHealthCheck(w http.ResponseWriter, r *htt
 		}
 	}
 
+	// Before checking, let the connector fill in anything it can work out for
+	// itself — GitHub's installation id, which is otherwise only visible in the
+	// address bar while installing the App. Done here rather than at save time
+	// on purpose: the App usually is not installed yet when the credentials are
+	// first pasted, so this is the earliest moment it can succeed.
+	s.completeCredentials(r, c, id)
+
 	s.reportHealth(w, r, id, s.conns.Probe(r.Context(), id))
+}
+
+// completeCredentials asks a connector to fill in fields it can discover, and
+// stores whatever comes back.
+func (s *ConsoleServer) completeCredentials(r *http.Request, c connectorkit.Connector, id string) {
+	completer, ok := c.(connectorkit.CredentialCompleter)
+	if !ok {
+		return
+	}
+	stored, err := s.store.Credential(id)
+	if err != nil || stored == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	known := connectorkit.Credentials{Config: stored.Config, AccessToken: stored.AccessToken}
+	filled, err := completer.CompleteCredentials(ctx, known)
+	if err != nil || len(filled) == 0 {
+		// Not an error worth surfacing: the health check that follows will say
+		// what is actually wrong, and "could not auto-fill" on top of that is
+		// noise about a convenience.
+		return
+	}
+
+	if stored.Config == nil {
+		stored.Config = map[string]string{}
+	}
+	for k, v := range filled {
+		stored.Config[k] = v
+	}
+	if err := s.store.SaveCredential(*stored); err != nil {
+		s.log.Warn("could not save a discovered credential field",
+			zap.String("connector", id), zap.Error(err))
+		return
+	}
+	// The keys, never the values: these are credentials and the audit log is
+	// read by people.
+	s.audit(r, "human", consoleUser(r).Member, "console.connector.discovered", id, "",
+		"filled in "+strings.Join(keysOf(filled), ", "))
+	s.log.Info("discovered a connector credential field",
+		zap.String("connector", id), zap.Strings("fields", keysOf(filled)))
+}
+
+// keysOf names what was filled in, for the audit line.
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // reportHealth persists a verdict and returns it.
