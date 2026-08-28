@@ -84,11 +84,14 @@ func (c *Connector) Manifest() connectorkit.Manifest {
 					"BEGIN and END lines.",
 			},
 			{
-				Key: "installation_id", Method: "app", Required: true,
-				Description: "The installation this account acts as",
-				Help: "You get this by INSTALLING the app (sidebar → Install App). If you have " +
-					"already installed it, leave this blank and run the health check — it asks " +
-					"GitHub where the app is installed and tells you the number.",
+				// Not required: the health check finds it. Marking it required
+				// while telling the operator to leave it blank is a form
+				// arguing with its own instructions.
+				Key: "installation_id", Method: "app",
+				Description: "The installation this account acts as — found automatically",
+				Help: "Leave this blank. Save what you have and run the health check: it asks " +
+					"GitHub where the App is installed and fills this in for you. You only need " +
+					"to set it by hand if the App is installed on several accounts.",
 			},
 			{
 				Key: "app_slug", Method: "app",

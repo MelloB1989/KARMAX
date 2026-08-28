@@ -1374,3 +1374,39 @@ func testPEM(t *testing.T) string {
 		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),
 	}))
 }
+
+// The form must not demand a field whose own help says to leave it blank.
+func TestAnAppSetupSavesWithoutAnInstallationID(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "POST", "/api/console/connectors/github/credentials", token, map[string]string{
+		"auth_method": "app", "app_id": "1234567", "app_private_key": testPEM(t),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("an App setup without an installation id was refused: %d %s", w.Code, w.Body.String())
+	}
+
+	cred, _ := db.Credential("github")
+	if cred == nil || cred.Config["app_id"] != "1234567" {
+		t.Error("the App credentials were not stored")
+	}
+
+	// And the setup response no longer marks it required.
+	setup := do(t, srv, "GET", "/api/console/connectors/github/setup", token, nil)
+	var body struct {
+		Fields []struct {
+			Key      string `json:"key"`
+			Required bool   `json:"required"`
+		} `json:"fields"`
+	}
+	json.Unmarshal(setup.Body.Bytes(), &body)
+	for _, f := range body.Fields {
+		if f.Key == "installation_id" && f.Required {
+			t.Error("the form still marks installation_id required")
+		}
+	}
+}

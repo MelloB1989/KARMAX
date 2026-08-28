@@ -100,6 +100,22 @@ type CredentialValidator interface {
 	ValidateCredentials(c Credentials) error
 }
 
+// CredentialCompleter is implemented by connectors that can fill in a field by
+// asking the provider, rather than making the operator find it.
+//
+// The case this exists for is GitHub's installation id, which is only visible
+// in the address bar while installing the App and is otherwise a hunt through
+// settings pages. The credentials already saved are enough to ask GitHub where
+// the App is installed, so asking a human to go and look is asking them to do
+// something the software can do.
+//
+// Returns the fields to merge, or nothing when it cannot tell — several
+// installations, for instance, where picking one would be a guess about which
+// account the operator meant.
+type CredentialCompleter interface {
+	CompleteCredentials(ctx context.Context, c Credentials) (map[string]string, error)
+}
+
 // AuthOption is one way to authenticate a connector.
 //
 // Connectors usually support several, and they are not interchangeable: a
