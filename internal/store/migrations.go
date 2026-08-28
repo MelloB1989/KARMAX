@@ -865,6 +865,14 @@ var migrations = []string{
 		received_at DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries ON webhook_deliveries(endpoint, received_at)`,
+
+	// 033_webhook_platform — which platform a created endpoint speaks.
+	//
+	// Empty means custom: the payload is published as it arrives. Set to
+	// github/jira/youtrack, the delivery is verified in that platform's dialect
+	// and normalised into a tracker event, so a recipe reads `summary` and
+	// `url` instead of three vendors' JSON.
+	`ALTER TABLE webhook_endpoints ADD COLUMN platform TEXT NOT NULL DEFAULT ''`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

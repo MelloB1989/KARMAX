@@ -19,6 +19,9 @@ type WebhookEndpoint struct {
 	Slug        string
 	Name        string
 	Description string
+	// Platform names a service KARMAX can decode: github, jira, youtrack.
+	// Empty is a custom endpoint whose payload is published as it arrives.
+	Platform string
 	// Secret verifies a delivery. Compared as an HMAC when SignatureHeader is
 	// set, and as a shared token otherwise.
 	Secret          string
@@ -85,24 +88,24 @@ func (s *Store) SaveWebhookEndpoint(e WebhookEndpoint) (WebhookEndpoint, error) 
 	}
 	_, err = s.exec(`
 INSERT INTO webhook_endpoints
-  (id, slug, name, description, secret, signature_header, event_kind, agent_id, enabled, created_at, updated_at, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?)
+  (id, slug, name, description, platform, secret, signature_header, event_kind, agent_id, enabled, created_at, updated_at, created_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?)
 ON CONFLICT(id) DO UPDATE SET
   slug = excluded.slug, name = excluded.name, description = excluded.description,
-  secret = excluded.secret, signature_header = excluded.signature_header,
+  platform = excluded.platform, secret = excluded.secret, signature_header = excluded.signature_header,
   event_kind = excluded.event_kind, agent_id = excluded.agent_id,
   enabled = excluded.enabled, updated_at = excluded.updated_at`,
-		e.ID, e.Slug, e.Name, e.Description, e.Secret, e.SignatureHeader,
+		e.ID, e.Slug, e.Name, e.Description, e.Platform, e.Secret, e.SignatureHeader,
 		e.EventKind, e.AgentID, enabled, e.CreatedBy)
 	return e, err
 }
 
-const webhookCols = `id, slug, name, description, secret, COALESCE(signature_header,''), event_kind, COALESCE(agent_id,''), enabled, created_at, updated_at, COALESCE(created_by,'')`
+const webhookCols = `id, slug, name, description, COALESCE(platform,''), secret, COALESCE(signature_header,''), event_kind, COALESCE(agent_id,''), enabled, created_at, updated_at, COALESCE(created_by,'')`
 
 func scanWebhook(sc interface{ Scan(...any) error }) (WebhookEndpoint, error) {
 	var e WebhookEndpoint
 	var enabled int
-	err := sc.Scan(&e.ID, &e.Slug, &e.Name, &e.Description, &e.Secret, &e.SignatureHeader,
+	err := sc.Scan(&e.ID, &e.Slug, &e.Name, &e.Description, &e.Platform, &e.Secret, &e.SignatureHeader,
 		&e.EventKind, &e.AgentID, &enabled, &e.CreatedAt, &e.UpdatedAt, &e.CreatedBy)
 	e.Enabled = enabled == 1
 	return e, err

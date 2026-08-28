@@ -270,3 +270,111 @@ func contains(hay []string, needle string) bool {
 	}
 	return false
 }
+
+// A platform delivery is verified and decoded by the code that already knows
+// that vendor, so a recipe reads `summary` and `url` rather than three
+// vendors' JSON — and one written for "an issue changed" survives a move from
+// Jira to YouTrack.
+func TestAPlatformDeliveryIsNormalised(t *testing.T) {
+	d, db := dispatcher(t)
+	endpoint(t, db, store.WebhookEndpoint{
+		Slug: "gh", Enabled: true, Platform: "github", Secret: "s3cret",
+		EventKind: "tracker.event",
+	})
+
+	body := `{"action":"opened","issue":{"number":7,"title":"It is broken","html_url":"https://x/7","body":"details"},"repository":{"full_name":"acme/api"}}`
+	sig := func() string {
+		m := hmac.New(sha256.New, []byte("s3cret"))
+		m.Write([]byte(body))
+		return "sha256=" + hex.EncodeToString(m.Sum(nil))
+	}()
+
+	w := post(d, "gh", body, map[string]string{
+		"X-Hub-Signature-256": sig, "X-GitHub-Event": "issues", "Content-Type": "application/json",
+	})
+	if w.Code < 200 || w.Code >= 300 {
+		t.Fatalf("a signed platform delivery was refused: %d %s", w.Code, w.Body.String())
+	}
+
+	events, err := db.RecentLogEvents(store.DefaultWorkspace, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.Kind == "tracker.event" {
+			found = true
+			// The normalised shape, not the raw GitHub payload.
+			if _, ok := e.Payload["summary"]; !ok {
+				t.Errorf("the event was not normalised: %v", e.Payload)
+			}
+		}
+	}
+	if !found {
+		t.Error("no tracker.event was published")
+	}
+
+	// And it was recorded as a delivery like any other.
+	got, _ := db.WebhookDeliveries("gh", 5)
+	if len(got) != 1 || got[0].Status != "accepted" {
+		t.Errorf("delivery not recorded as accepted: %+v", got)
+	}
+}
+
+// A platform endpoint with the wrong secret must be recorded as a rejection,
+// naming the platform: "the secret is wrong" and "the sender is not who you
+// think" are the same status and very different problems.
+func TestAPlatformRejectionIsRecorded(t *testing.T) {
+	d, db := dispatcher(t)
+	endpoint(t, db, store.WebhookEndpoint{
+		Slug: "gh2", Enabled: true, Platform: "github", Secret: "s3cret", EventKind: "tracker.event",
+	})
+
+	w := post(d, "gh2", `{"action":"opened"}`, map[string]string{
+		"X-Hub-Signature-256": "sha256=" + strings.Repeat("0", 64), "X-GitHub-Event": "issues",
+	})
+	if w.Code == http.StatusOK {
+		t.Fatal("a badly signed platform delivery was accepted")
+	}
+	got, _ := db.WebhookDeliveries("gh2", 5)
+	if len(got) != 1 || got[0].Status != "rejected" {
+		t.Fatalf("expected one rejection, got %+v", got)
+	}
+	if !strings.Contains(got[0].Detail, "github") {
+		t.Errorf("the record does not name the platform: %q", got[0].Detail)
+	}
+}
+
+// The catalogue is what a dropdown is built from, so it has to be complete and
+// internally consistent.
+func TestTheCatalogueIsCoherent(t *testing.T) {
+	seen := map[string]bool{}
+	var custom bool
+	for _, p := range Platforms() {
+		if seen[p.ID] {
+			t.Errorf("duplicate platform id %q", p.ID)
+		}
+		seen[p.ID] = true
+
+		if p.ID == "" {
+			custom = true
+			continue
+		}
+		if p.Name == "" || p.EventKind == "" || p.SetupHint == "" {
+			t.Errorf("%s is missing something a form needs: %+v", p.ID, p)
+		}
+		// An hmac platform without a header would be unverifiable.
+		if p.SecretKind == "hmac" && p.SignatureHeader == "" {
+			t.Errorf("%s signs deliveries but names no header", p.ID)
+		}
+		if _, ok := PlatformByID(p.ID); !ok {
+			t.Errorf("%s cannot be looked up by its own id", p.ID)
+		}
+	}
+	if !custom {
+		t.Error("the catalogue offers no Custom option")
+	}
+	if _, ok := PlatformByID("sharepoint"); ok {
+		t.Error("an unknown platform resolved")
+	}
+}

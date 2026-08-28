@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Plus, Trash2, Webhook, Zap } from "lucide-react";
-import { createWebhook, deleteWebhook, listDeliveries, listWebhooks, updateWebhook } from "@/api/webhooks";
-import type { WebhookDelivery, WebhookRow } from "@/api/types";
+import { Plus, Trash2, Webhook } from "lucide-react";
+import { createWebhook, deleteWebhook, getCatalogue, listDeliveries, listWebhooks, updateWebhook } from "@/api/webhooks";
+import type { WebhookCatalogue, WebhookDelivery, WebhookRow } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Input";
@@ -17,9 +17,27 @@ const DELIVERY_TONE: Record<string, "healthy" | "failed" | "degraded" | "neutral
 };
 
 const BLANK = {
-  slug: "", name: "", description: "", event_kind: "",
+  slug: "", name: "", description: "", platform: "", event_kind: "",
   secret: "", signature_header: "", agent_id: "", enabled: true,
 };
+
+/** A dropdown, because the point is to be told the options rather than guess. */
+function Select({
+  id, value, onChange, children,
+}: {
+  id: string; value: string; onChange: (v: string) => void; children: React.ReactNode;
+}) {
+  return (
+    <select
+      id={id}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-9 w-full rounded-[var(--radius-field)] border border-border bg-surface px-2.5 text-sm text-fg outline-none focus:border-brand"
+    >
+      {children}
+    </select>
+  );
+}
 
 export function WebhooksPage() {
   const [rows, setRows] = useState<WebhookRow[] | null>(null);
@@ -28,6 +46,9 @@ export function WebhooksPage() {
   const [draft, setDraft] = useState({ ...BLANK });
   const [err, setErr] = useState("");
   const [focus, setFocus] = useState<string>("");
+  const [cat, setCat] = useState<WebhookCatalogue | null>(null);
+
+  useEffect(() => { void getCatalogue().then(setCat).catch(() => setCat(null)); }, []);
 
   const refresh = useCallback(async () => {
     const [w, d] = await Promise.all([listWebhooks(), listDeliveries(focus || undefined)]);
@@ -48,9 +69,6 @@ export function WebhooksPage() {
       setErr(e instanceof Error ? e.message : String(e));
     }
   };
-
-  const platform = rows.filter((r) => r.kind === "platform");
-  const custom = rows.filter((r) => r.kind === "custom");
 
   return (
     <div>
@@ -76,51 +94,103 @@ export function WebhooksPage() {
 
       {adding && (
         <Panel className="mb-4 p-5">
-          <h2 className="mb-1 text-h2">Custom webhook</h2>
+          <h2 className="mb-1 text-h2">New webhook</h2>
           <p className="mb-3 text-sm text-fg-muted">
-            For a service KARMAX has no integration with. The payload becomes the event as it
-            arrives, under the kind you choose here — which is what you write in a recipe's{" "}
-            <code className="font-mono text-xs">on.event</code>.
+            Pick the platform first — if KARMAX knows it, deliveries are decoded into a typed
+            event and a recipe reads named fields instead of raw JSON.
           </p>
+
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-1">
+              <Label htmlFor="platform">Platform *</Label>
+              <Select
+                id="platform"
+                value={draft.platform}
+                onChange={(v) => {
+                  const p = cat?.platforms.find((x) => x.id === v);
+                  // The platform decides its own event kind and signature
+                  // header; showing them as chosen beats leaving blanks the
+                  // operator would try to fill in.
+                  setDraft({
+                    ...draft,
+                    platform: v,
+                    event_kind: p && p.id ? p.event_kind : "",
+                    signature_header: p?.signature_header ?? "",
+                  });
+                }}
+              >
+                {(cat?.platforms ?? []).map((p) => (
+                  <option key={p.id || "custom"} value={p.id}>{p.name}</option>
+                ))}
+              </Select>
+            </div>
+
+            <div className="space-y-1">
               <Label htmlFor="slug">Path *</Label>
-              <Input id="slug" value={draft.slug} placeholder="stripe-prod"
+              <Input id="slug" value={draft.slug} placeholder="acme-api-prod"
                 onChange={(e) => setDraft({ ...draft, slug: e.target.value })} />
             </div>
+
             <div className="space-y-1">
               <Label htmlFor="wname">Name</Label>
-              <Input id="wname" value={draft.name} placeholder="Stripe (production)"
+              <Input id="wname" value={draft.name} placeholder="Acme API (production)"
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
             </div>
+
             <div className="space-y-1">
               <Label htmlFor="kind">Event kind</Label>
-              <Input id="kind" value={draft.event_kind} placeholder={`custom.${draft.slug || "…"}`}
-                onChange={(e) => setDraft({ ...draft, event_kind: e.target.value })} />
+              {selected(cat, draft.platform)?.id ? (
+                // Fixed by the platform. Shown, not editable: a typed kind that
+                // does not match is a webhook that silently never fires.
+                <Input id="kind" value={draft.event_kind} readOnly className="opacity-70" />
+              ) : (
+                <Input id="kind" value={draft.event_kind} placeholder={`custom.${draft.slug || "…"}`}
+                  onChange={(e) => setDraft({ ...draft, event_kind: e.target.value })} />
+              )}
             </div>
+
             <div className="space-y-1">
               <Label htmlFor="secret">Secret</Label>
-              <Input id="secret" type="password" value={draft.secret} placeholder="leave blank for an open endpoint"
+              <Input id="secret" type="password" value={draft.secret}
+                placeholder={secretHint(selected(cat, draft.platform))}
                 onChange={(e) => setDraft({ ...draft, secret: e.target.value })} />
             </div>
-            <div className="space-y-1">
-              <Label htmlFor="sig">Signature header</Label>
-              <Input id="sig" value={draft.signature_header} placeholder="X-Hub-Signature-256"
-                onChange={(e) => setDraft({ ...draft, signature_header: e.target.value })} />
-            </div>
+
+            {!selected(cat, draft.platform)?.id && (
+              <div className="space-y-1">
+                <Label htmlFor="sig">Signature header</Label>
+                <Select id="sig" value={draft.signature_header}
+                  onChange={(v) => setDraft({ ...draft, signature_header: v })}>
+                  <option value="">None — the secret is a shared token</option>
+                  {(cat?.signature_headers ?? []).map((h) => <option key={h} value={h}>{h}</option>)}
+                </Select>
+              </div>
+            )}
+
             <div className="space-y-1">
               <Label htmlFor="agent">Also send to agent</Label>
-              <Input id="agent" value={draft.agent_id} placeholder="optional"
-                onChange={(e) => setDraft({ ...draft, agent_id: e.target.value })} />
+              <Select id="agent" value={draft.agent_id}
+                onChange={(v) => setDraft({ ...draft, agent_id: v })}>
+                <option value="">No — recipes only</option>
+                {(cat?.agents ?? []).map((a) => <option key={a} value={a}>{a}</option>)}
+              </Select>
             </div>
           </div>
-          <p className="mt-2 text-xs text-fg-subtle">
-            With a signature header the secret is checked as an HMAC of the body (sha256 or sha1,
-            with or without a prefix). Without one it is a shared token, sent as{" "}
-            <code className="font-mono">X-Webhook-Token</code>, a bearer token, or{" "}
-            <code className="font-mono">?token=</code>. Leave the secret blank and anyone who knows
-            the URL can post.
-          </p>
+
+          {selected(cat, draft.platform) && (
+            <div className="mt-3 rounded-[var(--radius-card)] bg-surface-2 p-3">
+              <p className="text-xs text-fg-muted">{selected(cat, draft.platform)!.setup_hint}</p>
+              {(selected(cat, draft.platform)!.fields ?? []).length > 0 && (
+                <p className="mt-1.5 text-xs text-fg-subtle">
+                  A recipe can read:{" "}
+                  {selected(cat, draft.platform)!.fields!.map((f) => (
+                    <code key={f} className="mr-1 font-mono text-fg-muted">{f}</code>
+                  ))}
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="mt-3 flex gap-2">
             <Button
               disabled={!draft.slug}
@@ -137,43 +207,26 @@ export function WebhooksPage() {
         </Panel>
       )}
 
-      <section className="mb-6">
-        <h2 className="mb-1 text-h2">Platforms KARMAX understands</h2>
-        <p className="mb-3 text-sm text-fg-muted">
-          These arrive in a shape KARMAX already knows, so deliveries are decoded into typed
-          events before anything acts on them.
-        </p>
-        {platform.length === 0 ? (
-          <EmptyState icon={Webhook} title="No platform webhooks" body="Connectors declare these." />
-        ) : (
-          <div className="space-y-2">
-            {platform.map((r) => <Row key={r.id} r={r} onFocus={setFocus} focused={focus === r.slug} />)}
-          </div>
-        )}
-      </section>
-
-      <section className="mb-6">
-        <h2 className="mb-1 text-h2">Custom</h2>
-        <p className="mb-3 text-sm text-fg-muted">
-          Anything else. The payload is published as-is under the kind you chose.
-        </p>
-        {custom.length === 0 ? (
-          <EmptyState icon={Zap} title="No custom webhooks" body="Add one to receive from a service KARMAX has no integration with." />
-        ) : (
-          <div className="space-y-2">
-            {custom.map((r) => (
-              <Row
-                key={r.id}
-                r={r}
-                focused={focus === r.slug}
-                onFocus={setFocus}
-                onToggle={() => run(() => updateWebhook(r.id, { enabled: !r.enabled }))}
-                onDelete={() => run(() => deleteWebhook(r.id))}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={Webhook}
+          title="No webhooks yet"
+          body="Add one to receive events from GitHub, Jira, YouTrack, or anything else."
+        />
+      ) : (
+        <div className="mb-6 space-y-2">
+          {rows.map((r) => (
+            <Row
+              key={r.id}
+              r={r}
+              focused={focus === r.slug}
+              onFocus={setFocus}
+              onToggle={() => run(() => updateWebhook(r.id, { enabled: !r.enabled }))}
+              onDelete={() => run(() => deleteWebhook(r.id))}
+            />
+          ))}
+        </div>
+      )}
 
       <section>
         <div className="mb-3 flex items-baseline justify-between gap-3">
@@ -267,4 +320,20 @@ function Row({
       )}
     </Panel>
   );
+}
+
+function selected(cat: WebhookCatalogue | null, id: string) {
+  return cat?.platforms.find((p) => p.id === id);
+}
+
+function secretHint(p: ReturnType<typeof selected>): string {
+  if (!p) return "";
+  switch (p.secret_kind) {
+    case "hmac":
+      return "signs the body";
+    case "token":
+      return "sent as ?token=";
+    default:
+      return "leave blank for an open endpoint";
+  }
 }
