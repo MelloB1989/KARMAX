@@ -939,3 +939,164 @@ func TestMemberIDsDerivedFromEmailAreSane(t *testing.T) {
 		}
 	}
 }
+
+// The two kinds are shown together because an operator thinks of them as one
+// list, but the distinction has to survive: for a platform webhook KARMAX
+// knows what the fields mean.
+func TestWebhooksListBothKinds(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
+	srv.conns.Register(githubconn.New(""))
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Webhooks.PublicURL = "https://hooks.example"
+	token := bootstrapAdmin(t, srv)
+
+	if _, err := db.SaveWebhookEndpoint(store.WebhookEndpoint{
+		Slug: "stripe", Name: "Stripe", EventKind: "stripe.payment", Enabled: true, Secret: "s",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, srv, "GET", "/api/console/webhooks", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Webhooks []struct {
+			Kind      string `json:"kind"`
+			URL       string `json:"url"`
+			EventKind string `json:"event_kind"`
+			Live      bool   `json:"live"`
+			Secured   bool   `json:"secured"`
+		} `json:"webhooks"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+
+	var platform, custom int
+	for _, r := range body.Webhooks {
+		switch r.Kind {
+		case "platform":
+			platform++
+			// The URL must be the /hooks-prefixed one a CDN can route.
+			if !strings.Contains(r.URL, "/hooks/connectors/github") {
+				t.Errorf("platform URL is wrong: %s", r.URL)
+			}
+			// GitHub has no credentials here, so it is configured-but-not-live.
+			if r.Live {
+				t.Error("a platform webhook claimed to be live with no credentials")
+			}
+		case "custom":
+			custom++
+			if !strings.Contains(r.URL, "/hooks/custom/stripe") {
+				t.Errorf("custom URL is wrong: %s", r.URL)
+			}
+			if r.EventKind != "stripe.payment" {
+				t.Errorf("event kind lost: %s", r.EventKind)
+			}
+		}
+	}
+	if platform == 0 || custom == 0 {
+		t.Errorf("expected both kinds, got %d platform and %d custom", platform, custom)
+	}
+}
+
+// The value is what an operator pasted once and must not be able to read back
+// out of a browser.
+func TestAWebhookSecretIsNeverReturned(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "POST", "/api/console/webhooks", token, map[string]any{
+		"slug": "secret-hook", "name": "Secret", "secret": "hunter2-the-secret", "enabled": true,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "hunter2") {
+		t.Error("the create response echoed the secret back")
+	}
+	if !strings.Contains(w.Body.String(), `"secured":true`) {
+		t.Error("the response does not say a secret is set")
+	}
+
+	list := do(t, srv, "GET", "/api/console/webhooks", token, nil)
+	if strings.Contains(list.Body.String(), "hunter2") {
+		t.Error("the listing returned the secret")
+	}
+	// It is still enforced, though — the value went to the store.
+	e, _ := db.WebhookEndpointBySlug("secret-hook")
+	if e == nil || e.Secret != "hunter2-the-secret" {
+		t.Error("the secret was not actually saved")
+	}
+}
+
+// An omitted field must be left alone. Without the distinction, renaming a
+// webhook would silently wipe its secret.
+func TestEditingOneFieldLeavesTheRestAlone(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	saved, err := db.SaveWebhookEndpoint(store.WebhookEndpoint{
+		Slug: "keep", Name: "Before", EventKind: "custom.keep", Secret: "keep-me", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, srv, "PUT", "/api/console/webhooks/"+saved.ID, token, map[string]any{"name": "After"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+
+	e, _ := db.WebhookEndpointBySlug("keep")
+	if e.Name != "After" {
+		t.Errorf("the name did not change: %q", e.Name)
+	}
+	if e.Secret != "keep-me" {
+		t.Errorf("renaming wiped the secret: %q", e.Secret)
+	}
+	if e.EventKind != "custom.keep" || !e.Enabled {
+		t.Errorf("renaming disturbed something else: %+v", e)
+	}
+}
+
+// Opening a public endpoint that publishes events is not a viewer's decision.
+func TestCreatingAWebhookNeedsOperator(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.cfg = &config.KarmaxConfig{}
+	bootstrapAdmin(t, srv)
+	if _, err := db.CreateConsoleUser("reader", "Reader", "viewer", "correct-horse"); err != nil {
+		t.Fatal(err)
+	}
+	w := do(t, srv, "POST", "/api/console/auth/login", "",
+		map[string]string{"member": "reader", "password": "correct-horse"})
+	var sess sessionResponse
+	json.Unmarshal(w.Body.Bytes(), &sess)
+
+	if got := do(t, srv, "POST", "/api/console/webhooks", sess.Token,
+		map[string]any{"slug": "x", "enabled": true}); got.Code != http.StatusForbidden {
+		t.Errorf("a viewer opened a public endpoint: %d", got.Code)
+	}
+	// Reading is fine.
+	if got := do(t, srv, "GET", "/api/console/webhooks", sess.Token, nil); got.Code != http.StatusOK {
+		t.Errorf("a viewer could not read the list: %d", got.Code)
+	}
+}
+
+// The operator's real question is "what do I write in the recipe".
+func TestAnOmittedEventKindGetsAUsefulDefault(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	if w := do(t, srv, "POST", "/api/console/webhooks", token,
+		map[string]any{"slug": "pager", "enabled": true}); w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	e, _ := db.WebhookEndpointBySlug("pager")
+	if e.EventKind != "custom.pager" {
+		t.Errorf("event kind defaulted to %q", e.EventKind)
+	}
+}

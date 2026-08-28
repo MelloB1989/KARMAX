@@ -295,3 +295,35 @@ export interface GoogleSignIn {
   /** Restricts sign-in to one Workspace domain. Empty means no restriction. */
   domain: string;
 }
+
+export interface WebhookRow {
+  id: string;
+  /** platform = KARMAX knows the payload's shape; custom = it does not. */
+  kind: "platform" | "custom";
+  name: string;
+  connector?: string;
+  slug?: string;
+  url: string;
+  /** What a recipe triggers on. */
+  event_kind: string;
+  description?: string;
+  enabled: boolean;
+  /** Whether the route is actually mounted and answering. */
+  live: boolean;
+  /** Whether a delivery has to prove itself. */
+  secured: boolean;
+  signature_header?: string;
+  agent_id?: string;
+  created_by?: string;
+  updated_at?: string;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  endpoint: string;
+  source: string;
+  status: "accepted" | "rejected" | "disabled" | "error";
+  detail: string;
+  body_sample: string;
+  received_at: string;
+}

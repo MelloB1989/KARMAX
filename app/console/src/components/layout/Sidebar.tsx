@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import {
-  KanbanSquare, Bot, Workflow, CircleCheck, ScrollText, Plug, Building2, Users,
+  KanbanSquare, Bot, Workflow, CircleCheck, ScrollText, Plug, Building2, Users, Webhook,
   Settings as SettingsIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -22,6 +22,7 @@ const GROUPS = [
       { to: "/agents", label: "Agents", icon: Bot },
       { to: "/recipes", label: "Recipes", icon: Workflow },
       { to: "/connectors", label: "Connectors", icon: Plug },
+      { to: "/webhooks", label: "Webhooks", icon: Webhook },
     ],
   },
   {
