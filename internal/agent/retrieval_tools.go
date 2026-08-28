@@ -43,7 +43,22 @@ func oneLine(s string, max int) string {
 }
 
 // memSearchTool — semantic keyword search over long-term memory entries.
-type memSearchTool struct{ mem *memory.Manager }
+//
+// Searches BOTH tiers when helping somebody: the organisation's memory and
+// theirs. Results say which, because "the team decided X" and "you told me X"
+// carry different weight and the agent has to be able to tell them apart.
+type memSearchTool struct {
+	mem    *memory.Manager
+	scopes *memory.Scopes
+}
+
+// searchIn is the set of memories one query should cover.
+func (t *memSearchTool) searchIn(ctx context.Context) []*memory.Manager {
+	if t.scopes == nil {
+		return []*memory.Manager{t.mem}
+	}
+	return t.scopes.Read(ctx)
+}
 
 func (t *memSearchTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
@@ -54,20 +69,49 @@ func (t *memSearchTool) Manifest() tools.ToolManifest {
 	}
 }
 
-func (t *memSearchTool) Execute(_ context.Context, in map[string]any) (tools.ToolResult, error) {
+func (t *memSearchTool) Execute(ctx context.Context, in map[string]any) (tools.ToolResult, error) {
 	q, _ := in["query"].(string)
-	res, err := t.mem.SearchSemantic(q, intOr(in["limit"], 12))
-	if err != nil {
-		return tools.ErrorResult(err), nil
+	limit := intOr(in["limit"], 12)
+
+	managers := t.searchIn(ctx)
+	var sb strings.Builder
+	var found int
+	var firstErr error
+
+	for _, m := range managers {
+		res, err := m.SearchSemantic(q, limit)
+		if err != nil {
+			// One tier failing must not hide the other. A member namespace that
+			// has never been written to is the ordinary case, not an error
+			// worth abandoning the whole search for.
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, r := range res {
+			found++
+			sb.WriteString(fmt.Sprintf("- [%s | stored %s] (%.0f%%) %s\n",
+				scopeLabel(t.scopes, m), humanAge(r.Entry.CreatedAt), r.Score*100,
+				oneLine(r.Entry.Content, 260)))
+		}
 	}
-	if len(res) == 0 {
+
+	if found == 0 {
+		if firstErr != nil {
+			return tools.ErrorResult(firstErr), nil
+		}
 		return tools.SuccessResult("no matching memory entries"), nil
 	}
-	var sb strings.Builder
-	for _, r := range res {
-		sb.WriteString(fmt.Sprintf("- [stored %s] (%.0f%%) %s\n", humanAge(r.Entry.CreatedAt), r.Score*100, oneLine(r.Entry.Content, 260)))
-	}
 	return tools.SuccessResult(sb.String()), nil
+}
+
+// scopeLabel says which tier a result came from, in words the model can act on.
+func scopeLabel(sc *memory.Scopes, m *memory.Manager) string {
+	if sc == nil || m.Namespace() == sc.GlobalNamespace() {
+		return "org"
+	}
+	return "this person"
 }
 
 // humanAge renders how long ago t was, so the agent can reason about staleness
