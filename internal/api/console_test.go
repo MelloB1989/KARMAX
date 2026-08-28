@@ -940,63 +940,103 @@ func TestMemberIDsDerivedFromEmailAreSane(t *testing.T) {
 	}
 }
 
-// The two kinds are shown together because an operator thinks of them as one
-// list, but the distinction has to survive: for a platform webhook KARMAX
-// knows what the fields mean.
-func TestWebhooksListBothKinds(t *testing.T) {
+// Connector-declared paths are not listed: they are mounted by their connector
+// and cannot be edited or deleted here, so showing them beside Enable and
+// Delete buttons promised something the page could not do. Every row is one
+// somebody created.
+func TestOnlyCreatedWebhooksAreListed(t *testing.T) {
 	srv, db := consoleTestServer(t)
 	srv.conns = connectors.NewHost(db, nil, nil, zap.NewNop())
-	srv.conns.Register(githubconn.New(""))
+	srv.conns.Register(githubconn.New("")) // declares a webhook source
 	srv.cfg = &config.KarmaxConfig{}
 	srv.cfg.Webhooks.PublicURL = "https://hooks.example"
 	token := bootstrapAdmin(t, srv)
-
-	if _, err := db.SaveWebhookEndpoint(store.WebhookEndpoint{
-		Slug: "stripe", Name: "Stripe", EventKind: "stripe.payment", Enabled: true, Secret: "s",
-	}); err != nil {
-		t.Fatal(err)
-	}
 
 	w := do(t, srv, "GET", "/api/console/webhooks", token, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 	var body struct {
-		Webhooks []struct {
-			Kind      string `json:"kind"`
-			URL       string `json:"url"`
-			EventKind string `json:"event_kind"`
-			Live      bool   `json:"live"`
-			Secured   bool   `json:"secured"`
-		} `json:"webhooks"`
+		Webhooks []json.RawMessage `json:"webhooks"`
 	}
 	json.Unmarshal(w.Body.Bytes(), &body)
-
-	var platform, custom int
-	for _, r := range body.Webhooks {
-		switch r.Kind {
-		case "platform":
-			platform++
-			// The URL must be the /hooks-prefixed one a CDN can route.
-			if !strings.Contains(r.URL, "/hooks/connectors/github") {
-				t.Errorf("platform URL is wrong: %s", r.URL)
-			}
-			// GitHub has no credentials here, so it is configured-but-not-live.
-			if r.Live {
-				t.Error("a platform webhook claimed to be live with no credentials")
-			}
-		case "custom":
-			custom++
-			if !strings.Contains(r.URL, "/hooks/custom/stripe") {
-				t.Errorf("custom URL is wrong: %s", r.URL)
-			}
-			if r.EventKind != "stripe.payment" {
-				t.Errorf("event kind lost: %s", r.EventKind)
-			}
-		}
+	if len(body.Webhooks) != 0 {
+		t.Errorf("a connector's own path was listed: %s", w.Body.String())
 	}
-	if platform == 0 || custom == 0 {
-		t.Errorf("expected both kinds, got %d platform and %d custom", platform, custom)
+}
+
+// A platform endpoint takes its event kind and signature header from the
+// platform, because typing either by hand produces a webhook that silently
+// never fires.
+func TestAPlatformWebhookTakesThePlatformsDefaults(t *testing.T) {
+	srv, db := consoleTestServer(t)
+	srv.cfg = &config.KarmaxConfig{}
+	srv.cfg.Webhooks.PublicURL = "https://hooks.example"
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "POST", "/api/console/webhooks", token, map[string]any{
+		"slug": "gh-main", "name": "GitHub main", "platform": "github",
+		// Deliberately wrong: the platform must win.
+		"event_kind": "totally.made.up", "signature_header": "X-Nonsense",
+		"secret": "s", "enabled": true,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+
+	e, _ := db.WebhookEndpointBySlug("gh-main")
+	if e.Platform != "github" {
+		t.Errorf("platform not stored: %q", e.Platform)
+	}
+	if e.EventKind != "tracker.event" {
+		t.Errorf("event kind should come from the platform, got %q", e.EventKind)
+	}
+	if e.SignatureHeader != "X-Hub-Signature-256" {
+		t.Errorf("signature header should come from the platform, got %q", e.SignatureHeader)
+	}
+
+	// And it reports as a platform row, with the routable URL.
+	var row struct {
+		Kind, URL, Connector string
+	}
+	json.Unmarshal(w.Body.Bytes(), &row)
+	if row.Kind != "platform" || row.Connector != "github" {
+		t.Errorf("row is %+v", row)
+	}
+	if !strings.Contains(row.URL, "/hooks/in/gh-main") {
+		t.Errorf("URL is %q", row.URL)
+	}
+}
+
+func TestAnUnknownPlatformIsRefused(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "POST", "/api/console/webhooks", token,
+		map[string]any{"slug": "x", "platform": "sharepoint", "enabled": true})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("an unknown platform was accepted: %d", w.Code)
+	}
+}
+
+// The form builds its dropdowns from this, so it has to name everything
+// KARMAX can actually do.
+func TestTheCatalogueOffersWhatKarmaxSupports(t *testing.T) {
+	srv, _ := consoleTestServer(t)
+	srv.cfg = &config.KarmaxConfig{}
+	token := bootstrapAdmin(t, srv)
+
+	w := do(t, srv, "GET", "/api/console/webhooks/catalogue", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{"github", "jira", "youtrack", "Custom",
+		"X-Hub-Signature-256", "tracker.event", "signature_headers"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the catalogue does not offer %q", want)
+		}
 	}
 }
 

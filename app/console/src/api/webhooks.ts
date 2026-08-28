@@ -1,6 +1,6 @@
 import { USE_MOCK } from "./config";
 import { del, get, post, put } from "./client";
-import type { WebhookDelivery, WebhookRow } from "./types";
+import type { WebhookCatalogue, WebhookDelivery, WebhookRow } from "./types";
 import { delay } from "./mock/util";
 
 export async function listWebhooks(): Promise<{ webhooks: WebhookRow[]; base_url: string }> {
@@ -15,8 +15,14 @@ export async function listDeliveries(endpoint?: string): Promise<WebhookDelivery
   return r.deliveries;
 }
 
+/** Everything KARMAX supports, so the form can offer it instead of asking. */
+export async function getCatalogue(): Promise<WebhookCatalogue> {
+  if (USE_MOCK) return delay({ platforms: [], signature_headers: [], agents: [], base_url: "" });
+  return get<WebhookCatalogue>("/api/console/webhooks/catalogue");
+}
+
 export async function createWebhook(input: {
-  slug: string; name: string; description?: string; event_kind?: string;
+  slug: string; name: string; description?: string; platform: string; event_kind?: string;
   secret?: string; signature_header?: string; agent_id?: string; enabled: boolean;
 }): Promise<WebhookRow> {
   if (USE_MOCK) throw new Error("creating a webhook needs a real server");

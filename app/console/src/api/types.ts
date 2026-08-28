@@ -327,3 +327,23 @@ export interface WebhookDelivery {
   body_sample: string;
   received_at: string;
 }
+
+export interface WebhookPlatform {
+  /** Empty is the Custom option. */
+  id: string;
+  name: string;
+  event_kind: string;
+  /** hmac signs the body, token sends the secret as-is, any = your choice. */
+  secret_kind: "hmac" | "token" | "none" | "any";
+  signature_header?: string;
+  /** What the normalised event carries, so a recipe author knows what to read. */
+  fields?: string[];
+  setup_hint: string;
+}
+
+export interface WebhookCatalogue {
+  platforms: WebhookPlatform[];
+  signature_headers: string[];
+  agents: string[];
+  base_url: string;
+}

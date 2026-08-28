@@ -157,6 +157,7 @@ func NewConsole(addr string, distDir string, d ConsoleDeps) *ConsoleServer {
 	// action because it opens a public endpoint that publishes events.
 	mux.HandleFunc("GET /api/console/webhooks", s.session(s.handleListWebhooks))
 	mux.HandleFunc("GET /api/console/webhooks/deliveries", s.session(s.handleWebhookDeliveries))
+	mux.HandleFunc("GET /api/console/webhooks/catalogue", s.session(s.handleWebhookCatalogue))
 	mux.HandleFunc("POST /api/console/webhooks", s.role("operator", s.handleCreateWebhook))
 	mux.HandleFunc("PUT /api/console/webhooks/{id}", s.role("operator", s.handleUpdateWebhook))
 	mux.HandleFunc("DELETE /api/console/webhooks/{id}", s.role("operator", s.handleDeleteWebhook))

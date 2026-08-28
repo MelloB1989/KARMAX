@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/store"
+	"github.com/MelloB1989/karmax/internal/tracker"
 	"go.uber.org/zap"
 )
 
@@ -27,8 +29,10 @@ import (
 // CustomPrefix is where operator-defined webhooks live.
 //
 // Under /hooks like everything else a third party posts to, so the same CDN
-// rule carries it and nobody has to remember a second one.
-const CustomPrefix = "/hooks/custom/"
+// rule carries it and nobody has to remember a second one. "in" rather than
+// "custom" because these are not all custom: a GitHub endpoint created here is
+// decoded by KARMAX, and /hooks/custom/github-main would say the opposite.
+const CustomPrefix = "/hooks/in/"
 
 // maxBody is what will be read from a delivery. Generous for a webhook and
 // bounded, so a sender that streams forever cannot exhaust memory.
@@ -81,6 +85,16 @@ func (d *CustomDispatcher) serve(w http.ResponseWriter, r *http.Request) {
 		// broke" look the same to whoever is debugging six weeks later.
 		d.record(ep, r, "disabled", "the endpoint is turned off", body)
 		http.Error(w, "this webhook is disabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// A platform endpoint is verified and decoded by the code that already
+	// knows that vendor, rather than a second implementation here that would
+	// drift from it. The normalised event is the same one the built-in tracker
+	// endpoints publish, so a recipe written for "an issue changed" works
+	// whichever way the delivery arrived.
+	if ep.Platform != "" {
+		d.servePlatform(w, r, ep, body)
 		return
 	}
 
@@ -239,4 +253,71 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// servePlatform handles a delivery from a service KARMAX can decode.
+func (d *CustomDispatcher) servePlatform(w http.ResponseWriter, r *http.Request, ep *store.WebhookEndpoint, body []byte) {
+	h := tracker.New(tracker.Config{
+		Source:  tracker.Source(ep.Platform),
+		Secret:  ep.Secret,
+		AgentID: ep.AgentID,
+	}, d.bus, d.log)
+
+	// The body was already consumed to record it, so hand the handler a fresh
+	// reader over the same bytes rather than an exhausted one.
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	h.ServeHTTP(rec, r)
+
+	switch {
+	case rec.status >= 200 && rec.status < 300:
+		d.record(ep, r, "accepted", "published "+string(tracker.EventKind), body)
+	case rec.status == http.StatusUnauthorized || rec.status == http.StatusForbidden:
+		// Recorded as a rejection with the platform named: "the secret is
+		// wrong" and "the sender is not who you think" are the same status and
+		// very different problems.
+		d.record(ep, r, "rejected", ep.Platform+" rejected the delivery as unverified", body)
+	default:
+		d.record(ep, r, "error", ep.Platform+" handler returned "+itoa(rec.status), body)
+	}
+}
+
+// statusRecorder remembers what a delegated handler answered, so the delivery
+// can be recorded without the handler knowing anything about this table.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.written {
+		s.status, s.written = code, true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.written = true
+	return s.ResponseWriter.Write(b)
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	if neg {
+		return "-" + string(b)
+	}
+	return string(b)
 }

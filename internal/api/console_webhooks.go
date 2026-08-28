@@ -5,10 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/MelloB1989/karmax/internal/connectors"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/webhook"
-	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
 
 // Two kinds of webhook, shown together because an operator thinks of them as
@@ -58,79 +56,47 @@ type deliveryRow struct {
 	ReceivedAt string `json:"received_at"`
 }
 
+// handleListWebhooks returns the endpoints an operator has created.
+//
+// Connector-declared paths are deliberately NOT listed. They are mounted by
+// their connector and cannot be edited or deleted from here, so showing them
+// in a list with Enable and Delete buttons promised something the page could
+// not do. Every row here is one somebody made and can change.
 func (s *ConsoleServer) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
-	out := []webhookRow{}
-
-	// Platform webhooks, derived from what each connector declares. Nothing is
-	// stored for these: the connector is the source of truth for its own paths,
-	// and a copy in the database would drift the first time one changed.
-	if s.conns != nil {
-		for _, m := range s.conns.Available() {
-			c, ok := s.conns.Get(m.ID)
-			if !ok {
-				continue
-			}
-			configured := false
-			if cred, err := s.store.Credential(m.ID); err == nil && cred != nil {
-				configured = true
-			} else if connectors.SelfConfigured(c, connectorkit.Credentials{Config: map[string]string{}}) {
-				configured = true
-			}
-
-			for _, src := range c.Sources() {
-				if src.Kind != connectorkit.SourceWebhook || src.Path == "" {
-					continue
-				}
-				out = append(out, webhookRow{
-					ID:        m.ID + ":" + src.ID,
-					Kind:      "platform",
-					Name:      m.Name,
-					Connector: m.ID,
-					URL:       s.webhookBase() + connectors.WebhookPrefix + src.Path,
-					EventKind: src.EventKind,
-					Description: "KARMAX knows this payload's shape, so a recipe can act on the " +
-						"decoded event without an agent reading it.",
-					Enabled: true,
-					// Routes mount at startup for connectors that have
-					// credentials. Saying so here is the difference between "it
-					// is set up" and "it is answering".
-					Live:    configured,
-					Secured: src.Verify != nil,
-				})
-			}
-		}
-	}
-
 	custom, err := s.store.ListWebhookEndpoints()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	for _, e := range custom {
-		out = append(out, webhookRow{
-			ID: e.ID, Kind: "custom", Name: e.Name, Slug: e.Slug,
-			URL:         s.webhookBase() + webhook.CustomPrefix + e.Slug,
-			EventKind:   e.EventKind,
-			Description: e.Description,
-			Enabled:     e.Enabled,
-			// Custom webhooks are dispatched from a lookup, so an enabled one
-			// is always answering — there is nothing to mount.
-			Live:            e.Enabled,
-			Secured:         e.Secret != "",
-			SignatureHeader: e.SignatureHeader,
-			AgentID:         e.AgentID,
-			CreatedBy:       e.CreatedBy,
-			UpdatedAt:       rfc3339(e.UpdatedAt),
-		})
-	}
 
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind == "platform"
-		}
-		return out[i].Name < out[j].Name
-	})
+	out := make([]webhookRow, 0, len(custom))
+	for _, e := range custom {
+		out = append(out, s.customRow(e))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	writeJSON(w, http.StatusOK, map[string]any{"webhooks": out, "base_url": s.webhookBase()})
+}
+
+// handleWebhookCatalogue is what the create form builds its dropdowns from.
+//
+// Typing a signature header or an event kind by hand produces a webhook that
+// silently never fires, with nothing on screen to say which of the two was
+// wrong. Everything KARMAX supports is offered instead.
+func (s *ConsoleServer) handleWebhookCatalogue(w http.ResponseWriter, r *http.Request) {
+	agents := []string{}
+	if s.agents != nil {
+		for _, a := range s.agents.List() {
+			agents = append(agents, a.Def().ID)
+		}
+	}
+	sort.Strings(agents)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"platforms":         webhook.Platforms(),
+		"signature_headers": webhook.SignatureHeaders(),
+		"agents":            agents,
+		"base_url":          s.webhookBase(),
+	})
 }
 
 func (s *ConsoleServer) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +104,7 @@ func (s *ConsoleServer) handleCreateWebhook(w http.ResponseWriter, r *http.Reque
 		Slug            string `json:"slug"`
 		Name            string `json:"name"`
 		Description     string `json:"description"`
+		Platform        string `json:"platform"`
 		EventKind       string `json:"event_kind"`
 		Secret          string `json:"secret"`
 		SignatureHeader string `json:"signature_header"`
@@ -148,6 +115,20 @@ func (s *ConsoleServer) handleCreateWebhook(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
 		return
 	}
+	plat, known := webhook.PlatformByID(strings.TrimSpace(req.Platform))
+	if !known {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "unknown platform " + req.Platform + " — pick one KARMAX supports, or Custom",
+		})
+		return
+	}
+	if plat.ID != "" {
+		// A platform decides its own event kind and how a delivery proves
+		// itself. Letting those be typed is how a webhook ends up silently
+		// never firing.
+		req.EventKind = plat.EventKind
+		req.SignatureHeader = plat.SignatureHeader
+	}
 	if strings.TrimSpace(req.EventKind) == "" {
 		// Defaulted rather than refused: the operator's real question is "what
 		// do I write in the recipe", and custom.<slug> is a good answer.
@@ -155,7 +136,7 @@ func (s *ConsoleServer) handleCreateWebhook(w http.ResponseWriter, r *http.Reque
 	}
 
 	saved, err := s.store.SaveWebhookEndpoint(store.WebhookEndpoint{
-		Slug: req.Slug, Name: req.Name, Description: req.Description,
+		Slug: req.Slug, Name: req.Name, Description: req.Description, Platform: plat.ID,
 		EventKind: req.EventKind, Secret: req.Secret, SignatureHeader: req.SignatureHeader,
 		AgentID: req.AgentID, Enabled: req.Enabled, CreatedBy: consoleUser(r).Member,
 	})
@@ -281,8 +262,12 @@ func (s *ConsoleServer) webhookByID(id string) (*store.WebhookEndpoint, error) {
 }
 
 func (s *ConsoleServer) customRow(e store.WebhookEndpoint) webhookRow {
+	kind, connector := "custom", ""
+	if e.Platform != "" {
+		kind, connector = "platform", e.Platform
+	}
 	return webhookRow{
-		ID: e.ID, Kind: "custom", Name: e.Name, Slug: e.Slug,
+		ID: e.ID, Kind: kind, Connector: connector, Name: e.Name, Slug: e.Slug,
 		URL:       s.webhookBase() + webhook.CustomPrefix + e.Slug,
 		EventKind: e.EventKind, Description: e.Description,
 		Enabled: e.Enabled, Live: e.Enabled,
