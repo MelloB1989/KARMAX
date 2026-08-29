@@ -84,6 +84,18 @@ func slugify(s string) string {
 	return strings.Trim(s, "-")
 }
 
+// leadingFiller are words a fact often opens with that say nothing about what
+// it is about. Skipping them keeps "Kartik decided to drop the Shravan collab"
+// and "Shravan collab dropped" under the same subject.
+var leadingFiller = map[string]bool{
+	"the": true, "a": true, "an": true, "on": true, "in": true, "at": true,
+	"as": true, "of": true, "for": true, "to": true, "and": true, "is": true,
+	"was": true, "kartik": true, "operator": true, "he": true, "his": true,
+	"correction": true, "update": true, "note": true, "confirmed": true,
+	"decided": true, "status": true, "pending": true, "critical": true,
+	"drop": true, "dropped": true, "collaboration": true, "collab": true,
+}
+
 // genericTags are labels that describe the filing system rather than the
 // subject, so they make useless slugs and useless cues.
 var genericTags = map[string]bool{
@@ -113,10 +125,31 @@ func subjectOf(e MemoryEntry) string {
 			return s
 		}
 	}
+	// Falling back to the body, the SUBJECT is its opening noun phrase — not
+	// the first six words. Six words is a sentence fragment, so every rewording
+	// of one fact produced a different filename and therefore a different file:
+	// "shravan-kumar-nalacharla-s-scripting-collaboration-was",
+	// "shravan-collaboration-dropped-no-further-follow-up" and
+	// "kartik-decided-to-drop-the-shravan" are one subject stored three times.
+	// AppendSection exists to fold a new fact into the file that already holds
+	// its subject, and it can only do that if the subject maps to a stable name.
+	//
+	// The first meaningful token, skipping filler. This is a heuristic and only
+	// a FALLBACK — a fact that carries tags is filed by its first non-generic
+	// tag, which the extractor sets to the subject and which is already stable.
+	// It exists so an untagged fact still lands beside its own kind instead of
+	// minting a file per sentence.
 	body := prefixRe.ReplaceAllString(e.Content, "")
-	words := strings.Fields(body)
-	if len(words) > 6 {
-		words = words[:6]
+	words := make([]string, 0, 2)
+	for _, w := range strings.Fields(body) {
+		w = slugify(w)
+		if w == "" || leadingFiller[w] {
+			continue
+		}
+		words = append(words, w)
+		if len(words) == 1 {
+			break
+		}
 	}
 	if s := slugify(strings.Join(words, "-")); s != "" {
 		return s
@@ -378,4 +411,39 @@ func ToGitLoom(e MemoryEntry, path string, related []string) gitloom.Memory {
 		}
 	}
 	return m
+}
+
+// RemoveSection deletes the "## ..." block whose header slugifies to slug,
+// returning the document without it and whether anything matched.
+//
+// The store addresses a fact as file.md#slug, where the slug is derived from
+// the header text. Matching is done by slugifying each header the same way
+// rather than by string-comparing the header, because the slug the store hands
+// back is truncated and lower-cased and will never equal the header itself.
+func RemoveSection(doc, slug string) (string, bool) {
+	slug = strings.ToLower(strings.Trim(slug, "-"))
+	if slug == "" {
+		return doc, false
+	}
+	lines := strings.Split(doc, "\n")
+	start, end := -1, len(lines)
+	for i, l := range lines {
+		if !strings.HasPrefix(l, "## ") {
+			continue
+		}
+		if start >= 0 {
+			end = i
+			break
+		}
+		h := slugify(strings.TrimSpace(strings.TrimPrefix(l, "## ")))
+		// The stored slug is a truncation of the header's slug.
+		if h == slug || strings.HasPrefix(h, slug) || strings.HasPrefix(slug, h) {
+			start = i
+		}
+	}
+	if start < 0 {
+		return doc, false
+	}
+	kept := append(append([]string{}, lines[:start]...), lines[end:]...)
+	return strings.TrimSpace(strings.Join(kept, "\n")), true
 }
