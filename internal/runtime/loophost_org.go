@@ -283,6 +283,12 @@ func (rt *KarmaxRuntime) runSandbox(ctx context.Context, agent string, spec loop
 		_ = rt.store.UpdateSandboxRun(runID, sandbox.StateFailed, 0, err.Error(), "")
 		return loopkit.SandboxResult{}, err
 	}
+	if err := rt.store.RecordSandboxContainer(runID, cid); err != nil {
+		// Not fatal to this run — it has its own poll loop. Fatal to the NEXT
+		// restart, which now cannot find this container to clean up.
+		rt.log.Warn("could not record the sandbox container id; a restart will not find it",
+			zap.String("run", runID), zap.String("container", cid), zap.Error(err))
+	}
 	rt.log.Info("sandbox launched", zap.String("run", runID), zap.String("container", cid),
 		zap.String("repo", spec.Repo))
 

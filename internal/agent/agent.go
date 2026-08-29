@@ -372,6 +372,13 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			// as an event on a later turn rather than blocking this one.
 			cp.Publish = a.bus.Publish
 			out = append(out, &cp)
+		case *builtin.SandboxTool:
+			cp := *tt
+			cp.AgentID = a.def.ID
+			// A build takes minutes. Without the bus the tool can only run
+			// inline, holding this turn open for all of them.
+			cp.Publish = a.bus.Publish
+			out = append(out, &cp)
 		case *builtin.SelfRemindTool:
 			cp := *tt
 			cp.AgentID = a.def.ID
