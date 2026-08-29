@@ -101,6 +101,38 @@ func applyDefaults(cfg *KarmaxConfig) {
 	if cfg.Webhooks.Port == 0 {
 		cfg.Webhooks.Port = 9090
 	}
+	// Harness defaults. Every one of these is a policy an operator may want to
+	// change; none of them is a thing the supervisor should decide for itself.
+	if cfg.Harness.Binary == "" {
+		cfg.Harness.Binary = "claude"
+	}
+	if cfg.Harness.WindowShare <= 0 || cfg.Harness.WindowShare > 1 {
+		// A minority share by default: the rate-limit windows belong to the
+		// account, and the operator's own sessions are the other claimant.
+		cfg.Harness.WindowShare = 0.4
+	}
+	if cfg.Harness.MaxLive <= 0 {
+		cfg.Harness.MaxLive = 6
+	}
+	if len(cfg.Harness.Allowlist) == 0 {
+		cfg.Harness.Allowlist = []string{
+			"karmax", "wacli", "gh", "git", "ls", "cat", "rg", "grep",
+			"sed", "awk", "jq", "head", "tail", "wc", "echo", "find",
+		}
+	}
+	if len(cfg.Harness.Kinds) == 0 {
+		cfg.Harness.Kinds = map[string]HarnessKindConfig{
+			// chat: answers a person, so latency matters and the idle window is
+			// short enough that a finished conversation stops costing a process.
+			"chat": {Model: "sonnet", Idle: "10m", MaxTurns: 40, TurnTimeout: "45s", MaxCostUSD: 0.50, Ephemeral: true},
+			// agent: the orchestrator's own thinking; longer-lived, keeps its
+			// transcript so a restart resumes rather than forgets.
+			"agent": {Model: "sonnet", Idle: "30m", MaxTurns: 100, TurnTimeout: "3m", MaxCostUSD: 2.00},
+			// task: one heavy piece of work, then gone.
+			"task": {Model: "opus", Idle: "1m", MaxTurns: 4, TurnTimeout: "10m", MaxCostUSD: 5.00, Ephemeral: true},
+		}
+	}
+
 	if cfg.Webhooks.Host == "" {
 		cfg.Webhooks.Host = "0.0.0.0"
 	}
