@@ -832,6 +832,17 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 }
 
 func (k *loopKit) Summarize(ctx context.Context, prompt string) (string, error) {
+	// A warm session first, one per loop. Summarising is exactly the kind of
+	// work a session is good at — short, frequent, and cheaper each time the
+	// same conversation handles it than a fresh process would be.
+	if k.rt.harness != nil {
+		if turn, err := k.rt.harness.Send(ctx, "loop-summarize/"+k.loopName, "chat", prompt); err == nil {
+			if strings.TrimSpace(turn.Text) != "" {
+				return turn.Text, nil
+			}
+		}
+	}
+
 	if len(k.rt.cfg.Agents) == 0 {
 		return "", fmt.Errorf("no agent configured")
 	}

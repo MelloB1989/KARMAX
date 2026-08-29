@@ -335,3 +335,20 @@ func (rt *KarmaxRuntime) wireHarnessBrains() {
 			zap.String("agent", a.Def().ID))
 	}
 }
+
+// harnessAnswer runs one prompt in a named long-lived session.
+//
+// The shape every non-agent caller needs: a reply, or a plain "not available"
+// so it can take the metered path. Callers pass a stable key so their work
+// continues one conversation rather than starting a process per call, which is
+// the difference between this being cheaper than the API and being far worse.
+func (rt *KarmaxRuntime) harnessAnswer(ctx context.Context, key, prompt string) (string, bool) {
+	if rt == nil || rt.harness == nil {
+		return "", false
+	}
+	turn, err := rt.harness.Send(ctx, key, "chat", prompt)
+	if err != nil || strings.TrimSpace(turn.Text) == "" {
+		return "", false
+	}
+	return turn.Text, true
+}
