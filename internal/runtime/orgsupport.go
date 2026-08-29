@@ -94,8 +94,10 @@ var (
 	sandboxErr  error
 )
 
-// sandboxDriver resolves the configured driver once. Docker is the only one
-// implemented; ECS and Kubernetes are the same interface and are not written.
+// sandboxDriver resolves the configured driver once. Docker runs the container
+// on this host; ECS runs it as a Fargate task, which is what you want as soon
+// as the sandbox would be sharing a machine with the daemon supervising it.
+// Kubernetes is the same interface and is not written.
 func (rt *KarmaxRuntime) sandboxDriver() (sandbox.Driver, error) {
 	sandboxOnce.Do(func() {
 		name := strings.TrimSpace(os.Getenv("KARMAX_SANDBOX_DRIVER"))
