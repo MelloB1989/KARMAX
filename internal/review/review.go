@@ -47,6 +47,10 @@ type Config struct {
 	Provider  string
 	Model     string
 	Fallbacks []karmahelper.FallbackModel
+	// Ask, when set, answers through a long-lived harness session instead of a
+	// metered call. It returns ok=false when the harness cannot serve the turn,
+	// which is a routing fact rather than a failure: the API path answers.
+	Ask func(ctx context.Context, key, prompt string) (reply string, ok bool)
 	// Deliver the check-in to WhatsApp. WAChannelID/WATarget come from the
 	// comms channel; SendFunc is the comms manager's Send. Both optional.
 	WAChannelID string
@@ -109,18 +113,28 @@ func (r *Reviewer) Tick(ctx context.Context) error {
 	for i, c := range candidates {
 		fmt.Fprintf(&list, "%d. [%s | stored %s] %s\n", i, c.kind, humanAge(c.at), oneLine(c.text, 240))
 	}
-	sess := karmahelper.NewSession(karmahelper.SessionConfig{
-		Kind:     "review",
-		Provider: r.cfg.Provider, Model: r.cfg.Model, MaxTokens: 400,
-		SystemPrompt: judgePrompt, FallbackModels: r.cfg.Fallbacks,
-	}, nil)
 	// Today's date, because the model had none. Entries say "today" and
 	// "tomorrow" meaning the day they were written, and without knowing the
 	// current date the model repeated those words verbatim days later.
-	resp, _, _, err := sess.Chat(ctx, fmt.Sprintf("Today is %s.\n\nCandidates (newest-relevant first):\n\n%s",
-		time.Now().Format("Monday, 2 January 2006"), list.String()))
-	if err != nil {
-		return fmt.Errorf("review judge: %w", err)
+	question := fmt.Sprintf("Today is %s.\n\nCandidates (newest-relevant first):\n\n%s",
+		time.Now().Format("Monday, 2 January 2006"), list.String())
+
+	var resp string
+	if r.cfg.Ask != nil {
+		if reply, ok := r.cfg.Ask(ctx, "review", judgePrompt+"\n\n"+question); ok {
+			resp = reply
+		}
+	}
+	if strings.TrimSpace(resp) == "" {
+		sess := karmahelper.NewSession(karmahelper.SessionConfig{
+			Kind:     "review",
+			Provider: r.cfg.Provider, Model: r.cfg.Model, MaxTokens: 400,
+			SystemPrompt: judgePrompt, FallbackModels: r.cfg.Fallbacks,
+		}, nil)
+		resp, _, _, err = sess.Chat(ctx, question)
+		if err != nil {
+			return fmt.Errorf("review judge: %w", err)
+		}
 	}
 	var pick struct {
 		Idx            int      `json:"idx"`
