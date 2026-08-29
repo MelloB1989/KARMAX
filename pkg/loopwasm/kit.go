@@ -177,6 +177,7 @@ const (
 	fnHostTool    = "hosttool"
 	fnHarness     = "harness"
 	fnGateway     = "gateway"
+	fnSession     = "session"
 	fnSummarize   = "summarize"
 	fnPropose     = "propose"
 	fnRemind      = "remind"
@@ -505,3 +506,41 @@ func OperatorChats() []string {
 	return res.Chats
 }
 
+// Session sends a message to a long-lived harness conversation and returns its
+// reply.
+//
+// The key is yours. Use a stable one per conversation — one per chat, one per
+// task — and the same conversation continues across messages: the first costs
+// a few seconds of cold start, the ones after it about a second and a half.
+// Opening, resuming after a crash and closing when idle all happen host-side.
+//
+// available is false when quota policy has paused the harness. That is a fact
+// to route around, not an error: take your own path for that turn.
+func Session(key, kind, text string) (reply string, available bool, err error) {
+	req, err := json.Marshal(map[string]any{"key": key, "kind": kind, "text": text})
+	if err != nil {
+		return "", false, err
+	}
+	out, err := request(fnSession, string(req))
+	if err != nil {
+		return "", false, err
+	}
+	var res struct {
+		Answer    string `json:"answer"`
+		Available bool   `json:"available"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		return "", false, err
+	}
+	return res.Answer, res.Available, nil
+}
+
+// SessionClose ends a conversation now rather than at its idle window.
+func SessionClose(key, kind string) error {
+	req, err := json.Marshal(map[string]any{"key": key, "kind": kind, "close": true})
+	if err != nil {
+		return err
+	}
+	_, err = request(fnSession, string(req))
+	return err
+}

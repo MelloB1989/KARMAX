@@ -93,6 +93,20 @@ type Kit interface {
 	// and remember but must not put a message in anybody's chat.
 	Observe(ctx context.Context, prompt string) (string, error)
 
+	// Session is a long-lived conversation with a coding harness, addressed by
+	// a key the WORKFLOW chooses and the kernel never interprets.
+	//
+	// This is the modularity contract. A workflow that wants one conversation
+	// per WhatsApp chat passes "chat:<jid>"; core learns nothing about WhatsApp
+	// from that, and a workflow for some other integration passes its own key
+	// without anything in core changing. Opening, resuming after a crash and
+	// closing when idle all happen underneath.
+	//
+	// The first message to a new key pays a cold start of a few seconds; the
+	// ones after it answer in about a second and a half. A workflow that keeps
+	// a key alive across a conversation gets the second number.
+	Session(key, kind string) SessionHandle
+
 	// Harness runs a prompt directly through the Claude Code CLI (web search,
 	// file, and shell tools) and returns its text output. It runs on the Claude
 	// subscription, independent of the main model — ideal for web research and
@@ -350,4 +364,14 @@ type ShortMemory struct {
 	Value     string     `json:"value"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// SessionHandle is a workflow's end of a harness conversation.
+type SessionHandle interface {
+	// Send asks, and returns the reply. Available is false when quota policy
+	// has paused the harness — a fact to route around, not an error to show a
+	// person, so the workflow falls back to its own gateway path.
+	Send(ctx context.Context, text string) (reply string, available bool, err error)
+	// Close ends the conversation now rather than at its idle window.
+	Close() error
 }

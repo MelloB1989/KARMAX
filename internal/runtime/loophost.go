@@ -13,6 +13,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -1073,3 +1074,46 @@ IDENTITY. Use the operator's name exactly as the prompt gives it to you. Never i
 HONESTY. Never say something is done unless a tool call in THIS turn did it. Never state what a message said, who sent it, or when, unless it is in this turn's tool output. "I could not find it" is always better than a plausible invention.
 
 ACT. You are here to handle things, not to offer menus. If a routine action is clear, do it and say what you did. Ask ONE sharp question only when the answer changes what you would do — never a list of options for something you could simply have done. Do not announce yourself in every message; say who you are when it is genuinely unclear, then get on with it.`
+
+// Session hands a workflow a long-lived harness conversation.
+//
+// The key belongs to the caller and means nothing here. A WhatsApp workflow
+// passes "chat:<jid>" and this package never learns what a chat is — which is
+// the point: a use-case must not require a change to the kernel.
+func (k *loopKit) Session(key, kind string) loopkit.SessionHandle {
+	return &loopSession{rt: k.rt, loop: k.loopName, key: key, kind: kind}
+}
+
+type loopSession struct {
+	rt   *KarmaxRuntime
+	loop string
+	key  string
+	kind string
+}
+
+func (s *loopSession) Send(ctx context.Context, text string) (string, bool, error) {
+	if s.rt.harness == nil {
+		// Not an error: the workflow has its own path and should take it.
+		return "", false, nil
+	}
+	// Namespaced by loop, so two workflows choosing the same key cannot end up
+	// talking into each other's conversation.
+	key := s.loop + "/" + s.key
+	turn, err := s.rt.harness.Send(ctx, key, s.kind, text)
+	if err != nil {
+		var open harness.ErrBreakerOpen
+		if asBreakerOpen(err, &open) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return turn.Text, true, nil
+}
+
+func (s *loopSession) Close() error {
+	if s.rt.harness == nil {
+		return nil
+	}
+	s.rt.harness.Close(s.loop + "/" + s.key)
+	return nil
+}

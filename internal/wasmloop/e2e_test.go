@@ -2,6 +2,7 @@ package wasmloop
 
 import (
 	"context"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"strings"
 	"testing"
 	"time"
@@ -339,3 +340,18 @@ func TestToolNameRefusesARequestThatNamesNothing(t *testing.T) {
 		t.Errorf("toolName = %q, %v; want whatsapp.read", name, err)
 	}
 }
+
+// A test kit holds no real conversation; it records that one was asked for.
+func (k *countingKit) Session(key, kind string) loopkit.SessionHandle {
+	return &countingSession{k: k, key: key}
+}
+
+type countingSession struct {
+	k   *countingKit
+	key string
+}
+
+func (s *countingSession) Send(_ context.Context, text string) (string, bool, error) {
+	return "session reply for " + s.key, true, nil
+}
+func (s *countingSession) Close() error { return nil }
