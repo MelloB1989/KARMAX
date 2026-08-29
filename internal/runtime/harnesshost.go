@@ -121,10 +121,11 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		Allowlist:   allow,
 	}, harnessStore{rt.store}, breaker, harnessLog{rt.log}, rt.auditHarnessTool)
 
-	// The brief every session inherits, written once at the sessions root.
-	// CLAUDE.md merges down the directory tree, so this carries what is true
-	// for all of them and a workflow's own file carries only its particulars.
-	if err := writeRootBrief(root); err != nil {
+	// The brief every session inherits, at the DATA ROOT rather than the
+	// sessions directory. CLAUDE.md merges upward from the working directory,
+	// so putting it here reaches every session wherever a workflow chooses to
+	// run one — including wa-sessions/, which is not under the default root.
+	if err := writeRootBrief(hostDataDir()); err != nil {
 		rt.log.Warn("harness: could not write the shared session brief", zap.Error(err))
 	}
 
@@ -226,7 +227,7 @@ func (rt *KarmaxRuntime) startHarnessReaper(ctx context.Context) {
 //
 // It says nothing about any particular integration. Whose assistant a session
 // is, and what it may do on someone's behalf, is the workflow's to state.
-func writeRootBrief(root string) error {
+func writeRootBrief(root string) error { //nolint:revive // root is the data dir
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}

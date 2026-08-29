@@ -124,12 +124,12 @@ func applyDefaults(cfg *KarmaxConfig) {
 		cfg.Harness.Kinds = map[string]HarnessKindConfig{
 			// chat: answers a person, so latency matters and the idle window is
 			// short enough that a finished conversation stops costing a process.
-			"chat": {Model: "sonnet", Idle: "10m", MaxTurns: 40, TurnTimeout: "45s", MaxCostUSD: 0.50, Ephemeral: true},
+			"chat": {Model: "sonnet", Idle: "20m", MaxTurns: 200, TurnTimeout: "4m"},
 			// agent: the orchestrator's own thinking; longer-lived, keeps its
 			// transcript so a restart resumes rather than forgets.
-			"agent": {Model: "sonnet", Idle: "30m", MaxTurns: 100, TurnTimeout: "3m", MaxCostUSD: 2.00},
+			"agent": {Model: "sonnet", Idle: "30m", MaxTurns: 500, TurnTimeout: "12m"},
 			// task: one heavy piece of work, then gone.
-			"task": {Model: "opus", Idle: "1m", MaxTurns: 4, TurnTimeout: "10m", MaxCostUSD: 5.00, Ephemeral: true},
+			"task": {Model: "opus", Idle: "5m", MaxTurns: 20, TurnTimeout: "20m"},
 		}
 	}
 
