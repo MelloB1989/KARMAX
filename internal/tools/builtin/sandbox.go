@@ -45,8 +45,8 @@ func (t *SandboxTool) Manifest() tools.ToolManifest {
 			"properties": {
 				"repo": {"type": "string", "description": "Repository as owner/name (e.g. dev-zeromoblt/o-refine-react) or a clone URL."},
 				"task": {"type": "string", "description": "What the coding agent should do, in prose. Include the acceptance criteria — this is the whole brief it gets."},
-				"branch": {"type": "string", "description": "Branch to create and push. Defaults to a name derived from the task."},
-				"base_branch": {"type": "string", "description": "Branch to start from. Defaults to main."},
+				"branch": {"type": "string", "description": "Branch to create and push. Defaults to a generated karmax/sandbox-... name."},
+				"base_branch": {"type": "string", "description": "Existing branch to start from and open the PR against. Defaults to main."},
 				"case_id": {"type": "string", "description": "Ticket or case this run belongs to (e.g. RTE-17), so the run is traceable to the work item."},
 				"timeout_minutes": {"type": "number", "description": "Give up after this long. Defaults to 45."},
 				"wait": {"type": "boolean", "description": "Block until the sandbox finishes instead of returning a run_id. Holds the conversation open for the whole build — only for short runs."}
@@ -66,21 +66,26 @@ func (t *SandboxTool) Execute(ctx context.Context, input map[string]any) (tools.
 		return tools.ErrorResult(errors.New("sandbox.start needs both repo and task")), nil
 	}
 
+	// Spec.Branch is the BASE. Both drivers map it straight to BASE_BRANCH,
+	// which the entrypoint clones with --branch, and the entrypoint takes the
+	// branch it CREATES from WORK_BRANCH instead. Passing the new branch as
+	// Spec.Branch clones a ref that does not exist yet and fails every run.
+	base := str(input["base_branch"])
+	if base == "" {
+		base = "main"
+	}
 	spec := loopkit.SandboxSpec{
 		Repo:    repo,
 		Task:    task,
 		CaseID:  str(input["case_id"]),
-		Branch:  str(input["branch"]),
+		Branch:  base,
 		Timeout: 45 * time.Minute,
 	}
 	if mins, ok := input["timeout_minutes"].(float64); ok && mins > 0 {
 		spec.Timeout = time.Duration(mins) * time.Minute
 	}
-	// BASE_BRANCH is what the container's entrypoint reads; Branch is the one
-	// it creates. Keeping them distinct is why a run can start from a release
-	// branch without pushing over it.
-	if base := str(input["base_branch"]); base != "" {
-		spec.Env = map[string]string{"BASE_BRANCH": base}
+	if work := str(input["branch"]); work != "" {
+		spec.Env = map[string]string{"WORK_BRANCH": work}
 	}
 
 	if wait, _ := input["wait"].(bool); wait || t.Publish == nil {

@@ -42,13 +42,35 @@ func TestStartLaunchesTheSandbox(t *testing.T) {
 	if got.Repo != "dev-zeromoblt/o-refine-react" || got.Task != "implement RTE-17" {
 		t.Errorf("the brief did not reach the container: %+v", got)
 	}
-	if got.Branch != "feature/RTE-17" || got.CaseID != "RTE-17" {
-		t.Errorf("branch/case lost: %+v", got)
+	if got.CaseID != "RTE-17" {
+		t.Errorf("case lost: %+v", got)
 	}
-	// BASE_BRANCH is the name the entrypoint reads; a different key silently
-	// starts every run from the default branch.
-	if got.Env["BASE_BRANCH"] != "main" {
-		t.Errorf("base branch not passed as BASE_BRANCH: %+v", got.Env)
+	// Spec.Branch is the BASE: both drivers map it to BASE_BRANCH, which the
+	// entrypoint clones with --branch. Putting the new branch here clones a
+	// ref that does not exist yet, and every run dies at the clone.
+	if got.Branch != "main" {
+		t.Errorf("Spec.Branch must carry the base branch, got %q", got.Branch)
+	}
+	if got.Env["WORK_BRANCH"] != "feature/RTE-17" {
+		t.Errorf("the branch to create must go to WORK_BRANCH: %+v", got.Env)
+	}
+}
+
+// The entrypoint hard-requires BASE_BRANCH; omitting it aborts before cloning.
+func TestBaseBranchDefaultsRatherThanGoingEmpty(t *testing.T) {
+	var got loopkit.SandboxSpec
+	done := make(chan struct{})
+	tool := &SandboxTool{Launch: func(_ context.Context, _ string, s loopkit.SandboxSpec) (loopkit.SandboxResult, error) {
+		got = s
+		close(done)
+		return loopkit.SandboxResult{Status: "exited"}, nil
+	}, Publish: func(bus.Event) error { return nil }}
+	if _, err := tool.Execute(context.Background(), map[string]any{"repo": "o/r", "task": "t"}); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if got.Branch != "main" {
+		t.Errorf("no base branch given and none defaulted: %q — the container aborts", got.Branch)
 	}
 }
 
