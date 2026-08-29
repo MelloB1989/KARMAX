@@ -20,8 +20,12 @@ type Policy struct {
 	Idle        time.Duration
 	MaxTurns    int
 	TurnTimeout time.Duration
-	MaxCostUSD  float64
-	Ephemeral   bool
+	// MaxCostUSD is retained for the record but no longer closes a session.
+	// The harness bills against a subscription, so a dollar figure is a
+	// diagnostic, not a budget — capping on it would stop useful work for a
+	// number nobody is charged.
+	MaxCostUSD float64
+	Ephemeral  bool
 }
 
 // Store is what the supervisor needs to remember sessions across restarts.
@@ -179,9 +183,6 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 		if pol.MaxTurns > 0 && rec.Turns >= pol.MaxTurns {
 			s.log.Warn("harness: closing a session at its turn limit", "key", key, "turns", rec.Turns)
 			s.Close(key)
-		} else if pol.MaxCostUSD > 0 && rec.CostUSD >= pol.MaxCostUSD {
-			s.log.Warn("harness: closing a session at its cost limit", "key", key, "cost_usd", rec.CostUSD)
-			s.Close(key)
 		}
 	}
 	return turn, nil
@@ -280,8 +281,15 @@ func (s *Supervisor) evictIfFull() {
 		return
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].LastActivityAt.Before(recs[j].LastActivityAt) })
-	s.log.Info("harness: at the session cap, evicting the least recently used", "key", recs[0].Key)
-	s.Close(recs[0].Key)
+	for _, r := range recs {
+		if s.busy(r.Key) {
+			continue // still working; evicting it would kill the turn
+		}
+		s.log.Info("harness: at the session cap, evicting the least recently used", "key", r.Key)
+		s.Close(r.Key)
+		return
+	}
+	s.log.Warn("harness: at the session cap and every session is busy; not evicting")
 }
 
 // Close ends a session. Ephemeral kinds forget it entirely.
@@ -305,6 +313,14 @@ func (s *Supervisor) Close(key string) {
 	_ = s.store.SetHarnessState(key, HarnessClosed, "", time.Now())
 }
 
+// busy reports whether a session has a turn in flight.
+func (s *Supervisor) busy(key string) bool {
+	s.mu.Lock()
+	sess := s.live[key]
+	s.mu.Unlock()
+	return sess.Busy()
+}
+
 func (s *Supervisor) kill(key, state, reason string) {
 	s.mu.Lock()
 	sess := s.live[key]
@@ -325,6 +341,11 @@ func (s *Supervisor) Reap(now time.Time) {
 	for _, r := range recs {
 		pol := s.policy(r.Kind)
 		if pol.Idle <= 0 {
+			continue
+		}
+		if s.busy(r.Key) {
+			// A long turn does not update LastActivityAt until it finishes, so
+			// without this the reaper closes the session doing the most work.
 			continue
 		}
 		if now.Sub(r.LastActivityAt) > pol.Idle {
@@ -415,11 +436,15 @@ func sanitize(key string) string {
 //
 // CLAUDE.md is loaded from the working directory and every parent, and they
 // merge — verified: a file three levels up still applied alongside the nearest
-// one. So a shared file at the sessions root can carry what every session needs
-// and this one carries only what is particular to the workflow.
+// one. So a shared file at a parent carries what every session needs and this
+// one carries only what is particular to the workflow.
 //
-// Rewritten only when the content differs, so a session that resumes into an
-// unchanged directory does not see its instructions churn.
+// SEEDED, NOT MAINTAINED. The file is written once, when it does not exist, and
+// never touched again — because the session owns it afterwards. A session that
+// is told to keep notes about the conversation it is having writes them here,
+// and rewriting the file on every open would erase everything it had learned
+// between one message and the next. The workflow decides what a session starts
+// knowing; the session decides what it goes on to know.
 func writeInstructions(workdir, content string) error {
 	if strings.TrimSpace(content) == "" {
 		return nil
@@ -428,8 +453,8 @@ func writeInstructions(workdir, content string) error {
 		return err
 	}
 	path := filepath.Join(workdir, "CLAUDE.md")
-	if old, err := os.ReadFile(path); err == nil && string(old) == content {
-		return nil
+	if _, err := os.Stat(path); err == nil {
+		return nil // the session's, now
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
 }

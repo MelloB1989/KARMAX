@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -37,6 +38,15 @@ type Session struct {
 
 	mu   sync.Mutex // one turn at a time
 	once sync.Once
+
+	// busy is true while a turn is in flight.
+	//
+	// Needed because the only other signal of activity is the stored
+	// LastActivityAt, which is written when a turn FINISHES. A session part-way
+	// through a long piece of work therefore looks like the least recently used
+	// one in the table, and both the eviction and the idle reaper would close
+	// it — which is exactly what "harness exited mid-turn" was.
+	busy atomic.Bool
 }
 
 // spawn starts a harness process for this session.
@@ -124,6 +134,8 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 func (s *Session) Send(ctx context.Context, text string, timeout time.Duration) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.busy.Store(true)
+	defer s.busy.Store(false)
 
 	line, err := userEvent(text)
 	if err != nil {
@@ -212,6 +224,10 @@ func (s *Session) Close() {
 		}
 	})
 }
+
+// Busy reports whether a turn is in flight, so nothing closes a session that is
+// still working.
+func (s *Session) Busy() bool { return s != nil && s.busy.Load() }
 
 // Alive reports whether the process is still running.
 func (s *Session) Alive() bool {
