@@ -1071,6 +1071,8 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.harness = rt.startHarness()
 	if rt.harness != nil {
 		rt.startHarnessReaper(ctx)
+		// Agents think in a session once there is one to think in.
+		rt.wireHarnessBrains()
 	}
 
 	rt.clock.Start(ctx)

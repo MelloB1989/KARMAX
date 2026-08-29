@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/harness"
@@ -294,3 +295,42 @@ You have a real shell and real tools. Prefer doing the thing to describing it,
 and prefer one clear question to a menu of options when you genuinely cannot
 proceed. Do not narrate what you are about to do and then stop.
 `
+
+// harnessSenderFor adapts the supervisor to what internal/agent expects,
+// keeping the agent package free of this one's types.
+type harnessSenderFor struct{ sup *harness.Supervisor }
+
+func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (agent.HarnessTurn, error) {
+	turn, err := h.sup.Send(ctx, key, kind, text)
+	if err != nil {
+		var open harness.ErrBreakerOpen
+		if asBreakerOpen(err, &open) {
+			// Not an error to the caller: the brain falls back on this.
+			return agent.HarnessTurn{Available: false, Reason: open.Reason}, nil
+		}
+		return agent.HarnessTurn{Available: false, Reason: err.Error()}, err
+	}
+	calls := make([]agent.HarnessToolCall, 0, len(turn.ToolCalls))
+	for _, tc := range turn.ToolCalls {
+		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input})
+	}
+	return agent.HarnessTurn{Available: true, Text: turn.Text, ToolCalls: calls}, nil
+}
+
+// wireHarnessBrains points each agent's thinking at a harness session.
+//
+// One session per agent, not per turn: the orchestrator's conversation is
+// continuous, and a session per turn would pay the cold start and the whole
+// per-turn overhead every time — which is the arrangement this package exists
+// to avoid.
+func (rt *KarmaxRuntime) wireHarnessBrains() {
+	if rt.harness == nil {
+		return
+	}
+	sender := harnessSenderFor{sup: rt.harness}
+	for _, a := range rt.agents.List() {
+		a.SetHarnessBrain(agent.NewHarnessBrain(sender, "agent:"+a.Def().ID, "agent", a.MainBrain()))
+		rt.log.Info("harness: agent thinking routed to a session",
+			zap.String("agent", a.Def().ID))
+	}
+}
