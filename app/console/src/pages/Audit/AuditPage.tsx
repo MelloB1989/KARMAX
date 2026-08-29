@@ -53,7 +53,15 @@ export function AuditPage() {
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-h1">Audit</h1>
-          <p className="text-sm text-fg-muted">Who did what, as who, and whether it was allowed.</p>
+          <p className="mt-1.5 font-mono text-register text-fg-subtle">
+            {events === null
+              ? "loading"
+              : `${events.length} event${events.length === 1 ? "" : "s"}`}
+            <span className="mx-2 text-border-strong">/</span>
+            {events === null
+              ? "\u00a0"
+              : `${events.filter((e) => e.decision === "denied").length} denied`}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">

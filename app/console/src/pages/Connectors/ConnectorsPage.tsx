@@ -5,6 +5,7 @@ import { Building2, FileText, Github, Mail, Instagram, Linkedin, MessageCircle, 
 import { listConnectors } from "@/api/connectors";
 import type { ConnectorSummary } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Button } from "@/components/ui/Button";
 import { PageSpinner } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -46,10 +47,15 @@ export function ConnectorsPage() {
 
   return (
     <div>
-      <div className="mb-5">
-        <h1 className="text-h1">Connectors</h1>
-        <p className="text-sm text-fg-muted">Integrations registered under your own accounts.</p>
-      </div>
+      <PageHeader
+        title="Connectors"
+        register={[
+          `${connectors.length} available`,
+          `${connectors.filter((c) => c.status === "healthy").length} healthy`,
+          connectors.some((c) => c.status === "failed") &&
+            `${connectors.filter((c) => c.status === "failed").length} failing`,
+        ]}
+      />
 
       {connectors.length === 0 ? (
         <EmptyState icon={Plug} title="No connectors" />

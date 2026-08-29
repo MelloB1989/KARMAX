@@ -4,6 +4,7 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useOrg } from "@/lib/org";
 
 // Grouped, because a flat list of seven makes the operator read all seven every
 // time. Work is what you are doing now; Fleet is what does it; Record is what
@@ -45,18 +46,24 @@ const GROUPS = [
 ];
 
 export function Sidebar() {
+  const { short } = useOrg();
+
   return (
     <aside className="flex h-full w-52 shrink-0 flex-col border-r border-border bg-bg-soft">
       <div className="flex h-13 items-center gap-2.5 border-b border-border px-4">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-brand-500">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-accent">
           <path d="M4 7h7M4 12h16M13 17h7" />
           <circle cx="15" cy="7" r="2.4" />
           <circle cx="9" cy="17" r="2.4" />
         </svg>
         <span className="text-[13.5px] font-semibold tracking-tight">oCrew</span>
-        <span className="ml-auto rounded-[3px] border border-border px-1.5 font-mono text-[9.5px] text-fg-subtle">
-          acme
-        </span>
+        {/* The organisation, not a fixture. Absent until somebody names it —
+            an empty space is honest, "acme" was not. */}
+        {short && (
+          <span className="ml-auto truncate rounded-[3px] border border-border px-1.5 font-mono text-[9.5px] text-fg-subtle">
+            {short}
+          </span>
+        )}
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2.5 py-3">

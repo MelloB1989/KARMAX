@@ -8,6 +8,7 @@ import { CASE_STATES, CaseStateChip, caseStateStripe } from "@/components/ui/Cas
 import { ChipGroup } from "@/components/ui/ChipGroup";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { cn, timeAgo } from "@/lib/utils";
 
 export function CasesPage() {
@@ -55,13 +56,16 @@ export function CasesPage() {
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-h1">Cases</h1>
-          <span className="font-mono text-[11px] text-fg-subtle">
-            {cases === null ? "…" : `${filtered.length} shown · ${cases.length} total`}
-          </span>
-        </div>
+      <PageHeader
+        title="Cases"
+        register={[
+          cases === null ? "loading" : `${cases.length} cases`,
+          cases !== null && filtered.length !== cases.length && `${filtered.length} shown`,
+          // The state tally lives in the strip at the foot of the table, where
+          // it summarises what is directly above it. Repeating it here would
+          // be the same fact twice on one screen.
+        ]}
+      >
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-fg-subtle" />
           <input
@@ -71,7 +75,7 @@ export function CasesPage() {
             className="h-8 w-64 rounded-[var(--radius-card)] border border-border bg-bg pl-8 pr-2.5 font-mono text-[11.5px] outline-none placeholder:text-fg-subtle focus:border-border-glow"
           />
         </div>
-      </div>
+      </PageHeader>
 
       <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 border-y border-border py-2">
         <ChipGroup

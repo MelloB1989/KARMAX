@@ -52,7 +52,13 @@ export function ApprovalsPage() {
     <div>
       <div className="mb-5">
         <h1 className="text-h1">Approvals</h1>
-        <p className="text-sm text-fg-muted">What your agents are asking permission to do — the same requests Slack shows.</p>
+        <p className="mt-1.5 font-mono text-register text-fg-subtle">
+          {approvals === null
+            ? "loading"
+            : `${approvals.filter((a) => a.status === "pending").length} waiting on you`}
+          <span className="mx-2 text-border-strong">/</span>
+          {approvals === null ? "\u00a0" : `${approvals.length} total`}
+        </p>
       </div>
 
       <div className="mb-4 flex gap-1 border-b border-border">

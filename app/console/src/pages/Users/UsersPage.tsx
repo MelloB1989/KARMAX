@@ -3,6 +3,7 @@ import { KeyRound, Trash2, UserPlus, Users as UsersIcon } from "lucide-react";
 import { createUser, deleteUser, listUsers, setPassword, updateUser } from "@/api/users";
 import type { ConsoleUser, ConsoleUsers } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
@@ -45,18 +46,19 @@ export function UsersPage() {
 
   return (
     <div>
-      <div className="mb-5 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-h1">Users</h1>
-          <p className="text-sm text-fg-muted">
-            Who can sign in to this console, and what they may do once they have.
-          </p>
-        </div>
-        <Button onClick={() => setAdding((v) => !v)}>
-          <UserPlus className="mr-1.5 h-4 w-4" />
-          Add user
-        </Button>
-      </div>
+      <PageHeader
+          title="Users"
+          register={[
+            `${data.users.length} account${data.users.length === 1 ? "" : "s"}`,
+            `${data.users.filter((u) => u.role === "admin").length} admin`,
+            `${data.users.filter((u) => u.email).length} sign in with Google`,
+          ]}
+        >
+          <Button onClick={() => setAdding((v) => !v)}>
+            <UserPlus className="mr-1.5 h-4 w-4" />
+            Add user
+          </Button>
+      </PageHeader>
 
       {err && (
         <Panel className="mb-4 border-failed/40 p-3">

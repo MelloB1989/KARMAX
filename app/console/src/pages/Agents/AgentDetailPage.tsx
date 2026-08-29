@@ -31,7 +31,7 @@ export function AgentDetailPage() {
 
       <div className="mb-6 flex items-center gap-3">
         <StatusDot health={AGENT_HEALTH[agent.status] ?? "unknown"} pulse={agent.status === "running"} />
-        <h1 className="text-h1">{agent.name}</h1>
+        <h1 className="text-title text-fg">{agent.name}</h1>
         <Badge tone="neutral" className="capitalize">{agent.status}</Badge>
       </div>
 

@@ -46,7 +46,7 @@ export function CaseDetailPage() {
             <span className="font-mono text-sm font-semibold text-fg-muted">{c.key}</span>
             <CaseStateChip state={c.state as CaseState} />
           </div>
-          <h1 className="text-h1">{c.title}</h1>
+          <h1 className="text-title text-fg">{c.title}</h1>
         </div>
       </div>
 
