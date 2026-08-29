@@ -9,8 +9,10 @@ func Open(name string) (Driver, error) {
 	switch name {
 	case "docker":
 		return NewDockerDriver()
-	case "ecs", "k8s":
-		return nil, fmt.Errorf("sandbox: driver %q is not implemented yet (planned for v1.1)", name)
+	case "ecs":
+		return NewECSDriver()
+	case "k8s":
+		return nil, fmt.Errorf("sandbox: driver %q is not implemented yet", name)
 	default:
 		return nil, fmt.Errorf("sandbox: unknown driver %q", name)
 	}
