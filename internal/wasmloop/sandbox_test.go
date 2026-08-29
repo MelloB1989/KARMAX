@@ -199,3 +199,7 @@ type nullSession struct{}
 
 func (nullSession) Send(context.Context, string) (string, bool, error) { return "", false, nil }
 func (nullSession) Close() error                                       { return nil }
+
+func (nullKit) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	return nullSession{}
+}

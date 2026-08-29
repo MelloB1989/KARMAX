@@ -120,6 +120,13 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		Allowlist:   allow,
 	}, harnessStore{rt.store}, breaker, harnessLog{rt.log}, rt.auditHarnessTool)
 
+	// The brief every session inherits, written once at the sessions root.
+	// CLAUDE.md merges down the directory tree, so this carries what is true
+	// for all of them and a workflow's own file carries only its particulars.
+	if err := writeRootBrief(root); err != nil {
+		rt.log.Warn("harness: could not write the shared session brief", zap.Error(err))
+	}
+
 	// Every pid in the table belongs to a process this daemon no longer owns.
 	sup.ReapOrphans()
 
@@ -208,3 +215,82 @@ func (rt *KarmaxRuntime) startHarnessReaper(ctx context.Context) {
 		}
 	}()
 }
+
+// writeRootBrief puts the instructions every harness session inherits at the
+// root of the sessions directory.
+//
+// CLAUDE.md is read from the working directory and from every parent, and they
+// merge — so this file reaches every session without being copied into each
+// one, and a workflow's own file adds to it rather than replacing it.
+//
+// It says nothing about any particular integration. Whose assistant a session
+// is, and what it may do on someone's behalf, is the workflow's to state.
+func writeRootBrief(root string) error {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(root, "CLAUDE.md")
+	if old, err := os.ReadFile(path); err == nil && string(old) == rootBrief {
+		return nil
+	}
+	return os.WriteFile(path, []byte(rootBrief), 0o644)
+}
+
+const rootBrief = `# You are running inside KARMAX
+
+KARMAX is your operator's always-on assistant. It handles memory, events, comms,
+scheduling and automation; you are the part that thinks. A workflow started this
+session for a specific job — read the CLAUDE.md beside this one for what that is.
+
+## Reaching KARMAX
+
+Everything KARMAX can do is a shell call away. There is no API to learn:
+
+    karmax tool list                     # every tool, with its arguments
+    karmax tool call <name> k=v k=v      # invoke one
+    karmax tool call <name> --json '{…}' # when a value is not a simple string
+
+Run ` + "`karmax tool list`" + ` when you are unsure what exists. Guessing a tool name
+wastes a turn; the list is authoritative and cheap.
+
+## Memory — query it, and keep it
+
+Long-term memory is GitLoom, shared with the rest of KARMAX. It is the difference
+between an assistant and a chatbot, and it only works if you use it in both
+directions.
+
+Before answering anything that refers to a person, a project, a deal or a
+decision, look it up:
+
+    karmax memory search "<what you need to know>"
+    karmax tool call memory.retrieve query="<a harder question, multi-step>"
+
+After anything durable happens — a decision, a commitment, a deadline, a fact
+about someone, a changed status — write it down:
+
+    karmax tool call memory.ingest content="<one standalone fact>" category=<people|projects|decisions|context> importance=<low|medium|high|critical>
+
+Rules that keep memory usable rather than merely large:
+
+- ONE fact per ingest, phrased so it stands alone months later. Not a transcript,
+  not a summary of a conversation, not "he said ok".
+- Include WHO said it when that matters. A third party's request recorded as the
+  operator's instruction becomes a standing order nobody gave.
+- When a fact CHANGES, ingest the corrected version and retire the old one with
+  ` + "`karmax tool call memory.forget id=<path>`" + `. A stale fact left beside its
+  correction will be retrieved instead of it.
+- Do not re-derive a list you already store. Update the existing fact.
+
+## Honesty
+
+- Never say something is done unless a command in THIS turn did it.
+- Never state what a message said, who sent it, or when, unless it is in this
+  turn's output. "I could not find it" always beats a plausible invention.
+- If a tool fails, say so plainly and say what you tried.
+
+## Acting
+
+You have a real shell and real tools. Prefer doing the thing to describing it,
+and prefer one clear question to a menu of options when you genuinely cannot
+proceed. Do not narrate what you are about to do and then stop.
+`

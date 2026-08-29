@@ -106,6 +106,16 @@ type Kit interface {
 	// ones after it answer in about a second and a half. A workflow that keeps
 	// a key alive across a conversation gets the second number.
 	Session(key, kind string) SessionHandle
+	// SessionIn is Session with the workflow's own working directory and
+	// standing instructions.
+	//
+	// A harness reads CLAUDE.md from the directory it runs in and from every
+	// parent, merging them. So a workflow that wants its sessions to know whose
+	// assistant they are, which tools to reach for and what to remember writes
+	// that file and runs its sessions there. Core stores the strings and starts
+	// the process; it never reads them, which is what keeps a use-case out of
+	// the kernel.
+	SessionIn(key, kind, workdir, instructions string) SessionHandle
 
 	// Harness runs a prompt directly through the Claude Code CLI (web search,
 	// file, and shell tools) and returns its text output. It runs on the Claude
