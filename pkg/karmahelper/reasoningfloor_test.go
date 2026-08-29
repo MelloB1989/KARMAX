@@ -7,7 +7,7 @@ import "testing"
 // memory-review failed 204 times in a row on a 400-token judge.
 func TestAReasoningModelGetsEnoughRoomToAnswer(t *testing.T) {
 	for _, model := range []string{"gpt-5", "gpt-5-mini", "o3-mini", "claude-sonnet-4-6-thinking"} {
-		if got := reasoningTokenFloor(model, 400); got < 2000 {
+		if got := reasoningTokenFloor(model, 400); got < 6000 {
 			t.Errorf("%s: got %d, a reasoning model needs room to think before it writes", model, got)
 		}
 	}
