@@ -517,7 +517,22 @@ func OperatorChats() []string {
 // available is false when quota policy has paused the harness. That is a fact
 // to route around, not an error: take your own path for that turn.
 func Session(key, kind, text string) (reply string, available bool, err error) {
-	req, err := json.Marshal(map[string]any{"key": key, "kind": kind, "text": text})
+	return SessionIn(key, kind, "", "", text)
+}
+
+// SessionIn is Session with a working directory and standing instructions of
+// your own.
+//
+// The harness reads CLAUDE.md from the directory it runs in AND from every
+// parent, merging them all — so a workflow can give its sessions a standing
+// brief (whose assistant they are, which tools to reach for, what to remember)
+// by writing one file and running its sessions beside it. Instructions are
+// rewritten only when they change.
+func SessionIn(key, kind, workdir, instructions, text string) (reply string, available bool, err error) {
+	req, err := json.Marshal(map[string]any{
+		"key": key, "kind": kind, "text": text,
+		"workdir": workdir, "instructions": instructions,
+	})
 	if err != nil {
 		return "", false, err
 	}

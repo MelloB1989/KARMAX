@@ -273,6 +273,11 @@ func (d *DryRun) Session(key, kind string) loopkit.SessionHandle {
 	return &dryRunSession{d: d, key: key, kind: kind}
 }
 
+func (d *DryRun) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	d.record("harness session %q would run in %s with %d bytes of instructions", key, workdir, len(instructions))
+	return &dryRunSession{d: d, key: key, kind: kind}
+}
+
 type dryRunSession struct {
 	d         *DryRun
 	key, kind string
