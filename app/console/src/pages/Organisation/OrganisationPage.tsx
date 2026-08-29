@@ -3,6 +3,7 @@ import { Building2, Info } from "lucide-react";
 import { getOrganisation, saveOrganisation } from "@/api/organisation";
 import type { OrgProfile } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Input";
 import { PageSpinner } from "@/components/ui/Spinner";
@@ -54,12 +55,14 @@ export function OrganisationPage() {
 
   return (
     <div>
-      <div className="mb-5">
-        <h1 className="text-h1">Organisation</h1>
-        <p className="text-sm text-fg-muted">
-          What every agent is told about the company before it answers anything.
-        </p>
-      </div>
+      <PageHeader
+        title="Organisation"
+        register={[
+          org.name || "unnamed",
+          org.context ? `${org.context.length.toLocaleString()} characters of context` : "no context set",
+          org.updated_at ? `updated ${formatDateTime(org.updated_at)}` : "never edited",
+        ]}
+      />
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="space-y-5">

@@ -1,41 +1,53 @@
 /* ============================================================================
-   OCREW CONSOLE — SIGNAL
+   oCREW CONSOLE — THE REGISTER
    ----------------------------------------------------------------------------
-   Dark-first, because this is a room somebody sits in for a shift, not a page
-   they visit. Three rules the whole system hangs off:
+   A room somebody sits in for a shift, watching colleagues who act without
+   asking. Every screen has one job: show what they did, and let a human stop
+   them. The design is built around that and nothing else.
 
-   1. Warm type on a cool ground. The neutrals carry the brand's warmth
-      (#E8E6E3 against #0C0D10); the single accent is cool and low-chroma. That
-      tension is the character — it is what stops a dark UI reading as a
-      template — and it leaves green/amber/red free to mean ONLY machine state.
-   2. Monospace is structure, not decoration. Every key, id, count and
-      timestamp is mono and tabular. That is what makes a dense table
-      scannable rather than merely small.
-   3. State is never colour alone. Each one carries a glyph and a stripe too,
-      so the board reads without colour vision and in a screenshot.
+   THE ONE IDEA: the page title is set in the same monospace as the ids beneath
+   it. Admin consoles reach for a grotesque headline and keep mono for data;
+   inverting that makes the whole screen read as one continuous register — an
+   instrument, not a dashboard. It is the risk this design takes, and it is
+   held back from looking like a terminal by size, light weight, sentence case,
+   and a generous sans for everything a human actually reads.
 
-   The light theme is a real design, not an inversion — but dark is the one
-   this was drawn for.
+   Three rules the rest hangs off:
+
+   1. Warm type on a cool ground. The neutrals carry the warmth (#E8E6E3 on
+      #0B0E13); the accent is a low-chroma indigo. That tension is the
+      character, and it keeps green/amber/red free to mean ONLY machine state.
+   2. Monospace is structure. Every key, id, count, state and timestamp is mono
+      and tabular — that is what makes a dense table scannable rather than
+      merely small.
+   3. State is never colour alone. Each carries a glyph and a rail, so the
+      board reads without colour vision and in a screenshot.
+
+   The state rail is the signature: a coloured edge down the left of anything
+   that has a state. It is the first thing the eye lands on, and it is the
+   question the operator came to answer.
+
+   Both themes are designed. Dark is the one this was drawn for.
    ========================================================================== */
 
 :root {
   /* Dark IS the default: an unset preference lands here. */
-  --k-bg: #0c0d10;
-  --k-bg-soft: #0a0b0e;
-  --k-surface: #101216;
-  --k-surface-2: #16191e;
-  --k-elevated: #1b1f25;
+  --k-bg: #0b0e13;
+  --k-bg-soft: #090b0f;
+  --k-surface: #11151b;
+  --k-surface-2: #171c23;
+  --k-elevated: #1d232b;
 
-  --k-border: #1f242a;
-  --k-border-strong: #2e343c;
-  --k-border-glow: #35586f;
+  --k-border: #20262f;
+  --k-border-strong: #2f3742;
+  --k-border-glow: #3d4585;
 
   --k-fg: #e8e6e3;
   --k-fg-muted: #9ba1a9;
   --k-fg-subtle: #6b717a;
 
-  --k-accent: #6fa8d6;
-  --k-accent-fg: #0c0d10;
+  --k-accent: #7b83e8;
+  --k-accent-fg: #0b0e13;
 
   --k-shadow-color: 0 0 0;
 
@@ -51,34 +63,42 @@
   --k-unknown-bg: #16191e;
 }
 
+/* The light theme is a real design, not an inversion — but it is deliberately
+   NOT warm cream. Cream with a serif and a terracotta accent is the look every
+   generated console arrives wearing, and it fights this product besides: this
+   is an instrument read under fluorescent light, not a reading surface. So the
+   ground goes cool and slightly blue, and the warmth stays where it is in the
+   dark theme — in the ink. */
 .light {
-  --k-bg: #f4f3f0;
-  --k-bg-soft: #eceae5;
+  --k-bg: #eef1f4;
+  --k-bg-soft: #e6eaef;
   --k-surface: #ffffff;
-  --k-surface-2: #f7f6f3;
+  --k-surface-2: #f5f7f9;
   --k-elevated: #ffffff;
 
-  --k-border: #e0ddd6;
-  --k-border-strong: #cbc7be;
-  --k-border-glow: #9dbdd4;
+  --k-border: #d8dee5;
+  --k-border-strong: #b9c2cc;
+  --k-border-glow: #a7abe6;
 
-  --k-fg: #23211e;
-  --k-fg-muted: #6e6a62;
-  --k-fg-subtle: #8a867e;
+  /* Warm ink, cool ground — the same tension as the dark theme, the other way
+     up. A pure grey #333 here would make the whole thing read as a wireframe. */
+  --k-fg: #1e1c1a;
+  --k-fg-muted: #5c5f66;
+  --k-fg-subtle: #868b93;
 
-  --k-accent: #2f6f8f;
+  --k-accent: #4b52c4;
   --k-accent-fg: #ffffff;
 
-  --k-shadow-color: 35 33 30;
+  --k-shadow-color: 30 34 42;
 
-  --k-healthy: #1f7a4d;
-  --k-healthy-bg: #e6f2ea;
-  --k-degraded: #96701c;
-  --k-degraded-bg: #f7efdc;
-  --k-failed: #a8402f;
-  --k-failed-bg: #f8e7e4;
-  --k-unknown: #6e6a62;
-  --k-unknown-bg: #eceae5;
+  --k-healthy: #16714a;
+  --k-healthy-bg: #e2f1e9;
+  --k-degraded: #8a6410;
+  --k-degraded-bg: #f8efd9;
+  --k-failed: #a83a2c;
+  --k-failed-bg: #fae6e3;
+  --k-unknown: #5c5f66;
+  --k-unknown-bg: #e6eaef;
 }
 
 @theme inline {
@@ -115,15 +135,38 @@
 
   /* A tight scale. An operator screen earns its density from restraint in the
      ramp, not from shrinking everything. */
-  --text-h1: 1.25rem;
-  --text-h1--line-height: 1.25;
-  --text-h1--letter-spacing: -0.015em;
-  --text-h1--font-weight: 600;
+  /* THE RISK, stated in one place.
+     
+     h1 is monospace: the page title is set in the same face as the ids beneath
+     it, so a screen reads as one register rather than a headline sitting on
+     top of a table. Large and LIGHT — at 400 it would read as a terminal, and
+     at 600 as a spreadsheet. Tight tracking keeps it from sprawling. */
+  --text-h1: 1.75rem;
+  --text-h1--line-height: 1.15;
+  --text-h1--letter-spacing: -0.035em;
+  --text-h1--font-weight: 300;
 
-  --text-h2: 1.0625rem;
+  /* A title that is somebody's WORDS — a case title, an agent's name — is set
+     in the sans. The mono h1 is the machine naming its own screens; running a
+     human sentence through it would be the console pretending it wrote that
+     too, and prose in monospace is harder to read besides. */
+  --text-title: 1.5rem;
+  --text-title--line-height: 1.2;
+  --text-title--letter-spacing: -0.02em;
+  --text-title--font-weight: 600;
+
+  /* Section headings stay in the sans: they label things a human reads, not
+     things the machine produced. */
+  --text-h2: 0.9375rem;
   --text-h2--line-height: 1.35;
-  --text-h2--letter-spacing: -0.01em;
+  --text-h2--letter-spacing: -0.008em;
   --text-h2--font-weight: 600;
+
+  /* The register line: the mono strip under a page title that says how many of
+     what, and in what state. Small, wide-tracked, the machine's own voice. */
+  --text-register: 0.75rem;
+  --text-register--line-height: 1.5;
+  --text-register--letter-spacing: 0.02em;
 
   --text-label: 0.625rem;
   --text-label--line-height: 1;
@@ -182,6 +225,13 @@
     font-size: 13px;
   }
   /* Digits that line up in a column are worth more than digits that don't. */
+  /* The title is mono. Stated here rather than at every call site, so a new
+     page cannot accidentally opt out of the one idea holding this together. */
+  .text-h1 {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+  }
+
   .font-mono, code, kbd, samp, pre {
     font-variant-numeric: tabular-nums;
   }

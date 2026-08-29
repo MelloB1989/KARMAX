@@ -3,6 +3,7 @@ import { Plus, Trash2, Webhook } from "lucide-react";
 import { createWebhook, deleteWebhook, getCatalogue, listDeliveries, listWebhooks, updateWebhook } from "@/api/webhooks";
 import type { WebhookCatalogue, WebhookDelivery, WebhookRow } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
@@ -72,19 +73,20 @@ export function WebhooksPage() {
 
   return (
     <div>
-      <div className="mb-5 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-h1">Webhooks</h1>
-          <p className="text-sm text-fg-muted">
-            Where things that happen elsewhere come in. Each one publishes an event, and a recipe
-            can act on it — no agent has to read the payload.
-          </p>
-        </div>
+      <PageHeader
+        title="Webhooks"
+        register={[
+          `${rows.length} endpoint${rows.length === 1 ? "" : "s"}`,
+          `${rows.filter((r) => r.live).length} receiving`,
+          deliveries.length > 0 &&
+            `${deliveries.filter((d) => d.status === "rejected").length} rejected of ${deliveries.length} recent`,
+        ]}
+      >
         <Button onClick={() => setAdding((v) => !v)}>
           <Plus className="mr-1.5 h-4 w-4" />
           Add webhook
         </Button>
-      </div>
+      </PageHeader>
 
       {err && (
         <Panel className="mb-4 border-failed/40 p-3">

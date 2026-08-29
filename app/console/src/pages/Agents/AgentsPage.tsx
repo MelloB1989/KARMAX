@@ -4,6 +4,7 @@ import { Bot } from "lucide-react";
 import { listAgents } from "@/api/agents";
 import type { AgentStatus, AgentSummary } from "@/api/types";
 import { Panel } from "@/components/ui/Panel";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { PageSpinner } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -23,10 +24,14 @@ export function AgentsPage() {
 
   return (
     <div>
-      <div className="mb-5">
-        <h1 className="text-h1">Agents</h1>
-        <p className="text-sm text-fg-muted">Installed packs, their persona, and exactly what they're allowed to do.</p>
-      </div>
+      <PageHeader
+        title="Agents"
+        register={[
+          `${agents.length} installed`,
+          `${agents.filter((a) => a.status === "running").length} running`,
+          `${agents.reduce((n, a) => n + a.open_cases, 0)} cases open`,
+        ]}
+      />
 
       {agents.length === 0 ? (
         <EmptyState icon={Bot} title="No agents installed" />
@@ -51,21 +56,45 @@ export function AgentsPage() {
                   ))}
                   <Badge tone="neutral">{a.model}</Badge>
                 </div>
-                <div className="space-y-1 border-t border-border pt-3">
-                  {a.grants.slice(0, 3).map((g, i) => (
-                    <p key={i} className="text-xs text-fg-muted before:mr-1.5 before:text-fg-subtle before:content-['—']">
-                      {g}
-                    </p>
+                {/* What this agent may do, in the sentences an operator
+                    approved. This is the most consequential thing on the page
+                    and it was set at 12px grey under a fold — the one part of
+                    the product nobody else has, rendered as an afterthought.
+                    It is now the body of the card: full list, no truncation,
+                    the verb carrying the weight. */}
+                <ul className="space-y-1.5 border-t border-border pt-3">
+                  {a.grants.map((g, i) => (
+                    <li key={i} className="flex gap-2 text-[13px] leading-snug text-fg-muted">
+                      <span aria-hidden className="mt-[7px] h-px w-2 shrink-0 bg-border-strong" />
+                      <span>{emphasiseVerb(g)}</span>
+                    </li>
                   ))}
-                  {a.grants.length > 3 && (
-                    <p className="text-xs font-medium text-brand-600">+{a.grants.length - 3} more</p>
-                  )}
-                </div>
+                </ul>
               </Panel>
             </Link>
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Sets the verb of a permission sentence in the foreground colour.
+ *
+ * "may open PRs in acme/api" — the word that matters is what it can DO, and
+ * scanning six of these for the difference between open, merge and push is the
+ * actual task. The rest of the sentence stays muted so the verbs form a column
+ * the eye can run down.
+ */
+function emphasiseVerb(grant: string) {
+  const m = grant.match(/^(may\s+)(\S+)(.*)$/);
+  if (!m) return grant;
+  return (
+    <>
+      {m[1]}
+      <span className="font-medium text-fg">{m[2]}</span>
+      {m[3]}
+    </>
   );
 }

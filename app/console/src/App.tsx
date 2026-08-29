@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { SessionProvider } from "@/lib/session";
+import { OrgProvider } from "@/lib/org";
 import { AppShell } from "@/components/layout/AppShell";
 import { LoginPage } from "@/pages/Login/LoginPage";
 import { CasesPage } from "@/pages/Cases/CasesPage";
@@ -22,6 +23,7 @@ export function App() {
   return (
     <BrowserRouter>
       <SessionProvider>
+        <OrgProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route element={<AppShell />}>
@@ -44,6 +46,7 @@ export function App() {
             <Route path="*" element={<Navigate to="/cases" replace />} />
           </Route>
         </Routes>
+        </OrgProvider>
       </SessionProvider>
     </BrowserRouter>
   );
