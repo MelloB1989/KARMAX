@@ -245,6 +245,25 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 				Metadata:    string(metaJSON),
 				CreatedAt:   msg.Timestamp,
 			}); err != nil {
+				// A message id we have already stored is a REDELIVERY, not a
+				// failure. Slack resends when an ack is slow, and an agent turn
+				// takes longer than Slack waits — so this is the ordinary case
+				// on any message that makes the agent think.
+				//
+				// Returning here is the point. Carrying on would publish the
+				// event a second time and run the whole turn again: another
+				// model call billed, and — for a message like "spin up a
+				// sandbox and raise a PR" — the work done twice. The reply
+				// de-duplicator downstream catches the second ANSWER, which is
+				// what hid this: the operator sees one reply and never learns
+				// the side effects happened twice.
+				if isDuplicateMessage(err) {
+					m.log.Info("ignoring a redelivered message",
+						zap.String("channel_id", ch.ID()),
+						zap.String("message_id", msg.ID),
+					)
+					continue
+				}
 				m.log.Error("failed to persist channel message",
 					zap.String("channel_id", ch.ID()),
 					zap.String("message_id", msg.ID),
@@ -671,4 +690,19 @@ func truncateForLog(s string) string {
 		return s[:120] + "…"
 	}
 	return s
+}
+
+// isDuplicateMessage reports whether err is the store refusing a message id it
+// already holds.
+//
+// Matched on the message rather than a driver error type because the store
+// speaks SQLite, Postgres and MySQL, and each words this differently — and
+// importing three driver packages to name one condition is a worse trade than
+// matching the two words they all use.
+func isDuplicateMessage(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate")
 }
