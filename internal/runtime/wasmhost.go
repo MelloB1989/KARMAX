@@ -486,6 +486,18 @@ func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 	if t, ok := rt.tools.Get(name); ok && lendableByName[tools.CanonicalName(name)] {
 		return asLoopkitTool(t), true
 	}
+	// memory.retrieve is not in the registry: it is built inside the agent,
+	// wrapping that agent's own memory model, so the registry lookup above can
+	// never find it. Every loop that asked was told "unknown tool" and ran
+	// without memory, silently. The agent's bound instance is the real one —
+	// and the only one that reads the right namespace.
+	if lendableByName[tools.CanonicalName(name)] {
+		for _, a := range rt.agents.List() {
+			if bound := a.NamedTools(name); len(bound) > 0 {
+				return asLoopkitTool(bound[0]), true
+			}
+		}
+	}
 	return loopkit.Tool{}, false
 }
 
