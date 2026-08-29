@@ -115,9 +115,16 @@ func applyDefaults(cfg *KarmaxConfig) {
 		cfg.Harness.MaxLive = 6
 	}
 	if len(cfg.Harness.Allowlist) == 0 {
+		// Read-only plumbing is allowed without comment. The audit's alert is
+		// for reach — network, packages, processes — not for `date`: the first
+		// live run pushed a phone alert because a session checked the time,
+		// and an alert that cries at that teaches the operator to ignore it.
 		cfg.Harness.Allowlist = []string{
 			"karmax", "wacli", "gh", "git", "ls", "cat", "rg", "grep",
 			"sed", "awk", "jq", "head", "tail", "wc", "echo", "find",
+			"date", "pwd", "whoami", "uname", "which", "sort", "uniq",
+			"tr", "cut", "basename", "dirname", "stat", "du", "df",
+			"printf", "true", "false", "sleep", "test", "file", "diff",
 		}
 	}
 	if len(cfg.Harness.Kinds) == 0 {
