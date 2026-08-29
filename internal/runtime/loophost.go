@@ -749,6 +749,28 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 	if len(k.rt.cfg.Agents) == 0 {
 		return "", fmt.Errorf("no agent configured")
 	}
+
+	// A warm harness session first, when one is available.
+	//
+	// The gateway is the highest-frequency model call KARMAX makes — a
+	// classification per incoming message — so it is both the biggest prize and
+	// the biggest quota risk. One session per loop rather than per call is what
+	// makes it affordable: the per-turn CLI overhead is paid once and amortised
+	// across every message that loop handles.
+	//
+	// Lent tools do not cross. The harness has its own toolset and reaches
+	// KARMAX through the CLI, so a call that genuinely depends on a lent tool
+	// stays on the API path rather than silently answering without it.
+	if k.rt.harness != nil && len(lent) == 0 {
+		reply, err := k.gatewayViaHarness(ctx, prompt)
+		if err == nil && strings.TrimSpace(reply) != "" {
+			return reply, nil
+		}
+		if err != nil {
+			k.rt.log.Debug("harness gateway declined; using the API path",
+				zap.String("loop", k.loopName), zap.Error(err))
+		}
+	}
 	a := k.rt.cfg.Agents[0]
 	var fallbacks []karmahelper.FallbackModel
 	for _, fb := range a.FallbackModels {
@@ -1116,4 +1138,17 @@ func (s *loopSession) Close() error {
 	}
 	s.rt.harness.Close(s.loop + "/" + s.key)
 	return nil
+}
+
+// gatewayViaHarness answers a loop's classification from a warm session.
+//
+// One session per loop, not per call. A key per message would pay a cold start
+// and the full per-turn overhead every time, which is precisely the design this
+// package exists to avoid.
+func (k *loopKit) gatewayViaHarness(ctx context.Context, prompt string) (string, error) {
+	turn, err := k.rt.harness.Send(ctx, "loop-gateway/"+k.loopName, "chat", prompt)
+	if err != nil {
+		return "", err
+	}
+	return turn.Text, nil
 }
