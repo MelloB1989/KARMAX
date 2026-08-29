@@ -157,8 +157,22 @@ func (rt *KarmaxRuntime) SetRepoTokenMinter(m RepoTokenMinter) { rt.repoTokenMin
 // codingAgentToken prefers the subscription token minted by `claude
 // setup-token`, and falls back to an API key for orgs billing per token.
 func (rt *KarmaxRuntime) codingAgentToken() (namedSecret, error) {
-	if c, err := rt.store.Credential("claude-code"); err == nil && c != nil && c.AccessToken != "" {
-		return namedSecret{"CLAUDE_CODE_OAUTH_TOKEN", c.AccessToken}, nil
+	// "sandbox_agent_token" is the key the console's Settings page writes to.
+	// Reading a different one meant an operator could save a token, see it
+	// stored, and still have every sandbox fail for want of a credential.
+	for _, key := range []string{sandboxTokenCredential, "claude-code"} {
+		c, err := rt.store.Credential(key)
+		if err != nil || c == nil {
+			continue
+		}
+		if tok := strings.TrimSpace(c.AccessToken); tok != "" {
+			// An API key and an OAuth token go in different variables; the
+			// entrypoint accepts either, but only under the right name.
+			if strings.HasPrefix(tok, "sk-ant-api") {
+				return namedSecret{"ANTHROPIC_API_KEY", tok}, nil
+			}
+			return namedSecret{"CLAUDE_CODE_OAUTH_TOKEN", tok}, nil
+		}
 	}
 	if v := strings.TrimSpace(os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")); v != "" {
 		return namedSecret{"CLAUDE_CODE_OAUTH_TOKEN", v}, nil
@@ -167,7 +181,7 @@ func (rt *KarmaxRuntime) codingAgentToken() (namedSecret, error) {
 		return namedSecret{"ANTHROPIC_API_KEY", v}, nil
 	}
 	return namedSecret{}, fmt.Errorf(
-		"no coding-agent credential: run `claude setup-token` and save it as the claude-code connector, or set ANTHROPIC_API_KEY")
+		"no coding-agent credential: run `claude setup-token` and save the sk-ant-oat01-… value in the console under Settings, or set ANTHROPIC_API_KEY")
 }
 
 // repoToken mints a git credential scoped to one repository.
@@ -187,3 +201,8 @@ func (rt *KarmaxRuntime) repoToken(ctx context.Context, repo string) (string, er
 	}
 	return "", fmt.Errorf("no GitHub credential: connect a GitHub App, or set GITHUB_TOKEN")
 }
+
+// sandboxTokenCredential is the credential key the console's Settings page
+// writes the coding-agent token to. Named here rather than repeated, because
+// the last time the two sides disagreed the token was saved and never read.
+const sandboxTokenCredential = "sandbox_agent_token"
