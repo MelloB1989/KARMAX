@@ -462,6 +462,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// not exist yet here. See the assignment further down.
 	recipeTool := &builtin.RecipeTool{}
 	toolReg.Register(recipeTool)
+	// Wired below, for the same reason as the recipe runner: the sandbox
+	// driver belongs to the runtime, which does not exist yet.
+	sandboxTool := &builtin.SandboxTool{Store: s}
+	toolReg.Register(sandboxTool)
+	toolReg.Register(&builtin.SandboxStatusTool{Store: s})
 	toolReg.Register(&builtin.GogTool{DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
@@ -1012,6 +1017,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	}
 	// The agent can now run what it writes, not just validate it — and it is
 	// told what the run did, since "started something" is not verification.
+	sandboxTool.Launch = rt.runSandbox
 	recipeTool.Run = func(ctx context.Context, name string) (bool, error) {
 		rt.recipeMu.RLock()
 		_, known := rt.recipeLoops[name]

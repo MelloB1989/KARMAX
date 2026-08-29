@@ -66,6 +66,19 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', ?, NULL)`,
 	return err
 }
 
+// RecordSandboxContainer stores the id the driver handed back at launch.
+//
+// Without it reconcileSandboxes finds an empty container_id on every live run
+// after a restart, marks it gone, and walks away from a container that is
+// still running against a repo with a live git token.
+func (s *Store) RecordSandboxContainer(id, containerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.exec(`UPDATE sandbox_runs SET container_id = ?, status = ? WHERE id = ?`,
+		containerID, "running", id)
+	return err
+}
+
 // UpdateSandboxRun records a poll's result. finished_at is set only on a
 // terminal status (exited/failed/gone); a driver still starting or running
 // leaves it null so LiveSandboxRuns keeps finding the row.
