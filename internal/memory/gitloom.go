@@ -116,6 +116,49 @@ func (g *gitloomBackend) write(ctx context.Context, e MemoryEntry, path string, 
 	return nil
 }
 
+// forgetSection removes ONE dated fact from the document that holds its
+// subject, leaving the rest of the document intact.
+//
+// The store has no delete-a-section call: a write replaces the whole file. So
+// the section is cut out here and the remainder written back. Deleting the file
+// instead — the only thing the API offers directly — would take every other
+// fact about that subject with it.
+func (g *gitloomBackend) forgetSection(ctx context.Context, file, slug string) error {
+	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
+	defer cancel()
+
+	existing, err := g.client.Get(cctx, file, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	if err != nil {
+		if isNotFound(err) {
+			return nil // already gone
+		}
+		g.setHealth(false, err)
+		return err
+	}
+	if existing == nil || strings.TrimSpace(existing.Content) == "" {
+		return nil
+	}
+	remaining, removed := RemoveSection(existing.Content, slug)
+	if !removed {
+		return nil // nothing matched; not an error, the fact is not there
+	}
+	if strings.TrimSpace(remaining) == "" {
+		// The last fact in the document: drop the document itself rather than
+		// leaving an empty file that still answers searches.
+		return g.forget(ctx, file)
+	}
+	out := gitloom.Memory{
+		Path: existing.Path, Content: remaining, Tags: existing.Tags,
+		Confidence: existing.Confidence, Cues: existing.Cues, Related: existing.Related,
+	}
+	if err := g.client.Write(cctx, []gitloom.Memory{out}, nil); err != nil {
+		g.setHealth(false, err)
+		return err
+	}
+	g.setHealth(true, nil)
+	return nil
+}
+
 func (g *gitloomBackend) forget(ctx context.Context, path string) error {
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
