@@ -714,6 +714,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 		merger := memmerge.New(memmerge.Config{
 			Namespace: ns, Provider: mergeProvider, Model: mergeModel, Fallbacks: fbs,
+			Ask: func(ctx context.Context, key, prompt string) (string, bool) {
+				return harnessRT.get().harnessAnswer(ctx, key, prompt)
+			},
 		}, s, memFactory.For(a0.ID, ns), log)
 		loopkit.Register(loopkit.Loop{
 			Name:        "memory-merge",
