@@ -116,6 +116,14 @@ func (h *Host) SetUserRefresher(r UserRefresher) { h.refreshUser = r }
 // person has not connected their account, there is no safe default: reading
 // whichever mailbox happens to be stored would answer a question about one
 // person's private data with another person's private data.
+// CredentialsFor resolves a connector's stored credentials, applying the
+// per-user rules. Exported for callers outside the connector plumbing that
+// need to act as a connector without being one — the sandbox mints a
+// repo-scoped git token from the GitHub App this way.
+func (h *Host) CredentialsFor(ctx context.Context, id string) (connectorkit.Credentials, error) {
+	return h.credentialsFor(ctx, id)
+}
+
 func (h *Host) credentialsFor(ctx context.Context, id string) (connectorkit.Credentials, error) {
 	base, err := h.credentials(id)
 	if err != nil {
