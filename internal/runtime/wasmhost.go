@@ -513,3 +513,7 @@ var outboundTools = map[string]bool{
 func (w *wasmKit) Session(key, kind string) loopkit.SessionHandle {
 	return w.mem().Session(key, kind)
 }
+
+func (w *wasmKit) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	return w.mem().SessionIn(key, kind, workdir, instructions)
+}

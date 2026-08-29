@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -109,17 +110,41 @@ type ErrBreakerOpen struct{ Reason string }
 
 func (e ErrBreakerOpen) Error() string { return "harness unavailable: " + e.Reason }
 
+// Options let a workflow shape its own session without core knowing why.
+//
+// Both fields exist because a harness reads its environment from the directory
+// it runs in: CLAUDE.md files are loaded from the working directory AND every
+// parent, and they all merge. So a workflow that wants its sessions to know who
+// they work for, which tools to reach for and what to remember writes that file
+// and points its sessions at that directory — no core change, no core knowledge
+// of the use-case.
+type Options struct {
+	// Workdir overrides where the session runs. Empty uses the default under
+	// the supervisor's root.
+	Workdir string
+	// Instructions is written to CLAUDE.md in the workdir before the first
+	// spawn. Rewritten when it changes, so a workflow can evolve its own
+	// standing instructions without restarting anything.
+	Instructions string
+}
+
 // Send is the whole caller-facing surface: give it a key and a message.
 //
 // Opening, resuming and reaping are consequences of this call, not separate
 // things a caller has to remember to do.
 func (s *Supervisor) Send(ctx context.Context, key, kind, text string) (Turn, error) {
+	return s.SendWith(ctx, key, kind, text, Options{})
+}
+
+// SendWith is Send with the workflow's own working directory and standing
+// instructions.
+func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt Options) (Turn, error) {
 	if ok, why := s.breaker.Allow(); !ok {
 		return Turn{}, ErrBreakerOpen{Reason: why}
 	}
 	pol := s.policy(kind)
 
-	sess, err := s.open(ctx, key, kind, pol)
+	sess, err := s.open(ctx, key, kind, pol, opt)
 	if err != nil {
 		return Turn{}, err
 	}
@@ -167,7 +192,7 @@ func (s *Supervisor) Send(ctx context.Context, key, kind, text string) (Turn, er
 // The order is the crash-safety story. A live process is reused; a dead one
 // whose transcript we know is resumed, which brings its context back; only a
 // genuinely new key starts cold.
-func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy) (*Session, error) {
+func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt Options) (*Session, error) {
 	s.mu.Lock()
 	if sess, ok := s.live[key]; ok && sess.Alive() {
 		s.mu.Unlock()
@@ -190,7 +215,10 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy) (*S
 	}
 
 	model := pol.Model
-	workdir := filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
+	workdir := strings.TrimSpace(opt.Workdir)
+	if workdir == "" {
+		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
+	}
 	sess := &Session{Key: key, Kind: kind, ID: id, Model: model}
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
@@ -209,6 +237,12 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy) (*S
 	}
 
 	s.evictIfFull()
+
+	// Written before the spawn, because the harness reads it as it starts.
+	if err := writeInstructions(workdir, opt.Instructions); err != nil {
+		s.log.Warn("harness: could not write session instructions",
+			"key", key, "workdir", workdir, "err", err.Error())
+	}
 
 	if err := spawn(ctx, s.cfg.Binary, sess, workdir, resume, s.cfg.Env); err != nil {
 		s.breaker.TripOn(fmt.Sprintf("could not start %s: %v", s.cfg.Binary, err))
@@ -374,4 +408,28 @@ func sanitize(key string) string {
 		}
 	}
 	return string(out)
+}
+
+// writeInstructions puts a workflow's standing instructions where the harness
+// will read them.
+//
+// CLAUDE.md is loaded from the working directory and every parent, and they
+// merge — verified: a file three levels up still applied alongside the nearest
+// one. So a shared file at the sessions root can carry what every session needs
+// and this one carries only what is particular to the workflow.
+//
+// Rewritten only when the content differs, so a session that resumes into an
+// unchanged directory does not see its instructions churn.
+func writeInstructions(workdir, content string) error {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(workdir, "CLAUDE.md")
+	if old, err := os.ReadFile(path); err == nil && string(old) == content {
+		return nil
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
 }

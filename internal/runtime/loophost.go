@@ -1106,11 +1106,22 @@ func (k *loopKit) Session(key, kind string) loopkit.SessionHandle {
 	return &loopSession{rt: k.rt, loop: k.loopName, key: key, kind: kind}
 }
 
+// SessionIn is Session with a working directory and standing instructions the
+// workflow chooses.
+func (k *loopKit) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	return &loopSession{
+		rt: k.rt, loop: k.loopName, key: key, kind: kind,
+		workdir: workdir, instructions: instructions,
+	}
+}
+
 type loopSession struct {
-	rt   *KarmaxRuntime
-	loop string
-	key  string
-	kind string
+	rt           *KarmaxRuntime
+	loop         string
+	key          string
+	kind         string
+	workdir      string
+	instructions string
 }
 
 func (s *loopSession) Send(ctx context.Context, text string) (string, bool, error) {
@@ -1121,7 +1132,9 @@ func (s *loopSession) Send(ctx context.Context, text string) (string, bool, erro
 	// Namespaced by loop, so two workflows choosing the same key cannot end up
 	// talking into each other's conversation.
 	key := s.loop + "/" + s.key
-	turn, err := s.rt.harness.Send(ctx, key, s.kind, text)
+	turn, err := s.rt.harness.SendWith(ctx, key, s.kind, text, harness.Options{
+		Workdir: s.workdir, Instructions: s.instructions,
+	})
 	if err != nil {
 		var open harness.ErrBreakerOpen
 		if asBreakerOpen(err, &open) {

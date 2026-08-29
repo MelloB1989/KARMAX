@@ -127,6 +127,7 @@ type Kit interface {
 	Notify(title, body string) error
 	Ask(ctx context.Context, prompt string) (string, error)
 	Session(key, kind string) loopkit.SessionHandle
+	SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle
 	HTTP(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, error)
 
 	Config(key string) string
@@ -552,15 +553,20 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 		// the workflow's own; the host namespaces it by loop and otherwise does
 		// not interpret it, which is what keeps a use-case out of the kernel.
 		var in struct {
-			Key   string `json:"key"`
-			Kind  string `json:"kind"`
-			Text  string `json:"text"`
-			Close bool   `json:"close"`
+			Key          string `json:"key"`
+			Kind         string `json:"kind"`
+			Text         string `json:"text"`
+			Close        bool   `json:"close"`
+			Workdir      string `json:"workdir"`
+			Instructions string `json:"instructions"`
 		}
 		if err := json.Unmarshal([]byte(req), &in); err != nil {
 			return nil, err
 		}
 		h := r.kit.Session(in.Key, in.Kind)
+		if in.Workdir != "" || in.Instructions != "" {
+			h = r.kit.SessionIn(in.Key, in.Kind, in.Workdir, in.Instructions)
+		}
 		if in.Close {
 			return json.Marshal(map[string]any{"closed": h.Close() == nil})
 		}

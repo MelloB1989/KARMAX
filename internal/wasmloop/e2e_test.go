@@ -355,3 +355,7 @@ func (s *countingSession) Send(_ context.Context, text string) (string, bool, er
 	return "session reply for " + s.key, true, nil
 }
 func (s *countingSession) Close() error { return nil }
+
+func (k *countingKit) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	return &countingSession{k: k, key: key}
+}
