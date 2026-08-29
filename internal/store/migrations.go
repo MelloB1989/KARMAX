@@ -873,6 +873,34 @@ var migrations = []string{
 	// and normalised into a tracker event, so a recipe reads `summary` and
 	// `url` instead of three vendors' JSON.
 	`ALTER TABLE webhook_endpoints ADD COLUMN platform TEXT NOT NULL DEFAULT ''`,
+
+	// One row per live conversation with a coding harness.
+	//
+	// The row is written BEFORE the process is spawned. A crash between spawn
+	// and registration would otherwise leave a process nobody owns, and the
+	// startup sweep has nothing to find it by.
+	//
+	// harness_session_id is the CLI's own uuid, and it is what makes a dead
+	// session recoverable: the transcript outlives the process, so `--resume`
+	// brings the context back rather than starting cold.
+	`CREATE TABLE IF NOT EXISTS harness_sessions (
+		key                TEXT PRIMARY KEY,
+		harness_session_id TEXT NOT NULL,
+		kind               TEXT NOT NULL DEFAULT '',
+		model              TEXT NOT NULL DEFAULT '',
+		pid                INTEGER NOT NULL DEFAULT 0,
+		state              TEXT NOT NULL DEFAULT 'starting',
+		workdir            TEXT NOT NULL DEFAULT '',
+		started_at         DATETIME NOT NULL,
+		last_activity_at   DATETIME NOT NULL,
+		turns              INTEGER NOT NULL DEFAULT 0,
+		cost_usd           REAL NOT NULL DEFAULT 0,
+		input_tokens       INTEGER NOT NULL DEFAULT 0,
+		output_tokens      INTEGER NOT NULL DEFAULT 0,
+		cache_read         INTEGER NOT NULL DEFAULT 0,
+		last_error         TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_harness_sessions_state ON harness_sessions(state, last_activity_at)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built
