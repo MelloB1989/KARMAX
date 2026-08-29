@@ -1017,6 +1017,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	}
 	// The agent can now run what it writes, not just validate it — and it is
 	// told what the run did, since "started something" is not verification.
+	// Without this the minter stays nil, and a host with a fully configured
+	// GitHub App still fails every sandbox with "no GitHub credential" and
+	// falls back to a broad GITHUB_TOKEN nobody set.
+	rt.SetRepoTokenMinter(githubconn.NewRepoTokenMinter(func(ctx context.Context) (connectorkit.Credentials, error) {
+		return connHost.CredentialsFor(ctx, "github")
+	}))
 	sandboxTool.Launch = rt.runSandbox
 	recipeTool.Run = func(ctx context.Context, name string) (bool, error) {
 		rt.recipeMu.RLock()
