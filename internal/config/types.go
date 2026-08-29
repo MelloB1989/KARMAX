@@ -16,6 +16,42 @@ type KarmaxConfig struct {
 	Agents   []AgentDefConfig      `yaml:"agents"`
 	Loops    []LoopConfig          `yaml:"loops"`
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
+	Harness  HarnessConfig         `yaml:"harness"`
+}
+
+// HarnessConfig runs coding harnesses as long-lived conversations.
+//
+// Every field here is policy. A new use-case adds a kind; it does not edit the
+// supervisor, which is the whole point of keeping this in configuration.
+type HarnessConfig struct {
+	// Enabled ships the feature dark until an operator turns it on.
+	Enabled bool `yaml:"enabled"`
+	// Binary is the harness CLI. Anything speaking the same stream-json
+	// protocol works, which is how a second harness becomes a config change.
+	Binary string `yaml:"binary"`
+	// WindowShare is the fraction of the account's rate-limit windows KARMAX
+	// may consume before standing down and leaving the rest to the operator.
+	WindowShare float64 `yaml:"window_share"`
+	// MaxLive caps concurrent sessions. Without it one busy chat spawns
+	// processes until the machine gives out.
+	MaxLive int `yaml:"max_live"`
+	// WorkdirRoot is where each session runs, away from the repo.
+	WorkdirRoot string `yaml:"workdir_root"`
+	// Allowlist are the shell commands a session is expected to run. Anything
+	// else still runs — sessions hold a real shell — but raises an alert.
+	Allowlist []string `yaml:"allowlist"`
+	// Kinds are the per-use-case policies, keyed by kind name.
+	Kinds map[string]HarnessKindConfig `yaml:"kinds"`
+}
+
+// HarnessKindConfig is one session policy.
+type HarnessKindConfig struct {
+	Model       string  `yaml:"model"`
+	Idle        string  `yaml:"idle"` // e.g. "10m"
+	MaxTurns    int     `yaml:"max_turns"`
+	TurnTimeout string  `yaml:"turn_timeout"` // e.g. "45s"
+	MaxCostUSD  float64 `yaml:"max_cost_usd"`
+	Ephemeral   bool    `yaml:"ephemeral"`
 }
 
 // DatabaseConfig points the store at a backend. See store.ParseDSN for the

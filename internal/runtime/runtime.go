@@ -34,6 +34,7 @@ import (
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
 	youtrackconn "github.com/MelloB1989/karmax/internal/connectors/youtrack"
+	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
@@ -82,6 +83,11 @@ type KarmaxRuntime struct {
 
 	// clock fires durable timers into the log — "continue on Thursday".
 	clock *clock.Clock
+
+	// harness runs coding harnesses as long-lived conversations. Nil when the
+	// feature is off, and every caller treats nil as "use the API path".
+	harness        *harness.Supervisor
+	harnessBreaker *harness.Breaker
 
 	// routedKinds are the event kinds that reach agent inboxes, computed at
 	// construction and consumed once the runtime starts.
@@ -456,6 +462,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	}
 
 	// Register new builtin tools
+	// Registered before the agents are built, because an agent binds its
+	// toolset at construction. The runtime they need does not exist yet, so
+	// they hold a reference that is filled in below.
+	harnessRT := &harnessRef{}
+	toolReg.Register(&harnessSendTool{ref: harnessRT})
+	toolReg.Register(&harnessListTool{ref: harnessRT})
+	toolReg.Register(&harnessCloseTool{ref: harnessRT})
+
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
 	// Wired after construction: the runner belongs to the runtime, which does
@@ -1041,11 +1055,24 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	for _, a := range agentReg.List() {
 		a.SetLentTools(rt.lentToolsForEvent)
 	}
+
+	// The tools were registered before the agents; this is the runtime they
+	// were waiting for.
+	harnessRT.rt = rt
+
 	return rt, nil
 }
 
 func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
+
+	// Started before anything can ask for a session, and it reaps the previous
+	// process's orphans on the way up.
+	rt.harness = rt.startHarness()
+	if rt.harness != nil {
+		rt.startHarnessReaper(ctx)
+	}
+
 	rt.clock.Start(ctx)
 	rt.connectors.StartPollers(ctx)
 	// Keep the console's health column true without anyone clicking. A status
