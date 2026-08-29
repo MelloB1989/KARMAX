@@ -507,3 +507,9 @@ var outboundTools = map[string]bool{
 	"whatsapp_place_call": true, "call_start": true,
 	"x_post": true, "linkedin_post": true, "instagram_post": true,
 }
+
+// Session gives a signed loop the same long-lived harness conversation the
+// recipe tier gets, keyed by whatever the workflow calls it.
+func (w *wasmKit) Session(key, kind string) loopkit.SessionHandle {
+	return w.mem().Session(key, kind)
+}
