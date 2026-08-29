@@ -684,6 +684,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		reviewer := review.New(review.Config{
 			Namespace: ns, AgentID: waAgentID, Provider: provider, Model: model, Fallbacks: fbs,
 			WAChannelID: waChannelID, WATarget: waTarget, SendFunc: commsMgr.Send,
+			// Answered by a warm session when one is available; the metered
+			// path stays as the fallback and is used whenever it is not.
+			Ask: func(ctx context.Context, key, prompt string) (string, bool) {
+				// Late-bound: review is built before the runtime exists.
+				return harnessRT.get().harnessAnswer(ctx, key, prompt)
+			},
 		}, s, memFactory.For(waAgentID, ns), log)
 		loopkit.Register(loopkit.Loop{
 			Name:        "memory-review",
