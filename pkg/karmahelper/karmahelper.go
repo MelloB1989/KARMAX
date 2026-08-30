@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karma/ai"
 	"github.com/MelloB1989/karma/models"
 	"github.com/MelloB1989/karmax/internal/tools"
+	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
 
 // FallbackModel defines an alternative provider+model to try when the primary fails.
@@ -111,6 +112,34 @@ type Session struct {
 	kai        *ai.KarmaAI
 	LastTokens TokenInfo
 	rec        *callRecorder
+	// actor is who this turn acts on behalf of.
+	//
+	// karma builds the context it hands a tool handler from
+	// context.Background(), so nothing carried on the caller's context
+	// survives the trip through the model. For a per-user connector that is
+	// fatal: it resolves whose Google account to use from the context, found
+	// nobody, and refused every call — while the connector itself was
+	// connected, granted and healthy.
+	//
+	// Guarded because the session is reused across turns; a turn holds the
+	// caller's lock for its whole length, so this is only ever one turn's.
+	actorMu sync.RWMutex
+	actor   string
+}
+
+// setActor records whose behalf the current turn acts on.
+func (s *Session) setActor(a string) {
+	s.actorMu.Lock()
+	s.actor = a
+	s.actorMu.Unlock()
+}
+
+// currentActor is read at tool-call time, not at session build time, because
+// the session outlives any one turn.
+func (s *Session) currentActor() string {
+	s.actorMu.RLock()
+	defer s.actorMu.RUnlock()
+	return s.actor
 }
 
 // callRecorder captures what the model actually invoked during one turn.
@@ -159,7 +188,7 @@ func NewSession(cfg SessionConfig, agentTools []tools.Tool) *Session {
 	return &Session{
 		cfg:   cfg,
 		tools: agentTools,
-		kai:   buildKarmaAI(cfg, agentTools, rec),
+		kai:   buildKarmaAI(cfg, agentTools, rec, nil),
 		rec:   rec,
 		history: models.AIChatHistory{
 			Messages: []models.AIMessage{},
@@ -226,10 +255,13 @@ func (s *Session) ChatWithTurnTools(ctx context.Context, userMessage string, ext
 		return s.chat(ctx, userMessage, s.kai, s.tools)
 	}
 	turnTools := turnToolSet(s.tools, extra, withhold)
-	return s.chat(ctx, userMessage, buildKarmaAI(s.cfg, turnTools, s.rec), turnTools)
+	return s.chat(ctx, userMessage, buildKarmaAI(s.cfg, turnTools, s.rec, s.currentActor), turnTools)
 }
 
 func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI, turnTools []tools.Tool) (string, []ToolCallRecord, TokenInfo, error) {
+	// Taken from the caller's context, before the model sees anything — never
+	// from a tool argument, or the model could choose whose mailbox it reads.
+	s.setActor(connectorkit.ActorFrom(ctx))
 	userMessage = CleanContent(userMessage)
 	s.history.Messages = append(s.history.Messages, models.AIMessage{
 		Role:    models.User,
@@ -289,7 +321,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 		// Built with the TURN's tools, not the session's: a fallback that
 		// silently dropped the lent ones would answer without the tools the
 		// question needed and look like the model simply chose not to use them.
-		fbKai := buildKarmaAI(fbCfg, turnTools, s.rec)
+		fbKai := buildKarmaAI(fbCfg, turnTools, s.rec, s.currentActor)
 
 		// Re-sanitize before each fallback attempt
 		sanitizeHistory(&s.history)
@@ -624,7 +656,7 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 }
 
 // buildKarmaAI creates a new KarmaAI instance from a session config and tools.
-func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder) *ai.KarmaAI {
+func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder, actor func() string) *ai.KarmaAI {
 	provider := resolveProvider(cfg.Provider)
 	model := resolveModel(cfg.Model)
 
@@ -672,7 +704,7 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder)
 		options = append(options, ai.WithMaxToolPasses(passes))
 
 		for _, t := range agentTools {
-			goTool := karmaxToolToGoFunctionTool(t, rec)
+			goTool := karmaxToolToGoFunctionTool(t, rec, actor)
 			options = append(options, ai.AddGoFunctionTool(goTool))
 		}
 	}
@@ -680,7 +712,7 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder)
 	return ai.NewKarmaAI(model, provider, options...)
 }
 
-func karmaxToolToGoFunctionTool(t tools.Tool, rec *callRecorder) ai.GoFunctionTool {
+func karmaxToolToGoFunctionTool(t tools.Tool, rec *callRecorder, actor func() string) ai.GoFunctionTool {
 	manifest := t.Manifest()
 
 	var params map[string]any
@@ -735,6 +767,13 @@ func karmaxToolToGoFunctionTool(t tools.Tool, rec *callRecorder) ai.GoFunctionTo
 		manifest.Description,
 		fp,
 		func(ctx context.Context, args ai.FuncParams) (string, error) {
+			// karma hands us a context descended from context.Background(),
+			// so put back the one thing the tool cannot work without.
+			if actor != nil && connectorkit.ActorFrom(ctx) == "" {
+				if who := actor(); who != "" {
+					ctx = connectorkit.WithActor(ctx, who)
+				}
+			}
 			input := make(map[string]any)
 			for k, v := range args {
 				if k != "__history" {

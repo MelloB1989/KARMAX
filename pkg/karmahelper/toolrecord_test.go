@@ -37,7 +37,7 @@ func TestWrapperRecordsWhatActuallyRan(t *testing.T) {
 	rec := &callRecorder{}
 	ft := &fakeTool{name: "comms.send", res: tools.SuccessResult(map[string]any{"ok": true})}
 
-	gt := karmaxToolToGoFunctionTool(ft, rec)
+	gt := karmaxToolToGoFunctionTool(ft, rec, nil)
 	if _, err := gt.Handler(context.Background(), ai.FuncParams{"q": "hello", "__history": "ignored"}); err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestFailedAndErroringCallsAreStillRecorded(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &callRecorder{}
-			gt := karmaxToolToGoFunctionTool(tc.tool, rec)
+			gt := karmaxToolToGoFunctionTool(tc.tool, rec, nil)
 			_, _ = gt.Handler(context.Background(), ai.FuncParams{})
 			if got := rec.take(); len(got) != 1 {
 				t.Fatalf("expected the attempt to be recorded, got %d", len(got))
@@ -87,7 +87,7 @@ func TestFailedAndErroringCallsAreStillRecorded(t *testing.T) {
 func TestMultipleCallsAccumulate(t *testing.T) {
 	rec := &callRecorder{}
 	for _, n := range []string{"one", "two", "three"} {
-		gt := karmaxToolToGoFunctionTool(&fakeTool{name: n, res: tools.SuccessResult(nil)}, rec)
+		gt := karmaxToolToGoFunctionTool(&fakeTool{name: n, res: tools.SuccessResult(nil)}, rec, nil)
 		if _, err := gt.Handler(context.Background(), ai.FuncParams{}); err != nil {
 			t.Fatalf("handler %s: %v", n, err)
 		}
@@ -105,7 +105,7 @@ func TestMultipleCallsAccumulate(t *testing.T) {
 
 // A nil recorder must not panic — buildKarmaAI is called in paths that predate it.
 func TestNilRecorderIsSafe(t *testing.T) {
-	gt := karmaxToolToGoFunctionTool(&fakeTool{name: "x", res: tools.SuccessResult(nil)}, nil)
+	gt := karmaxToolToGoFunctionTool(&fakeTool{name: "x", res: tools.SuccessResult(nil)}, nil, nil)
 	if _, err := gt.Handler(context.Background(), ai.FuncParams{}); err != nil {
 		t.Fatalf("handler: %v", err)
 	}
