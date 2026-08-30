@@ -70,3 +70,37 @@ func (s *Store) ListDirectory(kind string) ([]Member, error) {
 	}
 	return out, rows.Err()
 }
+
+// Directory returns every mapping, so an operator can see who the agent is
+// able to act as — and, more often, who it is not.
+func (s *Store) Directory() ([]Member, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.query(`
+SELECT external_kind, external_id, member, org, name FROM directory
+ORDER BY external_kind, member`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Member
+	for rows.Next() {
+		var m Member
+		if err := rows.Scan(&m.ExternalKind, &m.ExternalID, &m.Member, &m.Org, &m.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// UnmapMember drops one identity mapping. Removing access to act as somebody
+// has to be as easy as granting it.
+func (s *Store) UnmapMember(kind, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.exec(`DELETE FROM directory WHERE external_kind = ? AND external_id = ?`, kind, id)
+	return err
+}
