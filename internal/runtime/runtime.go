@@ -450,6 +450,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg := tools.NewRegistry()
 	registerBuiltinTools(toolReg)
 
+	// Before the tools: a tool the Broker will refuse is worse than no tool,
+	// because the agent offers it and then fails at the point of use.
+	connHost.ReconcileGrants()
+
 	// Enabled connectors contribute tools indistinguishable from the built-ins.
 	for _, t := range connHost.Tools() {
 		toolReg.Register(t)
