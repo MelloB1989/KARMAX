@@ -62,3 +62,38 @@ func TestListDirectoryByKind(t *testing.T) {
 		t.Fatalf("ListDirectory(\"\"): %+v, %v", all, err)
 	}
 }
+
+// An operator has to be able to see who the agent can act as, and to take it
+// away again. Neither was possible: MapMember existed and nothing read the
+// table back or removed a row.
+func TestTheDirectoryCanBeListedAndUnmapped(t *testing.T) {
+	s := newTestStore(t)
+	for _, m := range []Member{
+		{ExternalKind: "slack", ExternalID: "U1", Member: "kartik", Name: "Kartik"},
+		{ExternalKind: "slack", ExternalID: "U2", Member: "priya"},
+		{ExternalKind: "github", ExternalID: "gk", Member: "kartik"},
+	} {
+		if err := s.MapMember(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all, err := s.Directory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("listed %d of 3 mappings", len(all))
+	}
+
+	if err := s.UnmapMember("slack", "U1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.MemberByExternal("slack", "U1"); ok {
+		t.Error("unmapped identity still resolves — the agent can still act as them")
+	}
+	// Only that one: unmapping must not be a blunt instrument.
+	if _, ok, _ := s.MemberByExternal("github", "gk"); !ok {
+		t.Error("unmapping one identity removed another")
+	}
+}

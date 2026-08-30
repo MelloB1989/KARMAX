@@ -45,6 +45,7 @@ func newRootCmd() *cobra.Command {
 		connectorsCmd(),
 		recipeCmd(),
 		orgChartCmd(),
+		directoryCmd(),
 		vorgCmd(),
 		wloopCmd(),
 		migrateCmd(),
