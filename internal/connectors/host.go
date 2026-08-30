@@ -488,6 +488,27 @@ func (h *Host) poll(ctx context.Context, id string, src connectorkit.EventSource
 
 // GrantFromManifest records the capabilities a connector declared, so enabling
 // it grants exactly what its manifest asked for and nothing else.
+// ReconcileGrants re-derives every enabled connector's capabilities from its
+// manifest.
+//
+// Grants were written only when the operator saved credentials through the
+// console. A connector enabled any other way — an OAuth sign-in, a row that
+// predates the code that grants, a restored database — ended up enabled, with
+// tools the agent could see, and no grant behind them. The Broker then refused
+// every call, which reads as the connector being broken rather than ungranted.
+//
+// Idempotent, so running it on every boot costs one rewrite of rows that were
+// already correct and repairs the ones that were not.
+func (h *Host) ReconcileGrants() {
+	for _, c := range h.Enabled() {
+		id := c.Manifest().ID
+		if err := h.GrantFromManifest(id); err != nil {
+			h.log.Error("could not grant an enabled connector its own capabilities",
+				zap.String("connector", id), zap.Error(err))
+		}
+	}
+}
+
 func (h *Host) GrantFromManifest(id string) error {
 	c, ok := h.registry[id]
 	if !ok {
