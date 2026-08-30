@@ -20,6 +20,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
+	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -191,6 +192,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Message string `json:"message"`
 		Agent   string `json:"agent"`
+		// As names the org member this turn is on behalf of. Per-user
+		// connectors refuse to act for nobody, so without this there is no way
+		// to exercise them outside a real chat message.
+		As string `json:"as"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -208,6 +213,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
+	if member := strings.TrimSpace(req.As); member != "" {
+		ctx = connectorkit.WithActor(ctx, member)
+	}
 
 	reply, err := ag.Chat(ctx, req.Message)
 	if err != nil {

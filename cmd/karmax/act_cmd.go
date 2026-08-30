@@ -20,16 +20,20 @@ import (
 // newAskCmd sends a prompt to the orchestrator agent (full toolset + memory)
 // and prints its reply.
 func newAskCmd() *cobra.Command {
-	var agentID string
+	var agentID, asMember string
 	cmd := &cobra.Command{
 		Use:   "ask <prompt>",
 		Short: "Ask the orchestrator agent (full context, memory, and tools)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			out, err := apiPOSTJSON("/api/chat", map[string]any{
+			body := map[string]any{
 				"message": strings.Join(args, " "),
 				"agent":   agentID,
-			}, 4*time.Minute)
+			}
+			if asMember != "" {
+				body["as"] = asMember
+			}
+			out, err := apiPOSTJSON("/api/chat", body, 4*time.Minute)
 			if err != nil {
 				return err
 			}
@@ -38,6 +42,7 @@ func newAskCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&agentID, "agent", "", "agent to ask (default: the first agent)")
+	cmd.Flags().StringVar(&asMember, "as", "", "org member to act on behalf of, for per-user connectors (Google)")
 	return cmd
 }
 
