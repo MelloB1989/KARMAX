@@ -89,7 +89,17 @@ func newSendCmd() *cobra.Command {
 
 // callTool invokes a harness tool via the daemon API and prints the result.
 func callTool(name string, input map[string]any, timeout time.Duration) error {
-	out, err := apiPOSTJSON("/api/tools/"+url.PathEscape(name), input, timeout)
+	return callToolAs("", name, input, timeout)
+}
+
+// callToolAs runs a tool on one member's behalf, for connectors that
+// authenticate as an individual.
+func callToolAs(member, name string, input map[string]any, timeout time.Duration) error {
+	path := "/api/tools/" + url.PathEscape(name)
+	if member != "" {
+		path += "?as=" + url.QueryEscape(member)
+	}
+	out, err := apiPOSTJSON(path, input, timeout)
 	if err != nil {
 		return err
 	}

@@ -1013,6 +1013,11 @@ func (s *Server) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	// Tool runs can be slow (coding harness delegation) — allow a generous window.
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Minute)
 	defer cancel()
+	// Per-user connectors refuse to act for nobody. ?as= names the member, the
+	// same way an inbound message's sender would.
+	if member := strings.TrimSpace(r.URL.Query().Get("as")); member != "" {
+		ctx = connectorkit.WithActor(ctx, member)
+	}
 
 	res, err := ag.ExecuteTool(ctx, name, input)
 	if err != nil {

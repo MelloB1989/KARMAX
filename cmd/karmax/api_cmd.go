@@ -292,7 +292,7 @@ func newToolCmd() *cobra.Command {
 		},
 	})
 
-	var jsonInput string
+	var jsonInput, asMember string
 	call := &cobra.Command{
 		Use:   "call <name> [key=value ...]",
 		Short: "Invoke any harness tool (e.g. karmax tool call app.push title=Hi body=There)",
@@ -311,10 +311,11 @@ func newToolCmd() *cobra.Command {
 			for k, v := range kv {
 				input[k] = v
 			}
-			return callTool(args[0], input, 12*time.Minute)
+			return callToolAs(asMember, args[0], input, 12*time.Minute)
 		},
 	}
 	call.Flags().StringVar(&jsonInput, "json", "", "tool input as a JSON object (merged with key=value args)")
+	call.Flags().StringVar(&asMember, "as", "", "org member to act on behalf of, for per-user connectors (Google)")
 	cmd.AddCommand(call)
 	return cmd
 }
