@@ -185,15 +185,20 @@ type ToolCallRecord struct {
 
 func NewSession(cfg SessionConfig, agentTools []tools.Tool) *Session {
 	rec := &callRecorder{}
-	return &Session{
+	s := &Session{
 		cfg:   cfg,
 		tools: agentTools,
-		kai:   buildKarmaAI(cfg, agentTools, rec, nil),
 		rec:   rec,
 		history: models.AIChatHistory{
 			Messages: []models.AIMessage{},
 		},
 	}
+	// Built after the session exists, so its tool handlers can read the actor
+	// of whichever turn is running. This is the default path — the one every
+	// turn without lent or withheld tools takes — so a nil source here means
+	// the actor is lost on almost every call.
+	s.kai = buildKarmaAI(cfg, agentTools, rec, s.currentActor)
+	return s
 }
 
 // GetLastTokens returns the token usage from the most recent chat call.

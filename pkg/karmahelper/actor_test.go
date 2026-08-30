@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/MelloB1989/karma/ai"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
@@ -75,5 +76,32 @@ func TestAnExplicitActorOnTheContextIsNotOverwritten(t *testing.T) {
 	}
 	if spy.saw != "priya" {
 		t.Fatalf("the context said priya, the tool acted as %q", spy.saw)
+	}
+}
+
+// The default path — no lent tools, no withheld tools — is the one nearly
+// every turn takes. Its model is built once, in NewSession, before any turn
+// exists; wiring the actor only into the per-turn rebuild left that path
+// exactly as broken as before, and the direct tool call still worked, so it
+// looked fixed.
+func TestTheDefaultPathCarriesTheActorToo(t *testing.T) {
+	spy := &actorSpy{}
+	s := NewSession(SessionConfig{}, []tools.Tool{spy})
+	s.setActor("mellob")
+
+	var handler func(context.Context, ai.FuncParams) (string, error)
+	for _, gt := range s.kai.GoFunctionTools {
+		if gt.Name == "google_mail_search" {
+			handler = gt.Handler
+		}
+	}
+	if handler == nil {
+		t.Fatal("the session's model does not hold the tool at all")
+	}
+	if _, err := handler(context.Background(), ai.FuncParams{}); err != nil {
+		t.Fatal(err)
+	}
+	if spy.saw != "mellob" {
+		t.Fatalf("the default path ran the tool on behalf of %q", spy.saw)
 	}
 }
