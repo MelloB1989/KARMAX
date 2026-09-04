@@ -967,7 +967,12 @@ func turnToolSet(base, extra []tools.Tool, withhold map[string]bool) []tools.Too
 // small, and is the difference between an answer and silence on the ones that
 // do not.
 func reasoningTokenFloor(model string, want int) int {
-	const floor = 2000
+	// 6000, not 2000. The first floor was set from one failing judge and it was
+	// not enough: the log then filled with "empty response (output_tokens=2000)"
+	// every 45 minutes for hours — the cap exhausted to the token by reasoning,
+	// with nothing left for the answer. An exact-cap spend with empty text is
+	// the signature; a ceiling costs nothing when the model stays under it.
+	const floor = 6000
 	if want >= floor || !isReasoningModel(model) {
 		return want
 	}

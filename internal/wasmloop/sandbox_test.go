@@ -2,6 +2,7 @@ package wasmloop
 
 import (
 	"context"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -190,4 +191,15 @@ func TestAModuleModifiedOnDiskNeverReachesTheCompiler(t *testing.T) {
 	if !strings.Contains(err.Error(), "modified on disk") {
 		t.Errorf("the refusal does not explain itself: %v", err)
 	}
+}
+
+func (nullKit) Session(key, kind string) loopkit.SessionHandle { return nullSession{} }
+
+type nullSession struct{}
+
+func (nullSession) Send(context.Context, string) (string, bool, error) { return "", false, nil }
+func (nullSession) Close() error                                       { return nil }
+
+func (nullKit) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	return nullSession{}
 }

@@ -25,6 +25,10 @@ type Config struct {
 	Provider  string
 	Model     string
 	Fallbacks []karmahelper.FallbackModel
+	// Ask, when set, answers through a long-lived harness session. ok=false
+	// means the harness cannot serve the turn and the metered path answers —
+	// a routing fact, not a failure.
+	Ask func(ctx context.Context, key, prompt string) (reply string, ok bool)
 	// MaxPerCategory caps how many entries from one category are sent to the
 	// model in a single pass (keeps the prompt bounded).
 	MaxPerCategory int
@@ -164,9 +168,19 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 		FallbackModels: mg.cfg.Fallbacks,
 	}, nil)
 
-	resp, _, _, err := sess.Chat(ctx, fmt.Sprintf("Subject: %s\nEntries:\n%s", bestKey, sb.String()))
-	if err != nil {
-		return 0, fmt.Errorf("merge model: %w", err)
+	question := fmt.Sprintf("Subject: %s\nEntries:\n%s", bestKey, sb.String())
+	var resp string
+	if mg.cfg.Ask != nil {
+		if reply, ok := mg.cfg.Ask(ctx, "memory-merge", mergePrompt+"\n\n"+question); ok {
+			resp = reply
+		}
+	}
+	if strings.TrimSpace(resp) == "" {
+		var err error
+		resp, _, _, err = sess.Chat(ctx, question)
+		if err != nil {
+			return 0, fmt.Errorf("merge model: %w", err)
+		}
 	}
 
 	var res mergeResult
