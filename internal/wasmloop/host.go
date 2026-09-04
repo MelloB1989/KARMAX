@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"net/url"
 	"os"
 	"strings"
@@ -42,6 +43,7 @@ const (
 	FnHostTool    = "hosttool"
 	FnHarness     = "harness"
 	FnGateway     = "gateway"
+	FnSession     = "session"
 	FnSummarize   = "summarize"
 	FnPropose     = "propose"
 	FnRemind      = "remind"
@@ -68,6 +70,7 @@ var hostDescriptions = map[string]string{
 	FnHostTool:    "learn where wacli and gws live (a path, not permission to run them)",
 	FnHarness:     "run a coding harness — shell, files and web research",
 	FnGateway:     "ask the main model directly",
+	FnSession:     "hold a long-lived conversation with a coding harness",
 	FnSummarize:   "summarise text with the cheap model",
 	FnPropose:     "ask for your approval before acting",
 	FnRemind:      "put reminders on your list",
@@ -94,6 +97,7 @@ var capabilityFor = map[string]func(*Runner) (class, value string){
 	FnAsk:         func(r *Runner) (string, string) { return "tool", "agent.ask" },
 	FnHarness:     func(r *Runner) (string, string) { return "tool", "harness" },
 	FnGateway:     func(r *Runner) (string, string) { return "tool", "gateway" },
+	FnSession:     func(r *Runner) (string, string) { return "tool", "harness.send" },
 	FnSummarize:   func(r *Runner) (string, string) { return "tool", "summarize" },
 	FnPropose:     func(r *Runner) (string, string) { return "tool", "propose" },
 	FnRemind:      func(r *Runner) (string, string) { return "tool", "reminder.add" },
@@ -122,6 +126,8 @@ type Kit interface {
 	Remember(fact string) error
 	Notify(title, body string) error
 	Ask(ctx context.Context, prompt string) (string, error)
+	Session(key, kind string) loopkit.SessionHandle
+	SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle
 	HTTP(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, error)
 
 	Config(key string) string
@@ -541,6 +547,36 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 			return nil, err
 		}
 		return json.Marshal(map[string]any{"answer": answer})
+
+	case FnSession:
+		// A conversation the workflow keeps alive across messages. The key is
+		// the workflow's own; the host namespaces it by loop and otherwise does
+		// not interpret it, which is what keeps a use-case out of the kernel.
+		var in struct {
+			Key          string `json:"key"`
+			Kind         string `json:"kind"`
+			Text         string `json:"text"`
+			Close        bool   `json:"close"`
+			Workdir      string `json:"workdir"`
+			Instructions string `json:"instructions"`
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		h := r.kit.Session(in.Key, in.Kind)
+		if in.Workdir != "" || in.Instructions != "" {
+			h = r.kit.SessionIn(in.Key, in.Kind, in.Workdir, in.Instructions)
+		}
+		if in.Close {
+			return json.Marshal(map[string]any{"closed": h.Close() == nil})
+		}
+		reply, available, err := h.Send(ctx, in.Text)
+		if err != nil {
+			return nil, err
+		}
+		// available:false is a routing fact, not a failure: the workflow takes
+		// its own path for this turn.
+		return json.Marshal(map[string]any{"answer": reply, "available": available})
 
 	case FnPropose:
 		var in struct {

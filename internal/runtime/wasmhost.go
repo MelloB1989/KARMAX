@@ -486,6 +486,18 @@ func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 	if t, ok := rt.tools.Get(name); ok && lendableByName[tools.CanonicalName(name)] {
 		return asLoopkitTool(t), true
 	}
+	// memory.retrieve is not in the registry: it is built inside the agent,
+	// wrapping that agent's own memory model, so the registry lookup above can
+	// never find it. Every loop that asked was told "unknown tool" and ran
+	// without memory, silently. The agent's bound instance is the real one —
+	// and the only one that reads the right namespace.
+	if lendableByName[tools.CanonicalName(name)] {
+		for _, a := range rt.agents.List() {
+			if bound := a.NamedTools(name); len(bound) > 0 {
+				return asLoopkitTool(bound[0]), true
+			}
+		}
+	}
 	return loopkit.Tool{}, false
 }
 
@@ -506,4 +518,14 @@ var outboundTools = map[string]bool{
 	"comms_send": true, "comms_escalate": true,
 	"whatsapp_place_call": true, "call_start": true,
 	"x_post": true, "linkedin_post": true, "instagram_post": true,
+}
+
+// Session gives a signed loop the same long-lived harness conversation the
+// recipe tier gets, keyed by whatever the workflow calls it.
+func (w *wasmKit) Session(key, kind string) loopkit.SessionHandle {
+	return w.mem().Session(key, kind)
+}
+
+func (w *wasmKit) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	return w.mem().SessionIn(key, kind, workdir, instructions)
 }

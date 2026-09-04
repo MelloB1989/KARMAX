@@ -267,3 +267,28 @@ func plural(n int) string {
 
 // Compile-time proof that a rehearsal is the same shape as the real thing.
 var _ loopkit.Kit = (*DryRun)(nil)
+
+// Session in a dry run reports the conversation without holding one.
+func (d *DryRun) Session(key, kind string) loopkit.SessionHandle {
+	return &dryRunSession{d: d, key: key, kind: kind}
+}
+
+func (d *DryRun) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	d.record("harness session %q would run in %s with %d bytes of instructions", key, workdir, len(instructions))
+	return &dryRunSession{d: d, key: key, kind: kind}
+}
+
+type dryRunSession struct {
+	d         *DryRun
+	key, kind string
+}
+
+func (s *dryRunSession) Send(_ context.Context, text string) (string, bool, error) {
+	s.d.record("ask harness session %q (%s): %s", s.key, s.kind, oneLine(text))
+	return "[the session's reply would appear here]", true, nil
+}
+
+func (s *dryRunSession) Close() error {
+	s.d.record("close harness session %q", s.key)
+	return nil
+}
