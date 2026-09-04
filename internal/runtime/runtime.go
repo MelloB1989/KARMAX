@@ -34,6 +34,7 @@ import (
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
 	youtrackconn "github.com/MelloB1989/karmax/internal/connectors/youtrack"
+	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
@@ -82,6 +83,11 @@ type KarmaxRuntime struct {
 
 	// clock fires durable timers into the log — "continue on Thursday".
 	clock *clock.Clock
+
+	// harness runs coding harnesses as long-lived conversations. Nil when the
+	// feature is off, and every caller treats nil as "use the API path".
+	harness        *harness.Supervisor
+	harnessBreaker *harness.Breaker
 
 	// routedKinds are the event kinds that reach agent inboxes, computed at
 	// construction and consumed once the runtime starts.
@@ -460,6 +466,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	}
 
 	// Register new builtin tools
+	// Registered before the agents are built, because an agent binds its
+	// toolset at construction. The runtime they need does not exist yet, so
+	// they hold a reference that is filled in below.
+	harnessRT := &harnessRef{}
+	toolReg.Register(&harnessSendTool{ref: harnessRT})
+	toolReg.Register(&harnessListTool{ref: harnessRT})
+	toolReg.Register(&harnessCloseTool{ref: harnessRT})
+
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
 	// Wired after construction: the runner belongs to the runtime, which does
@@ -679,6 +693,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		reviewer := review.New(review.Config{
 			Namespace: ns, AgentID: waAgentID, Provider: provider, Model: model, Fallbacks: fbs,
 			WAChannelID: waChannelID, WATarget: waTarget, SendFunc: commsMgr.Send,
+			// Answered by a warm session when one is available; the metered
+			// path stays as the fallback and is used whenever it is not.
+			Ask: func(ctx context.Context, key, prompt string) (string, bool) {
+				// Late-bound: review is built before the runtime exists.
+				return harnessRT.get().harnessAnswer(ctx, key, prompt)
+			},
 		}, s, memFactory.For(waAgentID, ns), log)
 		loopkit.Register(loopkit.Loop{
 			Name:        "memory-review",
@@ -703,6 +723,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 		merger := memmerge.New(memmerge.Config{
 			Namespace: ns, Provider: mergeProvider, Model: mergeModel, Fallbacks: fbs,
+			Ask: func(ctx context.Context, key, prompt string) (string, bool) {
+				return harnessRT.get().harnessAnswer(ctx, key, prompt)
+			},
 		}, s, memFactory.For(a0.ID, ns), log)
 		loopkit.Register(loopkit.Loop{
 			Name:        "memory-merge",
@@ -1057,11 +1080,26 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	for _, a := range agentReg.List() {
 		a.SetLentTools(rt.lentToolsForEvent)
 	}
+
+	// The tools were registered before the agents; this is the runtime they
+	// were waiting for.
+	harnessRT.rt = rt
+
 	return rt, nil
 }
 
 func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
+
+	// Started before anything can ask for a session, and it reaps the previous
+	// process's orphans on the way up.
+	rt.harness = rt.startHarness()
+	if rt.harness != nil {
+		rt.startHarnessReaper(ctx)
+		// Agents think in a session once there is one to think in.
+		rt.wireHarnessBrains()
+	}
+
 	rt.clock.Start(ctx)
 	rt.connectors.StartPollers(ctx)
 	// Keep the console's health column true without anyone clicking. A status

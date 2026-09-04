@@ -46,6 +46,10 @@ type Agent struct {
 	memoryModel  *MemoryModel
 	summaryModel *SummaryModel
 
+	// harnessBrain routes thinking to a coding harness when one is configured.
+	// Nil is the ordinary case and means the API session does the thinking.
+	harnessBrain Brain
+
 	// allTools is the complete, agent-bound toolset the main model runs with
 	// (built-in + agent-scoped memory/profile tools + MCP). Kept so the API/CLI
 	// can list and invoke exactly what the harness itself has.
@@ -1067,7 +1071,9 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// argument, or the model could choose whose mailbox it reads.
 		turnCtx = connectorkit.WithActor(turnCtx, a.actingMember(evt))
 		lent := a.lentTools(evt)
-		response, toolCalls, err := a.mainSession.ProcessMessageWithContextAndTools(turnCtx, dynamicCtx, userPrompt, lent)
+		brain := a.thinkingBrain()
+		brain.SetTurnContext(dynamicCtx)
+		response, toolCalls, err := brain.ProcessMessageWithheld(turnCtx, userPrompt, lent, nil)
 		turnCancel()
 		ackCancel()
 		if err != nil {
@@ -1094,7 +1100,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 				"2. If you literally CANNOT (you're missing information — e.g. you don't have the credentials/file/detail it needs), say so plainly in ONE sentence and ask the one specific thing you need. Never a vague \"standing by\".\n" +
 				"Do not just acknowledge again. Act or state the blocker."
 			rctx, rcancel := context.WithTimeout(a.ctx, 3*time.Minute)
-			resp2, tc2, err2 := a.mainSession.ProcessMessage(rctx, nudge)
+			resp2, tc2, err2 := a.thinkingBrain().ProcessMessageWithheld(rctx, nudge, nil, nil)
 			rcancel()
 			if err2 == nil && strings.TrimSpace(resp2) != "" {
 				response = cleanOutboundResponse(resp2)
@@ -1284,8 +1290,9 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 		zap.Int("sessions", len(sc)), zap.Int("comms", len(cc)), zap.Int("memory", len(mc)),
 		zap.Int("total", len(dynamicCtx)), zap.Int("system", len(a.def.SystemPrompt)))
 
-	session.SetTurnContext(dynamicCtx)
-	response, toolCalls, err := session.ProcessMessageWithheld(ctx, text, lent, withhold)
+	brain := a.thinkingBrain()
+	brain.SetTurnContext(dynamicCtx)
+	response, toolCalls, err := brain.ProcessMessageWithheld(ctx, text, lent, withhold)
 	if err != nil {
 		return "", nil, fmt.Errorf("chat: %w", err)
 	}
@@ -1912,4 +1919,40 @@ func (a *Agent) SetScopes(sc *memory.Scopes) {
 	if a.memoryModel != nil {
 		a.memoryModel.SetScopes(sc)
 	}
+}
+
+// SetHarnessBrain routes this agent's thinking through a long-lived harness
+// session, keeping the API session as the fallback.
+//
+// Wiring rather than replacement: mainSession stays exactly where it was, still
+// owns the history and the token counting, and still answers every turn the
+// harness declines. Nothing is removed, so turning this off is setting it back
+// to nil.
+func (a *Agent) SetHarnessBrain(b Brain) {
+	a.mu.Lock()
+	a.harnessBrain = b
+	a.mu.Unlock()
+}
+
+// thinkingBrain is the engine for this turn: the harness when one is wired,
+// the API session otherwise.
+func (a *Agent) thinkingBrain() Brain {
+	a.mu.RLock()
+	hb := a.harnessBrain
+	sess := a.mainSession
+	a.mu.RUnlock()
+	if hb != nil {
+		return hb
+	}
+	return sess
+}
+
+// MainBrain is the API-backed session, used as the harness's fallback.
+func (a *Agent) MainBrain() Brain {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.mainSession == nil {
+		return nil
+	}
+	return a.mainSession
 }

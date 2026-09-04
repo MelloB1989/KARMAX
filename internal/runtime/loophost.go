@@ -13,6 +13,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -748,6 +749,28 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 	if len(k.rt.cfg.Agents) == 0 {
 		return "", fmt.Errorf("no agent configured")
 	}
+
+	// A warm harness session first, when one is available.
+	//
+	// The gateway is the highest-frequency model call KARMAX makes — a
+	// classification per incoming message — so it is both the biggest prize and
+	// the biggest quota risk. One session per loop rather than per call is what
+	// makes it affordable: the per-turn CLI overhead is paid once and amortised
+	// across every message that loop handles.
+	//
+	// Lent tools do not cross. The harness has its own toolset and reaches
+	// KARMAX through the CLI, so a call that genuinely depends on a lent tool
+	// stays on the API path rather than silently answering without it.
+	if k.rt.harness != nil && len(lent) == 0 {
+		reply, err := k.gatewayViaHarness(ctx, prompt)
+		if err == nil && strings.TrimSpace(reply) != "" {
+			return reply, nil
+		}
+		if err != nil {
+			k.rt.log.Debug("harness gateway declined; using the API path",
+				zap.String("loop", k.loopName), zap.Error(err))
+		}
+	}
 	a := k.rt.cfg.Agents[0]
 	var fallbacks []karmahelper.FallbackModel
 	for _, fb := range a.FallbackModels {
@@ -809,6 +832,17 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 }
 
 func (k *loopKit) Summarize(ctx context.Context, prompt string) (string, error) {
+	// A warm session first, one per loop. Summarising is exactly the kind of
+	// work a session is good at — short, frequent, and cheaper each time the
+	// same conversation handles it than a fresh process would be.
+	if k.rt.harness != nil {
+		if turn, err := k.rt.harness.Send(ctx, "loop-summarize/"+k.loopName, "chat", prompt); err == nil {
+			if strings.TrimSpace(turn.Text) != "" {
+				return turn.Text, nil
+			}
+		}
+	}
+
 	if len(k.rt.cfg.Agents) == 0 {
 		return "", fmt.Errorf("no agent configured")
 	}
@@ -1073,3 +1107,72 @@ IDENTITY. Use the operator's name exactly as the prompt gives it to you. Never i
 HONESTY. Never say something is done unless a tool call in THIS turn did it. Never state what a message said, who sent it, or when, unless it is in this turn's tool output. "I could not find it" is always better than a plausible invention.
 
 ACT. You are here to handle things, not to offer menus. If a routine action is clear, do it and say what you did. Ask ONE sharp question only when the answer changes what you would do — never a list of options for something you could simply have done. Do not announce yourself in every message; say who you are when it is genuinely unclear, then get on with it.`
+
+// Session hands a workflow a long-lived harness conversation.
+//
+// The key belongs to the caller and means nothing here. A WhatsApp workflow
+// passes "chat:<jid>" and this package never learns what a chat is — which is
+// the point: a use-case must not require a change to the kernel.
+func (k *loopKit) Session(key, kind string) loopkit.SessionHandle {
+	return &loopSession{rt: k.rt, loop: k.loopName, key: key, kind: kind}
+}
+
+// SessionIn is Session with a working directory and standing instructions the
+// workflow chooses.
+func (k *loopKit) SessionIn(key, kind, workdir, instructions string) loopkit.SessionHandle {
+	return &loopSession{
+		rt: k.rt, loop: k.loopName, key: key, kind: kind,
+		workdir: workdir, instructions: instructions,
+	}
+}
+
+type loopSession struct {
+	rt           *KarmaxRuntime
+	loop         string
+	key          string
+	kind         string
+	workdir      string
+	instructions string
+}
+
+func (s *loopSession) Send(ctx context.Context, text string) (string, bool, error) {
+	if s.rt.harness == nil {
+		// Not an error: the workflow has its own path and should take it.
+		return "", false, nil
+	}
+	// Namespaced by loop, so two workflows choosing the same key cannot end up
+	// talking into each other's conversation.
+	key := s.loop + "/" + s.key
+	turn, err := s.rt.harness.SendWith(ctx, key, s.kind, text, harness.Options{
+		Workdir: s.workdir, Instructions: s.instructions,
+	})
+	if err != nil {
+		var open harness.ErrBreakerOpen
+		if asBreakerOpen(err, &open) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return turn.Text, true, nil
+}
+
+func (s *loopSession) Close() error {
+	if s.rt.harness == nil {
+		return nil
+	}
+	s.rt.harness.Close(s.loop + "/" + s.key)
+	return nil
+}
+
+// gatewayViaHarness answers a loop's classification from a warm session.
+//
+// One session per loop, not per call. A key per message would pay a cold start
+// and the full per-turn overhead every time, which is precisely the design this
+// package exists to avoid.
+func (k *loopKit) gatewayViaHarness(ctx context.Context, prompt string) (string, error) {
+	turn, err := k.rt.harness.Send(ctx, "loop-gateway/"+k.loopName, "chat", prompt)
+	if err != nil {
+		return "", err
+	}
+	return turn.Text, nil
+}
