@@ -315,6 +315,26 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	primaryErr := err
 	log.Printf("[karmahelper] primary model %s/%s failed after retries: %v", s.cfg.Provider, s.cfg.Model, err)
 
+	// Running out of tool passes is not a failed turn — it is an unfinished
+	// one. The model called tools until the budget ran out and never got to
+	// write the answer, so everything it just learned is thrown away and the
+	// operator is told nothing at all. 101 turns died this way in three days.
+	//
+	// Every configured fallback would hit the same wall on the same history,
+	// so the retry that helps is the one WITHOUT tools: the model cannot call
+	// anything else, and has to answer from what it already has.
+	if isToolPassExhaustion(primaryErr) {
+		log.Printf("[karmahelper] tool passes exhausted; asking for an answer with tools off")
+		sanitizeHistory(&s.history)
+		if resp, ferr := chatWithRetry(ctx, buildKarmaAI(s.cfg, nil, s.rec, s.currentActor), &s.history, 1); ferr == nil {
+			if strings.TrimSpace(CleanContent(resp.AIResponse)) != "" {
+				return s.processResponse(resp)
+			}
+		} else {
+			log.Printf("[karmahelper] the tools-off answer also failed: %v", ferr)
+		}
+	}
+
 	// --- Try fallback models ---
 	for i, fb := range s.cfg.FallbackModels {
 		log.Printf("[karmahelper] trying fallback model %d: %s/%s", i+1, fb.Provider, fb.Model)
@@ -390,6 +410,18 @@ func transportFallback() TransportFallback {
 // to having been reached and having declined. Only the former is worth trying
 // on another path: a refusal or a malformed request fails identically wherever
 // it is sent.
+// isToolPassExhaustion reports whether the turn ended because the model used
+// up its tool round-trips rather than because anything broke.
+//
+// Matched on the message because karma returns a bare fmt.Errorf here, with no
+// typed error to check.
+func isToolPassExhaustion(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "exceeded tool execution passes")
+}
+
 func isTransportFailure(err error) bool {
 	if err == nil {
 		return false
