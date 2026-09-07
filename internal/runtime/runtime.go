@@ -473,6 +473,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&harnessSendTool{ref: harnessRT})
 	toolReg.Register(&harnessListTool{ref: harnessRT})
 	toolReg.Register(&harnessCloseTool{ref: harnessRT})
+	// Work the orchestrator hands to itself, and keeps until it is done.
+	toolReg.Register(&taskCreateTool{ref: harnessRT, agentID: agentIDOf(cfg)})
+	toolReg.Register(&taskListTool{ref: harnessRT})
+	toolReg.Register(&taskUpdateTool{ref: harnessRT})
 
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
@@ -1145,6 +1149,10 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		rt.log.Error("agent start error", zap.Error(err))
 		rt.publishCritical("", "agent start error", map[string]any{"error": err.Error()})
 	}
+
+	// Owned work is driven forward on its own clock, not by whoever happens to
+	// send the next message.
+	rt.startTaskRunner(ctx)
 
 	// Now that every agent has its API session, the harness can be given one
 	// to fall back to. Wired before this point, the fallback is nil and a
