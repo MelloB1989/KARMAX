@@ -92,6 +92,36 @@ func callTool(name string, input map[string]any, timeout time.Duration) error {
 	return callToolAs("", name, input, timeout)
 }
 
+// callToolField invokes a tool and prints ONE field of its output.
+//
+// For `karmax claude`, where the operator asked a question and wants the answer
+// — not the answer wrapped in the bookkeeping that came back with it.
+func callToolField(name, field string, input map[string]any, timeout time.Duration) error {
+	out, err := apiPOSTJSON("/api/tools/"+url.PathEscape(name), input, timeout)
+	if err != nil {
+		return err
+	}
+	if ok, _ := out["ok"].(bool); !ok {
+		return fmt.Errorf("%s: %s", name, asStr(out["error"]))
+	}
+	body, _ := out["output"].(map[string]any)
+	if body == nil {
+		printToolOutput(out["output"])
+		return nil
+	}
+	// The harness declining is a fact the operator needs, not a silent empty
+	// answer: it means the account is refusing, and nothing ran.
+	if avail, present := body["available"].(bool); present && !avail {
+		return fmt.Errorf("Claude is unavailable: %s", asStr(body["reason"]))
+	}
+	if v := asStr(body[field]); strings.TrimSpace(v) != "" {
+		fmt.Println(v)
+		return nil
+	}
+	printToolOutput(out["output"])
+	return nil
+}
+
 // callToolAs runs a tool on one member's behalf, for connectors that
 // authenticate as an individual.
 func callToolAs(member, name string, input map[string]any, timeout time.Duration) error {

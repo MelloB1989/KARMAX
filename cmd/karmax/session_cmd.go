@@ -131,7 +131,7 @@ func claudeCmd() *cobra.Command {
 				return err
 			}
 			start := time.Now()
-			if err := callTool("harness.send", in, opt.timeout); err != nil {
+			if err := callToolField("harness.send", "reply", in, opt.timeout); err != nil {
 				return err
 			}
 			fmt.Fprintf(c.ErrOrStderr(), "\n(%s · session %s)\n",

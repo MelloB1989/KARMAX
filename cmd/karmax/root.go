@@ -44,6 +44,7 @@ func newRootCmd() *cobra.Command {
 		costCmd(),
 		sessionCmd(),
 		claudeCmd(),
+		taskCmd(),
 		connectorsCmd(),
 		recipeCmd(),
 		orgChartCmd(),
