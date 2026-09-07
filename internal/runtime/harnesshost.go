@@ -330,7 +330,16 @@ func (rt *KarmaxRuntime) wireHarnessBrains() {
 	}
 	sender := harnessSenderFor{sup: rt.harness}
 	for _, a := range rt.agents.List() {
-		a.SetHarnessBrain(agent.NewHarnessBrain(sender, "agent:"+a.Def().ID, "agent", a.MainBrain()))
+		// No fallback means a declined turn has nowhere to go, and the agent
+		// answers nothing at all. The metered path is worse than the harness;
+		// it is not worse than silence.
+		fallback := a.MainBrain()
+		if fallback == nil {
+			rt.log.Error("harness: not routing this agent — it has no API session to fall back to",
+				zap.String("agent", a.Def().ID))
+			continue
+		}
+		a.SetHarnessBrain(agent.NewHarnessBrain(sender, "agent:"+a.Def().ID, "agent", fallback))
 		rt.log.Info("harness: agent thinking routed to a session",
 			zap.String("agent", a.Def().ID))
 	}

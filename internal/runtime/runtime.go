@@ -1096,8 +1096,9 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.harness = rt.startHarness()
 	if rt.harness != nil {
 		rt.startHarnessReaper(ctx)
-		// Agents think in a session once there is one to think in.
-		rt.wireHarnessBrains()
+		// Brains are wired AFTER agents start, further down. An agent's API
+		// session — the harness's fallback — does not exist until StartAll
+		// runs initModels, and capturing it here captures nil.
 	}
 
 	rt.clock.Start(ctx)
@@ -1143,6 +1144,14 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	if err := rt.agents.StartAll(ctx); err != nil {
 		rt.log.Error("agent start error", zap.Error(err))
 		rt.publishCritical("", "agent start error", map[string]any{"error": err.Error()})
+	}
+
+	// Now that every agent has its API session, the harness can be given one
+	// to fall back to. Wired before this point, the fallback is nil and a
+	// declined turn — a tripped breaker, an exhausted window, expired auth —
+	// returns an error instead of an answer, which is a silent agent.
+	if rt.harness != nil {
+		rt.wireHarnessBrains()
 	}
 
 	// Start health checks for all agents
