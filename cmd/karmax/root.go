@@ -43,6 +43,7 @@ func newRootCmd() *cobra.Command {
 		capsCmd(),
 		costCmd(),
 		sessionCmd(),
+		claudeCmd(),
 		connectorsCmd(),
 		recipeCmd(),
 		orgChartCmd(),

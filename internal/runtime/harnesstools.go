@@ -42,15 +42,20 @@ type harnessSendTool struct{ ref *harnessRef }
 func (t *harnessSendTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name: "harness.send",
-		Description: "Send a message to a long-lived coding-harness session and get its reply. " +
+		Description: "Send a message to a long-lived Claude Code session and get its reply. " +
 			"Sessions are keyed by an arbitrary string: the same key continues the same conversation, " +
-			"a new key starts a new one. Opening, resuming after a crash and closing when idle are automatic.",
+			"a new key starts a new one. Opening, resuming after a crash and closing when idle are automatic. " +
+			"Pick the model for the job: haiku for cheap classification and summarising, sonnet for ordinary " +
+			"work, opus for hard reasoning, fable for the hardest. Omit it to use the kind's default.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{
 				"key":{"type":"string","description":"Stable handle for this conversation, e.g. \"chat:<jid>\" or \"task:build-apk\"."},
 				"kind":{"type":"string","description":"Which configured policy to use (model, idle window, limits). Defaults to \"agent\"."},
-				"text":{"type":"string","description":"The message to send."}
+				"text":{"type":"string","description":"The message to send."},
+				"model":{"type":"string","description":"Override the kind's model: haiku | sonnet | opus | fable, or a full model id. Takes effect when the session is opened or resumed, not mid-conversation."},
+				"workdir":{"type":"string","description":"Directory the session runs in. It can read and write here, and inherits any CLAUDE.md above it."},
+				"instructions":{"type":"string","description":"Standing brief written to CLAUDE.md in the workdir before the first spawn. Seeded once; the session owns the file afterwards."}
 			},
 			"required":["key","text"]
 		}`),
@@ -73,7 +78,15 @@ func (t *harnessSendTool) Execute(ctx context.Context, in map[string]any) (tools
 		kind = "agent"
 	}
 
-	turn, err := sup.Send(ctx, key, kind, text)
+	model, _ := in["model"].(string)
+	workdir, _ := in["workdir"].(string)
+	instructions, _ := in["instructions"].(string)
+
+	turn, err := sup.SendWith(ctx, key, kind, text, harness.Options{
+		Model:        strings.TrimSpace(model),
+		Workdir:      strings.TrimSpace(workdir),
+		Instructions: instructions,
+	})
 	if err != nil {
 		// A tripped breaker is not a failure of this call — it is the system
 		// telling the caller to use its other path. Saying so plainly is what

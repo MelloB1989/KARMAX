@@ -836,7 +836,7 @@ func (k *loopKit) Summarize(ctx context.Context, prompt string) (string, error) 
 	// work a session is good at — short, frequent, and cheaper each time the
 	// same conversation handles it than a fresh process would be.
 	if k.rt.harness != nil {
-		if turn, err := k.rt.harness.Send(ctx, "loop-summarize/"+k.loopName, "chat", prompt); err == nil {
+		if turn, err := k.rt.harness.Send(ctx, "loop-summarize/"+k.loopName, "summary", prompt); err == nil {
 			if strings.TrimSpace(turn.Text) != "" {
 				return turn.Text, nil
 			}
@@ -1170,7 +1170,11 @@ func (s *loopSession) Close() error {
 // and the full per-turn overhead every time, which is precisely the design this
 // package exists to avoid.
 func (k *loopKit) gatewayViaHarness(ctx context.Context, prompt string) (string, error) {
-	turn, err := k.rt.harness.Send(ctx, "loop-gateway/"+k.loopName, "chat", prompt)
+	// The "gateway" kind, not "chat": this is a classification per inbound
+	// message — the highest-frequency call in the system and the one with the
+	// least judgement in it. Running it on the conversational model is how an
+	// afternoon of group chatter spends the window.
+	turn, err := k.rt.harness.Send(ctx, "loop-gateway/"+k.loopName, "gateway", prompt)
 	if err != nil {
 		return "", err
 	}
