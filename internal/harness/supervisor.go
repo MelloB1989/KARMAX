@@ -75,6 +75,14 @@ type Config struct {
 	Policies    map[string]Policy
 	Env         []string
 	Allowlist   map[string]bool
+	// CheapModel is the tier every session drops to once KARMAX is past its
+	// share of the account's window. It is not a lesser engine to fall out to
+	// — it is the same one, thinking less hard, which is what keeps the agent
+	// answering at all now that there is nothing else behind it.
+	CheapModel string
+	// FallbackModel is handed to the CLI so it degrades on its own when a
+	// model is overloaded, without a round trip through here.
+	FallbackModel string
 }
 
 // Supervisor owns every live harness session.
@@ -130,6 +138,15 @@ type Options struct {
 	// spawn. Rewritten when it changes, so a workflow can evolve its own
 	// standing instructions without restarting anything.
 	Instructions string
+	// Model overrides the kind's model for this session. The point of the
+	// kinds is that a use-case picks a tier once; the point of this is that an
+	// operator at a terminal, or a task that turns out to be harder than its
+	// kind assumed, can ask for a better brain without inventing a kind.
+	//
+	// Applied when the process is spawned, so it takes effect on a new session
+	// or on the next resume — never mid-conversation, which is not a thing a
+	// running process can do.
+	Model string
 }
 
 // Send is the whole caller-facing surface: give it a key and a message.
@@ -143,10 +160,18 @@ func (s *Supervisor) Send(ctx context.Context, key, kind, text string) (Turn, er
 // SendWith is Send with the workflow's own working directory and standing
 // instructions.
 func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt Options) (Turn, error) {
-	if ok, why := s.breaker.Allow(); !ok {
-		return Turn{}, ErrBreakerOpen{Reason: why}
+	decision := s.breaker.Decide()
+	if !decision.Allow {
+		return Turn{}, ErrBreakerOpen{Reason: decision.Reason}
 	}
 	pol := s.policy(kind)
+
+	// Past our share, everything runs on the cheap tier rather than not
+	// running. An explicit per-call model still wins: a caller that asked for
+	// a specific brain gets it, and the share is spent on what was asked for.
+	if decision.Degrade && opt.Model == "" && s.cfg.CheapModel != "" {
+		opt.Model = s.cfg.CheapModel
+	}
 
 	sess, err := s.open(ctx, key, kind, pol, opt)
 	if err != nil {
@@ -194,6 +219,9 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 // whose transcript we know is resumed, which brings its context back; only a
 // genuinely new key starts cold.
 func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt Options) (*Session, error) {
+	// A live process is reused whatever model it was started on. Killing a warm
+	// session to change tier would pay ~12.7k tokens of cold start to save a
+	// fraction of one turn, which is the opposite of what degrading is for.
 	s.mu.Lock()
 	if sess, ok := s.live[key]; ok && sess.Alive() {
 		s.mu.Unlock()
@@ -216,6 +244,9 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	}
 
 	model := pol.Model
+	if m := strings.TrimSpace(opt.Model); m != "" {
+		model = m
+	}
 	workdir := strings.TrimSpace(opt.Workdir)
 	if workdir == "" {
 		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
@@ -245,7 +276,7 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 			"key", key, "workdir", workdir, "err", err.Error())
 	}
 
-	if err := spawn(ctx, s.cfg.Binary, sess, workdir, resume, s.cfg.Env); err != nil {
+	if err := spawn(ctx, s.cfg.Binary, sess, workdir, resume, s.cfg.Env, s.cfg.FallbackModel); err != nil {
 		s.breaker.TripOn(fmt.Sprintf("could not start %s: %v", s.cfg.Binary, err))
 		_ = s.store.SetHarnessState(key, HarnessDead, err.Error(), time.Now())
 		return nil, err

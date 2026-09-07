@@ -55,7 +55,7 @@ type Session struct {
 // CLI rejects --session-id together with --resume, so a revived session passes
 // only --resume and a new one only --session-id. Minting the uuid ourselves is
 // what makes the session addressable before it has said anything.
-func spawn(ctx context.Context, bin string, s *Session, workdir string, resume bool, env []string) error {
+func spawn(ctx context.Context, bin string, s *Session, workdir string, resume bool, env []string, fallbackModel string) error {
 	args := []string{
 		"--print",
 		"--input-format", "stream-json",
@@ -70,6 +70,13 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	}
 	if s.Model != "" {
 		args = append(args, "--model", s.Model)
+	}
+	// The CLI's own degradation, one layer below the breaker's. The breaker
+	// acts on the account's published quota between turns; this catches a
+	// single model being overloaded DURING one, where there is nothing for
+	// KARMAX to observe and react to in time.
+	if fallbackModel != "" && fallbackModel != s.Model {
+		args = append(args, "--fallback-model", fallbackModel)
 	}
 
 	if err := os.MkdirAll(workdir, 0o755); err != nil {

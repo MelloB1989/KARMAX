@@ -102,23 +102,33 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	// indistinguishable from a feature nobody uses.
 	breaker := harness.NewBreaker(hc.WindowShare, func(tripped bool, reason string) {
 		if tripped {
-			rt.log.Warn("harness: standing down", zap.String("reason", reason))
+			rt.log.Warn("harness: quota state changed", zap.String("reason", reason))
 			builtin.PushAppNotification(rt.store, "", "alert",
-				"Harness paused", reason+" — KARMAX is falling back to the metered API path.")
+				"Claude quota is tight", reason)
 			return
 		}
-		rt.log.Info("harness: available again", zap.String("was", reason))
+		rt.log.Info("harness: back to the full model", zap.String("was", reason))
 		builtin.PushAppNotification(rt.store, "", "info",
-			"Harness resumed", "The rate-limit window rolled; KARMAX is using the harness again.")
+			"Claude quota recovered", "The rate-limit window rolled; KARMAX is back on its usual model.")
 	})
 
+	// Defaulted here rather than left empty, because an empty cheap tier turns
+	// the degrade into a no-op and the first busy afternoon spends the whole
+	// window on the good model.
+	cheap := strings.TrimSpace(hc.CheapModel)
+	if cheap == "" {
+		cheap = "haiku"
+	}
+
 	sup := harness.New(harness.Config{
-		Binary:      hc.Binary,
-		WorkdirRoot: root,
-		MaxLive:     hc.MaxLive,
-		Policies:    policies,
-		Env:         harnessEnviron(),
-		Allowlist:   allow,
+		Binary:        hc.Binary,
+		WorkdirRoot:   root,
+		MaxLive:       hc.MaxLive,
+		Policies:      policies,
+		Env:           harnessEnviron(),
+		Allowlist:     allow,
+		CheapModel:    cheap,
+		FallbackModel: strings.TrimSpace(hc.FallbackModel),
 	}, harnessStore{rt.store}, breaker, harnessLog{rt.log}, rt.auditHarnessTool)
 
 	// The brief every session inherits, at the DATA ROOT rather than the
@@ -355,7 +365,7 @@ func (rt *KarmaxRuntime) harnessAnswer(ctx context.Context, key, prompt string) 
 	if rt == nil || rt.harness == nil {
 		return "", false
 	}
-	turn, err := rt.harness.Send(ctx, key, "chat", prompt)
+	turn, err := rt.harness.Send(ctx, key, "summary", prompt)
 	if err != nil || strings.TrimSpace(turn.Text) == "" {
 		return "", false
 	}
