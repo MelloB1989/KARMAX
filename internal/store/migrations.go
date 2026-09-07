@@ -901,6 +901,38 @@ var migrations = []string{
 		last_error         TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_harness_sessions_state ON harness_sessions(state, last_activity_at)`,
+
+	// Work the operator handed over and expects finished.
+	//
+	// An agent turn is one exchange: it answers, and whatever it did not finish
+	// is gone the moment the turn ends. That is the right shape for a question
+	// and the wrong one for "get this done", which outlives any turn, survives a
+	// restart, and is not complete until somebody says so.
+	//
+	// next_action_at is what makes this a queue rather than a list: a task with
+	// no time on it is due now, and one that just ran is due again after its
+	// backoff. reported holds what the operator has already been told, so a task
+	// that ticks twenty times without changing does not send twenty messages.
+	`CREATE TABLE IF NOT EXISTS tasks (
+		id             TEXT PRIMARY KEY,
+		agent_id       TEXT NOT NULL DEFAULT '',
+		title          TEXT NOT NULL DEFAULT '',
+		goal           TEXT NOT NULL,
+		status         TEXT NOT NULL DEFAULT 'open',
+		session_key    TEXT NOT NULL DEFAULT '',
+		workdir        TEXT NOT NULL DEFAULT '',
+		channel_id     TEXT NOT NULL DEFAULT '',
+		target         TEXT NOT NULL DEFAULT '',
+		progress       TEXT NOT NULL DEFAULT '',
+		reported       TEXT NOT NULL DEFAULT '',
+		last_error     TEXT NOT NULL DEFAULT '',
+		attempts       INTEGER NOT NULL DEFAULT 0,
+		next_action_at DATETIME,
+		created_at     DATETIME NOT NULL,
+		updated_at     DATETIME NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, next_action_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id, updated_at DESC)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built
