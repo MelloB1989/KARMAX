@@ -473,6 +473,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&harnessSendTool{ref: harnessRT})
 	toolReg.Register(&harnessListTool{ref: harnessRT})
 	toolReg.Register(&harnessCloseTool{ref: harnessRT})
+	toolReg.Register(&harnessShowTool{ref: harnessRT})
+	toolReg.Register(&harnessModelTool{ref: harnessRT})
+	toolReg.Register(&harnessTranscriptTool{ref: harnessRT})
+	toolReg.Register(&harnessPruneTool{ref: harnessRT})
 	// Work the orchestrator hands to itself, and keeps until it is done.
 	toolReg.Register(&taskCreateTool{ref: harnessRT, agentID: agentIDOf(cfg)})
 	toolReg.Register(&taskListTool{ref: harnessRT})
