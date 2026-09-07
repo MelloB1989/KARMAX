@@ -180,3 +180,40 @@ func repeatPlaceholders(n int) string {
 	}
 	return out
 }
+
+// SetHarnessModel changes the tier a session will use.
+//
+// It takes effect on the next spawn, not on the process that is running now: a
+// model is chosen when the CLI starts and there is no way to change one
+// mid-conversation. The caller closes the live process if it wants the change
+// to apply immediately.
+func (s *Store) SetHarnessModel(key, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.exec(`UPDATE harness_sessions SET model = ? WHERE key = ?`, model, key)
+	if err != nil {
+		return fmt.Errorf("set harness model: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err == nil && n == 0 {
+		return fmt.Errorf("no session %q", key)
+	}
+	return nil
+}
+
+// PruneHarnessSessions forgets sessions that ended before a cutoff.
+//
+// Only closed and dead ones: a row is what makes a transcript reachable, so
+// dropping a live or idle session would strand a conversation that could still
+// have been resumed.
+func (s *Store) PruneHarnessSessions(before time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.exec(`
+DELETE FROM harness_sessions
+WHERE state IN ('closed', 'dead') AND last_activity_at < ?`, before)
+	if err != nil {
+		return 0, fmt.Errorf("prune harness sessions: %w", err)
+	}
+	return res.RowsAffected()
+}
