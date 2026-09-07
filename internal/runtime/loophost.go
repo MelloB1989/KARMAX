@@ -367,11 +367,32 @@ func (rt *KarmaxRuntime) RunRecipe(ctx context.Context, name string, trigger loo
 // RunLoopByName runs a registered loopkit loop on demand (manual trigger).
 // Returns false if no loop with that name is registered/enabled.
 func (rt *KarmaxRuntime) RunLoopByName(name string) (bool, error) {
-	l, ok := rt.loopkitLoops[name]
-	if !ok {
+	if l, ok := rt.loopkitLoops[name]; ok {
+		go rt.runLoopDurable(context.Background(), l, loopkit.Trigger{Kind: loopkit.TriggerManual}, 1)
+		return true, nil
+	}
+
+	// Recipes are listed as loops and were not runnable as one, so the only way
+	// to find out whether a recipe worked was to wait for its schedule. That is
+	// hours for hot-sync, and it is exactly when you want to check that a
+	// recipe is the tier you are least able to test.
+	//
+	// The registry keys recipes without a prefix; the scheduler and the run
+	// history use "recipe:<name>". Accepting either is the difference between
+	// the command working and the operator guessing which form is wanted.
+	bare := strings.TrimPrefix(name, "recipe:")
+	rt.recipeMu.RLock()
+	_, known := rt.recipeLoops[bare]
+	rt.recipeMu.RUnlock()
+	if !known {
 		return false, nil
 	}
-	go rt.runLoopDurable(context.Background(), l, loopkit.Trigger{Kind: loopkit.TriggerManual}, 1)
+	go func() {
+		if err := rt.RunRecipe(context.Background(), bare, loopkit.Trigger{Kind: loopkit.TriggerManual}); err != nil {
+			rt.log.Warn("a recipe run started by hand failed",
+				zap.String("recipe", bare), zap.Error(err))
+		}
+	}()
 	return true, nil
 }
 
