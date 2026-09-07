@@ -27,10 +27,14 @@ func TestEveryFailureModeIsRoutableNotFatal(t *testing.T) {
 			},
 		},
 		{
-			name: "quota is already spent",
+			// The account itself refusing, which is fact rather than estimate.
+			// Being merely past our own share is NOT this: that degrades the
+			// tier and the turn still runs. See
+			// TestPastOurShareRunsOnTheCheapModelInsteadOfNotRunning.
+			name: "the account refuses",
 			setup: func() (*Supervisor, func()) {
 				br := NewBreaker(0.4, nil)
-				br.Observe(rl(0.99, 0.99, "allowed_warning", time.Now().Add(time.Hour).Unix()))
+				br.Observe(rl(0.99, 0.99, "rejected", time.Now().Add(time.Hour).Unix()))
 				sup := New(Config{
 					Binary: "claude", WorkdirRoot: t.TempDir(),
 					Policies: map[string]Policy{"chat": {TurnTimeout: 2 * time.Second}},
@@ -143,4 +147,78 @@ func asOpen(err error, out *ErrBreakerOpen) bool {
 		return true
 	}
 	return false
+}
+
+// Past our share, the turn must still happen — on the cheap model.
+//
+// This is the difference the whole architecture now rests on. With a metered
+// API path behind it, refusing here meant "something else answers, slower and
+// worse". With the harness as the only engine it means nobody answers, which is
+// the failure the operator actually reported: messages that got no reply.
+//
+// Driven through a binary that cannot start, because the assertion is about
+// which model was CHOSEN, and the record is written before the spawn.
+func TestPastOurShareRunsOnTheCheapModelInsteadOfNotRunning(t *testing.T) {
+	br := NewBreaker(0.4, nil)
+	br.Observe(rl(0.99, 0.99, "allowed_warning", time.Now().Add(time.Hour).Unix()))
+
+	st := newMemStore()
+	sup := New(Config{
+		Binary: "definitely-not-a-real-binary-xyz", WorkdirRoot: t.TempDir(),
+		CheapModel: "haiku",
+		Policies:   map[string]Policy{"chat": {Model: "sonnet", TurnTimeout: time.Second}},
+	}, st, br, testLog{t}, nil)
+
+	_, err := sup.Send(context.Background(), "k", "chat", "hello")
+	// It failed on the missing binary, NOT on the breaker — which is the point:
+	// it got as far as trying.
+	var open ErrBreakerOpen
+	if asOpen(err, &open) {
+		t.Fatalf("refused instead of degrading: %s", open.Reason)
+	}
+	rec, _ := st.GetHarnessSession("k")
+	if rec == nil {
+		t.Fatal("no session was opened at all")
+	}
+	if rec.Model != "haiku" {
+		t.Errorf("degraded session ran on %q, want the cheap tier", rec.Model)
+	}
+}
+
+// An explicit model beats the degrade. A caller that named a brain has already
+// decided this turn is worth the quota; silently downgrading it is how a hard
+// task gets a cheap answer and nobody knows why.
+func TestAnExplicitModelSurvivesTheDegrade(t *testing.T) {
+	br := NewBreaker(0.4, nil)
+	br.Observe(rl(0.99, 0.99, "allowed_warning", time.Now().Add(time.Hour).Unix()))
+
+	st := newMemStore()
+	sup := New(Config{
+		Binary: "definitely-not-a-real-binary-xyz", WorkdirRoot: t.TempDir(),
+		CheapModel: "haiku",
+		Policies:   map[string]Policy{"chat": {Model: "sonnet", TurnTimeout: time.Second}},
+	}, st, br, testLog{t}, nil)
+
+	_, _ = sup.SendWith(context.Background(), "k", "chat", "hello", Options{Model: "opus"})
+	rec, _ := st.GetHarnessSession("k")
+	if rec == nil || rec.Model != "opus" {
+		t.Errorf("an explicitly requested model was overridden by the degrade: %+v", rec)
+	}
+}
+
+// The per-kind model is what a use-case picked; an override is what this one
+// call needs. Both have to reach the process.
+func TestTheKindsModelIsUsedWhenNothingOverridesIt(t *testing.T) {
+	st := newMemStore()
+	sup := New(Config{
+		Binary: "definitely-not-a-real-binary-xyz", WorkdirRoot: t.TempDir(),
+		CheapModel: "haiku",
+		Policies:   map[string]Policy{"task": {Model: "opus", TurnTimeout: time.Second}},
+	}, st, NewBreaker(0.9, nil), testLog{t}, nil)
+
+	_, _ = sup.Send(context.Background(), "t", "task", "hello")
+	rec, _ := st.GetHarnessSession("t")
+	if rec == nil || rec.Model != "opus" {
+		t.Errorf("the kind's model did not reach the session: %+v", rec)
+	}
 }

@@ -30,8 +30,19 @@ type HarnessConfig struct {
 	// protocol works, which is how a second harness becomes a config change.
 	Binary string `yaml:"binary"`
 	// WindowShare is the fraction of the account's rate-limit windows KARMAX
-	// may consume before standing down and leaving the rest to the operator.
+	// may consume before dropping to the cheap tier and leaving the better
+	// models for the operator's own interactive sessions.
 	WindowShare float64 `yaml:"window_share"`
+	// CheapModel is what every session runs on once past WindowShare.
+	//
+	// Not a lesser engine to fall out to — the same one, thinking less hard.
+	// The harness is the only brain now, so there is nothing behind it: the
+	// choice past our share is a cheaper model or no answer at all.
+	CheapModel string `yaml:"cheap_model"`
+	// FallbackModel is handed to the CLI's own --fallback-model, which covers
+	// a single model being overloaded mid-turn — too fast for the breaker,
+	// which only sees the account's quota between turns.
+	FallbackModel string `yaml:"fallback_model"`
 	// MaxLive caps concurrent sessions. Without it one busy chat spawns
 	// processes until the machine gives out.
 	MaxLive int `yaml:"max_live"`
