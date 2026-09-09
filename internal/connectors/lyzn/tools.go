@@ -86,7 +86,7 @@ func listWork(ctx context.Context, cr connectorkit.Credentials, _ map[string]any
 	}
 	out := make([]map[string]any, 0, len(tasks))
 	for _, task := range tasks {
-		out = append(out, event(task))
+		out = append(out, event(task, root(cr)))
 	}
 	return map[string]any{"tasks": out, "count": len(out)}, nil
 }
@@ -101,7 +101,7 @@ func claimWork(ctx context.Context, cr connectorkit.Credentials, in map[string]a
 		return nil, err
 	}
 	return map[string]any{
-		"task":  event(task),
+		"task":  event(task, root(cr)),
 		"lease": "15m",
 		"next":  "Do the work, then call lyzn.work.report with this task_id.",
 	}, nil
