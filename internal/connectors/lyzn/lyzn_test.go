@@ -261,7 +261,7 @@ func TestSpokenWordsAreCarriedUnderNamesTheHostFences(t *testing.T) {
 	task.Context.Title = "Pricing call"
 	task.Context.Summary = "Agreed the number"
 
-	e := event(task)
+	e := event(task, "https://api.lyzn.test")
 	// text, title, summary and comment are the names KARMAX fences before
 	// anything a stranger typed reaches a model or a log.
 	for _, key := range []string{"text", "title", "summary", "comment"} {
@@ -271,6 +271,36 @@ func TestSpokenWordsAreCarriedUnderNamesTheHostFences(t *testing.T) {
 	}
 	if e["comment"] != task.Quote {
 		t.Fatalf("the quote is not where the fence looks: %v", e["comment"])
+	}
+	// The fence names its source from `url`. Without one the marker reads
+	// "lyzn (<nil>)", which tells a reader nothing about where words came from.
+	if e["url"] != "https://api.lyzn.test/daemons/work/t-1" {
+		t.Fatalf("the fence has no honest source to name: %v", e["url"])
+	}
+}
+
+// The bug this catches cost an afternoon: the poll cursor advanced, the API
+// was answering, and nothing was on the bus under the kind every recipe waits
+// for — because a payload field called `kind` renames the event, and a task
+// carries a kind of its own.
+func TestNoFieldMayBeCalledKind(t *testing.T) {
+	var task work
+	task.TaskID = "t-1"
+	task.Kind = "message"
+
+	e := event(task, "https://api.lyzn.test")
+	if _, taken := e["kind"]; taken {
+		t.Fatal("a payload field called `kind` renames the event — the task's own kind is `task_kind`")
+	}
+	if e["task_kind"] != "message" {
+		t.Fatalf("the task's kind went missing: %v", e["task_kind"])
+	}
+	// `connector` and `source` are the host's to write, and it overwrites
+	// whatever is here — so claiming them would be writing into the dark.
+	for _, reserved := range []string{"connector", "source"} {
+		if _, taken := e[reserved]; taken {
+			t.Fatalf("%s belongs to the host, which overwrites it", reserved)
+		}
 	}
 }
 

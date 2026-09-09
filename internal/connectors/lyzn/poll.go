@@ -80,7 +80,7 @@ func pollWork(ctx context.Context, cr connectorkit.Credentials, cursor string) (
 		if seen[task.TaskID] {
 			continue
 		}
-		events = append(events, event(task))
+		events = append(events, event(task, root(cr)))
 	}
 
 	return events, encodeSeen(next), nil
@@ -88,14 +88,28 @@ func pollWork(ctx context.Context, cr connectorkit.Credentials, cursor string) (
 
 // event is one task as the bus carries it.
 //
-// The key names are chosen, not incidental. KARMAX fences free text by field
-// name before it reaches a log or a model — `text`, `title`, `summary` and
-// `comment` are on that list — and every string in here that a person said
-// rather than a program computed is carried under one of them. The quote is
-// `comment` for exactly that reason: it is a line of somebody's speech, and
-// speech is the one thing in this payload that could try to give an
-// instruction.
-func event(task work) map[string]any {
+// The key names are chosen, not incidental, and three of them are rules of the
+// host rather than preferences of mine.
+//
+// **Nothing here may be called `kind`.** A payload field of that name renames
+// the event — GitHub needs it, because every event type arrives down one
+// webhook — so a task carrying its own kind under that key published
+// `lyzn.task.approved` as `message`, `other`, or whatever the promise happened
+// to be. Every recipe waiting for an approved task waited forever, and the
+// only sign was the poll cursor advancing with nothing on the bus. It is
+// `task_kind` for that reason and must stay so.
+//
+// **Free text goes under a fenced name.** KARMAX wraps `text`, `title`,
+// `summary` and `comment` in an untrusted-content marker before they reach a
+// log or a model. Every string in here that a person said rather than a
+// program computed is carried under one of them — the quote is `comment`
+// because it is a line of somebody's speech, and speech is the one thing in
+// this payload that could try to give an instruction.
+//
+// **`url` is what the fence names as the source.** Without it the marker reads
+// `lyzn (<nil>)`, which tells a reader nothing about where the words came
+// from, so it carries the address this task was actually read from.
+func event(task work, from string) map[string]any {
 	facts := make([]string, 0, len(task.Context.Facts))
 	for _, f := range task.Context.Facts {
 		facts = append(facts, f.Text)
@@ -103,8 +117,9 @@ func event(task work) map[string]any {
 	return map[string]any{
 		"task_id":      task.TaskID,
 		"text":         task.Text,
-		"kind":         task.Kind,
+		"task_kind":    task.Kind,
 		"comment":      task.Quote,
+		"url":          from + "/daemons/work/" + task.TaskID,
 		"due_at":       task.DueAt,
 		"recording_id": task.RecordingID,
 		"created_at":   task.CreatedAt,
