@@ -30,7 +30,6 @@ import (
 	jiraconn "github.com/MelloB1989/karmax/internal/connectors/jira"
 	kekaconn "github.com/MelloB1989/karmax/internal/connectors/keka"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
-	lyznconn "github.com/MelloB1989/karmax/internal/connectors/lyzn"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
@@ -170,11 +169,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		connHost.Register(githubconn.New(account))
 	}
 	connHost.Register(notionconn.New())
-	// LYZN hears a promise and this machine keeps it. Paired with a
-	// six-character code rather than a key, because the product it talks to
-	// has no login for a laptop to hold — the code is redeemed once, for a
-	// token bound to this machine, and revoked from the phone that minted it.
-	connHost.Register(lyznconn.New())
 	// Slack is already wired as a COMMS CHANNEL — the thing that receives
 	// mentions and replies in threads. That is a different subsystem, which is
 	// why Slack never appeared on the Connectors page despite obviously being
