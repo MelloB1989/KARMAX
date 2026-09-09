@@ -8,6 +8,10 @@ require (
 	github.com/MelloB1989/karma v1.21.3
 	github.com/MelloB1989/wacli v0.3.0
 	github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36
+	github.com/aws/aws-sdk-go-v2 v1.45.1
+	github.com/aws/aws-sdk-go-v2/config v1.29.9
+	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.84.1
+	github.com/aws/aws-sdk-go-v2/service/ecs v1.93.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -39,9 +43,7 @@ require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.4.0 // indirect
 	github.com/aws/aws-sdk-go v1.55.5 // indirect
-	github.com/aws/aws-sdk-go-v2 v1.45.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect
-	github.com/aws/aws-sdk-go-v2/config v1.29.9 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.62 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.30 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.65 // indirect
@@ -51,8 +53,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.3.34 // indirect
 	github.com/aws/aws-sdk-go-v2/service/bedrock v1.22.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.24.3 // indirect
-	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.84.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ecs v1.93.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.7.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.15 // indirect
@@ -135,7 +135,3 @@ require (
 	google.golang.org/grpc v1.70.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/MelloB1989/wacli => /home/nikhil/code/wacli-voicestream
-
-replace github.com/MelloB1989/karma => /home/nikhil/code/karma
