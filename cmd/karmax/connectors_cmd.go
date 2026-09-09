@@ -120,7 +120,7 @@ func connectorsSetupCmd() *cobra.Command {
 			defer s.Close()
 
 			cfg := map[string]string{}
-			if rec, err := s.Credential(id); err == nil {
+			if rec, err := s.Credential(id); err == nil && rec != nil {
 				cfg = rec.Config
 			}
 			if cfg == nil {
