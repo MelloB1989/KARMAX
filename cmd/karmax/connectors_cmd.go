@@ -12,7 +12,6 @@ import (
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
-	lyznconn "github.com/MelloB1989/karmax/internal/connectors/lyzn"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"github.com/spf13/cobra"
@@ -23,7 +22,7 @@ import (
 // both sides list the same set; keeping the CLI able to configure one without
 // the daemon running is worth the duplication.
 func registered() []connectorkit.Connector {
-	return []connectorkit.Connector{githubconn.New(""), lyznconn.New()}
+	return []connectorkit.Connector{githubconn.New("")}
 }
 
 func connectorsCmd() *cobra.Command {
