@@ -361,7 +361,7 @@ func (r *Registry) Refresh(ctx context.Context, id string) error {
 		// made a step earlier. The host calls this before every credential
 		// read and logs whatever comes back, so returning an error here put a
 		// warning in the log on every single call for jira, youtrack, keka,
-		// slack, google and lyzn.
+		// slack and google.
 		return nil
 	}
 	auth := in.Auth()
