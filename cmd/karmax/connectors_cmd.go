@@ -12,6 +12,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
+	lyznconn "github.com/MelloB1989/karmax/internal/connectors/lyzn"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"github.com/spf13/cobra"
@@ -22,7 +23,7 @@ import (
 // both sides list the same set; keeping the CLI able to configure one without
 // the daemon running is worth the duplication.
 func registered() []connectorkit.Connector {
-	return []connectorkit.Connector{githubconn.New("")}
+	return []connectorkit.Connector{githubconn.New(""), lyznconn.New()}
 }
 
 func connectorsCmd() *cobra.Command {
@@ -51,8 +52,13 @@ func connectorsListCmd() *cobra.Command {
 			fmt.Fprintln(w, "ID\tNAME\tSTATUS\tDESCRIPTION")
 			for _, c := range registered() {
 				m := c.Manifest()
+				// A connector nobody has configured reads back as (nil, nil):
+				// absence is data, not an error. Checking only the error and
+				// then dereferencing was a panic waiting for the first
+				// unconfigured connector in the list, which is every one of
+				// them on a fresh install.
 				status := "not configured"
-				if rec, err := s.Credential(m.ID); err == nil {
+				if rec, err := s.Credential(m.ID); err == nil && rec != nil {
 					status = "configured, disabled"
 					if rec.Enabled {
 						status = "enabled"
@@ -114,7 +120,7 @@ func connectorsSetupCmd() *cobra.Command {
 			defer s.Close()
 
 			cfg := map[string]string{}
-			if rec, err := s.Credential(id); err == nil {
+			if rec, err := s.Credential(id); err == nil && rec != nil {
 				cfg = rec.Config
 			}
 			if cfg == nil {
@@ -142,6 +148,7 @@ func connectorsSetupCmd() *cobra.Command {
 			if err := s.SaveCredential(store.Credential{Connector: id, Config: cfg}); err != nil {
 				return err
 			}
+			complete(s, conn, id)
 			fmt.Printf("Saved. Enable it with `karmax connectors enable %s`.\n", id)
 			return nil
 		},
@@ -163,7 +170,7 @@ func connectorsEnableCmd() *cobra.Command {
 			}
 			defer s.Close()
 
-			if _, err := s.Credential(id); err != nil {
+			if rec, err := s.Credential(id); err != nil || rec == nil {
 				return fmt.Errorf("%s is not configured yet — run `karmax connectors setup %s`", id, id)
 			}
 
@@ -229,7 +236,7 @@ func connectorsCheckCmd() *cobra.Command {
 			defer s.Close()
 
 			rec, err := s.Credential(id)
-			if err != nil {
+			if err != nil || rec == nil {
 				return fmt.Errorf("%s is not configured", id)
 			}
 			var conn connectorkit.Connector
@@ -244,6 +251,16 @@ func connectorsCheckCmd() *cobra.Command {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			// The same order the console uses: let the connector fill in what
+			// it can work out before judging whether it works. For LYZN that
+			// is the whole of pairing, so a `check` after a failed `setup` is
+			// the retry — which matters when what expired was a code somebody
+			// has five minutes to type.
+			complete(s, conn, id)
+			if rec, err = s.Credential(id); err != nil || rec == nil {
+				return fmt.Errorf("%s is not configured", id)
+			}
+
 			cr := connectorkit.Credentials{Config: rec.Config, AccessToken: rec.AccessToken}
 			if err := conn.Health(ctx, cr); err != nil {
 				return fmt.Errorf("%s is not working: %w", id, err)
@@ -252,4 +269,56 @@ func connectorsCheckCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// complete asks a connector to fill in what it can discover for itself, and
+// stores whatever comes back — the CLI's half of what the console does on its
+// health-check screen.
+//
+// It exists because one connector's whole setup is a value that has to be
+// exchanged before it is worth anything: LYZN's pairing code buys a token, is
+// spent in the act, and lives five minutes. Making somebody run the daemon and
+// open a console to spend it would be a worse answer than this.
+//
+// Quiet when there is nothing to do, and never fatal: a failure here is
+// reported by the health check that follows in far more useful words than
+// "could not auto-fill".
+func complete(s *store.Store, conn connectorkit.Connector, id string) {
+	completer, ok := conn.(connectorkit.CredentialCompleter)
+	if !ok {
+		return
+	}
+	rec, err := s.Credential(id)
+	if err != nil || rec == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	filled, err := completer.CompleteCredentials(ctx,
+		connectorkit.Credentials{Config: rec.Config, AccessToken: rec.AccessToken})
+	if err != nil {
+		fmt.Printf("Could not finish setting %s up: %v\n", id, err)
+		return
+	}
+	if len(filled) == 0 {
+		return
+	}
+
+	if rec.Config == nil {
+		rec.Config = map[string]string{}
+	}
+	names := make([]string, 0, len(filled))
+	for k, v := range filled {
+		rec.Config[k] = v
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	if err := s.SaveCredential(*rec); err != nil {
+		fmt.Printf("Could not store what %s worked out: %v\n", id, err)
+		return
+	}
+	// The keys, never the values: some of these are credentials.
+	fmt.Printf("Filled in: %s\n", strings.Join(names, ", "))
 }

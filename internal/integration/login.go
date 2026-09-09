@@ -355,7 +355,14 @@ func exchange(ctx context.Context, tokenURL string, form url.Values) (tokenRespo
 func (r *Registry) Refresh(ctx context.Context, id string) error {
 	in, ok := r.Get(id)
 	if !ok {
-		return fmt.Errorf("no integration called %q", id)
+		// Not an error: half the registered connectors are deliberately not
+		// in the integrations catalogue, and a connector with no sign-in to
+		// renew is the same statement as an API-key one — "nothing to do" —
+		// made a step earlier. The host calls this before every credential
+		// read and logs whatever comes back, so returning an error here put a
+		// warning in the log on every single call for jira, youtrack, keka,
+		// slack, google and lyzn.
+		return nil
 	}
 	auth := in.Auth()
 	if auth.Kind != connectorkit.AuthOAuth2 || auth.OAuth2 == nil {
