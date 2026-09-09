@@ -52,8 +52,13 @@ func connectorsListCmd() *cobra.Command {
 			fmt.Fprintln(w, "ID\tNAME\tSTATUS\tDESCRIPTION")
 			for _, c := range registered() {
 				m := c.Manifest()
+				// A connector nobody has configured reads back as (nil, nil):
+				// absence is data, not an error. Checking only the error and
+				// then dereferencing was a panic waiting for the first
+				// unconfigured connector in the list, which is every one of
+				// them on a fresh install.
 				status := "not configured"
-				if rec, err := s.Credential(m.ID); err == nil {
+				if rec, err := s.Credential(m.ID); err == nil && rec != nil {
 					status = "configured, disabled"
 					if rec.Enabled {
 						status = "enabled"
@@ -165,7 +170,7 @@ func connectorsEnableCmd() *cobra.Command {
 			}
 			defer s.Close()
 
-			if _, err := s.Credential(id); err != nil {
+			if rec, err := s.Credential(id); err != nil || rec == nil {
 				return fmt.Errorf("%s is not configured yet — run `karmax connectors setup %s`", id, id)
 			}
 
@@ -231,7 +236,7 @@ func connectorsCheckCmd() *cobra.Command {
 			defer s.Close()
 
 			rec, err := s.Credential(id)
-			if err != nil {
+			if err != nil || rec == nil {
 				return fmt.Errorf("%s is not configured", id)
 			}
 			var conn connectorkit.Connector
