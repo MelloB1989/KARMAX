@@ -231,7 +231,7 @@ func Config(key string) string {
 	return v
 }
 
-// HostTool resolves where a host binary lives — "wacli", "gws", "karmax".
+// HostTool resolves where a host binary lives — "wacli", "gog", "karmax".
 //
 // It returns a PATH, not permission to run it: a sandboxed loop cannot exec.
 // The path is for naming the tool inside a Harness prompt, where the harness
@@ -325,7 +325,7 @@ func Tool(name string, input any) (string, error) {
 		return "", err
 	}
 	// The output is returned alongside the error on purpose: a tool that failed
-	// usually explains itself in what it printed, and "run gws auth login" is a
+	// usually explains itself in what it printed, and "run gog auth add" is a
 	// more useful thing for a loop to see than "it failed".
 	if res.Error != "" {
 		return res.Output, errors.New(res.Error)

@@ -112,7 +112,7 @@ func (t *ClaudeCodeTool) memoryContext(prompt string) string {
 		"- `" + karmaxBin + " notify \"<title>\" \"<body>\"` — notify the operator via their phone app (feed + push). Use for results, alerts, or anything they should see.\n" +
 		"- `" + karmaxBin + " send \"<target>\" \"<message>\"` — send a WhatsApp message through the operator's account.\n" +
 		"- `" + karmaxBin + " ask \"<prompt>\"` — ask the orchestrator agent (it has the operator's full context and judgement).\n" +
-		"- `" + karmaxBin + " tool list` and `" + karmaxBin + " tool call <name> --json '<input>'` — list and invoke ANY harness tool (calendar.add, reminder.add, propose, google_workspace, whatsapp.read, scheduler.add, …).\n\n" +
+		"- `" + karmaxBin + " tool list` and `" + karmaxBin + " tool call <name> --json '<input>'` — list and invoke ANY harness tool (calendar.add, reminder.add, propose, google, whatsapp.read, scheduler.add, …).\n\n" +
 		"----\n\n# TASK\n\n")
 	return sb.String()
 }
