@@ -22,6 +22,8 @@ var (
 	wacliPath  string
 	gwsOnce    sync.Once
 	gwsPath    string
+	gogOnce    sync.Once
+	gogPath    string
 	binOnce    sync.Once
 	binPath    string
 	workOnce   sync.Once
@@ -40,8 +42,28 @@ func Wacli() string {
 	return wacliPath
 }
 
-// GWS returns the Google Workspace CLI path: $KARMAX_GWS_PATH, then PATH, then
-// ~/.hermes/node/bin/gws and ~/.local/bin/gws.
+// Gog returns the Google Workspace CLI path: $KARMAX_GOG_PATH, then PATH, then
+// the places a Go install and a Homebrew install put it.
+//
+// gogcli replaced gws as the way this daemon reaches Google — see
+// internal/tools/builtin/gog.go for why, which comes down to gws only being
+// able to do interactive browser OAuth against a Workspace whose reauth policy
+// logs an unattended process out every few hours. It is also one fewer runtime
+// on the host: gws is an npm package and needs Node, while gogcli ships a
+// static binary per platform and builds with `go install`.
+func Gog() string {
+	gogOnce.Do(func() {
+		gogPath = resolve("KARMAX_GOG_PATH", "gog", "go/bin/gog", ".local/bin/gog")
+	})
+	return gogPath
+}
+
+// GWS returns the old Google Workspace CLI path: $KARMAX_GWS_PATH, then PATH,
+// then ~/.hermes/node/bin/gws and ~/.local/bin/gws.
+//
+// Kept because loops still ask for it by name — gchat-watch among them — and a
+// resolver that stopped answering would break them on the machines where gws is
+// still what is installed. New code should ask for Gog.
 func GWS() string {
 	gwsOnce.Do(func() {
 		gwsPath = resolve("KARMAX_GWS_PATH", "gws", ".hermes/node/bin/gws", ".local/bin/gws")
