@@ -52,6 +52,7 @@ func newRootCmd() *cobra.Command {
 		vorgCmd(),
 		wloopCmd(),
 		migrateCmd(),
+		accessCmd(),
 		browserCmd(),
 		newToolCmd(),
 		newMCPCmd(),
