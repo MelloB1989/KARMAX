@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -31,6 +32,29 @@ type ClaudeCodeTool struct {
 	// Publish delivers the result of a background delegation as an event. Nil
 	// means background mode is unavailable and every call runs inline.
 	Publish func(bus.Event) error
+	// Browser is the operator's browser session. When it is running, the
+	// harness gets it — see browserArgs.
+	Browser *browser.Session
+}
+
+// browserArgs attaches the operator's browser to one invocation.
+//
+// Only when it is actually open, and only for that run: the browser being open
+// IS the grant. Somebody who has closed it has said no, and nothing has to be
+// revoked anywhere for that to take effect.
+//
+// The order matters. --mcp-config is variadic, so it must come after the
+// prompt; put it before and the CLI reads the prompt as another config file and
+// fails with "MCP config file not found: <your prompt>".
+func (t *ClaudeCodeTool) browserArgs(ctx context.Context) []string {
+	if t.Browser == nil {
+		return nil
+	}
+	cfg, err := t.Browser.MCPConfigJSON(ctx)
+	if err != nil {
+		return nil
+	}
+	return []string{"--mcp-config", cfg}
 }
 
 func (t *ClaudeCodeTool) Manifest() tools.ToolManifest {
@@ -261,6 +285,7 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 	// Every call carries the operator's KARMAX context (profile + relevant
 	// memory + how to query more), so the executor never starts cold.
 	args = append(args, t.memoryContext(prompt)+prompt)
+	args = append(args, t.browserArgs(ctx)...)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()

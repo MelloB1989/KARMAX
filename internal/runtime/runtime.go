@@ -15,6 +15,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/broker"
+	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/clock"
 	"github.com/MelloB1989/karmax/internal/comms"
@@ -488,7 +489,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&taskListTool{ref: harnessRT})
 	toolReg.Register(&taskUpdateTool{ref: harnessRT})
 
-	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
+	// One browser for the whole instance: the window the operator signs into is
+	// the window the harness attaches to.
+	browserSession := browser.Shared(cfg.Karmax.DataDir)
+	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: "", Browser: browserSession})
+	toolReg.Register(&builtin.BrowserTool{Session: browserSession})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
 	// Wired after construction: the runner belongs to the runtime, which does
 	// not exist yet here. See the assignment further down.
@@ -1240,7 +1245,8 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// redundancy at all: they share one base URL and die with one process.
 	karmahelper.SetTransportFallback(func(c context.Context, prompt string) (string, error) {
 		tool := &builtin.ClaudeCodeTool{Store: rt.store, AgentID: rt.loopDefaultAgent,
-			MemoryMgr: rt.memory.For(rt.loopDefaultAgent, rt.loopNamespace())}
+			MemoryMgr: rt.memory.For(rt.loopDefaultAgent, rt.loopNamespace()),
+			Browser:   browser.Shared(rt.cfg.Karmax.DataDir)}
 		res, err := tool.Execute(c, map[string]any{"prompt": prompt, "ephemeral": true})
 		if err != nil {
 			return "", err
