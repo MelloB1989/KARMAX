@@ -492,7 +492,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// One browser for the whole instance: the window the operator signs into is
 	// the window the harness attaches to.
 	browserSession := browser.Shared(cfg.Karmax.DataDir)
-	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: "", Browser: browserSession})
+	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: "", Browser: browserSession,
+		DataDir: cfg.Karmax.DataDir})
 	toolReg.Register(&builtin.BrowserTool{Session: browserSession})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
 	// Wired after construction: the runner belongs to the runtime, which does
@@ -1246,7 +1247,8 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	karmahelper.SetTransportFallback(func(c context.Context, prompt string) (string, error) {
 		tool := &builtin.ClaudeCodeTool{Store: rt.store, AgentID: rt.loopDefaultAgent,
 			MemoryMgr: rt.memory.For(rt.loopDefaultAgent, rt.loopNamespace()),
-			Browser:   browser.Shared(rt.cfg.Karmax.DataDir)}
+			Browser:   browser.Shared(rt.cfg.Karmax.DataDir),
+			DataDir:   rt.cfg.Karmax.DataDir}
 		res, err := tool.Execute(c, map[string]any{"prompt": prompt, "ephemeral": true})
 		if err != nil {
 			return "", err
