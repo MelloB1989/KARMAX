@@ -557,7 +557,8 @@ func isTransportFailure(err error) bool {
 
 func (k *loopKit) Harness(ctx context.Context, prompt string) (string, error) {
 	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID, Namespace: k.namespace,
-		MemoryMgr: k.mem, Browser: browser.Shared(k.rt.cfg.Karmax.DataDir)}
+		MemoryMgr: k.mem, Browser: browser.Shared(k.rt.cfg.Karmax.DataDir),
+		DataDir: k.rt.cfg.Karmax.DataDir}
 	// Loop work is one-off: no follow-up value in keeping the session around.
 	res, err := tool.Execute(ctx, map[string]any{"prompt": prompt, "ephemeral": true})
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/fsscope"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -35,6 +36,9 @@ type ClaudeCodeTool struct {
 	// Browser is the operator's browser session. When it is running, the
 	// harness gets it — see browserArgs.
 	Browser *browser.Session
+	// DataDir is where the access policy and KARMAX's own state live. Empty
+	// falls back to ~/.karmax, the same as everywhere else.
+	DataDir string
 }
 
 // browserArgs attaches the operator's browser to one invocation.
@@ -267,16 +271,31 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 		workingDir = hostpaths.WorkDir()
 	}
 
-	// --dangerously-skip-permissions lets the headless harness actually use its
-	// tools (WebSearch/WebFetch, file, bash) without an interactive permission
-	// prompt — without it, --print mode silently blocks web search and the agent
+	// How the harness is allowed to use its tools, which depends on whether the
+	// operator has said anything about what it may touch.
+	//
+	// With no policy: --dangerously-skip-permissions, which is what this always
+	// did. Without it, --print mode silently blocks web search and the agent
 	// concludes "web is unavailable".
+	//
+	// With a policy: --permission-mode dontAsk plus a settings blob. The two
+	// cannot be combined — the dangerous flag ignores deny rules entirely, so a
+	// policy passed alongside it would be decoration. dontAsk asks nobody and
+	// still enforces both lists, which is the only shape that works for a
+	// process with no one sitting at it.
 	//
 	// Session args differ by case (current Claude CLI):
 	//   - new session:  --session-id <uuid>   (pre-mint an id we can resume later)
 	//   - resume:       --resume <uuid>        (the id is the VALUE of --resume;
 	//                   "--session-id X --resume" is rejected by the CLI)
-	args := []string{"--print", "--output-format", "text", "--dangerously-skip-permissions"}
+	policy := fsscope.Load(t.DataDir)
+	settings := policy.SettingsJSON(t.DataDir)
+	args := []string{"--print", "--output-format", "text"}
+	if settings == "" {
+		args = append(args, "--dangerously-skip-permissions")
+	} else {
+		args = append(args, "--permission-mode", "dontAsk")
+	}
 	if resuming {
 		args = append(args, "--resume", sessionID)
 	} else {
@@ -286,6 +305,17 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 	// memory + how to query more), so the executor never starts cold.
 	args = append(args, t.memoryContext(prompt)+prompt)
 	args = append(args, t.browserArgs(ctx)...)
+	// After the prompt, like --mcp-config and for the same reason: both are
+	// variadic, and a variadic flag placed before the positional prompt eats
+	// it.
+	if settings != "" {
+		args = append(args, "--settings", settings)
+		for _, dir := range policy.Dirs() {
+			// One flag per directory rather than one flag with many values, so
+			// nothing after it can be swallowed as another value.
+			args = append(args, "--add-dir", dir)
+		}
+	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
