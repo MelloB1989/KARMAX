@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,7 +26,11 @@ import (
 // user it is pointed at, so "which mailbox" becomes a parameter rather than a
 // second login.
 
-const gogTimeout = 90 * time.Second
+const (
+	gogTimeout = 90 * time.Second
+	// maxOutputLen caps what a shelled-out CLI can put into a model's context.
+	maxOutputLen = 10000
+)
 
 // GogTool runs Google Workspace operations via the gog binary.
 type GogTool struct {
@@ -104,9 +109,18 @@ func (t *GogTool) Execute(ctx context.Context, input map[string]any) (tools.Tool
 		if msg == "" {
 			msg = err.Error()
 		}
+		reason := ""
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			reason = GogExitReason(exitErr.ExitCode())
+		}
+		text := fmt.Sprintf("gog %s: %s", strings.Join(args, " "), strings.TrimSpace(msg))
+		if reason != "" {
+			text = fmt.Sprintf("gog %s: %s: %s", strings.Join(args, " "), reason, strings.TrimSpace(msg))
+		}
 		return tools.ToolResult{
 			Output:  map[string]any{"output": out},
-			Error:   fmt.Sprintf("gog %s: %s", strings.Join(args, " "), strings.TrimSpace(msg)),
+			Error:   text,
 			IsError: true,
 		}, nil
 	}
@@ -125,6 +139,39 @@ func (t *GogTool) bin() string {
 		return home + "/go/bin/gog"
 	}
 	return "gog"
+}
+
+// GogExitReason names gogcli's documented exit codes.
+//
+// gog answers "why did that fail" in its exit status — `gog schema` publishes
+// the table — and putting the name in the error text is what lets a caller act
+// on it. A loop that sees auth_required can tell the operator to reconnect
+// Google instead of matching English error strings that change with the CLI,
+// which is exactly what the gws-era code did and why it broke.
+func GogExitReason(code int) string {
+	switch code {
+	case 0:
+		return ""
+	case 3:
+		return "empty_results"
+	case 4:
+		return "auth_required"
+	case 5:
+		return "not_found"
+	case 6:
+		return "permission_denied"
+	case 7:
+		return "rate_limited"
+	case 8:
+		return "retryable"
+	case 10:
+		return "config"
+	case 11:
+		return "orphaned"
+	case 130:
+		return "cancelled"
+	}
+	return ""
 }
 
 // hasFlag reports whether the caller already supplied one of these flags, so a
