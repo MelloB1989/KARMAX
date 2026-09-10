@@ -169,6 +169,10 @@ func loginHint(binary string) string {
 	switch base {
 	case "wacli":
 		return binary + " login    (scan the QR with WhatsApp)"
+	case "gog":
+		// gogcli authorises per account rather than per machine, so the hint
+		// has to name one. The address is the operator's to fill in.
+		return binary + " auth add you@example.com --services gmail,calendar,drive"
 	case "gws":
 		return binary + " auth login"
 	}

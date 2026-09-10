@@ -871,11 +871,13 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		add("discord", "Discord", "off", "not configured")
 	}
 
-	// Google Workspace
-	if gws := lookGWS(); gws != "" {
-		add("google_workspace", "Google Workspace", "available", gws)
+	// Google Workspace. gogcli is what the agent's tool actually runs, so it
+	// is what this reports; gws is still accepted because a host set up before
+	// the switch has it and it still works for the loops that call it.
+	if gog := lookGoogleCLI(); gog != "" {
+		add("google_workspace", "Google Workspace", "available", gog)
 	} else {
-		add("google_workspace", "Google Workspace", "missing", "install + auth the gws CLI")
+		add("google_workspace", "Google Workspace", "missing", "install gogcli and run `gog auth add`")
 	}
 
 	// Coding harnesses
@@ -944,14 +946,25 @@ func firstLine(s string) string {
 	return s
 }
 
-func lookGWS() string {
-	p := hostpaths.GWS()
-	// hostpaths falls back to the bare command name; only report it as
-	// available if it actually resolves to something runnable.
-	if p == "gws" {
+// lookGoogleCLI finds whichever Google CLI this host has, preferring the one
+// the agent's tool runs.
+func lookGoogleCLI() string {
+	if p := runnable(hostpaths.Gog(), "gog"); p != "" {
+		return p
+	}
+	return runnable(hostpaths.GWS(), "gws")
+}
+
+// runnable reports a resolved path only when something is actually there.
+//
+// hostpaths falls back to the bare command name when it finds nothing, so a
+// path equal to the name proves nothing on its own.
+func runnable(p, name string) string {
+	if p == name {
 		if _, err := exec.LookPath(p); err != nil {
 			return ""
 		}
+		return p
 	}
 	if _, err := os.Stat(p); err != nil {
 		if _, lerr := exec.LookPath(p); lerr != nil {
