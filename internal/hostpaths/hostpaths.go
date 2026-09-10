@@ -13,21 +13,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
 
 var (
-	wacliOnce  sync.Once
-	wacliPath  string
-	gogOnce    sync.Once
-	gogPath    string
-	binOnce    sync.Once
-	binPath    string
-	workOnce   sync.Once
-	workDir    string
-	wacliAPIMu sync.Once
-	wacliAPI   string
+	wacliOnce   sync.Once
+	wacliPath   string
+	gogOnce     sync.Once
+	gogPath     string
+	browserOnce sync.Once
+	browserPath string
+	binOnce     sync.Once
+	binPath     string
+	workOnce    sync.Once
+	workDir     string
+	wacliAPIMu  sync.Once
+	wacliAPI    string
 )
 
 // Wacli returns the wacli binary path: $KARMAX_WACLI_PATH, then PATH, then
@@ -54,6 +57,68 @@ func Gog() string {
 		gogPath = resolve("KARMAX_GOG_PATH", "gog", "go/bin/gog", ".local/bin/gog")
 	})
 	return gogPath
+}
+
+// Browser returns a Chromium-family browser this machine already has:
+// $KARMAX_BROWSER_PATH, then PATH, then where each platform installs Chrome,
+// Chromium and Edge. Empty when there is none.
+//
+// Chromium-family specifically, because the agent reaches the browser over the
+// DevTools protocol and Firefox and Safari do not speak it. Empty rather than a
+// bare name, because "no browser on this machine" is a thing the caller has to
+// tell somebody about, not a command to fail at later.
+func Browser() string {
+	browserOnce.Do(func() { browserPath = findBrowser() })
+	return browserPath
+}
+
+func findBrowser() string {
+	if v := strings.TrimSpace(os.Getenv("KARMAX_BROWSER_PATH")); v != "" {
+		return v
+	}
+	for _, name := range []string{
+		"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+		"microsoft-edge", "microsoft-edge-stable", "brave-browser",
+	} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	home, _ := os.UserHomeDir()
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		for _, app := range []string{
+			"Google Chrome.app/Contents/MacOS/Google Chrome",
+			"Chromium.app/Contents/MacOS/Chromium",
+			"Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			"Brave Browser.app/Contents/MacOS/Brave Browser",
+		} {
+			candidates = append(candidates, filepath.Join("/Applications", app))
+			if home != "" {
+				candidates = append(candidates, filepath.Join(home, "Applications", app))
+			}
+		}
+	case "windows":
+		for _, root := range []string{
+			os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA"),
+		} {
+			if root == "" {
+				continue
+			}
+			candidates = append(candidates,
+				filepath.Join(root, "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+				filepath.Join(root, "Chromium", "Application", "chrome.exe"),
+			)
+		}
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // KarmaxBin returns the karmax CLI path that delegated harnesses (Claude Code)
