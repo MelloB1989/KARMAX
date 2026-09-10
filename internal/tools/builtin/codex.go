@@ -55,7 +55,14 @@ func (t *CodexTool) Execute(ctx context.Context, input map[string]any) (tools.To
 		workingDir = hostpaths.WorkDir()
 	}
 
-	// Codex CLI uses --quiet for non-interactive output
+	// Codex CLI uses --quiet for non-interactive output.
+	//
+	// The operator's browser is not attached here, unlike claude_code.call.
+	// Codex takes MCP servers as `-c mcp_servers.<name>.command=…` config
+	// overrides rather than a config blob, and there is no Codex on any machine
+	// this has been developed against to try it on. Shipping an unverified flag
+	// would break every Codex call on the version that rejects it, which is a
+	// worse failure than not having the browser here.
 	args := []string{"--quiet", prompt}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
