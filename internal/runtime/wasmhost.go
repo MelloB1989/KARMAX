@@ -423,10 +423,10 @@ func (w *wasmKit) OperatorChats() []string { return builtin.OperatorChats() }
 // runHostTool runs one read-only host command with a bounded output.
 //
 // The output is returned even when the command fails, because for these tools
-// the output IS the diagnosis: gws exits 2 with a JSON body saying Google needs
-// an interactive reauth, and gchat-watch classifies that to tell the operator
-// which command to run. Discarding it turned a specific, actionable message
-// into "it failed" and left a dead integration with no explanation.
+// the output IS the diagnosis: gog exits 4 and says which account is not
+// authorized, and gchat-watch classifies that to tell the operator which
+// command to run. Discarding it turned a specific, actionable message into "it
+// failed" and left a dead integration with no explanation.
 func runHostTool(ctx context.Context, bin string, args ...string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

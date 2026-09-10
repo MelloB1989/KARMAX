@@ -720,11 +720,6 @@ func (k *loopKit) HostTool(name string) string {
 		return hostpaths.Wacli()
 	case "gog":
 		return hostpaths.Gog()
-	case "gws":
-		// Still answered, because loops written before gogcli ask for it by
-		// name. On a host that has only gog, this resolves to nothing and the
-		// loop reports it is missing — which is the truth.
-		return hostpaths.GWS()
 	case "karmax":
 		return hostpaths.KarmaxBin()
 	case "wacli-api":

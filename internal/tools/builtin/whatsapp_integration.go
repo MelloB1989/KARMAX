@@ -117,7 +117,7 @@ func intArg(v any, def int) int {
 // runReadTool runs one read-only host command with a bounded output.
 //
 // The output is returned even when the command fails, because for these tools
-// the output IS the diagnosis: gws exits 2 with a JSON body saying Google needs
+// the output IS the diagnosis: gog exits 4 with a body saying Google needs
 // an interactive reauth, and a caller can only tell the operator what to do if
 // it can read that. Discarding it on error turned a specific, actionable
 // message into "it failed".

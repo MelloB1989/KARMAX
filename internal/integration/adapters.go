@@ -51,7 +51,7 @@ func APIKey(m Manifest, keyField string, check func(context.Context, connectorki
 // CLISession describes an integration whose session belongs to a host binary.
 //
 // KARMAX cannot log these in and should not pretend to: wacli holds a WhatsApp
-// pairing and gws holds a Google session, each in its own store, and the honest
+// pairing and gog holds a Google session, each in its own store, and the honest
 // thing is to check and report rather than to keep a second copy of a secret we
 // do not own.
 func CLISession(m Manifest, binary string, check func(context.Context, connectorkit.Credentials) error) Simple {
@@ -100,9 +100,9 @@ func SplitID(id string) (provider, account string) {
 
 // CheckBinarySession runs a host binary's own status command.
 //
-// The output is deliberately included in the error: `gws` explains an expired
+// The output is deliberately included in the error: `gog` explains an expired
 // Google token in its stdout, and swallowing that turns an actionable message
-// into "exit status 2".
+// into "exit status 4".
 func CheckBinarySession(binary string, args ...string) func(context.Context, connectorkit.Credentials) error {
 	return func(ctx context.Context, _ connectorkit.Credentials) error {
 		path := binary
