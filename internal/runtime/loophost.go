@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/broker"
+	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
@@ -556,7 +557,7 @@ func isTransportFailure(err error) bool {
 
 func (k *loopKit) Harness(ctx context.Context, prompt string) (string, error) {
 	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID, Namespace: k.namespace,
-		MemoryMgr: k.mem}
+		MemoryMgr: k.mem, Browser: browser.Shared(k.rt.cfg.Karmax.DataDir)}
 	// Loop work is one-off: no follow-up value in keeping the session around.
 	res, err := tool.Execute(ctx, map[string]any{"prompt": prompt, "ephemeral": true})
 	if err != nil {
