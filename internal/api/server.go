@@ -120,6 +120,10 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("GET /api/device/actions", srv.auth(srv.handleDeviceActions))
 	mux.HandleFunc("POST /api/device/actions/{id}/complete", srv.auth(srv.handleCompleteDeviceAction))
 	mux.HandleFunc("GET /api/integrations", srv.auth(srv.handleIntegrations))
+	mux.HandleFunc("GET /api/browser", srv.auth(srv.handleBrowserStatus))
+	mux.HandleFunc("POST /api/browser/start", srv.auth(srv.handleBrowserStart))
+	mux.HandleFunc("POST /api/browser/open", srv.auth(srv.handleBrowserOpen))
+	mux.HandleFunc("POST /api/browser/stop", srv.auth(srv.handleBrowserStop))
 	mux.HandleFunc("GET /api/tools", srv.auth(srv.handleListTools))
 	mux.HandleFunc("POST /api/tools/{name}", srv.auth(srv.handleCallTool))
 
