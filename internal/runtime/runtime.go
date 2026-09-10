@@ -499,7 +499,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	sandboxTool := &builtin.SandboxTool{Store: s}
 	toolReg.Register(sandboxTool)
 	toolReg.Register(&builtin.SandboxStatusTool{Store: s})
-	toolReg.Register(&builtin.GogTool{DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
+	toolReg.Register(&builtin.GogTool{Path: hostpaths.Gog(), DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
+	toolReg.Register(&builtin.GogSchemaTool{Path: hostpaths.Gog()})
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
 	toolReg.Register(&builtin.ToolSearchTool{Registry: toolReg})
@@ -511,8 +512,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		DefaultChannelID: commsMgr.DefaultChannelID,
 		KnownChannelID:   commsMgr.HasChannel,
 	})
-	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: hostpaths.GWS()})
-	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: hostpaths.GWS()})
 	// WhatsApp comes from wacli itself.
 	//
 	// It publishes its capabilities as karma tools — 29 of them, covering

@@ -29,7 +29,7 @@ func toolSet(names ...string) []tools.Tool {
 
 func TestSplitHoldsCoreAndIndexesTheRest(t *testing.T) {
 	a := &Agent{def: AgentDef{CoreTools: []string{"comms.send", "memory.retrieve"}}}
-	held, indexed := a.splitToolSet(toolSet("comms.send", "memory.retrieve", "google_workspace", "wacli"))
+	held, indexed := a.splitToolSet(toolSet("comms.send", "memory.retrieve", "google", "wacli"))
 
 	if len(held) != 2 {
 		t.Fatalf("held = %v", manifestNames(held))
@@ -74,7 +74,7 @@ func TestSplitMatchesCanonicalNames(t *testing.T) {
 }
 
 func TestLendNamedResolvesFromTheFullSet(t *testing.T) {
-	a := &Agent{allTools: toolSet("google_workspace", "wacli", "comms.send")}
+	a := &Agent{allTools: toolSet("google", "wacli", "comms.send")}
 	got := a.lendNamed([]string{"wacli", "nonexistent"})
 	if len(got) != 1 || got[0].Manifest().Name != "wacli" {
 		t.Errorf("lendNamed = %v", manifestNames(got))
@@ -88,12 +88,12 @@ func TestRequestedToolsReadsTheLoadCall(t *testing.T) {
 		{Name: "memory.retrieve"},
 		{
 			Name:   "tools.load",
-			Input:  map[string]any{"names": []any{"google_workspace"}},
-			Result: tools.SuccessResult(map[string]any{"loaded": []string{"google_workspace"}}),
+			Input:  map[string]any{"names": []any{"google"}},
+			Result: tools.SuccessResult(map[string]any{"loaded": []string{"google"}}),
 		},
 	}
 	got := requestedTools(calls)
-	if len(got) != 1 || got[0] != "google_workspace" {
+	if len(got) != 1 || got[0] != "google" {
 		t.Errorf("requestedTools = %v", got)
 	}
 }
@@ -138,7 +138,7 @@ func TestIndexIsMuchSmallerThanSchemas(t *testing.T) {
 
 func TestPreloadPromotesToolsTheBriefNames(t *testing.T) {
 	held := toolSet("comms.send")
-	indexed := toolSet("whatsapp_list_groups", "whatsapp_get_chat", "google_workspace")
+	indexed := toolSet("whatsapp_list_groups", "whatsapp_get_chat", "google")
 
 	brief := "Use whatsapp_list_groups to list groups, then whatsapp.get_chat on 12345@lid."
 	held, indexed = preloadNamedInBrief(brief, held, indexed)
@@ -160,7 +160,7 @@ func TestPreloadPromotesToolsTheBriefNames(t *testing.T) {
 			t.Errorf("%s named in the brief was not preloaded, held = %v", want, gotHeld)
 		}
 	}
-	if names := manifestNames(indexed); len(names) != 1 || names[0] != "google_workspace" {
+	if names := manifestNames(indexed); len(names) != 1 || names[0] != "google" {
 		t.Errorf("unnamed tools should stay indexed, got %v", names)
 	}
 }

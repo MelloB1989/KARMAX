@@ -718,8 +718,8 @@ func (k *loopKit) HostTool(name string) string {
 			return k.wacliPath
 		}
 		return hostpaths.Wacli()
-	case "gws":
-		return hostpaths.GWS()
+	case "gog":
+		return hostpaths.Gog()
 	case "karmax":
 		return hostpaths.KarmaxBin()
 	case "wacli-api":

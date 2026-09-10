@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	// configured for them, because "is my WhatsApp still paired" is a question
 	// worth answering even when nothing is using it yet.
 	reg.Register(whatsApp())
-	reg.Register(googleWorkspace())
+	reg.Register(google())
 
 	// The connectors, adapted through their own manifests — so a connector and a
 	// channel are the same kind of thing to `karmax login`, which is the point
@@ -101,15 +102,54 @@ func whatsApp() integration.Integration {
 	}, hostpaths.Wacli(), integration.CheckBinarySession(hostpaths.Wacli(), "status"))
 }
 
-// googleWorkspace is the gws CLI's OAuth session.
-func googleWorkspace() integration.Integration {
+// google is the gogcli session: one or more authorized Google accounts.
+func google() integration.Integration {
 	return integration.CLISession(integration.Manifest{
-		ID:          "google_workspace",
-		Name:        "Google Workspace",
-		Description: "Calendar, Gmail, Drive, Chat and Tasks through the gws CLI.",
+		ID:          "google",
+		Name:        "Google",
+		Description: "Gmail, Calendar, Drive, Chat, Docs, Sheets and Tasks through the gog CLI.",
 		Kind:        integration.KindConnector,
-		SetupURL:    "https://github.com/MelloB1989/google-workspace-cli",
-	}, hostpaths.GWS(), integration.CheckBinarySession(hostpaths.GWS(), "auth", "status"))
+		SetupURL:    "https://github.com/openclaw/gogcli",
+	}, hostpaths.Gog(), googleHealth)
+}
+
+// googleHealth asks gog which accounts it holds.
+//
+// `gog auth status` is not the check it looks like: it describes the keyring
+// and exits 0 on a machine that has never authorized anybody. The question
+// worth answering is whether there is an account to act as, so this counts
+// them.
+func googleHealth(ctx context.Context, _ connectorkit.Credentials) error {
+	bin := hostpaths.Gog()
+	if _, err := exec.LookPath(bin); err != nil {
+		return fmt.Errorf("the gog CLI is not on this machine (%v)", err)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, bin, "auth", "list", "--json", "--no-input").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gog auth list: %v — %s", err, trunc(strings.TrimSpace(string(out)), 300))
+	}
+	var listed struct {
+		Accounts []struct {
+			Email string `json:"email"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(out, &listed); err != nil {
+		return fmt.Errorf("gog auth list returned something unreadable: %v", err)
+	}
+	if len(listed.Accounts) == 0 {
+		return fmt.Errorf("no Google account is authorized yet")
+	}
+	return nil
+}
+
+// trunc keeps a CLI's complaint readable in an error line.
+func trunc(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // discord is a bot token.

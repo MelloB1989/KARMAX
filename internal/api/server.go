@@ -871,11 +871,11 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		add("discord", "Discord", "off", "not configured")
 	}
 
-	// Google Workspace
-	if gws := lookGWS(); gws != "" {
-		add("google_workspace", "Google Workspace", "available", gws)
+	// Google, through gogcli.
+	if gog := lookGoogleCLI(); gog != "" {
+		add("google", "Google", "available", gog)
 	} else {
-		add("google_workspace", "Google Workspace", "missing", "install + auth the gws CLI")
+		add("google", "Google", "missing", "install gogcli and run `gog auth add`")
 	}
 
 	// Coding harnesses
@@ -944,14 +944,19 @@ func firstLine(s string) string {
 	return s
 }
 
-func lookGWS() string {
-	p := hostpaths.GWS()
-	// hostpaths falls back to the bare command name; only report it as
-	// available if it actually resolves to something runnable.
-	if p == "gws" {
+// lookGoogleCLI reports where gogcli is, or "" if this host has no Google CLI.
+func lookGoogleCLI() string { return runnable(hostpaths.Gog(), "gog") }
+
+// runnable reports a resolved path only when something is actually there.
+//
+// hostpaths falls back to the bare command name when it finds nothing, so a
+// path equal to the name proves nothing on its own.
+func runnable(p, name string) string {
+	if p == name {
 		if _, err := exec.LookPath(p); err != nil {
 			return ""
 		}
+		return p
 	}
 	if _, err := os.Stat(p); err != nil {
 		if _, lerr := exec.LookPath(p); lerr != nil {
