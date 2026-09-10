@@ -135,7 +135,7 @@ func loginAPIKey(m Manifest, p Prompter) (LoginResult, error) {
 
 // loginCLI reports on a session the host binary holds itself.
 //
-// KARMAX cannot log in for wacli or gws — the session is theirs, in their own
+// KARMAX cannot log in for wacli or gog — the session is theirs, in their own
 // store. What it can do is check, and say the exact command rather than leaving
 // somebody to work out which of the binary's subcommands does it.
 func loginCLI(ctx context.Context, m Manifest, auth connectorkit.AuthMethod,
@@ -173,8 +173,6 @@ func loginHint(binary string) string {
 		// gogcli authorises per account rather than per machine, so the hint
 		// has to name one. The address is the operator's to fill in.
 		return binary + " auth add you@example.com --services gmail,calendar,drive"
-	case "gws":
-		return binary + " auth login"
 	}
 	return binary + " login"
 }

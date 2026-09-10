@@ -9,12 +9,12 @@ import (
 )
 
 func loader() *LoadToolTool {
-	return &LoadToolTool{Available: []string{"google_workspace", "whatsapp.read", "comms.send"}}
+	return &LoadToolTool{Available: []string{"google", "whatsapp.read", "comms.send"}}
 }
 
 func TestLoadResolvesKnownTools(t *testing.T) {
 	res, err := loader().Execute(context.Background(), map[string]any{
-		"names": []any{"google_workspace", "whatsapp.read"},
+		"names": []any{"google", "whatsapp.read"},
 	})
 	if err != nil || res.IsError {
 		t.Fatalf("unexpected failure: %v %s", err, res.Error)
@@ -33,7 +33,7 @@ func TestUnknownToolFailsWithTheRealNames(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("an unknown tool should be an error")
 	}
-	if !strings.Contains(res.Error, "google_workspace") {
+	if !strings.Contains(res.Error, "google") {
 		t.Errorf("the error should list what is available, got: %s", res.Error)
 	}
 }

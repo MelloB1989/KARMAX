@@ -871,13 +871,11 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		add("discord", "Discord", "off", "not configured")
 	}
 
-	// Google Workspace. gogcli is what the agent's tool actually runs, so it
-	// is what this reports; gws is still accepted because a host set up before
-	// the switch has it and it still works for the loops that call it.
+	// Google, through gogcli.
 	if gog := lookGoogleCLI(); gog != "" {
-		add("google_workspace", "Google Workspace", "available", gog)
+		add("google", "Google", "available", gog)
 	} else {
-		add("google_workspace", "Google Workspace", "missing", "install gogcli and run `gog auth add`")
+		add("google", "Google", "missing", "install gogcli and run `gog auth add`")
 	}
 
 	// Coding harnesses
@@ -946,14 +944,8 @@ func firstLine(s string) string {
 	return s
 }
 
-// lookGoogleCLI finds whichever Google CLI this host has, preferring the one
-// the agent's tool runs.
-func lookGoogleCLI() string {
-	if p := runnable(hostpaths.Gog(), "gog"); p != "" {
-		return p
-	}
-	return runnable(hostpaths.GWS(), "gws")
-}
+// lookGoogleCLI reports where gogcli is, or "" if this host has no Google CLI.
+func lookGoogleCLI() string { return runnable(hostpaths.Gog(), "gog") }
 
 // runnable reports a resolved path only when something is actually there.
 //

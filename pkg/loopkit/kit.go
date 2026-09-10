@@ -236,7 +236,7 @@ type Kit interface {
 	RunLoop(name string) error
 
 	// HostTool resolves a host-side dependency KARMAX knows about: "wacli" and
-	// "gws" return binary paths (env override → PATH → well-known locations),
+	// "gog" return binary paths (env override → PATH → well-known locations),
 	// "karmax" the KARMAX CLI itself, and "wacli-api" the local wacli HTTP API
 	// base URL. Returns the bare name when it cannot resolve further.
 	HostTool(name string) string
