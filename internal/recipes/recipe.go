@@ -300,6 +300,17 @@ func (r *Recipe) validate() error {
 	if len(r.Steps) == 0 {
 		return &Error{Path: r.Path, Line: 1, Message: "no steps"}
 	}
+	// A grant that does not parse is a step that will be refused at run time,
+	// hours later, in a log. Said here it is a line number in the file the
+	// person is editing.
+	for _, g := range r.Grants {
+		class, value, ok := strings.Cut(g, ":")
+		if !ok || strings.TrimSpace(class) == "" || strings.TrimSpace(value) == "" {
+			return &Error{Path: r.Path, Line: 1,
+				Message: fmt.Sprintf("the grant %q is not <capability>:<value>", g),
+				Fix:     "write it like 'http:api.example.com' or 'tool:app.push'"}
+		}
+	}
 	return validateSteps(r.Path, r.Steps)
 }
 

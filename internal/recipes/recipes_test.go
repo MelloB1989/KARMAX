@@ -693,3 +693,56 @@ steps:
 		}
 	}
 }
+
+// A grant that does not parse is refused where it is written.
+//
+// The alternative is a step that fails at run time, hours later, in a log
+// nobody is reading — which is exactly how `grants:` came to be parsed,
+// rendered for the operator, and honoured by nothing at all.
+func TestGrantsMustNameACapabilityAndAValue(t *testing.T) {
+	body := func(grants string) []byte {
+		return []byte(`name: probe
+on:
+  schedule: "0 */5 * * * *"
+grants:
+` + grants + `
+steps:
+  - log: hello
+`)
+	}
+
+	if _, err := Parse("probe.yaml", body("  - http:api.example.com")); err != nil {
+		t.Fatalf("a well-formed grant was refused: %v", err)
+	}
+	if _, err := Parse("probe.yaml", body("  - tool:app.push")); err != nil {
+		t.Fatalf("a well-formed grant was refused: %v", err)
+	}
+
+	for _, bad := range []string{"  - http", "  - \"http:\"", "  - \":api.example.com\""} {
+		if _, err := Parse("probe.yaml", body(bad)); err == nil {
+			t.Errorf("%q was accepted as a grant", strings.TrimSpace(bad))
+		}
+	}
+}
+
+// The grants a recipe declares are the ones an operator is shown.
+func TestDescribeNamesEveryGrant(t *testing.T) {
+	r, err := Parse("probe.yaml", []byte(`name: probe
+on:
+  schedule: "0 */5 * * * *"
+grants:
+  - http:api.example.com
+  - tool:app.push
+steps:
+  - log: hello
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	said := strings.Join(Describe(r), "\n")
+	for _, want := range []string{"http:api.example.com", "tool:app.push"} {
+		if !strings.Contains(said, want) {
+			t.Errorf("Describe never mentions %q:\n%s", want, said)
+		}
+	}
+}
