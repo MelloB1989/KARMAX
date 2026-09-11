@@ -1,0 +1,8 @@
+{"type":"system","subtype":"init","sessionId":"abc-123"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Archive the old screenshots"}]},"timestamp":"2026-09-11T10:00:00.000Z"}
+{"type":"ai-title","aiTitle":"Archiving old screenshots","sessionId":"abc-123"}
+{"type":"file-history-snapshot","messageId":"x","snapshot":{}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls ~/Downloads"}}]},"timestamp":"2026-09-11T10:00:02.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Found 14, all from July."}]},"timestamp":"2026-09-11T10:00:05.000Z"}
+{"type":"some-future-record-nobody-has-seen","whatever":true}
+{"type":"result","is_error":false,"result":"Found 14, all from July."}
