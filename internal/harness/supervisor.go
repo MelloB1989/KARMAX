@@ -147,6 +147,9 @@ type Options struct {
 	// or on the next resume — never mid-conversation, which is not a thing a
 	// running process can do.
 	Model string
+	// OnEvent watches the turn as it happens. Nil behaves exactly as before,
+	// which is what keeps every existing caller out of this change.
+	OnEvent func(Event)
 }
 
 // Send is the whole caller-facing surface: give it a key and a message.
@@ -178,7 +181,7 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 		return Turn{}, err
 	}
 
-	turn, err := sess.Send(ctx, text, pol.TurnTimeout)
+	turn, err := sess.Send(ctx, text, pol.TurnTimeout, opt.OnEvent)
 
 	// Quota is reported per turn, so the breaker learns from every call
 	// including the ones that fail.
