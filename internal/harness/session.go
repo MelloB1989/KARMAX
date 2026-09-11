@@ -156,12 +156,16 @@ func emit(sink func(Event), ev event) {
 		return
 	}
 	switch ev.Type {
+	case "stream_event":
+		if ev.StreamEvent.Type == "content_block_delta" && ev.StreamEvent.Delta.Type == "text_delta" {
+			sink(Event{Kind: "text", Text: ev.StreamEvent.Delta.Text})
+		}
 	case "assistant":
+		// Text is not emitted here: the deltas above already streamed it, and
+		// this block is that same text again, sent whole — emitting it too
+		// would double every reply.
 		for _, c := range ev.Message.Content {
-			switch c.Type {
-			case "text":
-				sink(Event{Kind: "text", Text: c.Text})
-			case "tool_use":
+			if c.Type == "tool_use" {
 				sink(Event{Kind: "tool", Tool: c.Name, Phase: "start"})
 			}
 		}
