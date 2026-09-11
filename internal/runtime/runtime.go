@@ -1267,6 +1267,7 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// loop list (the daemon's truth — includes runtime-registered loops).
 	if rt.api != nil {
 		rt.api.SetRunLoop(rt.RunLoopByName)
+		rt.api.SetChatTurn(rt.chatTurn)
 		rt.api.SetLoopHealth(func() (any, error) { return rt.LoopHealthReport() })
 		rt.api.SetListLoops(func() []api.LoopInfo {
 			out := make([]api.LoopInfo, 0, len(rt.loopkitLoops))

@@ -42,9 +42,22 @@ type Server struct {
 	log        *zap.Logger
 	httpSrv    *http.Server
 	mdns       *mdnsAd
-	runLoop    func(name string) (bool, error) // injected: run a loopkit loop by name
-	listLoops  func() []LoopInfo               // injected: the daemon's ACTIVE loops
-	loopHealth func() (any, error)             // injected: per-loop run health
+	runLoop    func(name string) (bool, error)                                                         // injected: run a loopkit loop by name
+	listLoops  func() []LoopInfo                                                                       // injected: the daemon's ACTIVE loops
+	loopHealth func() (any, error)                                                                     // injected: per-loop run health
+	chatTurn   func(ctx context.Context, key, message string, onEvent func(ChatEvent)) (string, error) // injected: run one watched harness turn
+}
+
+// ChatEvent is one thing worth telling a streaming chat client while a turn is
+// still running. It is this package's own type, not harness.Event, because
+// internal/api must not import internal/harness — the runtime adapter that
+// wires SetChatTurn is where a harness.Event becomes one of these.
+type ChatEvent struct {
+	Kind  string
+	Text  string
+	Tool  string
+	Phase string
+	JobID string
 }
 
 // LoopInfo describes one active loop for GET /api/loops.
@@ -70,6 +83,13 @@ func (s *Server) SetLoopHealth(fn func() (any, error)) { s.loopHealth = fn }
 // excludes operator-disabled ones, unlike a CLI process's local registry.
 func (s *Server) SetListLoops(fn func() []LoopInfo) { s.listLoops = fn }
 
+// SetChatTurn wires the streaming chat turn (POST /api/chat/stream). The
+// runtime adapts a harness.Event stream into ChatEvent so this package never
+// needs to import the harness for it.
+func (s *Server) SetChatTurn(fn func(ctx context.Context, key, message string, onEvent func(ChatEvent)) (string, error)) {
+	s.chatTurn = fn
+}
+
 // New builds the API server. token (from KARMAX_API_TOKEN) gates everything
 // except /api/ping; an empty token disables auth (development only).
 func New(addr string, port int, token string, agents *agent.Registry, s *store.Store, sched *scheduler.Scheduler, mem *memory.ManagerFactory, cfg *config.KarmaxConfig, log *zap.Logger) *Server {
@@ -91,6 +111,10 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 		_ = pprof.Lookup("goroutine").WriteTo(w, 2)
 	})
 	mux.HandleFunc("/api/chat", srv.auth(srv.handleChat))
+	mux.HandleFunc("POST /api/chat/stream", srv.auth(srv.handleChatStream))
+	mux.HandleFunc("GET /api/chat/conversations", srv.auth(srv.handleChatConversations))
+	mux.HandleFunc("GET /api/chat/conversations/{id}", srv.auth(srv.handleChatHistory))
+	mux.HandleFunc("DELETE /api/chat/conversations/{id}", srv.auth(srv.handleChatDelete))
 	mux.HandleFunc("/api/messages", srv.auth(srv.handleMessages))
 	mux.HandleFunc("POST /api/conversation/reset", srv.auth(srv.handleResetConversation))
 	mux.HandleFunc("/api/push/register", srv.auth(srv.handlePushRegister))
@@ -1060,6 +1084,15 @@ func (s *Server) resolveAgent(id string) *agent.Agent {
 		return nil
 	}
 	return s.defaultAgent()
+}
+
+// brainName is the harness CLI the config selected ("claude" or "codex"),
+// read from the same config the harness was built with.
+func (s *Server) brainName() string {
+	if s.cfg != nil && strings.TrimSpace(s.cfg.Harness.Binary) != "" {
+		return s.cfg.Harness.Binary
+	}
+	return "claude"
 }
 
 // localAddresses returns the http base URLs a client can use to reach KARMAX
