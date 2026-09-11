@@ -28,3 +28,4 @@ dist/
 /memcat
 # Prompt snapshots are the operator's live config, not source.
 !prompts/backup/
+.superpowers/
