@@ -34,6 +34,15 @@ type event struct {
 		Content []contentBlock `json:"content"`
 	} `json:"message"`
 
+	// stream_event, only present with --include-partial-messages
+	StreamEvent struct {
+		Type  string `json:"type"` // content_block_delta | message_start | …
+		Delta struct {
+			Type string `json:"type"` // text_delta
+			Text string `json:"text"`
+		} `json:"delta"`
+	} `json:"event"`
+
 	// rate_limit_event
 	RateLimitInfo *RateLimit `json:"rate_limit_info"`
 
