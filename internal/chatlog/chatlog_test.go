@@ -34,6 +34,31 @@ func TestUnknownRecordTypesAreSkipped(t *testing.T) {
 	}
 }
 
+// Merging is for a single assistant turn the CLI split across records — not
+// for two separate things the person typed. Two consecutive user records are
+// two messages; a tool_use-then-text assistant pair is still one.
+func TestUserTurnsDoNotMergeAcrossRecords(t *testing.T) {
+	msgs, err := Read("testdata/consecutive-user", "session-consecutive-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3 (user, user, assistant): %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Text != "First question" {
+		t.Errorf("first message = %+v", msgs[0])
+	}
+	if msgs[1].Role != "user" || msgs[1].Text != "Second question" {
+		t.Errorf("second message = %+v, want a separate user turn", msgs[1])
+	}
+	if msgs[2].Role != "assistant" || msgs[2].Text != "Done." {
+		t.Errorf("third message = %+v", msgs[2])
+	}
+	if len(msgs[2].Steps) != 1 || msgs[2].Steps[0].Tool != "Bash" {
+		t.Errorf("steps = %+v, want the assistant's split records still merged", msgs[2].Steps)
+	}
+}
+
 // The list is what the conversation column renders.
 func TestListsWithTitleAndOpening(t *testing.T) {
 	convs, err := List("testdata")

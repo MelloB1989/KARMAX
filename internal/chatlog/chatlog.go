@@ -89,8 +89,10 @@ func Read(dir, id string) ([]Message, error) {
 			return
 		}
 		// The CLI splits one assistant turn across several records — tools in
-		// one, prose in the next. Merging them keeps a turn a turn.
-		if n := len(out); n > 0 && out[n-1].Role == msg.Role {
+		// one, prose in the next. Merging them keeps a turn a turn. User
+		// records never split this way, so merging those would instead fuse
+		// two separate things the person typed into one bubble.
+		if n := len(out); n > 0 && msg.Role == "assistant" && out[n-1].Role == msg.Role {
 			out[n-1].Text += msg.Text
 			out[n-1].Steps = append(out[n-1].Steps, msg.Steps...)
 			return
