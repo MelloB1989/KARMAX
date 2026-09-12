@@ -118,3 +118,34 @@ func TestIdsThatEscapeTheDirectoryAreRefused(t *testing.T) {
 		t.Fatalf("the guard refused a real id: %v", err)
 	}
 }
+
+// The CLI writes a turn's body as a plain string as often as a list of parts.
+//
+// Reading only the list shape dropped every string-shaped turn as empty, so a
+// restored transcript was silently missing the person's own words — and an
+// untitled conversation had no opening line to show in a list either.
+func TestStringShapedContentIsRead(t *testing.T) {
+	msgs, err := Read("testdata/string-content", "plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2 — a string-shaped turn was dropped", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Text != "Plain string, the way a person's own turn is usually written" {
+		t.Errorf("string-shaped turn came back as %+v", msgs[0])
+	}
+	if msgs[1].Text != "A list of parts, the way a reply is written." {
+		t.Errorf("list-shaped turn regressed: %+v", msgs[1])
+	}
+
+	// An untitled conversation leans on the opening line to be tellable apart
+	// from every other untitled one in the list.
+	convs, err := List("testdata/string-content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(convs) != 1 || convs[0].Opening == "" {
+		t.Fatalf("no opening line for an untitled conversation: %+v", convs)
+	}
+}

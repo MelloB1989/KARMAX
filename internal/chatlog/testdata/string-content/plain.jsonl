@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"Plain string, the way a person's own turn is usually written"},"timestamp":"2026-09-11T10:00:00.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"A list of parts, the way a reply is written."}]},"timestamp":"2026-09-11T10:00:02.000Z"}
