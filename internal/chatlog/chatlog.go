@@ -3,6 +3,7 @@ package chatlog
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,9 +71,26 @@ func scan(path string, fn func(record)) error {
 	return sc.Err()
 }
 
+// sessionPath is the file for one conversation id, or "" if the id is not one.
+//
+// The id reaches this package from an HTTP path and is joined onto a
+// directory, so "../../etc/passwd" would otherwise escape the sessions
+// directory entirely. A session id is a uuid: anything carrying a separator
+// is not one, and is refused rather than cleaned into something plausible.
+func sessionPath(dir, id string) string {
+	if id == "" || strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return ""
+	}
+	return filepath.Join(dir, id+".jsonl")
+}
+
 func Read(dir, id string) ([]Message, error) {
+	path := sessionPath(dir, id)
+	if path == "" {
+		return nil, fmt.Errorf("chatlog: %q is not a conversation id", id)
+	}
 	var out []Message
-	err := scan(filepath.Join(dir, id+".jsonl"), func(r record) {
+	err := scan(path, func(r record) {
 		if r.Type != "user" && r.Type != "assistant" {
 			return
 		}
@@ -140,7 +158,11 @@ func List(dir string) ([]Conversation, error) {
 }
 
 func Delete(dir, id string) error {
-	err := os.Remove(filepath.Join(dir, id+".jsonl"))
+	path := sessionPath(dir, id)
+	if path == "" {
+		return fmt.Errorf("chatlog: %q is not a conversation id", id)
+	}
+	err := os.Remove(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
