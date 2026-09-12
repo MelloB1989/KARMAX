@@ -95,3 +95,26 @@ func TestSlug(t *testing.T) {
 		t.Errorf("Dir() = %q", Dir("/Users/x"))
 	}
 }
+
+// A conversation id reaches this package from an HTTP path, so it must not be
+// able to name a file outside the sessions directory.
+func TestIdsThatEscapeTheDirectoryAreRefused(t *testing.T) {
+	for _, id := range []string{
+		"../../etc/passwd",
+		"..",
+		"sub/dir",
+		`back\slash`,
+		"",
+	} {
+		if _, err := Read("testdata", id); err == nil {
+			t.Errorf("Read accepted %q", id)
+		}
+		if err := Delete("testdata", id); err == nil {
+			t.Errorf("Delete accepted %q", id)
+		}
+	}
+	// The real thing still works.
+	if _, err := Read("testdata", "session-basic"); err != nil {
+		t.Fatalf("the guard refused a real id: %v", err)
+	}
+}
