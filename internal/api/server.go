@@ -42,10 +42,10 @@ type Server struct {
 	log        *zap.Logger
 	httpSrv    *http.Server
 	mdns       *mdnsAd
-	runLoop    func(name string) (bool, error)                                                         // injected: run a loopkit loop by name
-	listLoops  func() []LoopInfo                                                                       // injected: the daemon's ACTIVE loops
-	loopHealth func() (any, error)                                                                     // injected: per-loop run health
-	chatTurn   func(ctx context.Context, key, message string, onEvent func(ChatEvent)) (string, error) // injected: run one watched harness turn
+	runLoop    func(name string) (bool, error)                                                                    // injected: run a loopkit loop by name
+	listLoops  func() []LoopInfo                                                                                  // injected: the daemon's ACTIVE loops
+	loopHealth func() (any, error)                                                                                // injected: per-loop run health
+	chatTurn   func(ctx context.Context, conversationID, message string, onEvent func(ChatEvent)) (string, error) // injected: run one watched harness turn
 }
 
 // ChatEvent is one thing worth telling a streaming chat client while a turn is
@@ -86,7 +86,7 @@ func (s *Server) SetListLoops(fn func() []LoopInfo) { s.listLoops = fn }
 // SetChatTurn wires the streaming chat turn (POST /api/chat/stream). The
 // runtime adapts a harness.Event stream into ChatEvent so this package never
 // needs to import the harness for it.
-func (s *Server) SetChatTurn(fn func(ctx context.Context, key, message string, onEvent func(ChatEvent)) (string, error)) {
+func (s *Server) SetChatTurn(fn func(ctx context.Context, conversationID, message string, onEvent func(ChatEvent)) (string, error)) {
 	s.chatTurn = fn
 }
 

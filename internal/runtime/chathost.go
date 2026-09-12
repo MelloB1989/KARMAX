@@ -7,6 +7,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/harness"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 )
 
 // errChatHarnessUnavailable mirrors the message the API layer used to return
@@ -17,11 +18,19 @@ var errChatHarnessUnavailable = errors.New("the brain is not running")
 // It is where a harness.Event becomes the api.ChatEvent the streaming
 // endpoint forwards — internal/api must not import internal/harness, so this
 // adapter is the only place the two types meet.
-func (rt *KarmaxRuntime) chatTurn(ctx context.Context, key, message string, onEvent func(api.ChatEvent)) (string, error) {
+// The argument is the CONVERSATION id, not the supervisor key. It is also the
+// harness session id and the name of the transcript on disk: the three were
+// three different values once, and the result was a chat that worked and a
+// conversation that could never be listed, reopened or deleted.
+func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEvent func(api.ChatEvent)) (string, error) {
 	if rt.harness == nil {
 		return "", errChatHarnessUnavailable
 	}
-	turn, err := rt.harness.SendWith(ctx, key, "chat", message, harness.Options{
+	turn, err := rt.harness.SendWith(ctx, "chat:"+id, "chat", message, harness.Options{
+		// Where chatlog reads. Left to the supervisor's default this lands in
+		// a per-conversation directory nothing ever lists.
+		Workdir:   hostpaths.WorkDir(),
+		SessionID: id,
 		OnEvent: func(e harness.Event) {
 			onEvent(api.ChatEvent{Kind: e.Kind, Text: e.Text, Tool: e.Tool, Phase: e.Phase, JobID: e.JobID})
 		},
