@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","sessionId":"def-456"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"First question"}]},"timestamp":"2026-09-11T11:00:00.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Second question"}]},"timestamp":"2026-09-11T11:00:01.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-09-11T11:00:02.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]},"timestamp":"2026-09-11T11:00:03.000Z"}

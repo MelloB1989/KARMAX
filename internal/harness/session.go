@@ -62,6 +62,9 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 		"--output-format", "stream-json",
 		"--verbose", // stream-json emits nothing without it
 		"--dangerously-skip-permissions",
+		// Without this, text arrives per completed block; with it, per token.
+		// The chat is the only caller that shows text as it lands.
+		"--include-partial-messages",
 	}
 	if resume {
 		args = append(args, "--resume", s.ID)
@@ -134,11 +137,54 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	return nil
 }
 
+// Event is one thing worth telling a caller while a turn is still running.
+//
+// The harness can only report what it sees, so this set is narrower than the
+// one on the wire: "conversation" and "done" are the endpoint's, added there
+// because the harness has no business knowing about either.
+type Event struct {
+	Kind  string // "text" | "tool" | "error"
+	Text  string
+	Tool  string
+	Phase string // for tool: "start" | "done" | "failed"
+	JobID string
+}
+
+// emit hands one parsed CLI event to the sink, if there is one.
+func emit(sink func(Event), ev event) {
+	if sink == nil {
+		return
+	}
+	switch ev.Type {
+	case "stream_event":
+		if ev.StreamEvent.Type == "content_block_delta" && ev.StreamEvent.Delta.Type == "text_delta" {
+			sink(Event{Kind: "text", Text: ev.StreamEvent.Delta.Text})
+		}
+	case "assistant":
+		// Text is not emitted here: the deltas above already streamed it, and
+		// this block is that same text again, sent whole — emitting it too
+		// would double every reply.
+		for _, c := range ev.Message.Content {
+			if c.Type == "tool_use" {
+				sink(Event{Kind: "tool", Tool: c.Name, Phase: "start"})
+			}
+		}
+	}
+}
+
+// replay drives emit over a fixed list, so the sink can be tested without a
+// subprocess.
+func replay(sink func(Event), evs []event) {
+	for _, ev := range evs {
+		emit(sink, ev)
+	}
+}
+
 // Send asks one question and reads until the turn completes.
 //
 // The result event is the only reliable delimiter: text arrives in pieces, tool
 // calls interleave, and nothing else says "this exchange is over".
-func (s *Session) Send(ctx context.Context, text string, timeout time.Duration) (Turn, error) {
+func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, sink func(Event)) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.busy.Store(true)
@@ -174,6 +220,7 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration) 
 			if !ok {
 				return turn, fmt.Errorf("harness exited mid-turn")
 			}
+			emit(sink, ev)
 			switch ev.Type {
 			case "system":
 				if ev.SessionID != "" {

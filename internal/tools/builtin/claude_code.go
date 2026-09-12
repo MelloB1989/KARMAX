@@ -12,6 +12,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/chatlog"
 	"github.com/MelloB1989/karmax/internal/fsscope"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -362,12 +363,7 @@ func removeClaudeSession(workingDir, sessionID string) {
 	if sessionID == "" {
 		return
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	slug := strings.NewReplacer("/", "-", ".", "-", "_", "-").Replace(workingDir)
-	path := filepath.Join(home, ".claude", "projects", slug, sessionID+".jsonl")
+	path := filepath.Join(chatlog.Dir(workingDir), sessionID+".jsonl")
 	_ = os.Remove(path)
 }
 

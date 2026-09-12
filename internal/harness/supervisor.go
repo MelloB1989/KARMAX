@@ -147,6 +147,17 @@ type Options struct {
 	// or on the next resume — never mid-conversation, which is not a thing a
 	// running process can do.
 	Model string
+	// SessionID names a new session rather than letting one be minted.
+	//
+	// The chat needs the id it hands a client to BE the id of the transcript
+	// on disk, because a conversation is its harness session: an id the caller
+	// cannot predict is a conversation it can never list, reopen or delete.
+	// Ignored when an existing session is being resumed — that one already has
+	// an id, and it wins.
+	SessionID string
+	// OnEvent watches the turn as it happens. Nil behaves exactly as before,
+	// which is what keeps every existing caller out of this change.
+	OnEvent func(Event)
 }
 
 // Send is the whole caller-facing surface: give it a key and a message.
@@ -178,7 +189,7 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 		return Turn{}, err
 	}
 
-	turn, err := sess.Send(ctx, text, pol.TurnTimeout)
+	turn, err := sess.Send(ctx, text, pol.TurnTimeout, opt.OnEvent)
 
 	// Quota is reported per turn, so the breaker learns from every call
 	// including the ones that fail.
@@ -237,9 +248,12 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 
 	resume := rec != nil && rec.HarnessSessionID != ""
 	id := ""
-	if resume {
+	switch {
+	case resume:
 		id = rec.HarnessSessionID
-	} else {
+	case strings.TrimSpace(opt.SessionID) != "":
+		id = strings.TrimSpace(opt.SessionID)
+	default:
 		id = uuid.New().String()
 	}
 
