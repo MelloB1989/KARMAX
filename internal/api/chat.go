@@ -165,6 +165,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	streamTurn(w, id, isNew, func(sink func(harnessEvent)) (string, error) {
-		return s.chatTurn(r.Context(), "chat:"+id, body.Message, sink)
+		return s.chatTurn(r.Context(), id, body.Message, sink)
 	})
 }
