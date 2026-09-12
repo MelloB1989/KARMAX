@@ -40,14 +40,42 @@ type record struct {
 	AITitle   string `json:"aiTitle"`
 	Timestamp string `json:"timestamp"`
 	Message   struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
-		} `json:"content"`
+		Role    string  `json:"role"`
+		Content content `json:"content"`
 	} `json:"message"`
+}
+
+type part struct {
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// content is a turn's body, which the CLI writes in two shapes.
+//
+// A plain string is the common one for something a person typed; a list of
+// parts is what an assistant turn and a tool result use. Decoding only the
+// list lost every string-shaped turn outright — the message had no text, so it
+// was dropped as empty, and a restored transcript was missing the person's own
+// words.
+type content []part
+
+func (c *content) UnmarshalJSON(b []byte) error {
+	var parts []part
+	if err := json.Unmarshal(b, &parts); err == nil {
+		*c = parts
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(b, &text); err != nil {
+		// Neither shape. A turn nobody can read is not a reason to abandon the
+		// rest of the transcript.
+		*c = nil
+		return nil
+	}
+	*c = content{{Type: "text", Text: text}}
+	return nil
 }
 
 // scan walks one session file, handing each decoded record to fn.
