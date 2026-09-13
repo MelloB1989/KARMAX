@@ -132,6 +132,9 @@ func toolTitle(name string, input json.RawMessage) string {
 			return s
 		}
 	}
+	if name == "" {
+		return "tool"
+	}
 	return name
 }
 

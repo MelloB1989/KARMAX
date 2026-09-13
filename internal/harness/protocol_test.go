@@ -2,7 +2,9 @@ package harness
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The real event stream, in the order the CLI emits it. Recorded from a live
@@ -124,4 +126,84 @@ func splitLines(s string) []string {
 		out = append(out, cur)
 	}
 	return out
+}
+
+// TodoWrite is where Claude Code keeps a plan, so that is where we read one.
+func TestPlanFromTodoWrite(t *testing.T) {
+	in := json.RawMessage(`{"todos":[
+		{"content":"Read the spec","status":"completed","activeForm":"Reading the spec"},
+		{"content":"Write the test","status":"in_progress","activeForm":"Writing the test"}
+	]}`)
+	got := planFrom(in)
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	if got[0].Content != "Read the spec" || got[0].Status != "completed" {
+		t.Errorf("first entry wrong: %+v", got[0])
+	}
+	if got[1].ActiveForm != "Writing the test" {
+		t.Errorf("activeForm lost: %+v", got[1])
+	}
+}
+
+// An older or newer TodoWrite shape must not cost us the whole plan.
+func TestPlanFromToleratesAMissingPriority(t *testing.T) {
+	got := planFrom(json.RawMessage(`{"todos":[{"content":"x","status":"pending"}]}`))
+	if len(got) != 1 || got[0].Priority != "" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestPlanFromRejectsRubbish(t *testing.T) {
+	if got := planFrom(json.RawMessage(`{"todos":"not a list"}`)); got != nil {
+		t.Errorf("got %+v, want nil", got)
+	}
+	if got := planFrom(nil); got != nil {
+		t.Errorf("nil input: got %+v, want nil", got)
+	}
+}
+
+// A tool_result's content is written either as a plain string or as a list of
+// blocks. Reading only one shape is how a transcript loses half its output —
+// the same trap internal/chatlog fell into with message content.
+func TestToolResultTextReadsBothShapes(t *testing.T) {
+	if got := toolResultText(json.RawMessage(`"total 4\n"`)); got != "total 4\n" {
+		t.Errorf("string shape: got %q", got)
+	}
+	blocks := json.RawMessage(`[{"type":"text","text":"one "},{"type":"text","text":"two"}]`)
+	if got := toolResultText(blocks); got != "one two" {
+		t.Errorf("block shape: got %q", got)
+	}
+	if got := toolResultText(nil); got != "" {
+		t.Errorf("nil: got %q", got)
+	}
+	if got := toolResultText(json.RawMessage(`{"unexpected":true}`)); got != "" {
+		t.Errorf("object: got %q", got)
+	}
+}
+
+func TestTruncateOutputLeavesShortResultsAlone(t *testing.T) {
+	if got := truncateOutput("hello"); got != "hello" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// A tool result can be a whole file. The transcript shows a preview; the bytes
+// are of no use to it and paying to stream them is worse than useless.
+func TestTruncateOutputCapsAndMarks(t *testing.T) {
+	got := truncateOutput(strings.Repeat("x", 5000))
+	if len(got) > maxToolOutput+len("\n…") {
+		t.Errorf("got %d bytes, want at most %d", len(got), maxToolOutput+len("\n…"))
+	}
+	if !strings.HasSuffix(got, "\n…") {
+		t.Errorf("no truncation marker: %q", got[len(got)-10:])
+	}
+}
+
+// Cutting mid-rune puts U+FFFD on screen.
+func TestTruncateOutputCutsOnARuneBoundary(t *testing.T) {
+	got := truncateOutput(strings.Repeat("é", 4000))
+	if !utf8.ValidString(strings.TrimSuffix(got, "\n…")) {
+		t.Error("truncation produced invalid UTF-8")
+	}
 }

@@ -16,6 +16,7 @@ package harness
 import (
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 )
 
 // event is one line of --output-format stream-json.
@@ -66,8 +67,9 @@ type contentBlock struct {
 	Input json.RawMessage `json:"input"`
 
 	// tool_result
-	ToolUseID string `json:"tool_use_id"`
-	IsError   bool   `json:"is_error"`
+	ToolUseID string          `json:"tool_use_id"`
+	IsError   bool            `json:"is_error"`
+	Content   json.RawMessage `json:"content"`
 }
 
 // Usage is what one turn consumed.
@@ -178,4 +180,75 @@ func shellCommand(name string, input json.RawMessage) string {
 		return f
 	}
 	return ""
+}
+
+// PlanEntry is one line of the agent's plan.
+//
+// Claude Code keeps a plan in TodoWrite's input, so that is where this is read
+// from; ACP delivers the same thing as a `plan` session update.
+type PlanEntry struct {
+	Content    string `json:"content"`
+	Status     string `json:"status"` // pending | in_progress | completed
+	ActiveForm string `json:"activeForm,omitempty"`
+	Priority   string `json:"priority,omitempty"`
+}
+
+// planFrom reads a plan out of a TodoWrite call's input.
+//
+// Every field is optional on purpose: the todo shape has changed upstream
+// before, and losing the whole plan over one renamed key is not a trade worth
+// making.
+func planFrom(input json.RawMessage) []PlanEntry {
+	var in struct {
+		Todos []PlanEntry `json:"todos"`
+	}
+	if json.Unmarshal(input, &in) != nil || len(in.Todos) == 0 {
+		return nil
+	}
+	return in.Todos
+}
+
+// toolResultText reads a tool_result's content.
+//
+// The CLI writes it either as a plain string or as a list of blocks, and
+// handling only one shape silently drops half the results — which is exactly
+// the bug internal/chatlog had with message content.
+func toolResultText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []contentBlock
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, bl := range blocks {
+		if bl.Type == "text" {
+			b.WriteString(bl.Text)
+		}
+	}
+	return b.String()
+}
+
+// maxToolOutput is as much of a result as a transcript can use.
+const maxToolOutput = 2048
+
+// truncateOutput caps a tool result at the adapter.
+//
+// Capping here rather than at each consumer keeps one number in one place, and
+// keeps a result that happens to be a whole file off the wire entirely.
+func truncateOutput(s string) string {
+	if len(s) <= maxToolOutput {
+		return s
+	}
+	// Back up to a rune start: slicing mid-rune renders as U+FFFD.
+	cut := maxToolOutput
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n…"
 }
