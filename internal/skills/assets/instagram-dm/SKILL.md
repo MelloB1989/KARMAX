@@ -41,66 +41,86 @@ Before anything else:
 
 Only once both are true does the rest of this procedure start.
 
-## Step 1 — Harvest the session, straight to a 0600 file
+## Step 1 — Harvest and discover together: capturing headers *is* the harvest
 
-The credential here is a full account session. Handle it as one:
+There is no separate "read the cookies, then write them" step. That was the
+original design here, and it does not work: `browser_run_code_unsafe` runs
+in a **sandboxed VM with no Node API at all** — checked directly against the
+`@playwright/mcp` version KARMAX pins: `typeof require` and `typeof process`
+are both `"undefined"` in that context, and `await import(...)` throws "A
+dynamic import callback was not specified." There is no way to
+`page.context().cookies()` and then write a file from inside that call.
+Don't attempt it.
 
-- Read it with `browser_run_code_unsafe` running `page.context().cookies()`
-  (Playwright's own API, backed by CDP — not `document.cookie`, which cannot
-  see the httpOnly `sessionid` cookie; see the `browser-sessions` skill).
-- Filter to the cookies on `instagram.com`, and **write them to disk in that
-  same `browser_run_code_unsafe` call** — do not return the cookie values as
-  the tool's result and write them with a second tool call. A value that
-  crosses back into the conversation as a tool result is logged in the
-  transcript, which is exactly what must not happen. One call, in-process,
-  reads and writes.
-- Write to `<workdir>/.ig-session.json`, and set its mode to `0600` in that
-  same call (e.g. `require('fs').writeFileSync(path, JSON.stringify(cookies), {mode: 0o600})`).
-  Node's `writeFileSync` mode is applied at file-creation time; if the file
-  might already exist from a prior attempt, `chmod` it to `0o600` right after
-  as a second, cheap belt-and-suspenders step.
-- Return only non-secret confirmation from the call — which cookie names were
-  found (`sessionid`, `csrftoken`, `ds_user_id`, `mid`, `ig_did`) and a count.
-  Never the values, never in an error message either.
-- This file is never logged, never echoed into the transcript, and is
-  **deleted when the run finishes or aborts.** `send_dms.py` deletes it
-  itself on every exit path once sending has started. If the procedure
-  aborts *before* `send_dms.py` ever runs (collect step fails, operator
-  cancels), delete `<workdir>/.ig-session.json` yourself before stopping.
+What actually gets a credential to disk without it ever crossing back into
+the conversation transcript is `browser_network_request`'s own `filename`
+parameter — documented as "Filename to save the result to. If not provided,
+output is returned as text." It writes in the MCP server's own process,
+straight to disk; the tool's result back to you is just a confirmation, not
+the content. And since a captured request's headers already include the
+real `Cookie:` header the browser sent, **harvesting and discovering an
+endpoint are the same action** — capture the headers of a real request to
+the endpoint you need, and the credential comes with it.
 
-## Step 2 — Discover the endpoints from real traffic, never from memory
+**First, a private directory — this is what actually protects the file,
+not its own permission bits.** Use `shell.exec` to create it with the mode
+set at creation: `mkdir -m 700 <workdir>/.ig-capture`. Don't route anything
+under it through `file.write` — that tool always creates files `0644` with
+no way to ask for tighter, so a chmod after the fact would leave a window;
+the directory being unreadable by anyone else is what has to do the work
+here, and it has to exist before anything is captured into it.
 
-Instagram's internal endpoints are unversioned and move. Hardcoding one from
-memory is how this breaks silently weeks later — so don't; observe it fresh
-every time this skill runs.
+**Then, per endpoint that's needed:**
 
-1. Navigate to the reel and open its comments.
-2. `browser_network_requests` to see what fired; filter to the request that
-   actually loaded the comments.
-3. `browser_network_request` on that request with `part: "request-headers"`
-   for the full header set Instagram sent — `x-csrftoken`, `x-ig-app-id`,
-   `x-asbd-id`, `user-agent`, and whatever else is present. Save this as
-   `<workdir>/headers.json`.
-4. Open the message composer and send yourself (or note, without sending) far
-   enough to capture the DM-send request in the network log the same way.
-   Capture **both** `part: "request-headers"` and `part: "request-body"` for
-   it — the body matters here: it is the exact field shape (recipient field
-   name, text field name, any `client_context`/action fields Instagram
-   expects) that `send_dms.py` needs and this skill deliberately does not
-   guess at. Save the body as a template at `<workdir>/payload-template.json`,
-   replacing the one recipient id in it with the literal token
-   `{recipient_id}` and the message text with the literal token `{text}`.
-5. Record what was observed — endpoint URLs, header keys (not cookie values),
-   and the payload template — into the run directory, so a later run can
-   diff against it and notice when Instagram has changed something.
+1. Navigate to the reel and open its comments (or open the DM composer, for
+   the send endpoint below) — this is also what generates the authenticated
+   request that gets captured.
+2. `browser_network_requests(filter: "instagram.com")` to see what fired,
+   and find the row for the request that actually did it.
+3. `browser_network_request(index: <that row's number>, part: "request-headers", filename: "<absolute path inside .ig-capture>")`.
+   `part`'s accepted values are exactly `request-headers`, `request-body`,
+   `response-headers`, `response-body` — confirmed from the tool's own
+   parameter schema. Use an absolute path; always inside the `0700`
+   directory.
+   - For the **comment-list** request: save to
+     `<workdir>/.ig-capture/comments-headers.txt`.
+   - For the **DM-send** request: save headers to
+     `<workdir>/.ig-capture/dm-headers.txt`, **and also** capture
+     `part: "request-body"` to `<workdir>/.ig-capture/payload-template.json`
+     — the exact field shape (recipient field name, text field name, any
+     `client_context`/action fields Instagram expects) that `send_dms.py`
+     needs and this skill deliberately does not guess at. In that template,
+     replace the one real recipient id with the literal token
+     `{recipient_id}` and the message text with the literal token `{text}`.
+4. **Two things here were not verified against a live Instagram capture in
+   this environment — check them on the first real run, not later:**
+   - *Where the file lands.* The `filename` parameter's relative-vs-absolute
+     resolution, and its interaction with an `--output-dir` flag (KARMAX
+     passes none), weren't confirmed. Passing an absolute path sidesteps the
+     ambiguity; after the very first capture, confirm the file actually
+     exists at that exact path (`file.read` it, or `shell.exec ls`) before
+     trusting anything downstream.
+   - *What the captured content looks like.* `collect_comments.py` and
+     `send_dms.py` both parse the file defensively — a JSON object, a JSON
+     array of `{name, value}` pairs, or plain `Name: value` lines — and log
+     which one matched. Check that log line on the first run; if none of
+     the three match, the parser needs a fourth branch added.
+5. **Delete `<workdir>/.ig-capture/` entirely when the run finishes or
+   aborts.** `send_dms.py` deletes the one DM-headers file it was given on
+   every exit path, but the directory as a whole — and
+   `comments-headers.txt`, which nothing else deletes — is this skill's own
+   job. Do it yourself if the procedure aborts before `send_dms.py` ever
+   runs.
+6. Record what was observed — endpoint URLs and header *names* (never
+   values) — into the run directory too, so a later run can diff against it
+   and notice when Instagram has changed something.
 
-## Step 3 — Collect the commenters fully, before sending anything
+## Step 2 — Collect the commenters fully, before sending anything
 
 ```
 python3 scripts/collect_comments.py \
   --endpoint "<observed comment-list endpoint>" \
-  --cookie-file <workdir>/.ig-session.json \
-  --headers-file <workdir>/headers.json \
+  --headers-file <workdir>/.ig-capture/comments-headers.txt \
   --out <workdir>/commenters.json
 ```
 
@@ -110,9 +130,9 @@ before a single DM goes out; a few hundred comments is seconds of paged
 requests, and the run needs to know its own size before it starts sending.
 `collect_comments.py --help` lists the field-name overrides if Instagram's
 response shape isn't the tool's defaults — check the response you captured
-in Step 2 against them.
+in Step 1 against them.
 
-## Step 4 — Register the task row, before launching the send
+## Step 3 — Register the task row, before launching the send
 
 A paced send can run for hours, which is longer than any turn. Before
 starting it:
@@ -125,7 +145,7 @@ Keep the returned `task_id` — pass it to `send_dms.py --task-id`. This is
 what gives the run a live status card and a pause/cancel control; call
 `task.start` **before** handing the send off, not after.
 
-## Step 5 — Send, dry-run first, then detached and resumable
+## Step 4 — Send, dry-run first, then detached and resumable
 
 First invocation, always:
 
@@ -135,9 +155,8 @@ python3 scripts/send_dms.py --dry-run \
   --progress <workdir>/progress.jsonl \
   --message "Hey {username}, here's the link: {link}" --link "<link>" \
   --endpoint "<observed DM-send endpoint>" \
-  --cookie-file <workdir>/.ig-session.json \
-  --headers-file <workdir>/headers.json \
-  --payload-template <workdir>/payload-template.json \
+  --headers-file <workdir>/.ig-capture/dm-headers.txt \
+  --payload-template <workdir>/.ig-capture/payload-template.json \
   --task-id <task_id>
 ```
 
@@ -167,7 +186,9 @@ whatever it holds when a run stops is exactly what the next run resumes from.
 
 ### Pause and cancel, through the task row
 
-Before each recipient, `send_dms.py` re-reads the task's `status`:
+`send_dms.py` reports `{sent, attempted, total}` to the task row once per
+recipient via `karmax tool call task.progress ...`, and reads the run's
+current `status` back from that same call's result:
 
 - `paused` — it idles (without exiting) until the status changes.
 - `cancelled` — it stops cleanly. `progress.jsonl` is left exactly as it is;
@@ -178,15 +199,23 @@ Before each recipient, `send_dms.py` re-reads the task's `status`:
   sending. `progress.jsonl` is the real record regardless of whether the
   daemon ever sees a single progress update.
 
+To pause or resume a run from a conversation — the operator does not need
+to have kept the task id:
+
+- `karmax tool call task.status` with no arguments lists open
+  running/paused tasks.
+- `karmax tool call task.status task_id=<id> status=paused` pauses one;
+  `status=running` resumes it.
+
 ## Never
 
 - Never send to anyone who did not comment on the specific post this run was
   pointed at.
 - Never retry a recipient that already has an `attempted` record, sent or
   not.
-- Never print, log, or return the contents of `.ig-session.json`, any cookie
-  value, or the raw `Cookie`/`Authorization` header — including inside an
-  error message.
+- Never print, log, or return the contents of anything under
+  `.ig-capture/`, any cookie value, or the raw `Cookie`/`Authorization`
+  header — including inside an error message.
 - Never attempt to sign in, solve a captcha, or handle an OTP on the
   operator's behalf. Hand the browser back to them with `browser` `open` and
   say what's needed.
