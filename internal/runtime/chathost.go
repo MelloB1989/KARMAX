@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/browser"
@@ -27,6 +28,9 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 	if rt.harness == nil {
 		return "", errChatHarnessUnavailable
 	}
+	// One dedupe set per turn, closed over by OnEvent below: a tool_update
+	// can repeat for the same call, and a ticket must not.
+	seenTickets := map[string]bool{}
 	turn, err := rt.harness.SendWith(ctx, "chat:"+id, "chat", message, harness.Options{
 		// Where chatlog reads. Left to the supervisor's default this lands in
 		// a per-conversation directory nothing ever lists.
@@ -53,18 +57,19 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 			}
 			ev.Plan = apiChatPlan(e.Plan)
 			onEvent(ev)
+			// A background delegation's id is only ever in its RESULT, never
+			// its input — see ticketFrom — so the ticket can only be built
+			// from the stream, while the tool's real output is still here.
+			if tk, ok := ticketFrom(e, seenTickets); ok {
+				onEvent(tk)
+			}
 		},
 	})
 	if err != nil {
 		return "", err
 	}
-	// Background jobs are announced from the finished turn, before `done`,
-	// because their ids only exist once the tool has returned.
-	for _, t := range chatTickets(turn) {
-		onEvent(t)
-	}
-	// The footer's facts, announced before `done` for the same reason tickets
-	// are: they only exist once the turn has finished.
+	// The footer's facts, announced before `done`: they only exist once the
+	// turn has finished.
 	onEvent(api.ChatEvent{
 		Kind:       "meta",
 		Model:      turn.Model,
@@ -117,29 +122,80 @@ func apiToolStatus(s harness.Status) string {
 	}
 }
 
-// chatTickets reports the background jobs a finished turn started.
+// ticketPayload is every field a background job's own JSON result might use
+// for its id and its label. task.start, claude_code.call --background and
+// sandbox.start each pick a different pair of names, and all three arrive
+// under harness tool names that have nothing to do with any of them (Bash,
+// mostly) — so the id is matched on the JSON, never on which tool carried it.
+type ticketPayload struct {
+	TaskID string `json:"task_id"`
+	JobID  string `json:"job_id"`
+	RunID  string `json:"run_id"`
+	Goal   string `json:"goal"`
+	Title  string `json:"title"`
+	Prompt string `json:"prompt"`
+}
+
+// ticketFrom turns one streaming tool_update into a ticket, if the tool's own
+// result carries a background job's id. seen is the calling turn's dedupe
+// set, keyed by e.Tool.ID: a tool_update can repeat for the same call, and a
+// ticket must not.
 //
-// Not a harness event, because the harness cannot know: a delegation's job id
-// is in the tool's RESULT, and the session loop only reads assistant messages
-// on its way to a Turn. Reading the completed turn's tool calls is both
-// simpler and correct — a card for background work can only be useful after
-// the turn ends, and the turn ends quickly precisely because the work went to
-// the background.
-func chatTickets(turn harness.Turn) []api.ChatEvent {
-	var out []api.ChatEvent
-	for _, tc := range turn.ToolCalls {
-		if tc.Name != "claude_code.call" && tc.Name != "codex.call" {
-			continue
-		}
-		var in struct {
-			Background bool   `json:"background"`
-			Prompt     string `json:"prompt"`
-			JobID      string `json:"job_id"`
-		}
-		if json.Unmarshal(tc.Input, &in) != nil || !in.Background {
-			continue
-		}
-		out = append(out, api.ChatEvent{Kind: "ticket", JobID: in.JobID, Text: trimTo(in.Prompt, 80)})
+// OnEvent — chatTurn's only caller — is invoked synchronously from
+// Session.Send's own read loop, one event at a time, under the session's
+// mutex (see session.go: "Exactly one turn may be in flight at a time" and
+// Send's `select` over s.events calling emit(sink, ev) inline). So seen is
+// never touched concurrently and needs no lock of its own.
+func ticketFrom(e harness.Event, seen map[string]bool) (api.ChatEvent, bool) {
+	if e.Kind != harness.KindToolUpdate || e.Tool == nil {
+		return api.ChatEvent{}, false
 	}
-	return out
+	t := e.Tool
+	if t.Status != harness.StatusCompleted && t.Status != harness.StatusFailed {
+		return api.ChatEvent{}, false // not a terminal update
+	}
+	if t.Output == "" || seen[t.ID] {
+		return api.ChatEvent{}, false
+	}
+	id, label := parseTicketPayload(t.Output)
+	if id == "" {
+		return api.ChatEvent{}, false
+	}
+	seen[t.ID] = true
+	if label == "" {
+		label = t.Title // never an empty card
+	}
+	return api.ChatEvent{Kind: "ticket", JobID: id, Text: trimTo(label, 80)}, true
+}
+
+// parseTicketPayload looks for a background job's id and label inside a
+// tool's output. It tolerates text around the JSON object (a tool may print
+// a sentence and then a result) by decoding from the first '{', and it
+// tolerates truncation: truncateOutput can only cut a result short, never
+// corrupt what it keeps, and json.Decoder simply errors on the cut — which
+// this reports as "no ticket", never as an error or a panic.
+func parseTicketPayload(output string) (id, label string) {
+	i := strings.IndexByte(output, '{')
+	if i < 0 {
+		return "", ""
+	}
+	var p ticketPayload
+	if err := json.NewDecoder(strings.NewReader(output[i:])).Decode(&p); err != nil {
+		return "", ""
+	}
+	id = firstNonEmpty(p.TaskID, p.JobID, p.RunID)
+	if id == "" {
+		return "", ""
+	}
+	return id, firstNonEmpty(p.Goal, p.Title, p.Prompt)
+}
+
+// firstNonEmpty returns the first non-empty value, or "".
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
