@@ -535,7 +535,12 @@ func (s *Supervisor) policy(kind string) Policy {
 	if p, ok := s.cfg.Policies[kind]; ok {
 		return withDefaults(p)
 	}
-	return withDefaults(Policy{})
+	// Same footgun as CheapModel itself (harnesshost.go): a kind nobody
+	// configured must not fall through to whatever the CLI defaults to.
+	// Cheap-by-default applies to every unconfigured kind, chat included --
+	// an operator who wants better for one pins it, and that config always
+	// wins over this fallback.
+	return withDefaults(Policy{Model: s.cfg.CheapModel})
 }
 
 func withDefaults(p Policy) Policy {
