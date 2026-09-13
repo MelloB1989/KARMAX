@@ -2,52 +2,84 @@ package runtime
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/MelloB1989/karmax/internal/harness"
 )
 
-func toolCall(name string, in map[string]any) harness.ToolCall {
-	b, _ := json.Marshal(in)
-	return harness.ToolCall{Name: name, Input: b}
-}
-
-// Only a background claude_code.call or codex.call becomes a ticket; a
-// foreground delegation is watched to completion and needs no card, and a
-// tool outside that pair is not a delegation at all.
-func TestChatTicketsOnlyBackgroundDelegations(t *testing.T) {
-	longPrompt := strings.Repeat("x", 120)
-	turn := harness.Turn{ToolCalls: []harness.ToolCall{
-		toolCall("claude_code.call", map[string]any{"background": true, "job_id": "job-1", "prompt": longPrompt}),
-		toolCall("claude_code.call", map[string]any{"background": false, "job_id": "job-2", "prompt": "short"}),
-		toolCall("codex.call", map[string]any{"background": true, "job_id": "job-3", "prompt": "short"}),
-		toolCall("shell.exec", map[string]any{"background": true, "job_id": "job-4", "prompt": "short"}),
-	}}
-
-	got := chatTickets(turn)
-	if len(got) != 2 {
-		t.Fatalf("tickets = %d, want 2: %+v", len(got), got)
-	}
-	if got[0].Kind != "ticket" || got[0].JobID != "job-1" {
-		t.Fatalf("first ticket = %+v", got[0])
-	}
-	if !strings.HasSuffix(got[0].Text, "…") || len(got[0].Text) > 84 {
-		t.Fatalf("long prompt was not trimmed to 80 chars: %q", got[0].Text)
-	}
-	if got[1].JobID != "job-3" || got[1].Text != "short" {
-		t.Fatalf("second ticket = %+v", got[1])
+// toolUpdate builds the streaming event a tool_result produces: the only
+// shape ticketFrom ever looks at.
+func toolUpdate(id, output string, status harness.Status) harness.Event {
+	return harness.Event{
+		Kind: harness.KindToolUpdate,
+		Tool: &harness.ToolEvent{ID: id, Status: status, Output: output, Title: "fallback title"},
 	}
 }
 
-// A job with no background flag set at all is not a delegation the client
-// needs to wait on.
-func TestChatTicketsIgnoresUnparseableInput(t *testing.T) {
-	turn := harness.Turn{ToolCalls: []harness.ToolCall{
-		{Name: "claude_code.call", Input: json.RawMessage(`not json`)},
-	}}
-	if got := chatTickets(turn); len(got) != 0 {
-		t.Fatalf("tickets = %+v, want none", got)
+// A background job's result — whatever tool returned it, under whatever
+// harness tool name it arrived as (task.start, claude_code.call
+// --background and sandbox.start all look different to the harness) —
+// becomes a ticket carrying its id and a label drawn from the same JSON.
+func TestATaskStartResultEmitsATicketWithItsID(t *testing.T) {
+	e := toolUpdate("call-1", `{"status":"started","task_id":"tsk-42","goal":"back up the drive"}`, harness.StatusCompleted)
+	ev, ok := ticketFrom(e, map[string]bool{})
+	if !ok {
+		t.Fatalf("ticketFrom returned no ticket for a task.start result")
+	}
+	if ev.Kind != "ticket" || ev.JobID != "tsk-42" {
+		t.Fatalf("ticket = %+v, want Kind=ticket JobID=tsk-42", ev)
+	}
+	if ev.Text != "back up the drive" {
+		t.Fatalf("ticket text = %q, want the goal field", ev.Text)
+	}
+}
+
+// tool_update can arrive more than once for the same call; the card must
+// not double.
+func TestATicketIsEmittedOncePerToolCall(t *testing.T) {
+	e := toolUpdate("call-1", `{"job_id":"job-9"}`, harness.StatusCompleted)
+	seen := map[string]bool{}
+	if _, ok := ticketFrom(e, seen); !ok {
+		t.Fatalf("first tool_update for this call should have produced a ticket")
+	}
+	if _, ok := ticketFrom(e, seen); ok {
+		t.Fatalf("a second tool_update for the same call produced a second ticket")
+	}
+}
+
+// A tool result with no task/job/run id is just a tool result — most of
+// them are, and none of those are tickets.
+func TestAToolResultWithoutATaskIDEmitsNoTicket(t *testing.T) {
+	e := toolUpdate("call-1", `{"status":"completed","output":"done"}`, harness.StatusCompleted)
+	if _, ok := ticketFrom(e, map[string]bool{}); ok {
+		t.Fatalf("a result with no id must not become a ticket")
+	}
+}
+
+// truncateOutput can cut a result's JSON mid-object; that must read as "no
+// ticket found", never crash the turn.
+func TestUnparseableToolOutputEmitsNoTicketAndDoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ticketFrom panicked on truncated output: %v", r)
+		}
+	}()
+	e := toolUpdate("call-1", `{"status":"started","task_id":"tsk-1`, harness.StatusCompleted)
+	if _, ok := ticketFrom(e, map[string]bool{}); ok {
+		t.Fatalf("truncated JSON must not produce a ticket")
+	}
+}
+
+// When the tool's own result carries no goal/title/prompt label, the card
+// falls back to the tool's title rather than going out blank.
+func TestATicketFallsBackToTheToolsTitleWhenNoLabelField(t *testing.T) {
+	e := toolUpdate("call-1", `{"job_id":"job-1"}`, harness.StatusCompleted)
+	ev, ok := ticketFrom(e, map[string]bool{})
+	if !ok {
+		t.Fatalf("expected a ticket")
+	}
+	if ev.Text != "fallback title" {
+		t.Fatalf("ticket text = %q, want the tool's own title", ev.Text)
 	}
 }
 
