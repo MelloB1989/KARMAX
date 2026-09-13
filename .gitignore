@@ -30,3 +30,7 @@ dist/
 
 # Personal/operational snapshots — never belong in a shared repo.
 prompts/backup/
+
+# Python bytecode from the skills scripts
+__pycache__/
+*.pyc
