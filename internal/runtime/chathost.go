@@ -34,6 +34,7 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 		SessionID: id,
 		// Empty when the browser is closed — the normal case, not a failure.
 		MCPConfig: browserMCPConfig(ctx, browser.Shared(rt.cfg.Karmax.DataDir), "chat"),
+		PluginDir: harnessPluginDir("chat", rt.skillsDir),
 		OnEvent: func(e harness.Event) {
 			ev := api.ChatEvent{Kind: string(e.Kind), Text: e.Text, JobID: e.JobID}
 			if e.Tool != nil {
