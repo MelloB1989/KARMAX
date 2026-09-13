@@ -22,21 +22,28 @@ observability, not a dependency: any failure to reach it is logged once
 and otherwise ignored, and progress.jsonl (not the daemon) remains the
 authoritative ledger regardless of whether a single report ever lands.
 
-Daemon contract this script assumes (Task 10, landing concurrently with
-this one — see this task's report for exactly which parameter names were
-assumed here, to reconcile against what Task 10 actually shipped): the
-route is the `karmax` CLI, not raw HTTP and never the daemon's SQLite file
-directly —
+Daemon contract (Task 10, landed as `9003cfb`, `internal/tools/builtin/
+longrun.go:134`): the route is the `karmax` CLI, never raw HTTP and never
+the daemon's SQLite file directly —
 
-    karmax tool call task.progress task_id=<id> sent=<n> attempted=<n> total=<n> last_at=<iso8601>
+    karmax tool call task.progress task_id=<id> sent=<n> attempted=<n> total=<n>
 
 — printing the tool's JSON result to stdout on success (exit 0), with a
-"status" field in it ("running" | "paused" | "cancelled" | ...) that IS the
+"status" field in it ("running" | "paused" | "cancelled") that IS the
 control signal this script reads back; a non-zero exit or unparseable
-output is treated as "reporting unavailable right now", never a crash. All
-of that is isolated in one method, TaskReporter.report() below, so if
-Task 10 ships slightly different parameter or field names, that method is
-what changes — not the send loop.
+output is treated as "reporting unavailable right now", never a crash.
+`total` is optional server-side (it carries over the previous value when
+omitted) but this script always sends it, since it already knows it.
+`task.progress` re-reads the row after writing, so a pause or cancel
+landing mid-call is still reflected in the status handed back — which is
+what makes one call per recipient (report, then act on the status it
+returns) sufficient; there is no separate status-read call. All of this is
+isolated in one method, TaskReporter.report() below.
+
+A run can be paused from any conversation with
+`karmax tool call task.status task_id=<id> status=paused`, and
+`karmax tool call task.status` with no arguments lists open running/paused
+tasks — useful for finding a run's task id without having kept it.
 
 Zero third-party dependencies beyond the `karmax` CLI itself: stdlib only
 (urllib for the actual DM request, subprocess for the CLI call), so nothing
@@ -49,7 +56,6 @@ import argparse
 import json
 import os
 import random
-import stat
 import subprocess
 import sys
 import time
@@ -189,10 +195,13 @@ class TaskReporter:
             self._warned = True
 
     def report(self, sent: int, attempted: int, total: int) -> str | None:
+        # task.progress sets LastAt itself (server-timestamped, not client-
+        # timestamped) and re-reads the row after writing — so this one call
+        # both reports and gets the post-write status back.
         args = [
             self.karmax_bin, "tool", "call", "task.progress",
             f"task_id={self.task_id}", f"sent={sent}", f"attempted={attempted}",
-            f"total={total}", f"last_at={now_iso()}",
+            f"total={total}",
         ]
         try:
             proc = subprocess.run(args, capture_output=True, text=True, timeout=self.timeout)
@@ -218,26 +227,65 @@ class TaskReporter:
 # Sending
 # ---------------------------------------------------------------------------
 
-def load_cookie_header(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # enforce 0600 regardless of how it arrived
-    except OSError:
-        pass
-    if not isinstance(data, dict) or not data:
-        raise SystemExit(f"cookie file {path!r} did not contain a JSON object of cookies")
-    print(f"loaded {len(data)} cookie(s) from {path}: {', '.join(sorted(data))}", file=sys.stderr)
-    return "; ".join(f"{k}={v}" for k, v in data.items())
+def parse_captured_headers(path: str) -> dict:
+    """Parse the file captured by
+    `browser_network_request(part="request-headers", filename=path)`.
 
+    This IS the credential — Cookie plus whatever else Instagram sent
+    (x-csrftoken, x-ig-app-id, x-asbd-id, user-agent, ...) for the DM-send
+    endpoint specifically, written by the MCP server directly to disk. Its
+    exact text shape was never confirmed against a live capture, so this
+    tries, in order: a JSON object of {name: value}; a JSON array of
+    {name, value} (or {key, value}) objects; and finally plain
+    "Name: value" lines. Whichever branch matches is named in the log line.
+    Only header NAMES are ever printed.
 
-def load_headers(path: str | None) -> dict:
-    if not path:
-        return {}
+    The containing directory is what is supposed to keep this file private
+    (SKILL.md: mkdir it 0700 before capturing into it) — this function does
+    not depend on the file's own mode, only reads it.
+    """
     with open(path, "r", encoding="utf-8") as f:
-        headers = json.load(f)
-    if not isinstance(headers, dict):
-        raise SystemExit(f"headers file {path!r} must be a JSON object")
+        raw = f.read()
+
+    text = raw.strip()
+    if text:
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed and all(isinstance(v, (str, int, float)) for v in parsed.values()):
+            headers = {str(k): str(v) for k, v in parsed.items()}
+            print(f"parsed {len(headers)} header(s) from {path} (json object): {', '.join(sorted(headers))}", file=sys.stderr)
+            return headers
+        if isinstance(parsed, list):
+            headers = {}
+            for item in parsed:
+                if isinstance(item, dict):
+                    name = item.get("name") or item.get("key")
+                    value = item.get("value")
+                    if name is not None and value is not None:
+                        headers[str(name)] = str(value)
+            if headers:
+                print(f"parsed {len(headers)} header(s) from {path} (json array): {', '.join(sorted(headers))}", file=sys.stderr)
+                return headers
+
+    headers = {}
+    for line in raw.splitlines():
+        line = line.rstrip()
+        if not line or ":" not in line:
+            continue
+        name, _, value = line.partition(":")
+        name, value = name.strip(), value.strip()
+        if not name or " " in name:
+            continue  # not a "Name: value" header line — e.g. an HTTP request line
+        headers[name] = value
+    if not headers:
+        raise SystemExit(
+            f"could not parse any headers out of {path!r} — its format was not verified live "
+            "against a real capture; open it, compare it with SKILL.md Step 1's note on this, "
+            "and adjust parse_captured_headers() if the shape is something else entirely"
+        )
+    print(f"parsed {len(headers)} header(s) from {path} (text lines): {', '.join(sorted(headers))}", file=sys.stderr)
     return headers
 
 
@@ -258,7 +306,7 @@ def substitute(obj, recipient_id: str, text: str):
     return obj
 
 
-def send_dm(endpoint: str, cookie_header: str, extra_headers: dict, payload_template,
+def send_dm(endpoint: str, headers: dict, payload_template,
             recipient: dict, text: str, timeout: float) -> tuple[bool, str | None]:
     body_obj = substitute(payload_template, recipient["id"], text)
     if isinstance(body_obj, (dict, list)):
@@ -269,10 +317,9 @@ def send_dm(endpoint: str, cookie_header: str, extra_headers: dict, payload_temp
         content_type = "application/x-www-form-urlencoded"
 
     req = urllib.request.Request(endpoint, data=data, method="POST")
-    req.add_header("Cookie", cookie_header)
-    if "content-type" not in {k.lower() for k in extra_headers}:
+    if "content-type" not in {k.lower() for k in headers}:
         req.add_header("Content-Type", content_type)
-    for k, v in extra_headers.items():
+    for k, v in headers.items():  # includes Cookie — this dict IS the credential
         req.add_header(k, v)
 
     try:
@@ -294,9 +341,8 @@ def parse_args(argv=None):
     p.add_argument("--dry-run", action="store_true", help="Run the whole pipeline but substitute a simulated send for the real request. This is the default first invocation.")
     p.add_argument("--message", default=None, help='Message template. "{username}" and "{link}" are substituted. Required for a live (non-dry-run) send.')
     p.add_argument("--link", default="", help="Link substituted into --message's {link}.")
-    p.add_argument("--endpoint", default=None, help="DM-send URL, observed from real traffic (SKILL.md Step 2). Required for a live send.")
-    p.add_argument("--cookie-file", default=None, help="Path to the 0600 harvested-session JSON file. Required for a live send.")
-    p.add_argument("--headers-file", default=None, help="Path to a JSON object of extra headers observed from real traffic.")
+    p.add_argument("--endpoint", default=None, help="DM-send URL, observed from real traffic (SKILL.md Step 1). Required for a live send.")
+    p.add_argument("--headers-file", default=None, help="Path to the file captured via browser_network_request(part='request-headers', filename=...) for the DM-send endpoint — the full credential set, Cookie included (SKILL.md Step 1). Required for a live send.")
     p.add_argument("--payload-template", default=None, help="Path to a JSON body template with {recipient_id} and {text} tokens, captured from the real DM request. Required for a live send.")
     p.add_argument("--cap", type=int, default=25, help="Maximum NEW recipients attempted in this run (default: 25, conservative on purpose).")
     p.add_argument("--interval-seconds", type=float, default=45.0, help="Base pacing interval between sends (default: 45).")
@@ -315,7 +361,7 @@ def main(argv=None) -> int:
     if not args.dry_run:
         missing = [name for name, val in [
             ("--endpoint", args.endpoint),
-            ("--cookie-file", args.cookie_file),
+            ("--headers-file", args.headers_file),
             ("--payload-template", args.payload_template),
             ("--message", args.message),
         ] if not val]
@@ -332,8 +378,7 @@ def main(argv=None) -> int:
           f"record (skipped, never retried — {len(sent_ids)} of those confirmed sent); "
           f"{len(eligible)} eligible this run", file=sys.stderr)
 
-    cookie_header = load_cookie_header(args.cookie_file) if args.cookie_file else ""
-    extra_headers = load_headers(args.headers_file)
+    headers = parse_captured_headers(args.headers_file) if args.headers_file else {}
     payload_template = load_payload_template(args.payload_template) if args.payload_template else None
 
     reporter = TaskReporter(args.karmax_bin, args.task_id) if args.task_id else None
@@ -369,7 +414,7 @@ def main(argv=None) -> int:
                     text = (args.message or "").format(
                         username=recipient.get("username") or recipient["id"], link=args.link
                     )
-                    ok, err = send_dm(args.endpoint, cookie_header, extra_headers,
+                    ok, err = send_dm(args.endpoint, headers,
                                        payload_template, recipient, text, args.timeout)
 
                 if ok:
@@ -398,12 +443,16 @@ def main(argv=None) -> int:
                     delay = max(0.0, args.interval_seconds + random.uniform(-args.jitter_seconds, args.jitter_seconds))
                     time.sleep(delay)
     finally:
-        if args.cookie_file and os.path.exists(args.cookie_file):
+        # This script's own belt-and-suspenders: delete the one credential
+        # file it was given, on every exit path. SKILL.md's directory-level
+        # cleanup (delete the whole 0700 capture directory) is what covers
+        # every file left behind, including collect_comments.py's own.
+        if args.headers_file and os.path.exists(args.headers_file):
             try:
-                os.remove(args.cookie_file)
-                print(f"deleted {args.cookie_file}", file=sys.stderr)
+                os.remove(args.headers_file)
+                print(f"deleted {args.headers_file}", file=sys.stderr)
             except OSError as e:
-                print(f"could not delete {args.cookie_file}: {redact(e)}", file=sys.stderr)
+                print(f"could not delete {args.headers_file}: {redact(e)}", file=sys.stderr)
 
     print(f"this run: {new_attempts} attempted, {new_sends} sent, "
           f"{new_attempts - new_sends} failed. lifetime: {total_sent}/{len(recipients)} sent."
