@@ -233,41 +233,28 @@ def parse_captured_headers(path: str) -> dict:
 
     This IS the credential — Cookie plus whatever else Instagram sent
     (x-csrftoken, x-ig-app-id, x-asbd-id, user-agent, ...) for the DM-send
-    endpoint specifically, written by the MCP server directly to disk. Its
-    exact text shape was never confirmed against a live capture, so this
-    tries, in order: a JSON object of {name: value}; a JSON array of
-    {name, value} (or {key, value}) objects; and finally plain
-    "Name: value" lines. Whichever branch matches is named in the log line.
-    Only header NAMES are ever printed.
+    endpoint specifically, written by the MCP server directly to disk.
+    Confirmed against a live capture: plain "Name: value" text, one header
+    per line, names arriving lowercased ("cookie:", not "Cookie:") —
+    harmless here since every header is applied generically by the caller
+    and HTTP header names are case-insensitive on the wire. That text-line
+    parse runs first and, on a real capture, always succeeds. JSON parsing
+    (an object of {name: value}, or an array of {name, value}/{key, value}
+    objects) is kept only as a fallback for a capture shape that has never
+    actually been observed — an XHR request's capture might differ from
+    what a top-level navigation produced — and is clearly labeled as such
+    in the log line if it's ever the branch that fires. Only header NAMES
+    are ever printed, never values.
 
     The containing directory is what is supposed to keep this file private
-    (SKILL.md: mkdir it 0700 before capturing into it) — this function does
-    not depend on the file's own mode, only reads it.
+    (SKILL.md: mkdir it 0700, relative to the session workdir, before
+    capturing into it) — confirmed end to end: the directory keeps its
+    mode, the file inside lands as an ordinary uncontrollable 0644, and
+    that's fine because nothing else can traverse in to read it. This
+    function doesn't depend on the file's own mode, only reads it.
     """
     with open(path, "r", encoding="utf-8") as f:
         raw = f.read()
-
-    text = raw.strip()
-    if text:
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict) and parsed and all(isinstance(v, (str, int, float)) for v in parsed.values()):
-            headers = {str(k): str(v) for k, v in parsed.items()}
-            print(f"parsed {len(headers)} header(s) from {path} (json object): {', '.join(sorted(headers))}", file=sys.stderr)
-            return headers
-        if isinstance(parsed, list):
-            headers = {}
-            for item in parsed:
-                if isinstance(item, dict):
-                    name = item.get("name") or item.get("key")
-                    value = item.get("value")
-                    if name is not None and value is not None:
-                        headers[str(name)] = str(value)
-            if headers:
-                print(f"parsed {len(headers)} header(s) from {path} (json array): {', '.join(sorted(headers))}", file=sys.stderr)
-                return headers
 
     headers = {}
     for line in raw.splitlines():
@@ -279,14 +266,42 @@ def parse_captured_headers(path: str) -> dict:
         if not name or " " in name:
             continue  # not a "Name: value" header line — e.g. an HTTP request line
         headers[name] = value
-    if not headers:
-        raise SystemExit(
-            f"could not parse any headers out of {path!r} — its format was not verified live "
-            "against a real capture; open it, compare it with SKILL.md Step 1's note on this, "
-            "and adjust parse_captured_headers() if the shape is something else entirely"
-        )
-    print(f"parsed {len(headers)} header(s) from {path} (text lines): {', '.join(sorted(headers))}", file=sys.stderr)
-    return headers
+    if headers:
+        print(f"parsed {len(headers)} header(s) from {path}: {', '.join(sorted(headers))}", file=sys.stderr)
+        return headers
+
+    # The confirmed plain-text shape matched nothing — fall back to JSON,
+    # for a capture shape that was never actually observed.
+    text = raw.strip()
+    if text:
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed and all(isinstance(v, (str, int, float)) for v in parsed.values()):
+            headers = {str(k): str(v) for k, v in parsed.items()}
+            print(f"parsed {len(headers)} header(s) from {path} (json object — the confirmed text shape did not "
+                  "match; this fallback is unverified, check it): "
+                  f"{', '.join(sorted(headers))}", file=sys.stderr)
+            return headers
+        if isinstance(parsed, list):
+            headers = {}
+            for item in parsed:
+                if isinstance(item, dict):
+                    name = item.get("name") or item.get("key")
+                    value = item.get("value")
+                    if name is not None and value is not None:
+                        headers[str(name)] = str(value)
+            if headers:
+                print(f"parsed {len(headers)} header(s) from {path} (json array — the confirmed text shape did "
+                      "not match; this fallback is unverified, check it): "
+                      f"{', '.join(sorted(headers))}", file=sys.stderr)
+                return headers
+
+    raise SystemExit(
+        f"could not parse any headers out of {path!r} as the confirmed plain-text shape or as JSON — "
+        "open it and check what browser_network_request actually wrote"
+    )
 
 
 def load_payload_template(path: str):

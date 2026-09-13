@@ -63,12 +63,38 @@ endpoint are the same action** — capture the headers of a real request to
 the endpoint you need, and the credential comes with it.
 
 **First, a private directory — this is what actually protects the file,
-not its own permission bits.** Use `shell.exec` to create it with the mode
-set at creation: `mkdir -m 700 <workdir>/.ig-capture`. Don't route anything
-under it through `file.write` — that tool always creates files `0644` with
-no way to ask for tighter, so a chmod after the fact would leave a window;
-the directory being unreadable by anyone else is what has to do the work
-here, and it has to exist before anything is captured into it.
+not its own permission bits.** Use `shell.exec` to create it, relative to
+the session workdir, with the mode set at creation: `mkdir -m 700
+.ig-capture`. Don't route anything under it through `file.write` — that
+tool always creates files `0644` with no way to ask for tighter, so a
+chmod after the fact would leave a window; the directory being unreadable
+by anyone else is what has to do the work here, confirmed end to end: a
+capture into a pre-created `0700` directory landed as `drwx------` on the
+directory and an ordinary `0644` on the file inside it, and the `0644`
+file is harmless because nothing else can traverse into the directory to
+reach it. It has to exist before anything is captured into it.
+
+**`filename` takes a path relative to the session workdir — never an
+absolute one.** This is the opposite of what an earlier version of this
+skill said, and it's confirmed by running it: an absolute path outside the
+server's allowed roots (`<cwd>` and `<cwd>/.playwright-mcp`) is flatly
+rejected —
+
+```
+Error: File access denied: /private/tmp/.../hdr-abs-probe.txt is outside allowed roots.
+Allowed roots: <cwd>/.playwright-mcp, <cwd>
+```
+
+— and a relative path lands directly under the session's own working
+directory (**not** under `.playwright-mcp`, despite the tool's own result
+sometimes rendering the link as `./name.txt`). So: always pass a plain
+relative path like `.ig-capture/comments-headers.txt`, the same relative
+form `shell.exec`'s `mkdir` used above — both tools share the session
+workdir as their cwd. This relative form is only for the
+`browser_network_request` call itself; once written, the file also has the
+ordinary absolute path `<workdir>/.ig-capture/<name>` — that's what Steps
+2 and 4 below pass to the Python scripts, since a plain `open()` call has
+no such allowed-roots restriction.
 
 **Then, per endpoint that's needed:**
 
@@ -77,40 +103,33 @@ here, and it has to exist before anything is captured into it.
    request that gets captured.
 2. `browser_network_requests(filter: "instagram.com")` to see what fired,
    and find the row for the request that actually did it.
-3. `browser_network_request(index: <that row's number>, part: "request-headers", filename: "<absolute path inside .ig-capture>")`.
-   `part`'s accepted values are exactly `request-headers`, `request-body`,
-   `response-headers`, `response-body` — confirmed from the tool's own
-   parameter schema. Use an absolute path; always inside the `0700`
-   directory.
+3. `browser_network_request(index: <that row's number>, part: "request-headers", filename: ".ig-capture/<name>.txt")`
+   — a relative path, inside the `0700` directory, as above. `part`'s
+   accepted values are exactly `request-headers`, `request-body`,
+   `response-headers`, `response-body`.
    - For the **comment-list** request: save to
-     `<workdir>/.ig-capture/comments-headers.txt`.
+     `.ig-capture/comments-headers.txt`.
    - For the **DM-send** request: save headers to
-     `<workdir>/.ig-capture/dm-headers.txt`, **and also** capture
-     `part: "request-body"` to `<workdir>/.ig-capture/payload-template.json`
+     `.ig-capture/dm-headers.txt`, **and also** capture
+     `part: "request-body"` to `.ig-capture/payload-template.json`
      — the exact field shape (recipient field name, text field name, any
      `client_context`/action fields Instagram expects) that `send_dms.py`
      needs and this skill deliberately does not guess at. In that template,
      replace the one real recipient id with the literal token
      `{recipient_id}` and the message text with the literal token `{text}`.
-4. **Two things here were not verified against a live Instagram capture in
-   this environment — check them on the first real run, not later:**
-   - *Where the file lands.* The `filename` parameter's relative-vs-absolute
-     resolution, and its interaction with an `--output-dir` flag (KARMAX
-     passes none), weren't confirmed. Passing an absolute path sidesteps the
-     ambiguity; after the very first capture, confirm the file actually
-     exists at that exact path (`file.read` it, or `shell.exec ls`) before
-     trusting anything downstream.
-   - *What the captured content looks like.* `collect_comments.py` and
-     `send_dms.py` both parse the file defensively — a JSON object, a JSON
-     array of `{name, value}` pairs, or plain `Name: value` lines — and log
-     which one matched. Check that log line on the first run; if none of
-     the three match, the parser needs a fourth branch added.
-5. **Delete `<workdir>/.ig-capture/` entirely when the run finishes or
-   aborts.** `send_dms.py` deletes the one DM-headers file it was given on
-   every exit path, but the directory as a whole — and
-   `comments-headers.txt`, which nothing else deletes — is this skill's own
-   job. Do it yourself if the procedure aborts before `send_dms.py` ever
-   runs.
+4. The captured file's shape is confirmed too: plain `Name: value` text,
+   one header per line, with names arriving **lowercased** (`cookie:`, not
+   `Cookie:`) — both scripts already parse this shape as the expected one
+   and apply every header generically, so the lowercasing doesn't matter
+   downstream, but it's worth knowing if anything else ever does a
+   case-sensitive lookup on this file. What genuinely remains unverified
+   is Instagram's *response* shape for the comment-list endpoint — see
+   Step 2.
+5. **Delete `.ig-capture/` entirely when the run finishes or aborts.**
+   `send_dms.py` deletes the one DM-headers file it was given on every
+   exit path, but the directory as a whole — and `comments-headers.txt`,
+   which nothing else deletes — is this skill's own job. Do it yourself if
+   the procedure aborts before `send_dms.py` ever runs.
 6. Record what was observed — endpoint URLs and header *names* (never
    values) — into the run directory too, so a later run can diff against it
    and notice when Instagram has changed something.
