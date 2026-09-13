@@ -220,6 +220,43 @@ func TestCancelledLeavesProgressIntact(t *testing.T) {
 	}
 }
 
+// A progress ping is a field-level write. It must not erase an error a
+// previous round recorded — that error is exactly what a script (or an
+// operator) investigating a stall needs to see, and UpdateTask writes
+// last_error unconditionally when it is not told to leave it alone.
+func TestProgressDoesNotClobberLastError(t *testing.T) {
+	s := newTestStore(t)
+	task, _ := s.CreateTask(Task{Goal: "paced send", Status: TaskRunning})
+	if err := s.UpdateTask(task.ID, TaskUpdate{LastError: "recipient 12 rate-limited"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskProgress(task.ID, TaskProgress{Sent: 13, Attempted: 13}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.GetTask(task.ID)
+	if got.LastError != "recipient 12 rate-limited" {
+		t.Errorf("last_error = %q, want it left alone by a progress ping", got.LastError)
+	}
+}
+
+// The same clobber applies to next_action_at. A status flip must not disturb
+// a scheduled retry it knows nothing about.
+func TestStatusDoesNotClobberNextActionAt(t *testing.T) {
+	s := newTestStore(t)
+	task, _ := s.CreateTask(Task{Goal: "paced send", Status: TaskRunning})
+	future := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
+	if err := s.UpdateTask(task.ID, TaskUpdate{NextActionAt: &future}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskStatus(task.ID, TaskPaused); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.GetTask(task.ID)
+	if got.NextActionAt == nil || !got.NextActionAt.Equal(future) {
+		t.Errorf("next_action_at = %v, want %v left alone", got.NextActionAt, future)
+	}
+}
+
 // A task that failed must stay visible. Pruning it away leaves the operator
 // with no record that something they asked for never happened.
 func TestPruningKeepsFailures(t *testing.T) {
