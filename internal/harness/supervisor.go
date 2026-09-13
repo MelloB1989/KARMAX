@@ -164,6 +164,11 @@ type Options struct {
 	// OnEvent watches the turn as it happens. Nil behaves exactly as before,
 	// which is what keeps every existing caller out of this change.
 	OnEvent func(Event)
+	// MCPConfig grants the tools in this JSON --mcp-config blob, such as the
+	// operator's browser. Empty grants none.
+	MCPConfig string
+	// PluginDir grants the skills under this --plugin-dir path. Empty grants none.
+	PluginDir string
 }
 
 // Send is the whole caller-facing surface: give it a key and a message.
@@ -271,7 +276,8 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	if workdir == "" {
 		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
 	}
-	sess := &Session{Key: key, Kind: kind, ID: id, Model: model, Thinking: opt.Thinking}
+	sess := &Session{Key: key, Kind: kind, ID: id, Model: model, Thinking: opt.Thinking,
+		MCPConfig: opt.MCPConfig, PluginDir: opt.PluginDir}
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
 	// sweep can find; the reverse leaves a process nothing knows about.

@@ -28,6 +28,10 @@ type Session struct {
 	// Thinking is fixed when the process spawns, so like Model it takes
 	// effect on a new session or on the next resume — never mid-conversation.
 	Thinking bool
+	// MCPConfig and PluginDir are threaded from Options the same way Model and
+	// Thinking are, taking effect on the next spawn.
+	MCPConfig string
+	PluginDir string
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
@@ -52,13 +56,23 @@ type Session struct {
 	busy atomic.Bool
 }
 
-// spawn starts a harness process for this session.
+// extraArgs returns the flags granting the tools and skills in opt, for
+// whichever of MCPConfig and PluginDir are set.
+func extraArgs(opt Options) []string {
+	var args []string
+	if opt.MCPConfig != "" {
+		args = append(args, "--mcp-config", opt.MCPConfig)
+	}
+	if opt.PluginDir != "" {
+		args = append(args, "--plugin-dir", opt.PluginDir)
+	}
+	return args
+}
+
+// spawnArgs assembles the CLI's argument list.
 //
-// resume decides which of the two mutually exclusive session flags is used: the
-// CLI rejects --session-id together with --resume, so a revived session passes
-// only --resume and a new one only --session-id. Minting the uuid ourselves is
-// what makes the session addressable before it has said anything.
-func spawn(ctx context.Context, bin string, s *Session, workdir string, resume bool, env []string, fallbackModel string) error {
+// Split out of spawn so ordering can be tested without starting a process.
+func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	args := []string{
 		"--print",
 		"--input-format", "stream-json",
@@ -84,6 +98,18 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	if fallbackModel != "" && fallbackModel != s.Model {
 		args = append(args, "--fallback-model", fallbackModel)
 	}
+	// No positional prompt here to collide with; still appended last, and tested.
+	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig, PluginDir: s.PluginDir})...)
+}
+
+// spawn starts a harness process for this session.
+//
+// resume decides which of the two mutually exclusive session flags is used: the
+// CLI rejects --session-id together with --resume, so a revived session passes
+// only --resume and a new one only --session-id. Minting the uuid ourselves is
+// what makes the session addressable before it has said anything.
+func spawn(ctx context.Context, bin string, s *Session, workdir string, resume bool, env []string, fallbackModel string) error {
+	args := spawnArgs(s, resume, fallbackModel)
 
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return fmt.Errorf("harness workdir: %w", err)
