@@ -1,6 +1,7 @@
 package chatlog
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -21,8 +22,8 @@ func TestReadsATranscript(t *testing.T) {
 	if msgs[1].Role != "assistant" || msgs[1].Text != "Found 14, all from July." {
 		t.Errorf("second message = %+v", msgs[1])
 	}
-	if len(msgs[1].Steps) != 1 || msgs[1].Steps[0].Tool != "Bash" {
-		t.Errorf("steps = %+v, want one Bash step", msgs[1].Steps)
+	if len(msgs[1].ToolCalls) != 1 || msgs[1].ToolCalls[0].Kind != "execute" || msgs[1].ToolCalls[0].Title != "ls ~/Downloads" {
+		t.Errorf("tool calls = %+v, want one execute call titled the command", msgs[1].ToolCalls)
 	}
 }
 
@@ -54,8 +55,8 @@ func TestUserTurnsDoNotMergeAcrossRecords(t *testing.T) {
 	if msgs[2].Role != "assistant" || msgs[2].Text != "Done." {
 		t.Errorf("third message = %+v", msgs[2])
 	}
-	if len(msgs[2].Steps) != 1 || msgs[2].Steps[0].Tool != "Bash" {
-		t.Errorf("steps = %+v, want the assistant's split records still merged", msgs[2].Steps)
+	if len(msgs[2].ToolCalls) != 1 || msgs[2].ToolCalls[0].Kind != "execute" || msgs[2].ToolCalls[0].Title != "ls" {
+		t.Errorf("tool calls = %+v, want the assistant's split records still merged", msgs[2].ToolCalls)
 	}
 }
 
@@ -147,5 +148,42 @@ func TestStringShapedContentIsRead(t *testing.T) {
 	}
 	if len(convs) != 1 || convs[0].Opening == "" {
 		t.Fatalf("no opening line for an untitled conversation: %+v", convs)
+	}
+}
+
+// A reopened conversation must still show what the assistant did, with the
+// same vocabulary a live turn uses. Emitting the old {tool, phase} shape here
+// while the wire emits tool calls is how history silently loses its work.
+func TestHistoryCarriesWholeToolCalls(t *testing.T) {
+	dir := t.TempDir()
+	line := `{"type":"assistant","timestamp":"2026-09-13T10:00:00Z","message":{"content":[` +
+		`{"type":"tool_use","id":"toolu_9","name":"Read","input":{"file_path":"/a/main.go"}}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "c1.jsonl"), []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := Read(dir, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	calls := msgs[0].ToolCalls
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(calls))
+	}
+	if calls[0].ID != "toolu_9" {
+		t.Errorf("id = %q, want toolu_9", calls[0].ID)
+	}
+	if calls[0].Title != "main.go" {
+		t.Errorf("title = %q, want main.go", calls[0].Title)
+	}
+	if calls[0].Kind != "read" {
+		t.Errorf("kind = %q, want read", calls[0].Kind)
+	}
+	// A transcript has no live calls: everything in it already finished.
+	if calls[0].Status != "completed" {
+		t.Errorf("status = %q, want completed", calls[0].Status)
 	}
 }

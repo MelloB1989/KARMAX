@@ -179,3 +179,13 @@ func firstPath(vals ...string) string {
 	}
 	return ""
 }
+
+// ToolTitle and ToolKindOf expose the naming rules to other packages, so a
+// transcript read back from disk describes a call the same way a live turn
+// does. Two vocabularies for one tool is how history stops matching the
+// present.
+func ToolTitle(name string, input json.RawMessage) string { return toolTitle(name, input) }
+
+// ToolKindOf classifies a tool by name. Named with the suffix because ToolKind
+// is the type.
+func ToolKindOf(name string) ToolKind { return toolKind(name) }

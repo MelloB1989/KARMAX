@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/MelloB1989/karmax/internal/harness"
 )
 
 type Conversation struct {
@@ -18,20 +20,25 @@ type Conversation struct {
 	Updated time.Time `json:"updated"`
 }
 
-// Message is one turn as a client needs it. Steps are the tool_use blocks that
-// were inside that assistant message, so a transcript read back from disk
-// shows the same step line a live turn showed.
+// Message is one turn as a client needs it. ToolCalls are the tool_use blocks
+// that were inside that assistant message, so a transcript read back from
+// disk shows the same call a live turn showed.
 type Message struct {
-	Role  string    `json:"role"`
-	Text  string    `json:"text"`
-	At    time.Time `json:"at"`
-	Steps []Step    `json:"steps"`
+	Role      string     `json:"role"`
+	Text      string     `json:"text"`
+	At        time.Time  `json:"at"`
+	ToolCalls []ToolCall `json:"toolCalls"`
 }
 
-type Step struct {
-	Tool   string `json:"tool"`
-	Phase  string `json:"phase"` // always "done": a transcript has no live steps
-	Detail string `json:"detail"`
+// ToolCall is one tool the assistant invoked, as a transcript remembers it.
+//
+// The same shape a live turn streams, so a reopened conversation and a running
+// one describe the same work in the same words.
+type ToolCall struct {
+	ID     string `json:"id"`
+	Title  string `json:"title,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+	Status string `json:"status"` // always "completed": a transcript has no live calls
 }
 
 // record is the subset of the CLI's line format this package reads.
@@ -48,6 +55,7 @@ type record struct {
 type part struct {
 	Type  string          `json:"type"`
 	Text  string          `json:"text"`
+	ID    string          `json:"id"`
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
 }
@@ -122,16 +130,21 @@ func Read(dir, id string) ([]Message, error) {
 		if r.Type != "user" && r.Type != "assistant" {
 			return
 		}
-		msg := Message{Role: r.Type, At: parseTime(r.Timestamp), Steps: []Step{}}
+		msg := Message{Role: r.Type, At: parseTime(r.Timestamp), ToolCalls: []ToolCall{}}
 		for _, c := range r.Message.Content {
 			switch c.Type {
 			case "text":
 				msg.Text += c.Text
 			case "tool_use":
-				msg.Steps = append(msg.Steps, Step{Tool: c.Name, Phase: "done"})
+				msg.ToolCalls = append(msg.ToolCalls, ToolCall{
+					ID:     c.ID,
+					Title:  harness.ToolTitle(c.Name, c.Input),
+					Kind:   string(harness.ToolKindOf(c.Name)),
+					Status: "completed",
+				})
 			}
 		}
-		if msg.Text == "" && len(msg.Steps) == 0 {
+		if msg.Text == "" && len(msg.ToolCalls) == 0 {
 			return
 		}
 		// The CLI splits one assistant turn across several records — tools in
@@ -140,7 +153,7 @@ func Read(dir, id string) ([]Message, error) {
 		// two separate things the person typed into one bubble.
 		if n := len(out); n > 0 && msg.Role == "assistant" && out[n-1].Role == msg.Role {
 			out[n-1].Text += msg.Text
-			out[n-1].Steps = append(out[n-1].Steps, msg.Steps...)
+			out[n-1].ToolCalls = append(out[n-1].ToolCalls, msg.ToolCalls...)
 			return
 		}
 		out = append(out, msg)
