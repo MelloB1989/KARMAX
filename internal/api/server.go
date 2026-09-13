@@ -53,7 +53,10 @@ type Server struct {
 // internal/api must not import internal/harness — the runtime adapter that
 // wires SetChatTurn is where a harness.Event becomes one of these.
 type ChatEvent struct {
-	Kind  string
+	Kind string
+	// Text carries the payload for three different Kinds — "message",
+	// "thought" and "error" — never all at once, so a client must switch on
+	// Kind before reading it.
 	Text  string
 	Tool  *ChatTool
 	Plan  []ChatPlanEntry

@@ -50,3 +50,26 @@ func TestChatTicketsIgnoresUnparseableInput(t *testing.T) {
 		t.Fatalf("tickets = %+v, want none", got)
 	}
 }
+
+// A known kind passes through unchanged; an ACP client's own vocabulary
+// (nothing the harness emits today, but the next thing to wire in) must not
+// leak past the TypeScript client's closed union.
+func TestAPIToolKindCoercesUnknown(t *testing.T) {
+	if got := apiToolKind(harness.ToolEdit); got != "edit" {
+		t.Fatalf("known kind = %q, want %q", got, "edit")
+	}
+	if got := apiToolKind(harness.ToolKind("browse")); got != "other" {
+		t.Fatalf("unknown kind = %q, want %q", got, "other")
+	}
+}
+
+// A known status passes through unchanged; an unrecognised one is reported as
+// failed, not completed — we do not know it succeeded.
+func TestAPIToolStatusCoercesUnknown(t *testing.T) {
+	if got := apiToolStatus(harness.StatusCompleted); got != "completed" {
+		t.Fatalf("known status = %q, want %q", got, "completed")
+	}
+	if got := apiToolStatus(harness.Status("cancelled")); got != "failed" {
+		t.Fatalf("unknown status = %q, want %q", got, "failed")
+	}
+}
