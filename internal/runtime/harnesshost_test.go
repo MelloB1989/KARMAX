@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/browser"
 	"go.uber.org/zap"
@@ -99,24 +100,55 @@ func TestMaterialiseFailureLeavesPluginDirEmpty(t *testing.T) {
 }
 
 // fakeSupervisor stands in for *harness.Supervisor: just enough to drive
-// recycleIdleBrowserSessions without a real process.
+// recycleIdleBrowserSessions without a real process. recycleIdleBrowserSessions
+// now calls CloseIfIdle from its own goroutine per key, so closed and
+// busyKey are guarded — a plain slice/map append from concurrent goroutines
+// would be a real data race, not just a theoretical one.
 type fakeSupervisor struct {
-	live    []string
+	live []string
+	// closeDelay simulates a slow teardown (a real Close() waiting out a
+	// stubborn process's SIGKILL fallback), so a test can tell "closed one
+	// at a time" from "closed in parallel" by wall-clock time.
+	closeDelay time.Duration
+
+	mu      sync.Mutex
 	busyKey map[string]bool
 	closed  []string
 }
 
-func (f *fakeSupervisor) Live() []string       { return f.live }
-func (f *fakeSupervisor) Busy(key string) bool { return f.busyKey[key] }
-func (f *fakeSupervisor) Close(key string)     { f.closed = append(f.closed, key) }
+func (f *fakeSupervisor) Live() []string { return f.live }
+
+func (f *fakeSupervisor) CloseIfIdle(key string) bool {
+	if f.closeDelay > 0 {
+		time.Sleep(f.closeDelay)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.busyKey[key] {
+		return false
+	}
+	f.closed = append(f.closed, key)
+	return true
+}
+
+// closedKeys is a synchronized snapshot of what got closed, for assertions
+// made after recycleIdleBrowserSessions has returned (it waits on its own
+// goroutines, so by then there is nothing left to race against — this is
+// just so `go vet`/the race detector see every access going through the same
+// lock).
+func (f *fakeSupervisor) closedKeys() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.closed...)
+}
 
 // The browser starting is the trigger: a chat session's next turn needs the
 // tools that just became available, and its baked-in --mcp-config has none.
 func TestBrowserStartClosesIdleChatSessions(t *testing.T) {
 	sup := &fakeSupervisor{live: []string{"chat:1"}, busyKey: map[string]bool{}}
 	recycleIdleBrowserSessions(sup, map[string]string{"chat:1": "chat"}, browserKinds)
-	if len(sup.closed) != 1 || sup.closed[0] != "chat:1" {
-		t.Fatalf("closed = %v, want [chat:1]", sup.closed)
+	if got := sup.closedKeys(); len(got) != 1 || got[0] != "chat:1" {
+		t.Fatalf("closed = %v, want [chat:1]", got)
 	}
 }
 
@@ -125,8 +157,8 @@ func TestBrowserStartClosesIdleChatSessions(t *testing.T) {
 func TestBrowserStopClosesIdleChatSessions(t *testing.T) {
 	sup := &fakeSupervisor{live: []string{"agent:foo"}, busyKey: map[string]bool{}}
 	recycleIdleBrowserSessions(sup, map[string]string{"agent:foo": "agent"}, browserKinds)
-	if len(sup.closed) != 1 || sup.closed[0] != "agent:foo" {
-		t.Fatalf("closed = %v, want [agent:foo]", sup.closed)
+	if got := sup.closedKeys(); len(got) != 1 || got[0] != "agent:foo" {
+		t.Fatalf("closed = %v, want [agent:foo]", got)
 	}
 }
 
@@ -135,8 +167,8 @@ func TestBrowserStopClosesIdleChatSessions(t *testing.T) {
 func TestABusySessionIsLeftAlone(t *testing.T) {
 	sup := &fakeSupervisor{live: []string{"chat:1"}, busyKey: map[string]bool{"chat:1": true}}
 	recycleIdleBrowserSessions(sup, map[string]string{"chat:1": "chat"}, browserKinds)
-	if len(sup.closed) != 0 {
-		t.Fatalf("closed = %v, want none — the session was busy", sup.closed)
+	if got := sup.closedKeys(); len(got) != 0 {
+		t.Fatalf("closed = %v, want none — the session was busy", got)
 	}
 }
 
@@ -144,8 +176,41 @@ func TestABusySessionIsLeftAlone(t *testing.T) {
 func TestUtilitySessionsAreNotRecycled(t *testing.T) {
 	sup := &fakeSupervisor{live: []string{"summary:1"}, busyKey: map[string]bool{}}
 	recycleIdleBrowserSessions(sup, map[string]string{"summary:1": "utility"}, browserKinds)
-	if len(sup.closed) != 0 {
-		t.Fatalf("closed = %v, want none — utility never gets the browser", sup.closed)
+	if got := sup.closedKeys(); len(got) != 0 {
+		t.Fatalf("closed = %v, want none — utility never gets the browser", got)
+	}
+}
+
+// A stubborn process can take up to 3s to give up its SIGKILL fallback.
+// With several sessions to recycle, closing them one at a time would turn a
+// single browser toggle into a multi-second stall; recycleIdleBrowserSessions
+// must close them concurrently instead, so the whole pass costs about as
+// much as the single slowest close, not their sum.
+func TestRecycleIdleBrowserSessionsClosesConcurrently(t *testing.T) {
+	const n = 5
+	const delay = 80 * time.Millisecond
+
+	live := make([]string, n)
+	kindOf := make(map[string]string, n)
+	for i := range live {
+		live[i] = "chat:" + string(rune('a'+i))
+		kindOf[live[i]] = "chat"
+	}
+	sup := &fakeSupervisor{live: live, busyKey: map[string]bool{}, closeDelay: delay}
+
+	start := time.Now()
+	recycleIdleBrowserSessions(sup, kindOf, browserKinds)
+	elapsed := time.Since(start)
+
+	if got := sup.closedKeys(); len(got) != n {
+		t.Fatalf("closed %d sessions, want %d: %v", len(got), n, got)
+	}
+	// A sequential pass would take roughly n*delay (400ms here); a
+	// concurrent one costs about one delay however many sessions there are.
+	// The bound is generous — well under 2*delay — so this only fails if the
+	// sessions were closed one at a time, not from ordinary scheduling noise.
+	if elapsed > 2*delay {
+		t.Fatalf("recycling %d sessions took %v at %v each; want roughly one delay's worth, not %d", n, elapsed, delay, n)
 	}
 }
 

@@ -352,36 +352,69 @@ var browserKinds = map[string]bool{
 // the supervisor, small enough to fake in tests.
 type harnessRecycler interface {
 	Live() []string
-	Busy(key string) bool
-	Close(key string)
+	// CloseIfIdle closes key only if it is not busy, checking and removing it
+	// from the live table atomically — a separate Busy-then-Close here would
+	// reopen the exact TOCTOU CloseIfIdle exists to close: the session can
+	// become busy in the gap between the two calls, and Close does not
+	// re-check.
+	CloseIfIdle(key string) bool
 }
 
 // recycleIdleBrowserSessions closes idle sessions of the kinds that take a
 // browser, so the next turn respawns one with --mcp-config matching whatever
 // the browser just became. A busy session is left alone: closing it mid-turn
-// would kill a running answer in front of the operator.
+// would kill a running answer in front of the operator — CloseIfIdle is what
+// guarantees that atomically rather than as two calls a scheduler can split.
+//
+// Each close runs on its own goroutine: a stubborn process can take up to 3s
+// to give up its SIGKILL fallback, and with MaxLive sessions to consider,
+// closing them one at a time would make one recycling pass take minutes
+// instead of seconds. The caller (onBrowserStateChange) already runs this
+// off the browser's own Start/Stop call path, but a slow pass still delays
+// the log line and leaves stale processes around longer than it has to.
 func recycleIdleBrowserSessions(sup harnessRecycler, kindOf map[string]string, kinds map[string]bool) {
+	var wg sync.WaitGroup
 	for _, key := range sup.Live() {
-		if !kinds[kindOf[key]] || sup.Busy(key) {
+		if !kinds[kindOf[key]] {
 			continue
 		}
-		sup.Close(key)
+		wg.Add(1)
+		go func(key string) {
+			defer wg.Done()
+			sup.CloseIfIdle(key)
+		}(key)
 	}
+	wg.Wait()
 }
 
 // onBrowserStateChange is the browser's start/stop signal, registered once at
-// startup. Which direction it fired doesn't change what to do: either way, a
-// warm session's baked-in flags are stale and the fix is the same.
+// startup, and called synchronously from inside browser.Session.Start/Stop
+// (see notify) — so whatever this does runs on the operator's own "start
+// browser"/"stop browser" click, and must stay fast. Which direction it
+// fired doesn't change what to do: either way, a warm session's baked-in
+// flags are stale and the fix is the same.
 func (rt *KarmaxRuntime) onBrowserStateChange(running bool) {
 	if rt.harness == nil {
 		return
 	}
-	// A pure flag flip — no I/O — so it costs nothing on this synchronous
-	// callback. The next turn that calls browserMCPConfig probes again and
-	// repopulates it lazily.
+	// A pure flag flip — no I/O — so it costs nothing to do inline. The next
+	// turn that calls browserMCPConfig probes again and repopulates it
+	// lazily.
 	if rt.browserMCPCache != nil {
 		rt.browserMCPCache.invalidate()
 	}
+	// The recycling pass is a different matter: it can close several
+	// sessions, and a stubborn process takes up to 3s to give up its own
+	// SIGKILL fallback (recycleIdleBrowserSessions parallelises that across
+	// sessions, but the pass as a whole is still real work). Running it here
+	// would make Start/Stop hang for however long that takes; off to a
+	// goroutine is how they return immediately instead.
+	go rt.recycleForBrowserStateChange(running)
+}
+
+// recycleForBrowserStateChange is onBrowserStateChange's slow part, moved
+// off the browser's own Start/Stop call path.
+func (rt *KarmaxRuntime) recycleForBrowserStateChange(running bool) {
 	rows, err := rt.store.ListHarnessSessions()
 	if err != nil {
 		return
