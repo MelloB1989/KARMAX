@@ -9,6 +9,11 @@ This script speaks only stdlib HTTP (urllib), so it has no dependency to
 install before a run. It never prints the headers file's contents, any
 header value, or any raw Cookie header — only field NAMES and counts.
 
+Commenter ids are canonicalized (normalize_id()) before dedup, so a user id
+that arrives as 1001 on one page and 1001.0 on another — JSON does not
+distinguish them — collapses to one commenter rather than two, which would
+otherwise mean send_dms.py messaging the same person twice.
+
 --headers-file is the full credential set for this endpoint: it is not a
 hand-assembled cookie file, it is exactly what
 `browser_network_request(part="request-headers", filename=...)` captured
@@ -136,6 +141,30 @@ def parse_captured_headers(path: str) -> dict:
     )
 
 
+def normalize_id(value) -> str:
+    """Canonicalize a commenter id so "1001", 1001, and 1001.0 all compare
+    equal. JSON does not distinguish an int from an equal-valued float, and
+    Instagram's own responses are not guaranteed consistent about which one
+    a user id arrives as across pages — without this, two spellings of one
+    id look like two people, which defeats the dedupe this function exists
+    for and, downstream in send_dms.py, is how the same person gets
+    messaged twice. Applied at the one place an id enters this script's
+    dedupe below.
+    """
+    if isinstance(value, bool):
+        return str(value)  # bool is an int subclass in Python; keep it inert here
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, int):
+        return str(value)
+    s = str(value).strip()
+    try:
+        f = float(s)
+    except (TypeError, ValueError):
+        return s
+    return str(int(f)) if f.is_integer() else s
+
+
 def dotted_get(obj, path, default=None):
     cur = obj
     for part in path.split("."):
@@ -211,7 +240,7 @@ def collect(args) -> list[dict]:
             uid = first_present(comment, user_id_fields)
             if uid is None:
                 continue
-            uid = str(uid)
+            uid = normalize_id(uid)
             if uid not in commenters:
                 username = first_present(comment, username_fields)
                 commenters[uid] = {"id": uid, "username": username}

@@ -3,13 +3,29 @@
 
 The one behaviour that must not be wrong: progress.jsonl records an
 `attempted` event BEFORE the request and a `sent` event AFTER it succeeds.
-On any resume — crash, kill, a second invocation over the same files — a
-recipient with `attempted` and no `sent` is SKIPPED, never retried. Missing
-one DM is a smaller failure than sending two.
+On any resume — crash, kill, a second invocation over the same files, or a
+hand-edited ledger — a recipient already covered by EITHER event is
+SKIPPED, never retried: eligibility is computed against the union of
+attempted and sent ids, not attempted alone, so a lone `sent` line with no
+matching `attempted` (a hand-edited ledger, or a merge of two runs' logs)
+still excludes that recipient rather than quietly re-admitting them.
+Missing one DM is a smaller failure than sending two. Ids are normalized
+(`normalize_id()`) before every comparison, so "1001", 1001, and 1001.0
+are the same recipient rather than three.
+
+Exactly one of --dry-run or --live is required; passing neither, or both,
+refuses to run rather than picking a default — these messages reach real
+people from the operator's real account, so which mode this is must always
+be said explicitly, never inferred from a flag's absence.
 
 --dry-run runs this entire pipeline — ledger writes, pacing, the cap, task
 status checks — and substitutes a simulated success for the real network
-call. It is what this skill runs first, always.
+call, so it can be rehearsed and tested with no network. Its ledger writes
+are tagged `dry_run: true` and are invisible to eligibility: they gate
+nothing, for either mode. That's deliberate — SKILL.md's dry-run and live
+runs share one progress.jsonl on purpose, and a dry-run's simulated
+`attempted`/`sent` records must never make the live run that follows it
+believe real DMs already went out when none did.
 
 --task-id is optional. With it absent, the daemon-reporting function below
 is never called, and this script still runs end to end and still writes
@@ -84,6 +100,29 @@ def redact(err: BaseException) -> str:
 # Recipients and the progress ledger
 # ---------------------------------------------------------------------------
 
+def normalize_id(value) -> str:
+    """Canonicalize a recipient id so "1001", 1001, and 1001.0 all compare
+    equal. JSON does not distinguish an int from an equal-valued float, and
+    a hand-edited or re-serialized ledger can produce either spelling for
+    the same account — without this, two spellings of one id look like two
+    people, which is a second real DM to someone who already got one.
+    Applied everywhere an id crosses a JSON boundary: recipients and the
+    progress ledger both.
+    """
+    if isinstance(value, bool):
+        return str(value)  # bool is an int subclass in Python; keep it inert here
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, int):
+        return str(value)
+    s = str(value).strip()
+    try:
+        f = float(s)
+    except (TypeError, ValueError):
+        return s
+    return str(int(f)) if f.is_integer() else s
+
+
 def load_recipients(path: str) -> list[dict]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -94,7 +133,7 @@ def load_recipients(path: str) -> list[dict]:
     for row in data:
         if not isinstance(row, dict) or "id" not in row:
             continue
-        rid = str(row["id"])
+        rid = normalize_id(row["id"])
         if rid in seen:
             continue
         seen.add(rid)
@@ -103,18 +142,26 @@ def load_recipients(path: str) -> list[dict]:
 
 
 def load_ledger(progress_path: str) -> tuple[set[str], set[str]]:
-    """Read progress.jsonl into (attempted_ids, sent_ids).
+    """Read progress.jsonl into (attempted_ids, sent_ids) — REAL ones only.
+
+    A `dry_run: true` record is a simulation and gates nothing: it is
+    excluded here so a dry-run's own ledger writes can never make a
+    subsequent live run (sharing the same progress.jsonl, as SKILL.md's
+    Step 4 does on purpose) believe a real DM already went out when it
+    didn't.
 
     A missing file is a fresh run, not an error. A malformed trailing line
     — plausible if a previous run was killed mid-write — is skipped with a
-    warning rather than aborting the whole resume; the ledger is the thing
-    crash-safety depends on, so reading it must itself be crash-tolerant.
+    warning rather than aborting the whole resume, and a non-UTF-8 byte
+    (file corruption, not a credential — nothing secret lives in this
+    file's bytes beyond what JSON already carries) is replaced rather than
+    left to raise, so one bad line costs one line, not the whole resume.
     """
     attempted: set[str] = set()
     sent: set[str] = set()
     if not os.path.exists(progress_path):
         return attempted, sent
-    with open(progress_path, "r", encoding="utf-8") as f:
+    with open(progress_path, "r", encoding="utf-8", errors="replace") as f:
         for lineno, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
@@ -124,11 +171,13 @@ def load_ledger(progress_path: str) -> tuple[set[str], set[str]]:
             except json.JSONDecodeError:
                 print(f"progress.jsonl:{lineno}: unparseable line, skipping it", file=sys.stderr)
                 continue
+            if not isinstance(rec, dict) or rec.get("dry_run"):
+                continue
             rid = rec.get("recipient_id")
             event = rec.get("event")
             if rid is None:
                 continue
-            rid = str(rid)
+            rid = normalize_id(rid)
             if event == "attempted":
                 attempted.add(rid)
             elif event == "sent":
@@ -353,7 +402,8 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--recipients", required=True, help="Path to commenters.json (a JSON list of {id, username}).")
     p.add_argument("--progress", required=True, help="Path to progress.jsonl — the crash-safe ledger. Never deleted.")
-    p.add_argument("--dry-run", action="store_true", help="Run the whole pipeline but substitute a simulated send for the real request. This is the default first invocation.")
+    p.add_argument("--dry-run", action="store_true", help="Run the whole pipeline but substitute a simulated send for the real request. What this skill runs first. Mutually exclusive with --live; exactly one is required.")
+    p.add_argument("--live", action="store_true", help="Actually send. Mutually exclusive with --dry-run; exactly one is required — there is no default, on purpose.")
     p.add_argument("--message", default=None, help='Message template. "{username}" and "{link}" are substituted. Required for a live (non-dry-run) send.')
     p.add_argument("--link", default="", help="Link substituted into --message's {link}.")
     p.add_argument("--endpoint", default=None, help="DM-send URL, observed from real traffic (SKILL.md Step 1). Required for a live send.")
@@ -367,13 +417,22 @@ def parse_args(argv=None):
     p.add_argument("--task-id", default=None, help="Optional. A tasks-row id from task.start, for progress reporting and pause/cancel. Absent means no daemon call is ever made.")
     p.add_argument("--karmax-bin", default="karmax", help="The karmax CLI to shell out to for task reporting (default: karmax, found on PATH).")
     p.add_argument("--pause-poll-seconds", type=float, default=10.0, help="How often to re-report (and so re-check status) while paused (default: 10).")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+
+    if args.dry_run and args.live:
+        p.error("--dry-run and --live are mutually exclusive — pick one")
+    if not args.dry_run and not args.live:
+        p.error(
+            "pass exactly one of --dry-run (rehearse, sends nothing) or --live (sends for real) — "
+            "neither may be assumed, since these messages reach real people from the operator's own account"
+        )
+    return args
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    if not args.dry_run:
+    if args.live:
         missing = [name for name, val in [
             ("--endpoint", args.endpoint),
             ("--headers-file", args.headers_file),
@@ -381,17 +440,18 @@ def main(argv=None) -> int:
             ("--message", args.message),
         ] if not val]
         if missing:
-            print(f"a live send needs {', '.join(missing)} (or run with --dry-run)", file=sys.stderr)
+            print(f"a live send needs {', '.join(missing)}", file=sys.stderr)
             return 1
 
     recipients = load_recipients(args.recipients)
     attempted_ids, sent_ids = load_ledger(args.progress)
-    eligible = [r for r in recipients if r["id"] not in attempted_ids]
+    already_covered = attempted_ids | sent_ids  # a lone `sent` with no matching `attempted` (a hand-edited or merged ledger) must still exclude, not re-admit
+    eligible = [r for r in recipients if r["id"] not in already_covered]
     already_done = len(recipients) - len(eligible)
 
-    print(f"{len(recipients)} recipient(s) total; {already_done} already have an attempted "
-          f"record (skipped, never retried — {len(sent_ids)} of those confirmed sent); "
-          f"{len(eligible)} eligible this run", file=sys.stderr)
+    print(f"{len(recipients)} recipient(s) total; {already_done} already covered by a real "
+          f"attempted and/or sent record (skipped, never retried — {len(sent_ids)} of those "
+          f"confirmed sent); {len(eligible)} eligible this run", file=sys.stderr)
 
     headers = parse_captured_headers(args.headers_file) if args.headers_file else {}
     payload_template = load_payload_template(args.payload_template) if args.payload_template else None
@@ -405,12 +465,15 @@ def main(argv=None) -> int:
     new_sends = 0
     halted = False
     cancelled = False
+    cap_reached = False
 
     try:
         with open(args.progress, "a", encoding="utf-8") as progress_fp:
             for recipient in eligible:
                 if new_attempts >= args.cap:
-                    print(f"reached --cap {args.cap} for this run, stopping", file=sys.stderr)
+                    print(f"reached --cap {args.cap} for this run, stopping — this is a normal "
+                          "pause point, not a failure; re-run to continue the campaign", file=sys.stderr)
+                    cap_reached = True
                     break
 
                 if consecutive_failures >= args.max_consecutive_failures:
@@ -459,10 +522,17 @@ def main(argv=None) -> int:
                     time.sleep(delay)
     finally:
         # This script's own belt-and-suspenders: delete the one credential
-        # file it was given, on every exit path. SKILL.md's directory-level
-        # cleanup (delete the whole 0700 capture directory) is what covers
-        # every file left behind, including collect_comments.py's own.
-        if args.headers_file and os.path.exists(args.headers_file):
+        # file it was given — but only when this run actually finished
+        # consuming it. NOT on --dry-run (nothing real happened, and
+        # SKILL.md's own Step 4 runs dry-run then live over the same
+        # headers file — deleting here would make the live run that
+        # follows crash on a missing file). NOT on hitting --cap either:
+        # that's a normal pause point per spec §3, and the campaign is
+        # meant to continue with the same credential, not force a fresh
+        # browser harvest. SKILL.md's directory-level cleanup (delete the
+        # whole 0700 capture directory) is what covers final cleanup,
+        # including collect_comments.py's own headers file.
+        if args.headers_file and args.live and not cap_reached and os.path.exists(args.headers_file):
             try:
                 os.remove(args.headers_file)
                 print(f"deleted {args.headers_file}", file=sys.stderr)
