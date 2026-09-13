@@ -195,9 +195,16 @@ func emit(sink func(Event), ev event) {
 		}
 		switch ev.StreamEvent.Delta.Type {
 		case "text_delta":
-			sink(Event{Kind: KindMessage, Text: ev.StreamEvent.Delta.Text})
+			// Empty deltas arrive under subscription auth (no actual text to forward) or mid-streaming;
+			// both are waste: empty traffic for no words, and a JSON encode-decode for the sink each.
+			if ev.StreamEvent.Delta.Text != "" {
+				sink(Event{Kind: KindMessage, Text: ev.StreamEvent.Delta.Text})
+			}
 		case "thinking_delta":
-			sink(Event{Kind: KindThought, Text: ev.StreamEvent.Delta.Thinking})
+			// Same as text_delta: subscription auth sends empty thinking blocks by the dozen.
+			if ev.StreamEvent.Delta.Thinking != "" {
+				sink(Event{Kind: KindThought, Text: ev.StreamEvent.Delta.Thinking})
+			}
 		}
 
 	case "assistant":
