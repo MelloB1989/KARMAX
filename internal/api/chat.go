@@ -80,14 +80,18 @@ func streamTurn(w io.Writer, conversationID string, isNew bool,
 		// to treat every field as optional to read it.
 		obj := map[string]any{"kind": e.Kind}
 		switch e.Kind {
-		case "text", "error":
+		case "message", "thought", "error":
 			obj["text"] = e.Text
-		case "tool":
-			obj["tool"], obj["phase"] = e.Tool, e.Phase
+		case "tool", "tool_update":
+			obj["tool"] = e.Tool
+		case "plan":
+			obj["plan"] = e.Plan
 		case "ticket":
 			// A ticket's title rides in Text: ChatEvent has no title field and
 			// giving it one would put a chat's concern in the wire type.
 			obj["jobId"], obj["title"] = e.JobID, e.Text
+		case "meta":
+			obj["model"], obj["durationMs"], obj["costUsd"] = e.Model, e.DurationMS, e.CostUSD
 		}
 		send(obj)
 	})

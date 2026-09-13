@@ -55,9 +55,41 @@ type Server struct {
 type ChatEvent struct {
 	Kind  string
 	Text  string
-	Tool  string
-	Phase string
+	Tool  *ChatTool
+	Plan  []ChatPlanEntry
 	JobID string
+	// Model, DurationMS and CostUSD carry a "meta" event's footer facts as
+	// their own typed fields rather than smuggled through Text/JobID, so a
+	// numeric duration never has to round-trip through a string.
+	Model      string
+	DurationMS int64
+	CostUSD    float64
+}
+
+// ChatTool is a tool call on its way to a client. A "tool" carries all of it;
+// a "tool_update" carries only ID, Status and Output, and the client merges by
+// id — which is what makes two calls to one tool two lines.
+type ChatTool struct {
+	ID        string         `json:"id"`
+	Title     string         `json:"title,omitempty"`
+	Kind      string         `json:"kind,omitempty"`
+	Status    string         `json:"status"`
+	Locations []ChatLocation `json:"locations,omitempty"`
+	Output    string         `json:"output,omitempty"`
+}
+
+// ChatLocation is a file a tool call touched.
+type ChatLocation struct {
+	Path string `json:"path"`
+	Line int    `json:"line,omitempty"`
+}
+
+// ChatPlanEntry is one line of the agent's plan.
+type ChatPlanEntry struct {
+	Content    string `json:"content"`
+	Status     string `json:"status"`
+	ActiveForm string `json:"activeForm,omitempty"`
+	Priority   string `json:"priority,omitempty"`
 }
 
 // LoopInfo describes one active loop for GET /api/loops.

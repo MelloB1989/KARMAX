@@ -13,14 +13,14 @@ func TestStreamBracketsHarnessEventsWithConversationAndDone(t *testing.T) {
 	w := &lineSink{onLine: func(s string) { lines = append(lines, s) }}
 
 	streamTurn(w, "sess-1", true, func(sink func(harnessEvent)) (string, error) {
-		sink(harnessEvent{Kind: "text", Text: "Found "})
-		sink(harnessEvent{Kind: "tool", Tool: "Bash", Phase: "start"})
-		sink(harnessEvent{Kind: "text", Text: "14."})
+		sink(harnessEvent{Kind: "message", Text: "Found "})
+		sink(harnessEvent{Kind: "tool", Tool: &ChatTool{ID: "t1", Status: "in_progress"}})
+		sink(harnessEvent{Kind: "message", Text: "14."})
 		return "Found 14.", nil
 	})
 
 	kinds := kindsOf(t, lines)
-	want := []string{"conversation", "text", "tool", "text", "done"}
+	want := []string{"conversation", "message", "tool", "message", "done"}
 	if strings.Join(kinds, ",") != strings.Join(want, ",") {
 		t.Fatalf("kinds = %v, want %v", kinds, want)
 	}
@@ -31,11 +31,11 @@ func TestExistingConversationIsNotAnnounced(t *testing.T) {
 	var lines []string
 	w := &lineSink{onLine: func(s string) { lines = append(lines, s) }}
 	streamTurn(w, "sess-1", false, func(sink func(harnessEvent)) (string, error) {
-		sink(harnessEvent{Kind: "text", Text: "hi"})
+		sink(harnessEvent{Kind: "message", Text: "hi"})
 		return "hi", nil
 	})
-	if got := kindsOf(t, lines); got[0] != "text" {
-		t.Fatalf("first event = %q, want text", got[0])
+	if got := kindsOf(t, lines); got[0] != "message" {
+		t.Fatalf("first event = %q, want message", got[0])
 	}
 }
 
@@ -45,7 +45,7 @@ func TestFailureEndsTheStream(t *testing.T) {
 	var lines []string
 	w := &lineSink{onLine: func(s string) { lines = append(lines, s) }}
 	streamTurn(w, "sess-1", false, func(sink func(harnessEvent)) (string, error) {
-		sink(harnessEvent{Kind: "text", Text: "partial"})
+		sink(harnessEvent{Kind: "message", Text: "partial"})
 		return "", errTest
 	})
 	kinds := kindsOf(t, lines)
@@ -59,13 +59,111 @@ func TestBackgroundWorkBecomesATicket(t *testing.T) {
 	var lines []string
 	w := &lineSink{onLine: func(s string) { lines = append(lines, s) }}
 	streamTurn(w, "s", false, func(sink func(harnessEvent)) (string, error) {
-		sink(harnessEvent{Kind: "text", Text: "That will take a while."})
+		sink(harnessEvent{Kind: "message", Text: "That will take a while."})
 		sink(harnessEvent{Kind: "ticket", JobID: "job-1", Text: "Refactor the auth module"})
 		return "That will take a while.", nil
 	})
 	kinds := kindsOf(t, lines)
-	if strings.Join(kinds, ",") != "text,ticket,done" {
+	if strings.Join(kinds, ",") != "message,ticket,done" {
 		t.Fatalf("kinds = %v", kinds)
+	}
+}
+
+// Each kind writes only its own fields. A blanket dump would put an empty
+// "tool" on every text delta and force the client's union to make every field
+// optional to read it.
+func TestStreamTurnWritesOneShapePerKind(t *testing.T) {
+	var lines []string
+	sink := &lineSink{onLine: func(s string) { lines = append(lines, s) }}
+
+	streamTurn(sink, "conv-1", true, func(emit func(harnessEvent)) (string, error) {
+		emit(harnessEvent{Kind: "message", Text: "Found "})
+		emit(harnessEvent{Kind: "thought", Text: "checking"})
+		emit(harnessEvent{Kind: "tool", Tool: &ChatTool{
+			ID: "toolu_1", Title: "main.go", Kind: "read", Status: "in_progress",
+			Locations: []ChatLocation{{Path: "/a/main.go", Line: 12}},
+		}})
+		emit(harnessEvent{Kind: "tool_update", Tool: &ChatTool{
+			ID: "toolu_1", Status: "completed", Output: "package main",
+		}})
+		emit(harnessEvent{Kind: "plan", Plan: []ChatPlanEntry{{Content: "Ship it", Status: "pending"}}})
+		// The footer's facts, so the meta case is actually exercised here and
+		// not only by the runtime adapter's own (untested-by-this-package) call.
+		emit(harnessEvent{Kind: "meta", Model: "claude-x", DurationMS: 1234, CostUSD: 0.05})
+		return "Found 14.", nil
+	})
+
+	got := make([]map[string]any, 0, len(lines))
+	for _, l := range lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Fatalf("line is not json: %s", l)
+		}
+		got = append(got, m)
+	}
+
+	if got[0]["kind"] != "conversation" || got[0]["id"] != "conv-1" {
+		t.Fatalf("first line: %+v", got[0])
+	}
+	if got[1]["kind"] != "message" || got[1]["text"] != "Found " {
+		t.Errorf("message: %+v", got[1])
+	}
+	if _, extra := got[1]["tool"]; extra {
+		t.Error("a message line carried a tool field")
+	}
+	if got[2]["kind"] != "thought" || got[2]["text"] != "checking" {
+		t.Errorf("thought: %+v", got[2])
+	}
+
+	tool, ok := got[3]["tool"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool line has no tool object: %+v", got[3])
+	}
+	if tool["id"] != "toolu_1" || tool["title"] != "main.go" || tool["kind"] != "read" {
+		t.Errorf("tool: %+v", tool)
+	}
+	locs, ok := tool["locations"].([]any)
+	if !ok || len(locs) != 1 {
+		t.Errorf("locations: %+v", tool["locations"])
+	}
+
+	upd := got[4]["tool"].(map[string]any)
+	if upd["id"] != "toolu_1" || upd["status"] != "completed" {
+		t.Errorf("update: %+v", upd)
+	}
+
+	plan, ok := got[5]["plan"].([]any)
+	if !ok || len(plan) != 1 {
+		t.Fatalf("plan: %+v", got[5])
+	}
+
+	meta := got[len(got)-2]
+	if meta["kind"] != "meta" {
+		t.Fatalf("meta: %+v", meta)
+	}
+	if _, ok := meta["model"]; !ok {
+		t.Errorf("meta line missing model field: %+v", meta)
+	}
+
+	last := got[len(got)-1]
+	if last["kind"] != "done" || last["text"] != "Found 14." {
+		t.Errorf("done: %+v", last)
+	}
+}
+
+// The error goes down the stream, not into a status code: the headers left
+// before the first token did.
+func TestStreamTurnReportsFailureInBand(t *testing.T) {
+	var lines []string
+	sink := &lineSink{onLine: func(s string) { lines = append(lines, s) }}
+	streamTurn(sink, "conv-2", false, func(emit func(harnessEvent)) (string, error) {
+		emit(harnessEvent{Kind: "message", Text: "part"})
+		return "", errTest
+	})
+	var last map[string]any
+	_ = json.Unmarshal([]byte(lines[len(lines)-1]), &last)
+	if last["kind"] != "error" {
+		t.Fatalf("got %+v", last)
 	}
 }
 
