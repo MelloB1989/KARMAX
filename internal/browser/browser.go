@@ -259,12 +259,38 @@ func (s *Session) closeBlanks(ctx context.Context, endpoint, keep string) {
 }
 
 // Stop closes the browser. Sessions signed into it survive in the profile.
+//
+// Real Chromium is in no hurry to shut down: the polite /json/close request
+// below can take a while to answer, and the process itself keeps its
+// DevTools port answering for as long as it is still alive. Everything this
+// session advertises — Running, Endpoint, MCPConfigJSON — must fail closed
+// the moment Stop is called, not once that slow teardown finally finishes;
+// otherwise a session spawned mid-Stop gets handed a --mcp-config pointing
+// at an endpoint already being torn down. So the endpoint and pid this call
+// still needs are captured FIRST, the state is cleared and onChange notified
+// SECOND, and only then does the slow part — asking nicely, then SIGINT —
+// run against the values captured up front.
 func (s *Session) Stop(ctx context.Context) error {
 	endpoint := s.Endpoint(ctx)
 	s.mu.Lock()
 	cmd := s.cmd
 	s.cmd = nil
 	s.mu.Unlock()
+
+	// The SIGINT fallback below needs the pid from the state file when this
+	// Session did not spawn the process itself (e.g. after a daemon
+	// restart) — read it now, before clearState removes that file.
+	var fallbackPID int
+	if cmd == nil {
+		if st, ok := s.loadState(); ok {
+			fallbackPID = st.PID
+		}
+	}
+
+	// From here on, nothing — not this call's own callers, not a harness
+	// turn spawning concurrently — is told the browser is still up.
+	s.clearState()
+	s.notify(false)
 
 	if endpoint != "" {
 		// Ask first. A killed Chromium leaves the profile marked as crashed and
@@ -278,13 +304,11 @@ func (s *Session) Stop(ctx context.Context) error {
 	}
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Signal(os.Interrupt)
-	} else if st, ok := s.loadState(); ok && st.PID > 0 {
-		if p, err := os.FindProcess(st.PID); err == nil {
+	} else if fallbackPID > 0 {
+		if p, err := os.FindProcess(fallbackPID); err == nil {
 			_ = p.Signal(os.Interrupt)
 		}
 	}
-	s.clearState()
-	s.notify(false)
 	return nil
 }
 
