@@ -145,6 +145,11 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	// that on every turn would be wasteful and racy.
 	rt.skillsDir = materialiseSkills(rt.cfg.Karmax.DataDir, rt.log)
 
+	// --mcp-config is fixed when a warm session spawns, so a session outlives
+	// the browser state that justified it. Recycling on start and stop is how
+	// the next turn gets a process with the current flags.
+	browser.Shared(rt.cfg.Karmax.DataDir).OnStateChange(rt.onBrowserStateChange)
+
 	// Every pid in the table belongs to a process this daemon no longer owns.
 	sup.ReapOrphans()
 
@@ -334,6 +339,46 @@ proceed. Do not narrate what you are about to do and then stop.
 var browserKinds = map[string]bool{
 	"chat":  true,
 	"agent": true,
+}
+
+// harnessRecycler is what recycling idle browser-taking sessions needs from
+// the supervisor, small enough to fake in tests.
+type harnessRecycler interface {
+	Live() []string
+	Busy(key string) bool
+	Close(key string)
+}
+
+// recycleIdleBrowserSessions closes idle sessions of the kinds that take a
+// browser, so the next turn respawns one with --mcp-config matching whatever
+// the browser just became. A busy session is left alone: closing it mid-turn
+// would kill a running answer in front of the operator.
+func recycleIdleBrowserSessions(sup harnessRecycler, kindOf map[string]string, kinds map[string]bool) {
+	for _, key := range sup.Live() {
+		if !kinds[kindOf[key]] || sup.Busy(key) {
+			continue
+		}
+		sup.Close(key)
+	}
+}
+
+// onBrowserStateChange is the browser's start/stop signal, registered once at
+// startup. Which direction it fired doesn't change what to do: either way, a
+// warm session's baked-in flags are stale and the fix is the same.
+func (rt *KarmaxRuntime) onBrowserStateChange(running bool) {
+	if rt.harness == nil {
+		return
+	}
+	rows, err := rt.store.ListHarnessSessions()
+	if err != nil {
+		return
+	}
+	kindOf := make(map[string]string, len(rows))
+	for _, r := range rows {
+		kindOf[r.Key] = r.Kind
+	}
+	recycleIdleBrowserSessions(rt.harness, kindOf, browserKinds)
+	rt.log.Info("harness: browser state changed, recycled idle sessions", zap.Bool("running", running))
 }
 
 // browserConfigger is the one method chatTurn and the harness sender need

@@ -45,9 +45,29 @@ import (
 type Session struct {
 	dir string
 
-	mu   sync.Mutex
-	cmd  *exec.Cmd
-	port int
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	port     int
+	onChange func(running bool)
+}
+
+// OnStateChange registers fn to run after the browser actually starts or
+// stops. There is one caller — the daemon recycling harness sessions whose
+// --mcp-config was fixed at spawn — so a second call simply replaces the
+// first rather than fanning out.
+func (s *Session) OnStateChange(fn func(running bool)) {
+	s.mu.Lock()
+	s.onChange = fn
+	s.mu.Unlock()
+}
+
+func (s *Session) notify(running bool) {
+	s.mu.Lock()
+	fn := s.onChange
+	s.mu.Unlock()
+	if fn != nil {
+		fn(running)
+	}
 }
 
 // state is what survives a KARMAX restart, so a browser the person left open
@@ -138,6 +158,7 @@ func (s *Session) Start(ctx context.Context) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if alive(ctx, port) {
+			s.notify(true)
 			return nil
 		}
 		select {
@@ -263,6 +284,7 @@ func (s *Session) Stop(ctx context.Context) error {
 		}
 	}
 	s.clearState()
+	s.notify(false)
 	return nil
 }
 
