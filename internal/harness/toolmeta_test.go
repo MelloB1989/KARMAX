@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestToolKindClassifiesTheToolsWeActuallySee(t *testing.T) {
@@ -53,10 +54,13 @@ func TestToolTitleTrimsALongCommandToOneLine(t *testing.T) {
 	if got := toolTitle("Bash", in); got != "one" {
 		t.Errorf("got %q, want only the first line", got)
 	}
-	long, _ := json.Marshal(map[string]string{"command": strings.Repeat("x", 200)})
+	long, _ := json.Marshal(map[string]string{"command": strings.Repeat("é", 200)})
 	got := toolTitle("Bash", long)
 	if len([]rune(got)) != 60 {
 		t.Errorf("got %d runes, want 60", len([]rune(got)))
+	}
+	if !utf8.ValidString(got) {
+		t.Error("truncation produced invalid UTF-8")
 	}
 }
 
@@ -90,6 +94,10 @@ func TestToolTitleFallsBackToTheToolName(t *testing.T) {
 	}
 	if got := toolTitle("Mystery", json.RawMessage(`not json at all`)); got != "Mystery" {
 		t.Errorf("bad json: got %q, want the tool name", got)
+	}
+	// Malformed tool_use with empty name must not produce empty title.
+	if got := toolTitle("", json.RawMessage(`{}`)); got != "tool" {
+		t.Errorf("empty name: got %q, want tool", got)
 	}
 }
 
