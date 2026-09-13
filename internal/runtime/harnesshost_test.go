@@ -2,9 +2,12 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/MelloB1989/karmax/internal/browser"
+	"go.uber.org/zap"
 )
 
 // fakeBrowser stands in for *browser.Session: just enough to drive
@@ -41,5 +44,42 @@ func TestUtilityKindNeverGetsTheBrowser(t *testing.T) {
 	br := fakeBrowser{cfg: `{"mcpServers":{}}`}
 	if got := browserMCPConfig(context.Background(), br, "utility"); got != "" {
 		t.Fatalf("MCPConfig = %q, want empty for the utility kind", got)
+	}
+}
+
+// Chat and agent sessions get the skills directory, same as they get the
+// browser.
+func TestHarnessPluginDirForBrowserKinds(t *testing.T) {
+	for _, kind := range []string{"chat", "agent"} {
+		if got := harnessPluginDir(kind, "/skills"); got != "/skills" {
+			t.Fatalf("%s: PluginDir = %q, want /skills", kind, got)
+		}
+	}
+}
+
+// utility gets no skills either, for the same reason it gets no browser.
+func TestHarnessPluginDirForOtherKinds(t *testing.T) {
+	if got := harnessPluginDir("utility", "/skills"); got != "" {
+		t.Fatalf("PluginDir = %q, want empty for the utility kind", got)
+	}
+}
+
+// A Materialise failure must not stop chat and agent sessions from working —
+// they run without --plugin-dir, the same as when the browser is closed.
+func TestMaterialiseFailureLeavesPluginDirEmpty(t *testing.T) {
+	dataDir := t.TempDir()
+	// A file where Materialise wants a directory forces os.MkdirAll to fail,
+	// standing in for an unwritable disk.
+	blocked := filepath.Join(dataDir, "blocked")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := materialiseSkills(blocked, zap.NewNop())
+	if dir != "" {
+		t.Fatalf("materialiseSkills = %q, want empty on failure", dir)
+	}
+	if got := harnessPluginDir("chat", dir); got != "" {
+		t.Fatalf("PluginDir = %q, want empty when nothing was materialised", got)
 	}
 }
