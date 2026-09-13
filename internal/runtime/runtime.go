@@ -600,6 +600,13 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// What the operator has been building. KARMAX has recorded every delegated
 	// engineering task since the first one; nothing could read them back.
 	toolReg.Register(&builtin.ActivityTool{Store: s, AgentID: ""})
+	// Registers a long-running background job as a tracked task before a turn
+	// hands the work to a detached process — see longrun.go. task.start opens
+	// the row, task.progress is the detached process's write-and-control-
+	// signal, task.status is the pause button (and a plain read/list).
+	toolReg.Register(&builtin.TaskStartTool{Store: s, AgentID: ""})
+	toolReg.Register(&builtin.TaskProgressTool{Store: s})
+	toolReg.Register(&builtin.TaskStatusTool{Store: s})
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 	forbidden.attach(memFactory)
