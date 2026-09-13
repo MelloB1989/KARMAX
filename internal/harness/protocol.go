@@ -16,6 +16,7 @@ package harness
 import (
 	"encoding/json"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -157,9 +158,14 @@ type Turn struct {
 	ToolCalls []ToolCall
 	Usage     Usage
 	CostUSD   float64
-	Limits    *RateLimit
-	NumTurns  int
-	Err       error
+	// Model and Duration are what the transcript's footer reports. The CLI
+	// names the model on every assistant message and the elapsed time on the
+	// result, so neither has to be measured here.
+	Model    string
+	Duration time.Duration
+	Limits   *RateLimit
+	NumTurns int
+	Err      error
 }
 
 // userEvent is the single line written to stdin to ask a question.

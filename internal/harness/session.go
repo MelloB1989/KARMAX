@@ -25,6 +25,9 @@ type Session struct {
 	Kind  string
 	ID    string // the CLI's session uuid, for --resume
 	Model string
+	// Thinking is fixed when the process spawns, so like Model it takes
+	// effect on a new session or on the next resume — never mid-conversation.
+	Thinking bool
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
@@ -89,6 +92,10 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = workdir
 	cmd.Env = env
+	if s.Thinking {
+		// Extended thinking is off unless the child is given a budget for it.
+		cmd.Env = append(cmd.Env, "MAX_THINKING_TOKENS=8000")
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -245,6 +252,41 @@ func replay(sink func(Event), evs []event) {
 	}
 }
 
+// absorb folds one CLI event into the turn being assembled.
+//
+// Split out of Send so the turn's own bookkeeping can be tested without a
+// subprocess: Send owns the loop and the timeouts, this owns the fields.
+func (t *Turn) absorb(ev event) {
+	switch ev.Type {
+	case "rate_limit_event":
+		t.Limits = ev.RateLimitInfo
+	case "assistant":
+		if ev.Message.Model != "" {
+			t.Model = ev.Message.Model
+		}
+		for _, c := range ev.Message.Content {
+			if c.Type == "tool_use" {
+				t.ToolCalls = append(t.ToolCalls, ToolCall{
+					Name:    c.Name,
+					Input:   c.Input,
+					Command: shellCommand(c.Name, c.Input),
+				})
+			}
+		}
+	case "result":
+		t.Usage = ev.Usage
+		t.CostUSD = ev.TotalCostUSD
+		t.NumTurns = ev.NumTurns
+		t.Duration = time.Duration(ev.DurationMS) * time.Millisecond
+		if ev.Result != "" {
+			t.Text = ev.Result
+		}
+		if ev.IsError {
+			t.Err = fmt.Errorf("harness error: %s", firstNonEmpty(ev.APIErrorState, ev.Subtype))
+		}
+	}
+}
+
 // Send asks one question and reads until the turn completes.
 //
 // The result event is the only reliable delimiter: text arrives in pieces, tool
@@ -286,37 +328,23 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 				return turn, fmt.Errorf("harness exited mid-turn")
 			}
 			emit(sink, ev)
+			turn.absorb(ev)
 			switch ev.Type {
 			case "system":
 				if ev.SessionID != "" {
 					s.ID = ev.SessionID // authoritative, in case the CLI reassigns
 				}
-			case "rate_limit_event":
-				turn.Limits = ev.RateLimitInfo
 			case "assistant":
+				// The builder is the loop's own running total; absorb has no
+				// access to it and only fills Text from a non-empty result.
 				for _, c := range ev.Message.Content {
-					switch c.Type {
-					case "text":
+					if c.Type == "text" {
 						sb.WriteString(c.Text)
-					case "tool_use":
-						turn.ToolCalls = append(turn.ToolCalls, ToolCall{
-							Name:    c.Name,
-							Input:   c.Input,
-							Command: shellCommand(c.Name, c.Input),
-						})
 					}
 				}
 			case "result":
-				turn.Usage = ev.Usage
-				turn.CostUSD = ev.TotalCostUSD
-				turn.NumTurns = ev.NumTurns
-				if ev.Result != "" {
-					turn.Text = ev.Result
-				} else {
+				if ev.Result == "" {
 					turn.Text = strings.TrimSpace(sb.String())
-				}
-				if ev.IsError {
-					turn.Err = fmt.Errorf("harness error: %s", firstNonEmpty(ev.APIErrorState, ev.Subtype))
 				}
 				return turn, turn.Err
 			}
