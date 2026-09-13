@@ -147,6 +147,12 @@ type Options struct {
 	// or on the next resume — never mid-conversation, which is not a thing a
 	// running process can do.
 	Model string
+	// Thinking asks for the reasoning stream, which is off by default.
+	//
+	// Applied when the process is spawned, so like Model it takes effect on a
+	// new session or on the next resume. A conversation is a session, which is
+	// why per-conversation is the granularity this can honestly offer.
+	Thinking bool
 	// SessionID names a new session rather than letting one be minted.
 	//
 	// The chat needs the id it hands a client to BE the id of the transcript
@@ -265,7 +271,7 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	if workdir == "" {
 		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
 	}
-	sess := &Session{Key: key, Kind: kind, ID: id, Model: model}
+	sess := &Session{Key: key, Kind: kind, ID: id, Model: model, Thinking: opt.Thinking}
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
 	// sweep can find; the reverse leaves a process nothing knows about.

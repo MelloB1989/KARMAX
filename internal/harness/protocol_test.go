@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -210,5 +211,32 @@ func TestTruncateOutputCutsOnARuneBoundary(t *testing.T) {
 	}
 	if len(got) >= len(strings.Repeat("→", 1000)) {
 		t.Error("truncation did not cap the result")
+	}
+}
+
+// The transcript's footer says which brain answered and how long it took.
+// Exercised directly against absorb, not Send: Send needs a live subprocess
+// to drive, and absorb is the piece that actually sets these fields.
+func TestAbsorbCapturesModelAndDuration(t *testing.T) {
+	var assistant, result event
+	mustLine(t, &assistant, `{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"hi"}]}}`)
+	mustLine(t, &result, `{"type":"result","duration_ms":7830,"total_cost_usd":0.012,"result":"hi"}`)
+
+	var turn Turn
+	turn.absorb(assistant)
+	turn.absorb(result)
+
+	if turn.Model != "claude-opus-5" {
+		t.Errorf("model not captured: %q", turn.Model)
+	}
+	if turn.Duration != 7830*time.Millisecond {
+		t.Errorf("duration not captured: %s", turn.Duration)
+	}
+}
+
+func mustLine(t *testing.T, into *event, line string) {
+	t.Helper()
+	if err := json.Unmarshal([]byte(line), into); err != nil {
+		t.Fatalf("fixture is not json: %v", err)
 	}
 }

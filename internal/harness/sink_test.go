@@ -1,7 +1,9 @@
 package harness
 
 import (
+	"bufio"
 	"encoding/json"
+	"os"
 	"testing"
 )
 
@@ -116,4 +118,41 @@ func TestAssistantTextIsNotEmittedTwice(t *testing.T) {
 
 func TestANilSinkIsNotACrash(t *testing.T) {
 	replay(nil, []event{{Type: "assistant"}})
+}
+
+// Ground truth from a real turn with thinking enabled: reasoning and reply
+// must not leak into each other.
+func TestRecordedThinkingTurnSeparatesThoughtFromReply(t *testing.T) {
+	f, err := os.Open("testdata/thinking.jsonl")
+	if err != nil {
+		t.Skip("no thinking fixture recorded yet")
+	}
+	defer f.Close()
+
+	var thought, message int
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		var ev event
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		emit(func(e Event) {
+			switch e.Kind {
+			case KindThought:
+				thought++
+				if e.Text == "" {
+					t.Error("a thought arrived empty — wrong delta field")
+				}
+			case KindMessage:
+				message++
+			}
+		}, ev)
+	}
+	if thought == 0 {
+		t.Error("no thoughts emitted from a turn recorded with thinking on")
+	}
+	if message == 0 {
+		t.Error("no reply emitted")
+	}
 }
