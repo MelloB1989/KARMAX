@@ -10,8 +10,12 @@ attempted and sent ids, not attempted alone, so a lone `sent` line with no
 matching `attempted` (a hand-edited ledger, or a merge of two runs' logs)
 still excludes that recipient rather than quietly re-admitting them.
 Missing one DM is a smaller failure than sending two. Ids are normalized
-(`normalize_id()`) before every comparison, so "1001", 1001, and 1001.0
-are the same recipient rather than three.
+(`ids.normalize_id()`, shared with collect_comments.py) before every
+comparison, so "1001", 1001, and 1001.0 are the same recipient rather than
+three — and, just as importantly, that function never parses a string id
+as a number, because Instagram's real ids are 16-17 digits, past what a
+float can represent exactly, and doing so once already turned one real id
+into a different real id. See ids.py.
 
 Exactly one of --dry-run or --live is required; passing neither, or both,
 refuses to run rather than picking a default — these messages reach real
@@ -79,6 +83,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+from ids import normalize_id
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -100,29 +106,6 @@ def redact(err: BaseException) -> str:
 # Recipients and the progress ledger
 # ---------------------------------------------------------------------------
 
-def normalize_id(value) -> str:
-    """Canonicalize a recipient id so "1001", 1001, and 1001.0 all compare
-    equal. JSON does not distinguish an int from an equal-valued float, and
-    a hand-edited or re-serialized ledger can produce either spelling for
-    the same account — without this, two spellings of one id look like two
-    people, which is a second real DM to someone who already got one.
-    Applied everywhere an id crosses a JSON boundary: recipients and the
-    progress ledger both.
-    """
-    if isinstance(value, bool):
-        return str(value)  # bool is an int subclass in Python; keep it inert here
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    if isinstance(value, int):
-        return str(value)
-    s = str(value).strip()
-    try:
-        f = float(s)
-    except (TypeError, ValueError):
-        return s
-    return str(int(f)) if f.is_integer() else s
-
-
 def load_recipients(path: str) -> list[dict]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -133,7 +116,16 @@ def load_recipients(path: str) -> list[dict]:
     for row in data:
         if not isinstance(row, dict) or "id" not in row:
             continue
-        rid = normalize_id(row["id"])
+        try:
+            rid = normalize_id(row["id"])
+        except ValueError as e:
+            # Loud, not silent: this person is excluded from the run until
+            # the recipients file is fixed. A dropped recipient nobody
+            # notices is exactly the failure normalize_id() exists to make
+            # impossible to miss.
+            print(f"--recipients: excluding a row — {e} — this person will NOT be "
+                  "messaged until the recipients file is fixed", file=sys.stderr)
+            continue
         if rid in seen:
             continue
         seen.add(rid)
@@ -177,7 +169,11 @@ def load_ledger(progress_path: str) -> tuple[set[str], set[str]]:
             event = rec.get("event")
             if rid is None:
                 continue
-            rid = normalize_id(rid)
+            try:
+                rid = normalize_id(rid)
+            except ValueError as e:
+                print(f"progress.jsonl:{lineno}: excluding a record — {e}", file=sys.stderr)
+                continue
             if event == "attempted":
                 attempted.add(rid)
             elif event == "sent":
@@ -478,7 +474,8 @@ def main(argv=None) -> int:
 
                 if consecutive_failures >= args.max_consecutive_failures:
                     print(f"{consecutive_failures} consecutive failures, halting — this is the signal "
-                          "to stop and look, not to keep grinding", file=sys.stderr)
+                          "to stop and look, not to keep grinding. The credential is preserved; once "
+                          "whatever's wrong is fixed, re-run the same --live command to resume", file=sys.stderr)
                     halted = True
                     break
 
@@ -512,7 +509,8 @@ def main(argv=None) -> int:
                         time.sleep(args.pause_poll_seconds)
                         status = reporter.report(total_sent, total_attempted, len(recipients))
                     if status == "cancelled":
-                        print("task cancelled, stopping cleanly (progress.jsonl left intact)", file=sys.stderr)
+                        print("task cancelled, stopping cleanly (progress.jsonl and the credential "
+                              "file are both left intact — re-run the same --live command to resume)", file=sys.stderr)
                         cancelled = True
                         break
 
@@ -523,16 +521,25 @@ def main(argv=None) -> int:
     finally:
         # This script's own belt-and-suspenders: delete the one credential
         # file it was given — but only when this run actually finished
-        # consuming it. NOT on --dry-run (nothing real happened, and
-        # SKILL.md's own Step 4 runs dry-run then live over the same
-        # headers file — deleting here would make the live run that
-        # follows crash on a missing file). NOT on hitting --cap either:
-        # that's a normal pause point per spec §3, and the campaign is
-        # meant to continue with the same credential, not force a fresh
-        # browser harvest. SKILL.md's directory-level cleanup (delete the
-        # whole 0700 capture directory) is what covers final cleanup,
-        # including collect_comments.py's own headers file.
-        if args.headers_file and args.live and not cap_reached and os.path.exists(args.headers_file):
+        # consuming it, i.e. a --live run that exhausted every eligible
+        # recipient with none of the three pause points below in play. NOT
+        # on --dry-run (nothing real happened, and SKILL.md's own Step 4
+        # runs dry-run then live over the same headers file — deleting
+        # here would make the live run that follows crash on a missing
+        # file). NOT on hitting --cap (a normal pause point per spec §3,
+        # meant to continue with the same credential). NOT on a
+        # failure-streak halt either — that's a transient blip or a brief
+        # rate-limit, the most likely reason to resume, and forcing a
+        # fresh browser harvest to retry a rate-limit is exactly the
+        # friction this is meant to avoid. NOT on cancellation — the same
+        # reasoning as cap: cancelled is a pause an operator can resume
+        # from with the identical `--live` command, not a declaration that
+        # the campaign is over. SKILL.md's directory-level cleanup (delete
+        # the whole 0700 capture directory) is what covers final cleanup,
+        # including collect_comments.py's own headers file, once no more
+        # runs — of any of these kinds — are coming.
+        if (args.headers_file and args.live and not cap_reached and not halted
+                and not cancelled and os.path.exists(args.headers_file)):
             try:
                 os.remove(args.headers_file)
                 print(f"deleted {args.headers_file}", file=sys.stderr)

@@ -128,16 +128,33 @@ no such allowed-roots restriction.
    case-sensitive lookup on this file. What genuinely remains unverified
    is Instagram's *response* shape for the comment-list endpoint — see
    Step 2.
-5. **Delete `.ig-capture/` entirely once the whole campaign is actually
-   done.** `send_dms.py --live` deletes the one DM-headers file it was
-   given when a live run genuinely finishes — but deliberately *not* on
-   `--dry-run` (Step 4's dry-run and live commands reuse the same file on
-   purpose) and *not* on hitting `--cap` (a normal pause point, meant to be
-   continued with the same credential, not a finish). The directory as a
-   whole — and `comments-headers.txt`, which nothing else deletes — is
-   this skill's own job once no more runs are coming: after the campaign's
-   last live run completes, or if the procedure aborts before
-   `send_dms.py` ever runs.
+5. **Delete `.ig-capture/` entirely once no more runs of any kind are
+   coming for this campaign.** `send_dms.py --live` deletes the one
+   DM-headers file it was given, but only on a genuine finish — every
+   eligible recipient processed with no pause point below in play. It
+   deliberately preserves the file, and expects to be re-run with the
+   identical `--live` command, in four cases:
+   - `--dry-run` (Step 4's dry-run and live commands reuse the same file
+     on purpose).
+   - Hitting `--cap` — a normal pause point per spec §3, not a finish.
+   - A failure-streak halt — usually a transient blip or a brief
+     rate-limit, the most likely reason to resume, so it would defeat the
+     point to force a fresh browser harvest just to retry it.
+   - The task being `cancelled` through the task row — the same reasoning
+     as `--cap`: a pause the operator can resume from, not a declaration
+     that the campaign is over.
+
+   None of those four delete anything, so the directory as a whole — and
+   `comments-headers.txt`, which nothing ever deletes on its own — is this
+   skill's own job whenever a run genuinely will not be resumed:
+   - After the campaign's last live run completes normally.
+   - If the procedure aborts before `send_dms.py` ever runs.
+   - **After a `--dry-run` whose plan the operator decided not to act
+     on.** This is the case easiest to miss: `send_dms.py` ran and exited
+     cleanly, so nothing crashed and nothing else will ever trigger
+     cleanup — a full credential sits in `.ig-capture/` with nothing
+     pointing back at it until you delete it yourself, the moment that
+     decision is made.
 6. Record what was observed — endpoint URLs and header *names* (never
    values) — into the run directory too, so a later run can diff against it
    and notice when Instagram has changed something.
@@ -216,16 +233,19 @@ python3 scripts/send_dms.py --live \
 ```
 
 The same `.ig-capture/dm-headers.txt` from Step 1 is reused here on
-purpose — the credential file survives a `--dry-run` exit and a
-`--cap`-limited exit specifically so this second command can reuse it
-without re-harvesting. It is deleted automatically once a live run
-actually finishes (see below), or by you, per Step 1, if the whole
-procedure aborts first.
+purpose — the credential file survives a `--dry-run` exit, a
+`--cap`-limited exit, a failure-streak halt, and a `cancelled` task,
+specifically so a follow-up `--live` command can reuse it without
+re-harvesting. It is deleted automatically only once a live run actually
+finishes with nothing left to do (see Step 1 point 5 for all four cases
+where it isn't, and for what to delete it yourself once no more runs are
+coming).
 
-**Hitting `--cap` is a normal stopping point, not a failure or a finish.**
-A campaign larger than one run's cap needs the live command run again —
-same files, same credential, nothing to re-harvest — to keep going where
-the ledger says it left off.
+**`--cap`, a failure-streak halt, and cancellation are all normal stopping
+points, not a failure or a finish.** A campaign larger than one run's cap,
+or interrupted by a rate-limit or an operator pause, needs the identical
+live command run again — same files, same credential, nothing to
+re-harvest — to keep going where the ledger says it left off.
 
 ### The resume contract — the one thing that must not be wrong
 
