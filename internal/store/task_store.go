@@ -194,6 +194,17 @@ type TaskUpdate struct {
 	// BumpAttempt counts a round that ran, which is what stops a task that
 	// cannot make progress from running forever.
 	BumpAttempt bool
+	// KeepLastError leaves last_error untouched instead of the default
+	// write-through (see UpdateTask). A full round-based update wants the
+	// opposite — a round that ran and produced no error must clear the one
+	// the round before it left — but a field-level write like
+	// SetTaskProgress must not silently erase an error a previous round
+	// recorded just because this call has nothing to say about it.
+	KeepLastError bool
+	// KeepNextActionAt leaves next_action_at untouched, for the same reason:
+	// a progress ping or a status flip must not cancel a scheduled retry it
+	// knows nothing about.
+	KeepNextActionAt bool
 }
 
 // UpdateTask records a round's outcome.
@@ -217,11 +228,17 @@ func (s *Store) UpdateTask(id string, u TaskUpdate) error {
 	}
 	// Written even when empty: a round that succeeded must clear the error the
 	// previous one left, or a finished task carries a stale failure forever.
-	sets = append(sets, "last_error = ?")
-	args = append(args, u.LastError)
+	// A caller writing only one field (KeepLastError) opts out, because for
+	// it "empty" means "I have nothing to say," not "there is no error."
+	if !u.KeepLastError {
+		sets = append(sets, "last_error = ?")
+		args = append(args, u.LastError)
+	}
 
-	sets = append(sets, "next_action_at = ?")
-	args = append(args, u.NextActionAt)
+	if !u.KeepNextActionAt {
+		sets = append(sets, "next_action_at = ?")
+		args = append(args, u.NextActionAt)
+	}
 
 	if u.BumpAttempt {
 		sets = append(sets, "attempts = attempts + 1")
@@ -262,10 +279,12 @@ func DecodeProgress(raw string) (TaskProgress, error) {
 }
 
 // SetTaskProgress records one round's progress. Built on UpdateTask, so it
-// touches only the progress column (plus updated_at) — status, next_action_at
-// and last_error are whatever the task already had.
+// touches only the progress column (plus updated_at) — status, last_error
+// and next_action_at are whatever the task already had.
 func (s *Store) SetTaskProgress(id string, p TaskProgress) error {
-	return s.UpdateTask(id, TaskUpdate{Progress: EncodeProgress(p)})
+	return s.UpdateTask(id, TaskUpdate{
+		Progress: EncodeProgress(p), KeepLastError: true, KeepNextActionAt: true,
+	})
 }
 
 // SetTaskStatus flips the control channel — status alone. Also built on
@@ -274,7 +293,7 @@ func (s *Store) SetTaskProgress(id string, p TaskProgress) error {
 // survive it, or a later resume has no record of who was already messaged
 // and risks sending twice.
 func (s *Store) SetTaskStatus(id, status string) error {
-	return s.UpdateTask(id, TaskUpdate{Status: status})
+	return s.UpdateTask(id, TaskUpdate{Status: status, KeepLastError: true, KeepNextActionAt: true})
 }
 
 // ReleaseStuckTasks brings back tasks left mid-round when the daemon died.
