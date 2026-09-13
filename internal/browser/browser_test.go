@@ -2,8 +2,15 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 )
 
 // Two URLs on the same site raise the tab that is already there.
@@ -70,6 +77,72 @@ func TestStopNotifiesOnStateChange(t *testing.T) {
 	if len(got) != 1 || got[0] != false {
 		t.Fatalf("notified %v, want [false]", got)
 	}
+}
+
+// newSlowClosingDevTools fakes a DevTools endpoint that answers
+// /json/version immediately (so alive() reports true) but only answers
+// /json/close after closeDelay — standing in for a Chromium that takes a
+// while to actually go away once asked. Each handler runs in its own
+// goroutine (httptest's normal behaviour), so the slow /json/close does not
+// block a concurrent /json/version probe.
+func newSlowClosingDevTools(t *testing.T, closeDelay time.Duration) int {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/json/version", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"Browser": "fake/1.0"})
+	})
+	mux.HandleFunc("/json/close", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(closeDelay)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// Stop's own polite /json/close request can take a while to answer — real
+// Chromium is in no hurry to shut down. Running()/Endpoint()/MCPConfigJSON()
+// must stop advertising the browser as soon as Stop begins, not once that
+// request finally returns: a session spawned in between would otherwise get
+// a --mcp-config pointing at an endpoint already on its way out, which is
+// exactly what spec 1 promises cannot happen.
+func TestRunningFailsClosedAsSoonAsStopBegins(t *testing.T) {
+	port := newSlowClosingDevTools(t, 300*time.Millisecond)
+	s := New(t.TempDir())
+	s.mu.Lock()
+	s.port = port
+	s.mu.Unlock()
+	s.saveState(state{Port: port})
+
+	ctx := context.Background()
+	if !s.Running(ctx) {
+		t.Fatal("precondition: session should report running before Stop is called")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = s.Stop(ctx)
+	}()
+
+	// Well before the fake /json/close's deliberate delay could have
+	// elapsed, but comfortably after Stop has started.
+	time.Sleep(50 * time.Millisecond)
+	if s.Running(ctx) {
+		t.Fatal("Running() still reported true while Stop was mid-flight, waiting on /json/close")
+	}
+
+	wg.Wait()
 }
 
 // The same data directory is the same window.
