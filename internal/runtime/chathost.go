@@ -41,8 +41,8 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 				ev.Tool = &api.ChatTool{
 					ID:        e.Tool.ID,
 					Title:     e.Tool.Title,
-					Kind:      string(e.Tool.Kind),
-					Status:    string(e.Tool.Status),
+					Kind:      apiToolKind(e.Tool.Kind),
+					Status:    apiToolStatus(e.Tool.Status),
 					Locations: locs,
 					Output:    e.Tool.Output,
 				}
@@ -73,6 +73,34 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 		CostUSD:    turn.CostUSD,
 	})
 	return turn.Text, nil
+}
+
+// apiToolKind coerces a kind to one of the ten values ACP defines. Today the
+// harness only ever produces those ten, but an ACP client is a provider's own
+// vocabulary flowing through unchecked — a stray "browse" would pass
+// json.Marshal here and violate the TypeScript client's closed union silently
+// on the far end.
+func apiToolKind(k harness.ToolKind) string {
+	switch k {
+	case harness.ToolRead, harness.ToolEdit, harness.ToolDelete, harness.ToolMove,
+		harness.ToolSearch, harness.ToolExecute, harness.ToolThink, harness.ToolFetch,
+		harness.ToolSwitchMode, harness.ToolOther:
+		return string(k)
+	default:
+		return string(harness.ToolOther)
+	}
+}
+
+// apiToolStatus coerces a status to one of the four values ACP defines. An
+// unrecognised status means we do not know the call succeeded, and reporting
+// it as "completed" would be a worse lie than reporting it as "failed".
+func apiToolStatus(s harness.Status) string {
+	switch s {
+	case harness.StatusPending, harness.StatusInProgress, harness.StatusCompleted, harness.StatusFailed:
+		return string(s)
+	default:
+		return string(harness.StatusFailed)
+	}
 }
 
 // chatTickets reports the background jobs a finished turn started.
