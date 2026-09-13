@@ -32,7 +32,28 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 		Workdir:   hostpaths.WorkDir(),
 		SessionID: id,
 		OnEvent: func(e harness.Event) {
-			onEvent(api.ChatEvent{Kind: e.Kind, Text: e.Text, Tool: e.Tool, Phase: e.Phase, JobID: e.JobID})
+			ev := api.ChatEvent{Kind: string(e.Kind), Text: e.Text, JobID: e.JobID}
+			if e.Tool != nil {
+				locs := make([]api.ChatLocation, 0, len(e.Tool.Locations))
+				for _, l := range e.Tool.Locations {
+					locs = append(locs, api.ChatLocation{Path: l.Path, Line: l.Line})
+				}
+				ev.Tool = &api.ChatTool{
+					ID:        e.Tool.ID,
+					Title:     e.Tool.Title,
+					Kind:      string(e.Tool.Kind),
+					Status:    string(e.Tool.Status),
+					Locations: locs,
+					Output:    e.Tool.Output,
+				}
+			}
+			for _, p := range e.Plan {
+				ev.Plan = append(ev.Plan, api.ChatPlanEntry{
+					Content: p.Content, Status: p.Status,
+					ActiveForm: p.ActiveForm, Priority: p.Priority,
+				})
+			}
+			onEvent(ev)
 		},
 	})
 	if err != nil {
@@ -43,6 +64,14 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 	for _, t := range chatTickets(turn) {
 		onEvent(t)
 	}
+	// The footer's facts, announced before `done` for the same reason tickets
+	// are: they only exist once the turn has finished.
+	onEvent(api.ChatEvent{
+		Kind:       "meta",
+		Model:      turn.Model,
+		DurationMS: turn.Duration.Milliseconds(),
+		CostUSD:    turn.CostUSD,
+	})
 	return turn.Text, nil
 }
 
