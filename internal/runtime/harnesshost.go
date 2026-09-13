@@ -470,7 +470,7 @@ func browserMCPConfig(ctx context.Context, br browserConfigger, kind string) str
 type browserMCPCache struct {
 	br browserConfigger
 
-	// mu guards valid/cfg/err: turns call MCPConfigJSON from whatever
+	// mu guards valid/cfg/err/gen: turns call MCPConfigJSON from whatever
 	// goroutine is running that turn, and onBrowserStateChange calls
 	// invalidate from the browser's own goroutine — genuinely concurrent,
 	// not merely theoretically so.
@@ -478,6 +478,15 @@ type browserMCPCache struct {
 	valid bool
 	cfg   string
 	err   error
+	// gen counts invalidations. refresh captures it before starting its own
+	// probe (up to browser.Shared's ~1.5s alive timeout, run unlocked) and
+	// compares it after: if invalidate bumped gen while that probe was in
+	// flight, the probe's answer describes a browser state that has already
+	// been superseded, and writing it to valid/cfg/err would silently undo
+	// the invalidation — pinning the cache to the pre-transition answer
+	// until some unrelated later toggle happens to invalidate it again. See
+	// refresh's own comment.
+	gen uint64
 }
 
 func newBrowserMCPCache(br browserConfigger) *browserMCPCache {
@@ -508,10 +517,32 @@ func (c *browserMCPCache) MCPConfigJSON(ctx context.Context) (string, error) {
 // refresh does the one real probe and remembers the answer, whichever it
 // is: the browser being closed caches exactly as validly as it running —
 // that is the normal state, not a miss to keep retrying.
+//
+// The probe runs unlocked (it is the up-to-1.5s loopback call, not a memory
+// operation), so a concurrent invalidate can fire — and complete — while it
+// is still in flight. Without the generation check below, that race is
+// reproducible deterministically, not just theoretically: start a refresh,
+// block it mid-probe, call invalidate, let the probe finish — the write at
+// the bottom of this function would set valid back to true holding the
+// answer from before whatever invalidate was announcing, and nothing short
+// of another, unrelated invalidate would ever look again. Comparing gen
+// before writing is what lets this refresh recognise its own answer as
+// already stale and discard it instead of caching it.
 func (c *browserMCPCache) refresh(ctx context.Context) (string, error) {
-	cfg, err := c.br.MCPConfigJSON(ctx)
 	c.mu.Lock()
-	c.valid, c.cfg, c.err = true, cfg, err
+	gen := c.gen
+	c.mu.Unlock()
+
+	cfg, err := c.br.MCPConfigJSON(ctx)
+
+	c.mu.Lock()
+	if c.gen == gen {
+		c.valid, c.cfg, c.err = true, cfg, err
+	}
+	// else: invalidated while the probe was in flight. valid is already
+	// false from that invalidate; leave it there rather than overwrite it
+	// with an answer that predates it. The caller that triggered THIS probe
+	// still gets what it asked for below — only the cache write is skipped.
 	c.mu.Unlock()
 	return cfg, err
 }
@@ -523,6 +554,7 @@ func (c *browserMCPCache) refresh(ctx context.Context) (string, error) {
 func (c *browserMCPCache) invalidate() {
 	c.mu.Lock()
 	c.valid = false
+	c.gen++
 	c.mu.Unlock()
 }
 

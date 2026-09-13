@@ -326,3 +326,88 @@ func TestBrowserMCPCacheIsSafeUnderConcurrentTurnsAndInvalidation(t *testing.T) 
 	}
 	wg.Wait()
 }
+
+// blockingBrowser blocks its first MCPConfigJSON call until released, so a
+// test can land a concurrent invalidate() precisely while that first probe
+// is still in flight — the exact window F2's generation guard exists to
+// close. Every call after the first returns immediately, so the same fake
+// can also confirm what happens on the next, unblocked call.
+type blockingBrowser struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+	cfg     string
+	err     error
+}
+
+func newBlockingBrowser(cfg string) *blockingBrowser {
+	return &blockingBrowser{entered: make(chan struct{}), release: make(chan struct{}), cfg: cfg}
+}
+
+func (b *blockingBrowser) MCPConfigJSON(context.Context) (string, error) {
+	b.mu.Lock()
+	b.calls++
+	first := b.calls == 1
+	b.mu.Unlock()
+	if first {
+		close(b.entered)
+		<-b.release
+	}
+	return b.cfg, b.err
+}
+
+func (b *blockingBrowser) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+// F2, reproduced deterministically: invalidate() fires while a refresh's own
+// probe is still in flight (unlocked, since it is a loopback network call
+// and not a memory operation), and that probe is then allowed to complete
+// anyway. Before the generation guard, refresh's unconditional write at the
+// end unset what invalidate had just announced — valid ended true, pinned
+// to the answer from before whatever transition invalidate was signalling,
+// and nothing short of some later, unrelated toggle would ever cause a
+// reprobe. Every chat and agent turn in between would spawn with the wrong
+// --mcp-config.
+func TestBrowserMCPCacheDiscardsAProbeInvalidatedWhileInFlight(t *testing.T) {
+	br := newBlockingBrowser(`{"mcpServers":{"old":{}}}`)
+	cache := newBrowserMCPCache(br)
+
+	done := make(chan struct{})
+	var got string
+	var gotErr error
+	go func() {
+		defer close(done)
+		got, gotErr = cache.MCPConfigJSON(context.Background())
+	}()
+
+	<-br.entered       // the probe is in flight, unlocked
+	cache.invalidate() // announces: whatever this probe returns is already stale
+	close(br.release)  // let it finish anyway
+	<-done
+
+	if gotErr != nil || got != `{"mcpServers":{"old":{}}}` {
+		t.Fatalf("the in-flight caller got %q, %v; it should still see its own probe's real answer", got, gotErr)
+	}
+
+	cache.mu.Lock()
+	valid := cache.valid
+	cache.mu.Unlock()
+	if valid {
+		t.Fatal("the cache ended valid=true, pinned to an answer from before the invalidate that raced it — " +
+			"every turn until some unrelated later toggle would spawn with this stale --mcp-config")
+	}
+
+	// The next caller must trigger a real reprobe, not inherit a cached hit
+	// left over from the raced write.
+	if got := browserMCPConfig(context.Background(), cache, "chat"); got != br.cfg {
+		t.Fatalf("post-race call = %q, want %q", got, br.cfg)
+	}
+	if n := br.count(); n != 2 {
+		t.Fatalf("underlying probes = %d, want 2 (the raced one, then a real reprobe) — "+
+			"a lower count means the stale write was still cached despite the race", n)
+	}
+}
