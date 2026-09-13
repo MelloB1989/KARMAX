@@ -122,6 +122,24 @@ func TestANilSinkIsNotACrash(t *testing.T) {
 
 // Ground truth from a real turn with thinking enabled: reasoning and reply
 // must not leak into each other.
+func TestEmptyTextDeltaEmitsNothing(t *testing.T) {
+	got := collect(t,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":""}}}`,
+	)
+	if len(got) != 0 {
+		t.Fatalf("got %d events, want 0 (empty text_delta should not emit): %+v", len(got), got)
+	}
+}
+
+func TestEmptyThinkingDeltaEmitsNothing(t *testing.T) {
+	got := collect(t,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":""}}}`,
+	)
+	if len(got) != 0 {
+		t.Fatalf("got %d events, want 0 (empty thinking_delta should not emit): %+v", len(got), got)
+	}
+}
+
 func TestRecordedThinkingTurnSeparatesThoughtFromReply(t *testing.T) {
 	f, err := os.Open("testdata/thinking.jsonl")
 	if err != nil {
