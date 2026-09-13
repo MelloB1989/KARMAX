@@ -13,6 +13,11 @@ import (
 	"path/filepath"
 )
 
+// Without an `all:` prefix this silently skips anything under assets whose
+// name starts with "." or "_" — so a skill file named that way would not ship
+// and nothing would say so. Kept deliberately: it is also what keeps a
+// stray __pycache__ beside the Python scripts out of the binary.
+//
 //go:embed assets
 var assets embed.FS
 
