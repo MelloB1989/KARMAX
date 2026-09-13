@@ -409,6 +409,17 @@ func (s *Session) Close() {
 // still working.
 func (s *Session) Busy() bool { return s != nil && s.busy.Load() }
 
+// claim marks the session busy before Send has actually been called on it.
+// Supervisor.open uses this the moment it decides to hand a session back
+// for reuse (or hands back a freshly spawned one), while it still holds its
+// own lock — so a concurrent CloseIfIdle, which checks Busy under that same
+// lock, can never see the session as idle in the gap between open returning
+// it and the caller's own call to Send actually starting. Send's own
+// busy.Store(true) is then a harmless, idempotent confirmation once the turn
+// is genuinely under way; its defer busy.Store(false) is still what clears
+// the claim when the turn ends.
+func (s *Session) claim() { s.busy.Store(true) }
+
 // Alive reports whether the process is still running.
 func (s *Session) Alive() bool {
 	if s == nil || s.cmd == nil || s.cmd.Process == nil {
