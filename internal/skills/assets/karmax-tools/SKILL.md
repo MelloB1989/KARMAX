@@ -125,9 +125,18 @@ work is itself a mistake this tool's own description calls out.
 
 ## Scheduling and automation you write yourself
 
-- `scheduler.add` — a one-off task for later; delivered back to you as an
-  event. Use for "remind me to check this in an hour," not for anything
-  recurring.
+- `self.remind` — arm a durable one-shot timer that wakes *you* (not the
+  operator's phone) with a prompt, e.g. "in 2h, check whether Siva replied
+  about the APK." Survives a restart, fires exactly once, nothing left
+  behind. **This is the tool for "remind me to check this in an hour"** —
+  reach for it before `scheduler.add`.
+- `scheduler.add` — schedules a job delivered back to you as an event, via
+  either `cron` or `delay_minutes`. **`delay_minutes` is not a one-shot**:
+  it computes the target time and stores it as a 5-field cron (minute hour
+  day month `*`, no year), so the job fires once now and then fires again
+  every year on that same date, forever — and there is no `scheduler.remove`
+  tool, so nothing you hold can clean it up afterwards. Use `self.remind`
+  for a delay; reach for `scheduler.add` only when you actually mean `cron`.
 - `recipe.write` — your own recurring workflows: YAML with a trigger
   (schedule/event/manual) and numbered steps, running within seconds of being
   written. `check` before `write` (returns the exact line and a fix), `run`
