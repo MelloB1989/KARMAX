@@ -57,6 +57,21 @@ func TestColdSessionIsNotRunning(t *testing.T) {
 	}
 }
 
+// Stopping notifies a registered callback, so a long-lived harness session
+// whose --mcp-config went stale can be recycled.
+func TestStopNotifiesOnStateChange(t *testing.T) {
+	s := New(t.TempDir())
+	var got []bool
+	s.OnStateChange(func(running bool) { got = append(got, running) })
+
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(got) != 1 || got[0] != false {
+		t.Fatalf("notified %v, want [false]", got)
+	}
+}
+
 // The same data directory is the same window.
 func TestSharedIsOnePerDirectory(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()

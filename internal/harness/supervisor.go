@@ -339,7 +339,7 @@ func (s *Supervisor) evictIfFull() {
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].LastActivityAt.Before(recs[j].LastActivityAt) })
 	for _, r := range recs {
-		if s.busy(r.Key) {
+		if s.Busy(r.Key) {
 			continue // still working; evicting it would kill the turn
 		}
 		s.log.Info("harness: at the session cap, evicting the least recently used", "key", r.Key)
@@ -370,8 +370,9 @@ func (s *Supervisor) Close(key string) {
 	_ = s.store.SetHarnessState(key, HarnessClosed, "", time.Now())
 }
 
-// busy reports whether a session has a turn in flight.
-func (s *Supervisor) busy(key string) bool {
+// Busy reports whether a session has a turn in flight, so a caller outside
+// this package can tell a live session from one safe to close.
+func (s *Supervisor) Busy(key string) bool {
 	s.mu.Lock()
 	sess := s.live[key]
 	s.mu.Unlock()
@@ -400,7 +401,7 @@ func (s *Supervisor) Reap(now time.Time) {
 		if pol.Idle <= 0 {
 			continue
 		}
-		if s.busy(r.Key) {
+		if s.Busy(r.Key) {
 			// A long turn does not update LastActivityAt until it finishes, so
 			// without this the reaper closes the session doing the most work.
 			continue
