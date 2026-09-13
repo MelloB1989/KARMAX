@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/MelloB1989/karmax/internal/api"
+	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 )
@@ -31,6 +32,8 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 		// a per-conversation directory nothing ever lists.
 		Workdir:   hostpaths.WorkDir(),
 		SessionID: id,
+		// Empty when the browser is closed — the normal case, not a failure.
+		MCPConfig: browserMCPConfig(ctx, browser.Shared(rt.cfg.Karmax.DataDir), "chat"),
 		OnEvent: func(e harness.Event) {
 			ev := api.ChatEvent{Kind: string(e.Kind), Text: e.Text, JobID: e.JobID}
 			if e.Tool != nil {
