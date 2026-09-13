@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -22,6 +23,17 @@ const (
 	TaskBlocked = "blocked"
 	TaskDone    = "done"
 	TaskFailed  = "failed"
+)
+
+// Long-run states. A detached script owns these, not the due-tasks poller
+// above: Running/Paused/Cancelled never appear in DueTasks, so a paced send
+// and the polling queue share a table without sharing a scheduler. Status is
+// the whole control channel — a script re-reads it before each unit of work,
+// idling on Paused and stopping cleanly on Cancelled.
+const (
+	TaskRunning   = "running"
+	TaskPaused    = "paused"
+	TaskCancelled = "cancelled"
 )
 
 // Task is one piece of work owned until it is finished.
@@ -218,6 +230,51 @@ func (s *Store) UpdateTask(id string, u TaskUpdate) error {
 
 	_, err := s.exec(`UPDATE tasks SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	return err
+}
+
+// TaskProgress is a long run's ledger, JSON-encoded into the progress column.
+// Attempted counts a send tried, Sent one that succeeded — a script writes
+// Attempted before the request and Sent after it, so a crash between the two
+// is visible on resume rather than silently retried or silently skipped.
+type TaskProgress struct {
+	Sent      int       `json:"sent"`
+	Attempted int       `json:"attempted"`
+	Total     int       `json:"total"`
+	LastAt    time.Time `json:"last_at"`
+}
+
+// EncodeProgress renders progress the way the TEXT column holds it.
+func EncodeProgress(p TaskProgress) string {
+	b, _ := json.Marshal(p)
+	return string(b)
+}
+
+// DecodeProgress reads a task's progress column back into TaskProgress. A
+// task that has not reported yet has an empty column, which decodes to the
+// zero value rather than an error.
+func DecodeProgress(raw string) (TaskProgress, error) {
+	var p TaskProgress
+	if strings.TrimSpace(raw) == "" {
+		return p, nil
+	}
+	err := json.Unmarshal([]byte(raw), &p)
+	return p, err
+}
+
+// SetTaskProgress records one round's progress. Built on UpdateTask, so it
+// touches only the progress column (plus updated_at) — status, next_action_at
+// and last_error are whatever the task already had.
+func (s *Store) SetTaskProgress(id string, p TaskProgress) error {
+	return s.UpdateTask(id, TaskUpdate{Progress: EncodeProgress(p)})
+}
+
+// SetTaskStatus flips the control channel — status alone. Also built on
+// UpdateTask, which leaves progress untouched when TaskUpdate.Progress is
+// empty: this is what makes cancelling safe. A cancelled run's ledger must
+// survive it, or a later resume has no record of who was already messaged
+// and risks sending twice.
+func (s *Store) SetTaskStatus(id, status string) error {
+	return s.UpdateTask(id, TaskUpdate{Status: status})
 }
 
 // ReleaseStuckTasks brings back tasks left mid-round when the daemon died.
