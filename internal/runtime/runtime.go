@@ -765,49 +765,49 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			},
 		})
 
-		// Brain monitor: pings the actual brain the agent depends on and alerts
-		// the operator (app + WhatsApp, fixed text — NOT model-composed, since a
-		// dead brain can't write) the moment it goes down, and again when it
-		// recovers. This is why the operator is never silently deaf again: a
-		// codex-style usage-limit outage now announces itself. Latched so it
-		// alerts on transitions, not every tick.
-		mainProvider, mainModel := a0.Provider, a0.Model
+		// Brain monitor: pings the actual brain the agent depends on — the
+		// harness (Claude Code via the supervisor; see
+		// docs/CLAUDE-ONLY-ORCHESTRATOR.md), not the metered API path nothing
+		// in this daemon actually answers on — and alerts the operator (app +
+		// WhatsApp, fixed text — NOT model-composed, since a dead brain can't
+		// write) the moment it goes down, and again when it recovers. Latched
+		// so it alerts on transitions, not every tick.
+		//
+		// An open circuit breaker is reported as healthy-but-paused, never as
+		// down: it means the daemon is deliberately declining to spend quota
+		// right now, which is the system working as designed. Reporting that
+		// as an outage would replace one false alarm with another that fires
+		// on exactly the schedule a quota pause is likeliest to happen on.
+		// checkBrainHealth (brainmonitor.go) makes that distinction the same
+		// way harnesstools.go's asBreakerOpen does.
+		//
+		// Rides the cheapest kind ("classify" — see the tier table in
+		// CLAUDE-ONLY-ORCHESTRATOR.md) on its own session key, never an
+		// operator-priority kind: a ten-minute health check must not spend a
+		// share of the operator's own quota.
 		waChannelID2, _ := commsMgr.FindChannelIDByType("whatsapp")
-		brainDown := false
+		brainLatch := &brainMonitorLatch{}
 		loopkit.Register(loopkit.Loop{
 			Name:        "brain-monitor",
-			Description: "Pings the agent's model every few minutes and alerts you (app + WhatsApp) if the brain goes down or comes back — so an LLM outage never silently deafens KARMAX.",
+			Description: "Pings the harness (the agent's real brain) every few minutes on the cheapest tier and alerts you (app + WhatsApp) if it goes down or comes back — so an outage never silently deafens KARMAX. A paused circuit breaker (quota policy) is never reported as down.",
 			Schedule:    loopkit.Every("10m"),
 			Run: func(ctx context.Context, k loopkit.Kit) error {
+				h := harnessRT.get()
+				if h == nil || h.harness == nil {
+					return nil // harness disabled: nothing to monitor
+				}
 				pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				defer cancel()
-				// MaxTokens must be generous enough for a THINKING model to finish:
-				// claude-sonnet-4.6/opus emit internal thinking first, so a tiny
-				// budget (8) is consumed before any text and the call fails with a
-				// misleading "context deadline exceeded" — making the monitor cry
-				// wolf even when the brain is perfectly healthy. 256 completes the
-				// "OK" reply reliably (verified: 8 & 64 fail, 256 works).
-				sess := karmahelper.NewSession(karmahelper.SessionConfig{
-					Kind:     "runtime",
-					Provider: mainProvider, Model: mainModel, MaxTokens: 256, FallbackModels: fbs,
-				}, nil)
-				resp, _, _, perr := sess.Chat(pctx, "Reply with the single word OK.")
-				healthy := perr == nil && strings.TrimSpace(resp) != ""
-				switch {
-				case !healthy && !brainDown:
-					brainDown = true
-					reason := "no response"
-					if perr != nil {
-						reason = perr.Error()
-					}
-					msg := fmt.Sprintf("⚠️ KARMAX brain is DOWN (model %s: %.140s). Your messages won't be answered until it recovers.", mainModel, reason)
+				event, reason := brainLatch.tick(pctx, h.harness)
+				switch event {
+				case brainMonitorAlertDown:
+					msg := fmt.Sprintf("⚠️ KARMAX brain is DOWN (harness: %.140s). Your messages won't be answered until it recovers.", reason)
 					builtin.PushAppNotification(s, waAgentID, "alert", "⚠️ KARMAX brain is down", msg)
 					if waChannelID2 != "" && waTarget != "" {
 						_ = commsMgr.Send(waChannelID2, waTarget, msg)
 					}
 					k.Logf("brain-monitor: DOWN (%s)", reason)
-				case healthy && brainDown:
-					brainDown = false
+				case brainMonitorAlertRecovered:
 					msg := "✅ KARMAX brain is back online. Resend anything I missed."
 					builtin.PushAppNotification(s, waAgentID, "update", "✅ KARMAX brain recovered", msg)
 					if waChannelID2 != "" && waTarget != "" {
