@@ -73,3 +73,18 @@ func TestAPIToolStatusCoercesUnknown(t *testing.T) {
 		t.Fatalf("unknown status = %q, want %q", got, "failed")
 	}
 }
+
+// An empty (or nil) plan must marshal to "[]", not "null": the TypeScript
+// side declares plan non-nullable and reads plan.length unguarded, so a null
+// would throw inside deriveRows and take the whole transcript down with it.
+func TestAPIChatPlanEmptyMarshalsAsEmptyArray(t *testing.T) {
+	for name, entries := range map[string][]harness.PlanEntry{"nil": nil, "empty": {}} {
+		b, err := json.Marshal(apiChatPlan(entries))
+		if err != nil {
+			t.Fatalf("%s: marshal error: %v", name, err)
+		}
+		if string(b) != "[]" {
+			t.Fatalf("%s: plan JSON = %s, want []", name, b)
+		}
+	}
+}

@@ -153,7 +153,6 @@ const (
 	KindTool       EventKind = "tool"        // a call, announced
 	KindToolUpdate EventKind = "tool_update" // the same call, resolved
 	KindPlan       EventKind = "plan"
-	KindError      EventKind = "error"
 )
 
 // Event is one thing worth telling a caller while a turn is still running.
@@ -165,7 +164,8 @@ const (
 type Event struct {
 	Kind EventKind
 
-	// Text carries KindMessage, KindThought and KindError.
+	// Text carries KindMessage and KindThought. The wire's own "error" kind
+	// is written directly by internal/api/chat.go, never through an Event.
 	Text string
 
 	// Tool is set for KindTool and KindToolUpdate.
