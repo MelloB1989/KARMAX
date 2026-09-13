@@ -246,6 +246,12 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	// fraction of one turn, which is the opposite of what degrading is for.
 	s.mu.Lock()
 	if sess, ok := s.live[key]; ok && sess.Alive() {
+		// Claimed here, under the same lock CloseIfIdle checks Busy() under —
+		// not left for Send to set once it starts. The caller unlocks and
+		// returns this pointer to whoever asked, who then calls Send in its
+		// own time; without the claim, the session sits in s.live looking
+		// idle for that whole gap, and a concurrent CloseIfIdle can win it.
+		sess.claim()
 		s.mu.Unlock()
 		return sess, nil
 	}
@@ -315,6 +321,7 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	})
 
 	s.mu.Lock()
+	sess.claim() // same reasoning as the reuse path above
 	s.live[key] = sess
 	s.mu.Unlock()
 
@@ -349,13 +356,47 @@ func (s *Supervisor) evictIfFull() {
 	s.log.Warn("harness: at the session cap and every session is busy; not evicting")
 }
 
-// Close ends a session. Ephemeral kinds forget it entirely.
+// Close ends a session unconditionally. Ephemeral kinds forget it entirely.
 func (s *Supervisor) Close(key string) {
 	s.mu.Lock()
 	sess := s.live[key]
 	delete(s.live, key)
 	s.mu.Unlock()
+	s.teardown(key, sess)
+}
 
+// CloseIfIdle closes key only if it is live and not busy, checking Busy and
+// removing it from the live table in the same critical section — so nothing
+// can start a turn on it in the gap between deciding it is safe to close and
+// actually closing it, the way a separate Busy() call followed by Close()
+// could. Reports whether it actually closed anything.
+//
+// This alone is not the whole fix: it is only as safe as Busy() is
+// up-to-date, and open() is what keeps it that way — claiming a session busy
+// under s.mu the moment it is handed back for reuse, not leaving that for
+// Send to do once it gets around to running. See Session.claim.
+//
+// Shares Close's own shape for the slow part: the map mutation happens under
+// s.mu, the actual teardown (sess.Close(), which waits up to 3s for a SIGINT
+// before SIGKILL) happens after releasing it, so one stuck process being torn
+// down never blocks every other session — including a concurrent open() on
+// a different key.
+func (s *Supervisor) CloseIfIdle(key string) bool {
+	s.mu.Lock()
+	sess, ok := s.live[key]
+	if !ok || sess.Busy() {
+		s.mu.Unlock()
+		return false
+	}
+	delete(s.live, key)
+	s.mu.Unlock()
+	s.teardown(key, sess)
+	return true
+}
+
+// teardown is the slow, unlocked part Close and CloseIfIdle share: stop the
+// process, then record or forget the session.
+func (s *Supervisor) teardown(key string, sess *Session) {
 	if sess != nil {
 		sess.Close()
 	}
