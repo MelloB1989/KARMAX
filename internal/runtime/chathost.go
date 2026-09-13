@@ -47,12 +47,7 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 					Output:    e.Tool.Output,
 				}
 			}
-			for _, p := range e.Plan {
-				ev.Plan = append(ev.Plan, api.ChatPlanEntry{
-					Content: p.Content, Status: p.Status,
-					ActiveForm: p.ActiveForm, Priority: p.Priority,
-				})
-			}
+			ev.Plan = apiChatPlan(e.Plan)
 			onEvent(ev)
 		},
 	})
@@ -89,6 +84,21 @@ func apiToolKind(k harness.ToolKind) string {
 	default:
 		return string(harness.ToolOther)
 	}
+}
+
+// apiChatPlan is built non-nil even for an empty plan: a nil slice marshals
+// to JSON null, and the TypeScript side declares plan non-nullable and reads
+// plan.length unguarded — a null here doesn't fail to parse, it throws inside
+// deriveRows and takes the whole transcript down with it.
+func apiChatPlan(entries []harness.PlanEntry) []api.ChatPlanEntry {
+	out := make([]api.ChatPlanEntry, 0, len(entries))
+	for _, p := range entries {
+		out = append(out, api.ChatPlanEntry{
+			Content: p.Content, Status: p.Status,
+			ActiveForm: p.ActiveForm, Priority: p.Priority,
+		})
+	}
+	return out
 }
 
 // apiToolStatus coerces a status to one of the four values ACP defines. An
