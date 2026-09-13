@@ -22,7 +22,10 @@ optional polish:
 - **Capped, and dry-run first.** The very first invocation of the send script
   is `--dry-run`. It produces the real plan — how many people, in what order
   — and sends nothing. A live run has a per-run cap as a required-looking
-  argument with a conservative default, not a constant buried in code.
+  argument with a conservative default, not a constant buried in code, and
+  needs its own explicit `--live` flag — there is no default mode, and
+  passing neither `--dry-run` nor `--live` refuses to run rather than
+  guessing.
 - **It is the operator's own account.** Everything here rides on the browser
   session they signed into themselves. This skill has no sign-in flow and
   must never attempt one on their behalf.
@@ -125,11 +128,16 @@ no such allowed-roots restriction.
    case-sensitive lookup on this file. What genuinely remains unverified
    is Instagram's *response* shape for the comment-list endpoint — see
    Step 2.
-5. **Delete `.ig-capture/` entirely when the run finishes or aborts.**
-   `send_dms.py` deletes the one DM-headers file it was given on every
-   exit path, but the directory as a whole — and `comments-headers.txt`,
-   which nothing else deletes — is this skill's own job. Do it yourself if
-   the procedure aborts before `send_dms.py` ever runs.
+5. **Delete `.ig-capture/` entirely once the whole campaign is actually
+   done.** `send_dms.py --live` deletes the one DM-headers file it was
+   given when a live run genuinely finishes — but deliberately *not* on
+   `--dry-run` (Step 4's dry-run and live commands reuse the same file on
+   purpose) and *not* on hitting `--cap` (a normal pause point, meant to be
+   continued with the same credential, not a finish). The directory as a
+   whole — and `comments-headers.txt`, which nothing else deletes — is
+   this skill's own job once no more runs are coming: after the campaign's
+   last live run completes, or if the procedure aborts before
+   `send_dms.py` ever runs.
 6. Record what was observed — endpoint URLs and header *names* (never
    values) — into the run directory too, so a later run can diff against it
    and notice when Instagram has changed something.
@@ -181,27 +189,62 @@ python3 scripts/send_dms.py --dry-run \
 
 `--dry-run` runs the entire pipeline — ledger writes, pacing, the cap, task
 status checks — and substitutes a simulated send for the real network call.
-Report the plan it prints (recipient count, cap, pace) to the operator before
-doing anything live.
+Its ledger writes are tagged as simulated and do not count toward anyone
+being "already messaged" — a dry-run can never starve the live run that
+follows it. Report the plan it prints (recipient count, cap, pace) to the
+operator before doing anything live.
 
-Only after the operator has seen that plan, launch the live run the same way
-without `--dry-run`, and **detached** — `claude_code.call` with
-`background: true`, or a plain detached process. Never inside the turn that
-starts it: chat/agent/task turns time out in minutes, and a real run is
-hours. The turn that starts it returns immediately with the task id and the
-count; completion arrives later as an event.
+Only after the operator has seen that plan, launch the live run — the same
+command, with `--dry-run` replaced by `--live` (never omitted outright:
+`send_dms.py` refuses to run with neither flag, and refuses `--endpoint`/
+`--headers-file`/`--payload-template`/`--message` missing under `--live`)
+— and **detached**: `claude_code.call` with `background: true`, or a plain
+detached process. Never inside the turn that starts it: chat/agent/task
+turns time out in minutes, and a real run is hours. The turn that starts it
+returns immediately with the task id and the count; completion arrives
+later as an event.
+
+```
+python3 scripts/send_dms.py --live \
+  --recipients <workdir>/commenters.json \
+  --progress <workdir>/progress.jsonl \
+  --message "Hey {username}, here's the link: {link}" --link "<link>" \
+  --endpoint "<observed DM-send endpoint>" \
+  --headers-file <workdir>/.ig-capture/dm-headers.txt \
+  --payload-template <workdir>/.ig-capture/payload-template.json \
+  --task-id <task_id>
+```
+
+The same `.ig-capture/dm-headers.txt` from Step 1 is reused here on
+purpose — the credential file survives a `--dry-run` exit and a
+`--cap`-limited exit specifically so this second command can reuse it
+without re-harvesting. It is deleted automatically once a live run
+actually finishes (see below), or by you, per Step 1, if the whole
+procedure aborts first.
+
+**Hitting `--cap` is a normal stopping point, not a failure or a finish.**
+A campaign larger than one run's cap needs the live command run again —
+same files, same credential, nothing to re-harvest — to keep going where
+the ledger says it left off.
 
 ### The resume contract — the one thing that must not be wrong
 
 `send_dms.py` writes one JSON record per recipient to `progress.jsonl`:
 `attempted` **before** the request goes out, `sent` **after** it succeeds.
 On any resume — a restart after a crash, a kill-and-relaunch, a second
-invocation over the same files — **a recipient with an `attempted` record
-and no `sent` record is skipped, not retried.** Missing one DM is a smaller
-failure than sending two; this skill would rather under-deliver than double-
-message anyone. `progress.jsonl` is never deleted and never rewritten,
-including on `--dry-run`, on a failure-streak halt, or on cancellation —
-whatever it holds when a run stops is exactly what the next run resumes from.
+invocation over the same files, or a hand-edited/merged ledger — a
+recipient is skipped, not retried, the moment **either** record exists for
+them; a lone `sent` with no matching `attempted` still excludes, it does
+not re-admit. Missing one DM is a smaller failure than sending two; this
+skill would rather under-deliver than double-message anyone. Only real
+records count — a `--dry-run`'s simulated `attempted`/`sent` writes are
+tagged and never gate a real send, which is what lets Step 4's dry-run and
+live commands safely share one `progress.jsonl`. Recipient ids are
+normalized before comparison, so "1001", `1001`, and `1001.0` are always
+the same person. `progress.jsonl` is never deleted and never rewritten,
+including on `--dry-run`, on a `--cap` stop, on a failure-streak halt, or
+on cancellation — whatever it holds when a run stops is exactly what the
+next run resumes from.
 
 ### Pause and cancel, through the task row
 
@@ -230,8 +273,8 @@ to have kept the task id:
 
 - Never send to anyone who did not comment on the specific post this run was
   pointed at.
-- Never retry a recipient that already has an `attempted` record, sent or
-  not.
+- Never retry a recipient that already has an `attempted` **or** `sent`
+  record — either one alone is enough to exclude them.
 - Never print, log, or return the contents of anything under
   `.ig-capture/`, any cookie value, or the raw `Cookie`/`Authorization`
   header — including inside an error message.
