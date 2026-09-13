@@ -196,6 +196,14 @@ func (t *harnessCloseTool) Execute(ctx context.Context, in map[string]any) (tool
 	if strings.TrimSpace(key) == "" {
 		return tools.ErrorResult(fmt.Errorf("key is required")), nil
 	}
+	// Deliberately unconditional, not CloseIfIdle: this is the operator (or
+	// an agent acting for them) explicitly asking to close key right now,
+	// which is exactly the case where killing a busy turn is the intended
+	// behaviour — "close it now" loses its meaning if it silently no-ops
+	// whenever there happens to be a turn in flight. Session.Close's own
+	// writer synchronization (see session.go) means this can no longer
+	// corrupt the session it interrupts; it can only interrupt it, which is
+	// what was asked for.
 	rt.harness.Close(key)
 	return tools.SuccessResult(map[string]any{"closed": key}), nil
 }
