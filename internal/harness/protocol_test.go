@@ -200,10 +200,15 @@ func TestTruncateOutputCapsAndMarks(t *testing.T) {
 	}
 }
 
-// Cutting mid-rune puts U+FFFD on screen.
+// Cutting mid-rune puts U+FFFD on screen. "→" is 3 bytes; 2048 = 3×682 + 2,
+// so naïve byte-slicing lands mid-rune, which proves the rune-boundary logic.
 func TestTruncateOutputCutsOnARuneBoundary(t *testing.T) {
-	got := truncateOutput(strings.Repeat("é", 4000))
-	if !utf8.ValidString(strings.TrimSuffix(got, "\n…")) {
+	got := truncateOutput(strings.Repeat("→", 1000))
+	trimmed := strings.TrimSuffix(got, "\n…")
+	if !utf8.ValidString(trimmed) {
 		t.Error("truncation produced invalid UTF-8")
+	}
+	if len(got) >= len(strings.Repeat("→", 1000)) {
+		t.Error("truncation did not cap the result")
 	}
 }

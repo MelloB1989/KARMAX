@@ -132,6 +132,7 @@ func toolTitle(name string, input json.RawMessage) string {
 			return s
 		}
 	}
+	// Malformed tool_use with empty name would render a blank line otherwise.
 	if name == "" {
 		return "tool"
 	}
