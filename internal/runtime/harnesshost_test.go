@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/MelloB1989/karmax/internal/browser"
@@ -40,10 +41,18 @@ func TestChatSessionGetsNoBrowserWhenItIsNotRunning(t *testing.T) {
 
 // utility sessions are cheap one-shot judgments with no use for a browser,
 // even when one happens to be open.
+//
+// browserKinds is an ALLOWLIST of {"chat","agent"}, not a denylist of
+// {"utility"} — so this alone would pass identically against a hardcoded
+// denylist implementation, proving nothing about the actual rule. The kind
+// below is not on the branch that added "utility" and never will be one
+// KARMAX itself defines; a real allowlist still refuses it.
 func TestUtilityKindNeverGetsTheBrowser(t *testing.T) {
 	br := fakeBrowser{cfg: `{"mcpServers":{}}`}
-	if got := browserMCPConfig(context.Background(), br, "utility"); got != "" {
-		t.Fatalf("MCPConfig = %q, want empty for the utility kind", got)
+	for _, kind := range []string{"utility", "some-kind-nobody-registered"} {
+		if got := browserMCPConfig(context.Background(), br, kind); got != "" {
+			t.Fatalf("%s: MCPConfig = %q, want empty for a kind not on the allowlist", kind, got)
+		}
 	}
 }
 
@@ -57,10 +66,15 @@ func TestHarnessPluginDirForBrowserKinds(t *testing.T) {
 	}
 }
 
-// utility gets no skills either, for the same reason it gets no browser.
+// utility gets no skills either, for the same reason it gets no browser —
+// and, same as TestUtilityKindNeverGetsTheBrowser, "utility" alone would
+// pass against a hardcoded denylist of that one string, so an arbitrary
+// unlisted kind is checked too.
 func TestHarnessPluginDirForOtherKinds(t *testing.T) {
-	if got := harnessPluginDir("utility", "/skills"); got != "" {
-		t.Fatalf("PluginDir = %q, want empty for the utility kind", got)
+	for _, kind := range []string{"utility", "some-kind-nobody-registered"} {
+		if got := harnessPluginDir(kind, "/skills"); got != "" {
+			t.Fatalf("%s: PluginDir = %q, want empty for a kind not on the allowlist", kind, got)
+		}
 	}
 }
 
@@ -133,4 +147,117 @@ func TestUtilitySessionsAreNotRecycled(t *testing.T) {
 	if len(sup.closed) != 0 {
 		t.Fatalf("closed = %v, want none — utility never gets the browser", sup.closed)
 	}
+}
+
+// countingBrowser stands in for the real browser session, counting how many
+// times its own MCPConfigJSON — the real loopback probe — actually runs, so
+// a test can tell "cached" from "probed every time" apart.
+type countingBrowser struct {
+	mu    sync.Mutex
+	calls int
+	cfg   string
+	err   error
+}
+
+func (c *countingBrowser) MCPConfigJSON(context.Context) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return c.cfg, c.err
+}
+
+func (c *countingBrowser) set(cfg string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cfg, c.err = cfg, err
+}
+
+func (c *countingBrowser) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// A warm session's --mcp-config is fixed at spawn, so recomputing it on
+// every turn against an already-running session is pure waste: the probe
+// must happen once, not once per turn.
+func TestBrowserMCPCacheProbesOnceForRepeatedWarmTurns(t *testing.T) {
+	br := &countingBrowser{cfg: `{"mcpServers":{}}`}
+	cache := newBrowserMCPCache(br)
+	for i := 0; i < 5; i++ {
+		if got := browserMCPConfig(context.Background(), cache, "chat"); got != br.cfg {
+			t.Fatalf("turn %d: MCPConfig = %q, want %q", i, got, br.cfg)
+		}
+	}
+	if got := br.count(); got != 1 {
+		t.Fatalf("underlying probes = %d, want 1 — a warm session must not reprobe per turn", got)
+	}
+}
+
+// The browser being closed is the normal state, not a miss to keep
+// retrying — it caches exactly like a running one, with one probe however
+// many turns ask while it stays that way.
+func TestBrowserMCPCacheCachesTheBrowserBeingClosed(t *testing.T) {
+	br := &countingBrowser{err: browser.ErrNotRunning}
+	cache := newBrowserMCPCache(br)
+	for i := 0; i < 3; i++ {
+		if got := browserMCPConfig(context.Background(), cache, "chat"); got != "" {
+			t.Fatalf("turn %d: MCPConfig = %q, want empty while the browser is closed", i, got)
+		}
+	}
+	if got := br.count(); got != 1 {
+		t.Fatalf("underlying probes = %d, want 1 even while the browser stays closed", got)
+	}
+}
+
+// The cache must not survive the state it was cached for: once the browser
+// actually starts or stops, the next turn needs the current answer, not the
+// one from before the transition.
+func TestBrowserMCPCacheRefreshesOnlyAfterInvalidate(t *testing.T) {
+	br := &countingBrowser{cfg: `{"mcpServers":{"a":{}}}`}
+	cache := newBrowserMCPCache(br)
+
+	if got := browserMCPConfig(context.Background(), cache, "chat"); got != br.cfg {
+		t.Fatalf("initial call = %q, want %q", got, br.cfg)
+	}
+
+	// The underlying browser's answer changes, but nothing has told the
+	// cache to look again yet.
+	br.set(`{"mcpServers":{"b":{}}}`, nil)
+	if got := browserMCPConfig(context.Background(), cache, "chat"); got != `{"mcpServers":{"a":{}}}` {
+		t.Fatalf("pre-invalidate call = %q, want the stale cached value", got)
+	}
+
+	cache.invalidate()
+	if got := browserMCPConfig(context.Background(), cache, "chat"); got != `{"mcpServers":{"b":{}}}` {
+		t.Fatalf("post-invalidate call = %q, want the new config", got)
+	}
+	if got := br.count(); got != 2 {
+		t.Fatalf("underlying probes = %d, want exactly 2 (initial miss, then after invalidate)", got)
+	}
+}
+
+// Turns run concurrently with the browser's own start/stop signal, which
+// invalidates the cache from a different goroutine — run with `go test
+// -race` for this to mean anything.
+func TestBrowserMCPCacheIsSafeUnderConcurrentTurnsAndInvalidation(t *testing.T) {
+	br := &countingBrowser{cfg: `{"mcpServers":{}}`}
+	cache := newBrowserMCPCache(br)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			browserMCPConfig(context.Background(), cache, "chat")
+		}()
+	}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cache.invalidate()
+		}()
+	}
+	wg.Wait()
 }
