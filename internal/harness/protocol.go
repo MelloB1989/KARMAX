@@ -32,6 +32,8 @@ type event struct {
 
 	// assistant / user
 	Message struct {
+		// Model names the brain that answered, for the transcript's footer.
+		Model   string         `json:"model"`
 		Content []contentBlock `json:"content"`
 	} `json:"message"`
 
@@ -39,8 +41,11 @@ type event struct {
 	StreamEvent struct {
 		Type  string `json:"type"` // content_block_delta | message_start | …
 		Delta struct {
-			Type string `json:"type"` // text_delta
+			Type string `json:"type"` // text_delta | thinking_delta
 			Text string `json:"text"`
+			// Reasoning arrives under its own key, not under Text. Reading
+			// Text for a thinking_delta yields empty thoughts, silently.
+			Thinking string `json:"thinking"`
 		} `json:"delta"`
 	} `json:"event"`
 
@@ -122,6 +127,27 @@ type ToolCall struct {
 	// Command is the first token of a shell invocation, for the audit
 	// allowlist. Empty for anything that is not a shell tool.
 	Command string
+}
+
+// ToolEvent is the streaming view of one tool call: announced, then revised.
+//
+// Deliberately not ToolCall, which is the settled record of a call inside a
+// Turn and carries the raw Input and Command the audit allowlist reads. That
+// one has consumers — the allowlist audit, harnessbrain, the chat's ticket
+// extraction — and keeps its name and shape.
+//
+// A KindToolUpdate carries only ID, Status and Output: the consumer merges it
+// into the call it already has, the way ACP's tool_call_update does.
+type ToolEvent struct {
+	// ID is stable for the life of the call. Without it a completion can only
+	// be matched by name, and a second call to the same tool resolves the
+	// wrong one.
+	ID        string     `json:"id"`
+	Title     string     `json:"title,omitempty"`
+	Kind      ToolKind   `json:"kind,omitempty"`
+	Status    Status     `json:"status"`
+	Locations []Location `json:"locations,omitempty"`
+	Output    string     `json:"output,omitempty"`
 }
 
 // Turn is one complete exchange: everything between sending a user message and

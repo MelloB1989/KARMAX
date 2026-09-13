@@ -137,37 +137,102 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	return nil
 }
 
+// EventKind is one thing a harness can say while a turn is running.
+type EventKind string
+
+const (
+	KindMessage    EventKind = "message"     // the reply, as deltas
+	KindThought    EventKind = "thought"     // reasoning, when it is enabled
+	KindTool       EventKind = "tool"        // a call, announced
+	KindToolUpdate EventKind = "tool_update" // the same call, resolved
+	KindPlan       EventKind = "plan"
+	KindError      EventKind = "error"
+)
+
 // Event is one thing worth telling a caller while a turn is still running.
 //
-// The harness can only report what it sees, so this set is narrower than the
-// one on the wire: "conversation" and "done" are the endpoint's, added there
-// because the harness has no business knowing about either.
+// Shaped after ACP's SessionUpdate rather than after any one CLI's output, so
+// that a second harness is an adapter rather than a second vocabulary. The set
+// is still narrower than the wire's: "conversation" and "done" are the
+// endpoint's, added there because the harness has no business knowing either.
 type Event struct {
-	Kind  string // "text" | "tool" | "error"
-	Text  string
-	Tool  string
-	Phase string // for tool: "start" | "done" | "failed"
+	Kind EventKind
+
+	// Text carries KindMessage, KindThought and KindError.
+	Text string
+
+	// Tool is set for KindTool and KindToolUpdate.
+	Tool *ToolEvent
+
+	// Plan replaces the whole plan each time. The agent revises it wholesale,
+	// and merging entry by entry would invent a history it does not have.
+	Plan []PlanEntry
+
 	JobID string
 }
 
 // emit hands one parsed CLI event to the sink, if there is one.
+//
+// Stateless on purpose. A tool call is announced from the assistant message,
+// which already carries its complete input, and resolved from the tool_result
+// that follows — so nothing has to be remembered between events, and an
+// update carrying only an id is merged by whoever is keeping the transcript.
 func emit(sink func(Event), ev event) {
 	if sink == nil {
 		return
 	}
 	switch ev.Type {
 	case "stream_event":
-		if ev.StreamEvent.Type == "content_block_delta" && ev.StreamEvent.Delta.Type == "text_delta" {
-			sink(Event{Kind: "text", Text: ev.StreamEvent.Delta.Text})
+		if ev.StreamEvent.Type != "content_block_delta" {
+			return
 		}
+		switch ev.StreamEvent.Delta.Type {
+		case "text_delta":
+			sink(Event{Kind: KindMessage, Text: ev.StreamEvent.Delta.Text})
+		case "thinking_delta":
+			sink(Event{Kind: KindThought, Text: ev.StreamEvent.Delta.Thinking})
+		}
+
 	case "assistant":
 		// Text is not emitted here: the deltas above already streamed it, and
 		// this block is that same text again, sent whole — emitting it too
 		// would double every reply.
 		for _, c := range ev.Message.Content {
-			if c.Type == "tool_use" {
-				sink(Event{Kind: "tool", Tool: c.Name, Phase: "start"})
+			if c.Type != "tool_use" {
+				continue
 			}
+			// The plan is the useful artifact; a line saying "kept track" is
+			// not. The tool_result that follows is dropped by the consumer,
+			// which ignores updates for calls it never saw announced.
+			if c.Name == "TodoWrite" {
+				if plan := planFrom(c.Input); plan != nil {
+					sink(Event{Kind: KindPlan, Plan: plan})
+				}
+				continue
+			}
+			sink(Event{Kind: KindTool, Tool: &ToolEvent{
+				ID:        c.ID,
+				Title:     toolTitle(c.Name, c.Input),
+				Kind:      toolKind(c.Name),
+				Status:    StatusInProgress,
+				Locations: toolLocations(c.Name, c.Input),
+			}})
+		}
+
+	case "user":
+		for _, c := range ev.Message.Content {
+			if c.Type != "tool_result" {
+				continue
+			}
+			status := StatusCompleted
+			if c.IsError {
+				status = StatusFailed
+			}
+			sink(Event{Kind: KindToolUpdate, Tool: &ToolEvent{
+				ID:     c.ToolUseID,
+				Status: status,
+				Output: truncateOutput(toolResultText(c.Content)),
+			}})
 		}
 	}
 }

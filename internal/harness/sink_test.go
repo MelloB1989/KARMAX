@@ -1,104 +1,119 @@
 package harness
 
 import (
-	"bufio"
 	"encoding/json"
-	"os"
-	"strings"
 	"testing"
 )
 
-// The sink sees the turn as it happens, in order: text from the streamed
-// deltas, tool calls from the assistant block that carries them.
-//
-// Without this the desktop chat is a three-minute spinner: the events are
-// already parsed on the way to building a Turn and were simply discarded.
-func TestSinkSeesTextAndTools(t *testing.T) {
-	var got []Event
-	sink := func(e Event) { got = append(got, e) }
-
-	replay(sink, []event{
-		streamDeltaEvent("Look"),
-		assistantEvent(contentBlock{Type: "tool_use", Name: "Bash"}),
-		streamDeltaEvent("ing…"),
-	})
-
-	want := []Event{
-		{Kind: "text", Text: "Look"},
-		{Kind: "tool", Tool: "Bash", Phase: "start"},
-		{Kind: "text", Text: "ing…"},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d events, want %d: %+v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("event %d = %+v, want %+v", i, got[i], want[i])
-		}
-	}
-}
-
-// A nil sink must change nothing at all. Every existing caller — the task
-// runner, loops, harnessSendTool — goes through this same path.
-func TestNilSinkIsSafe(t *testing.T) {
-	replay(nil, []event{assistantEvent(contentBlock{Type: "text", Text: "hi"})})
-}
-
-// This is the regression test for the double-delivery trap: the CLI streams
-// text as stream_event deltas, then repeats the same text whole in a normal
-// assistant event. The fixture is real --include-partial-messages output, so
-// this proves emit against the actual wire shape, not a guess at it.
-func TestSinkDeliversStreamedTextExactlyOnce(t *testing.T) {
-	f, err := os.Open("testdata/partial-messages.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	var got []Event
-	sink := func(e Event) { got = append(got, e) }
-
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
+// collect replays a list of raw CLI lines and returns what the sink saw.
+func collect(t *testing.T, lines ...string) []Event {
+	t.Helper()
+	var evs []event
+	for _, l := range lines {
 		var ev event
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			t.Fatalf("unmarshal %q: %v", line, err)
+		if err := json.Unmarshal([]byte(l), &ev); err != nil {
+			t.Fatalf("fixture line is not json: %v\n%s", err, l)
 		}
-		emit(sink, ev)
+		evs = append(evs, ev)
 	}
-	if err := sc.Err(); err != nil {
-		t.Fatal(err)
-	}
+	var got []Event
+	replay(func(e Event) { got = append(got, e) }, evs)
+	return got
+}
 
-	var sb strings.Builder
-	for _, e := range got {
-		if e.Kind == "text" {
-			sb.WriteString(e.Text)
-		}
-	}
-	if want := "hello world"; sb.String() != want {
-		t.Errorf("assembled text = %q, want %q exactly once", sb.String(), want)
+func TestTextDeltasBecomeMessages(t *testing.T) {
+	got := collect(t,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Found "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"14."}}}`,
+	)
+	if len(got) != 2 || got[0].Kind != KindMessage || got[1].Text != "14." {
+		t.Fatalf("got %+v", got)
 	}
 }
 
-// assistantEvent builds an assistant event from content blocks, the shape the
-// CLI itself emits, so the sink can be tested without a subprocess.
-func assistantEvent(blocks ...contentBlock) event {
-	e := event{Type: "assistant"}
-	e.Message.Content = blocks
-	return e
+// Reasoning is a different stream from the reply, and the delta field it
+// arrives in is named "thinking", not "text".
+func TestThinkingDeltasBecomeThoughts(t *testing.T) {
+	got := collect(t,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Let me check "}}}`,
+	)
+	if len(got) != 1 || got[0].Kind != KindThought || got[0].Text != "Let me check " {
+		t.Fatalf("got %+v", got)
+	}
 }
 
-// streamDeltaEvent builds a stream_event carrying one text_delta chunk, the
-// shape --include-partial-messages emits per token.
-func streamDeltaEvent(text string) event {
-	e := event{Type: "stream_event"}
-	e.StreamEvent.Type = "content_block_delta"
-	e.StreamEvent.Delta.Type = "text_delta"
-	e.StreamEvent.Delta.Text = text
-	return e
+// The whole point of the id: two calls to one tool are two calls.
+func TestAToolCallIsAnnouncedWithItsIdentity(t *testing.T) {
+	got := collect(t,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/a/main.go"}}]}}`,
+	)
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1: %+v", len(got), got)
+	}
+	e := got[0]
+	if e.Kind != KindTool || e.Tool == nil {
+		t.Fatalf("got %+v", e)
+	}
+	if e.Tool.ID != "toolu_1" || e.Tool.Title != "main.go" || e.Tool.Kind != ToolRead {
+		t.Errorf("identity wrong: %+v", e.Tool)
+	}
+	if e.Tool.Status != StatusInProgress {
+		t.Errorf("status = %q, want in_progress", e.Tool.Status)
+	}
+	if len(e.Tool.Locations) != 1 || e.Tool.Locations[0].Path != "/a/main.go" {
+		t.Errorf("locations wrong: %+v", e.Tool.Locations)
+	}
+}
+
+func TestAToolResultResolvesByID(t *testing.T) {
+	got := collect(t,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"package main"}]}}`,
+	)
+	if len(got) != 1 || got[0].Kind != KindToolUpdate || got[0].Tool == nil {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].Tool.ID != "toolu_1" || got[0].Tool.Status != StatusCompleted {
+		t.Errorf("got %+v", got[0].Tool)
+	}
+	if got[0].Tool.Output != "package main" {
+		t.Errorf("output = %q", got[0].Tool.Output)
+	}
+}
+
+func TestAFailedToolResultSaysSo(t *testing.T) {
+	got := collect(t,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","is_error":true,"content":"no such file"}]}}`,
+	)
+	if len(got) != 1 || got[0].Tool.Status != StatusFailed {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// TodoWrite is a plan, not a tool call worth a line of its own.
+func TestTodoWriteBecomesAPlanAndNotATool(t *testing.T) {
+	got := collect(t,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_3","name":"TodoWrite","input":{"todos":[{"content":"Ship it","status":"pending"}]}}]}}`,
+	)
+	if len(got) != 1 || got[0].Kind != KindPlan {
+		t.Fatalf("got %+v", got)
+	}
+	if len(got[0].Plan) != 1 || got[0].Plan[0].Content != "Ship it" {
+		t.Errorf("plan wrong: %+v", got[0].Plan)
+	}
+}
+
+// The bug this file was written for: --include-partial-messages sends the
+// deltas AND the finished text again, so emitting both doubles every reply.
+func TestAssistantTextIsNotEmittedTwice(t *testing.T) {
+	got := collect(t,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}`,
+	)
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1 — the reply was doubled: %+v", len(got), got)
+	}
+}
+
+func TestANilSinkIsNotACrash(t *testing.T) {
+	replay(nil, []event{{Type: "assistant"}})
 }
