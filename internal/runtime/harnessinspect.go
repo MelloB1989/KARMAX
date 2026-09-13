@@ -123,6 +123,14 @@ func (t *harnessModelTool) Execute(_ context.Context, in map[string]any) (tools.
 	// Closed rather than left running, because the process already has its
 	// model. The row keeps the transcript id, so the next message resumes this
 	// conversation rather than starting a new one.
+	//
+	// Deliberately unconditional, not CloseIfIdle, for the same reason as
+	// harness.close: the operator explicitly asked to move this session to a
+	// different model, and a running process cannot change tier without being
+	// restarted — waiting for it to go idle first would silently ignore the
+	// request instead of carrying it out. Session.Close's writer
+	// synchronization means this interrupts the turn cleanly rather than
+	// corrupting it.
 	rt.harness.Close(key)
 	return tools.SuccessResult(map[string]any{
 		"key": key, "was": was, "now": model,

@@ -333,6 +333,17 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 // evictIfFull makes room by closing the least recently used session.
 //
 // Without a cap, one busy chat spawns processes until the machine gives out.
+//
+// Picks its victim with CloseIfIdle, not a bare Busy check followed by
+// Close: a session that looked idle when this loop read Busy(key) can start
+// a brand new, unrelated turn before the loop gets around to closing it —
+// evicting one conversation's cold start would then kill a completely
+// different conversation's in-flight turn. CloseIfIdle closes the TOCTOU
+// gap by checking Busy and removing the session from the live table in one
+// critical section, so there is nothing for a concurrent open() to land in
+// between. A candidate that loses that race (goes busy first) is simply
+// skipped, exactly as if it had looked busy from the start — the next LRU
+// candidate is tried instead.
 func (s *Supervisor) evictIfFull() {
 	s.mu.Lock()
 	over := len(s.live) >= s.cfg.MaxLive
@@ -346,13 +357,19 @@ func (s *Supervisor) evictIfFull() {
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].LastActivityAt.Before(recs[j].LastActivityAt) })
 	for _, r := range recs {
-		if s.Busy(r.Key) {
-			continue // still working; evicting it would kill the turn
+		if s.CloseIfIdle(r.Key) {
+			s.log.Info("harness: at the session cap, evicted the least recently used", "key", r.Key)
+			return
 		}
-		s.log.Info("harness: at the session cap, evicting the least recently used", "key", r.Key)
-		s.Close(r.Key)
-		return
 	}
+	// Every live-or-idle session is genuinely busy right now, not merely
+	// idle-looking. Decision: exceed MaxLive rather than force a close —
+	// closing any of them here would either race the exact TOCTOU this
+	// function exists to avoid (if picked before it finishes its own turn)
+	// or kill a turn outright (if picked correctly, while busy). A session
+	// finishing its turn naturally, a moment later, is a far cheaper fix
+	// than a killed turn, and the cap is a soft resource limit, not a
+	// correctness one.
 	s.log.Warn("harness: at the session cap and every session is busy; not evicting")
 }
 
@@ -365,16 +382,25 @@ func (s *Supervisor) Close(key string) {
 	s.teardown(key, sess)
 }
 
-// CloseIfIdle closes key only if it is live and not busy, checking Busy and
-// removing it from the live table in the same critical section — so nothing
-// can start a turn on it in the gap between deciding it is safe to close and
+// CloseIfIdle closes key only if it is not busy, checking Busy and removing
+// it from the live table in the same critical section — so nothing can
+// start a turn on it in the gap between deciding it is safe to close and
 // actually closing it, the way a separate Busy() call followed by Close()
-// could. Reports whether it actually closed anything.
+// could. Reports whether it actually closed (or cleaned up) anything.
 //
 // This alone is not the whole fix: it is only as safe as Busy() is
 // up-to-date, and open() is what keeps it that way — claiming a session busy
 // under s.mu the moment it is handed back for reuse, not leaving that for
 // Send to do once it gets around to running. See Session.claim.
+//
+// A key not present in the live table at all (ok is false) is not a reason
+// to refuse: nothing is running, so there is no turn to protect and no
+// TOCTOU to have — Reap and evictIfFull both iterate the STORE's Live/Idle
+// rows, which can name a key the live table no longer has an entry for
+// (already dead, never re-added). Treating that as "safe to close" runs
+// teardown with a nil session, which only reconciles the store's state; the
+// alternative — refusing and leaving the row claiming Live forever — is
+// worse than either scanning is worth guarding against.
 //
 // Shares Close's own shape for the slow part: the map mutation happens under
 // s.mu, the actual teardown (sess.Close(), which waits up to 3s for a SIGINT
@@ -384,13 +410,13 @@ func (s *Supervisor) Close(key string) {
 func (s *Supervisor) CloseIfIdle(key string) bool {
 	s.mu.Lock()
 	sess, ok := s.live[key]
-	if !ok || sess.Busy() {
+	if ok && sess.Busy() {
 		s.mu.Unlock()
 		return false
 	}
 	delete(s.live, key)
 	s.mu.Unlock()
-	s.teardown(key, sess)
+	s.teardown(key, sess) // sess is nil when !ok; teardown already handles that
 	return true
 }
 
@@ -432,6 +458,15 @@ func (s *Supervisor) kill(key, state, reason string) {
 }
 
 // Reap closes sessions that have gone quiet past their kind's idle window.
+//
+// Runs every minute, against every session (startHarnessReaper), so this is
+// the call site F1 called the most dangerous of the two: closes via
+// CloseIfIdle, not a bare Busy check followed by Close, for the same reason
+// evictIfFull does — a session that was idle when LastActivityAt was read
+// can start a fresh turn before the close actually happens, and a plain
+// Busy-then-Close has no way to notice that in between. A session that
+// loses that race is simply left alone; being a minute past its idle
+// window is not going anywhere, so the next tick reaps it instead.
 func (s *Supervisor) Reap(now time.Time) {
 	recs, err := s.store.ListHarnessSessions(HarnessLive, HarnessIdle)
 	if err != nil {
@@ -439,19 +474,16 @@ func (s *Supervisor) Reap(now time.Time) {
 	}
 	for _, r := range recs {
 		pol := s.policy(r.Kind)
-		if pol.Idle <= 0 {
+		if pol.Idle <= 0 || now.Sub(r.LastActivityAt) <= pol.Idle {
 			continue
 		}
-		if s.Busy(r.Key) {
-			// A long turn does not update LastActivityAt until it finishes, so
-			// without this the reaper closes the session doing the most work.
-			continue
-		}
-		if now.Sub(r.LastActivityAt) > pol.Idle {
-			s.log.Info("harness: closing an idle session", "key", r.Key,
+		if s.CloseIfIdle(r.Key) {
+			s.log.Info("harness: closed an idle session", "key", r.Key,
 				"idle_for", now.Sub(r.LastActivityAt).Round(time.Second).String())
-			s.Close(r.Key)
 		}
+		// Busy sessions are left for the next tick, a minute later — a long
+		// turn does not update LastActivityAt until it finishes, so without
+		// this the reaper would go after the session doing the most work.
 	}
 }
 

@@ -46,6 +46,16 @@ type Session struct {
 	mu   sync.Mutex // one turn at a time
 	once sync.Once
 
+	// writeMu guards stdin specifically — separate from mu, which Send holds
+	// for an entire turn (routinely minutes). Close must be able to flush
+	// and interrupt without waiting out whatever turn is currently running,
+	// so it cannot take mu; but Close's own Flush and Send's Write+Flush
+	// both call methods on the same *bufio.Writer, which is not safe for
+	// concurrent use on its own. writeMu is held only around those two brief
+	// operations — never across a whole turn — so Close stays non-blocking
+	// while the writer itself is never touched by two goroutines at once.
+	writeMu sync.Mutex
+
 	// busy is true while a turn is in flight.
 	//
 	// Needed because the only other signal of activity is the stored
@@ -334,11 +344,20 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 	if err != nil {
 		return Turn{}, err
 	}
-	if _, err := s.stdin.Write(line); err != nil {
-		return Turn{}, fmt.Errorf("harness stdin closed: %w", err)
+	// Held only around the write itself, not the turn that follows: a Close
+	// racing in here waits a few instructions, never minutes.
+	s.writeMu.Lock()
+	_, writeErr := s.stdin.Write(line)
+	var flushErr error
+	if writeErr == nil {
+		flushErr = s.stdin.Flush()
 	}
-	if err := s.stdin.Flush(); err != nil {
-		return Turn{}, fmt.Errorf("harness stdin flush: %w", err)
+	s.writeMu.Unlock()
+	if writeErr != nil {
+		return Turn{}, fmt.Errorf("harness stdin closed: %w", writeErr)
+	}
+	if flushErr != nil {
+		return Turn{}, fmt.Errorf("harness stdin flush: %w", flushErr)
 	}
 
 	deadline := time.NewTimer(timeout)
@@ -386,11 +405,24 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 }
 
 // Close stops the process, politely then not.
+//
+// Never takes mu: Send holds it for a whole turn, sometimes minutes, and
+// Close has to be able to interrupt that turn rather than wait it out — that
+// is the entire reason a caller reaches for Close instead of just letting
+// the turn finish. What it does take is writeMu, for exactly as long as its
+// own Flush call: bufio.Writer is not safe for concurrent use, and without
+// this, this Flush races Send's own Write+Flush on the same writer whenever
+// Close is called on a session with a turn in flight — a genuine, -race
+// -detected data race, independent of whether killing that turn was the
+// right call (see the harness.close and harness.model call sites for that
+// judgement).
 func (s *Session) Close() {
 	s.once.Do(func() {
 		close(s.closed)
 		if s.stdin != nil {
+			s.writeMu.Lock()
 			_ = s.stdin.Flush()
+			s.writeMu.Unlock()
 		}
 		if s.cmd == nil || s.cmd.Process == nil {
 			return
