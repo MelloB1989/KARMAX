@@ -18,20 +18,21 @@ import (
 // Verbs a step may use. Chosen to cover digests, watches, triage and reminders,
 // which is the honest 80%.
 const (
-	VerbAsk      = "ask"      // the operator's agent, with tools and judgement
-	VerbObserve  = "observe"  // the same agent with every way to speak withheld
-	VerbHarness  = "harness"  // a coding harness, for research and shell work
-	VerbGateway  = "gateway"  // the main model, no agent loop — cheapest
-	VerbHTTP     = "http"     // fetch something
-	VerbTool     = "tool"     // call a KARMAX tool by name
-	VerbRecall   = "recall"   // read long-term memory
-	VerbRemember = "remember" // write long-term memory
-	VerbNotify   = "notify"   // tell the operator
-	VerbPropose  = "propose"  // ask the operator to approve an action
-	VerbRemind   = "remind"   // put something on the operator's list
-	VerbSend     = "send"     // message someone through WhatsApp
-	VerbSleep    = "sleep"    // durable wait; the run resumes later
-	VerbLog      = "log"      // write a line to KARMAX's log
+	VerbAsk           = "ask"            // the operator's agent, with tools and judgement
+	VerbObserve       = "observe"        // the same agent with every way to speak withheld
+	VerbHarness       = "harness"        // a coding harness, for research and shell work
+	VerbHarnessForget = "harness.forget" // release a durable harness session's disk
+	VerbGateway       = "gateway"        // the main model, no agent loop — cheapest
+	VerbHTTP          = "http"           // fetch something
+	VerbTool          = "tool"           // call a KARMAX tool by name
+	VerbRecall        = "recall"         // read long-term memory
+	VerbRemember      = "remember"       // write long-term memory
+	VerbNotify        = "notify"         // tell the operator
+	VerbPropose       = "propose"        // ask the operator to approve an action
+	VerbRemind        = "remind"         // put something on the operator's list
+	VerbSend          = "send"           // message someone through WhatsApp
+	VerbSleep         = "sleep"          // durable wait; the run resumes later
+	VerbLog           = "log"            // write a line to KARMAX's log
 
 	// Organisational verbs. A recipe working inside a company needs a thread of
 	// work to belong to, a way to wait on other people, and somewhere to build.
@@ -47,7 +48,7 @@ const (
 )
 
 var verbs = []string{
-	VerbAsk, VerbObserve, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall, VerbRemember,
+	VerbAsk, VerbObserve, VerbHarness, VerbHarnessForget, VerbGateway, VerbHTTP, VerbTool, VerbRecall, VerbRemember,
 	VerbNotify, VerbPropose, VerbRemind, VerbSend, VerbSleep, VerbLog,
 	VerbCaseOpen, VerbCaseGet, VerbCaseState, VerbCaseLog, VerbCaseHistory, VerbCaseSay,
 	VerbAwait, VerbForeach, VerbSandbox,
@@ -352,6 +353,8 @@ var required = map[string][]string{
 	VerbCaseSay:     {"case", "text"},
 	VerbAwait:       {"event"},
 	VerbSandbox:     {"repo", "branch", "task"},
+
+	VerbHarnessForget: {"session_id"},
 }
 
 func (s Step) validate(path string) error {
