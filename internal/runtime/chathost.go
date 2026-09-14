@@ -39,7 +39,6 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 		// rt.browserMCPCache avoids probing the browser on every turn; see
 		// harnesshost.go.
 		MCPConfig: browserMCPConfig(ctx, rt.browserMCPCache, "chat"),
-		PluginDir: harnessPluginDir("chat", rt.skillsDir),
 		OnEvent: func(e harness.Event) {
 			ev := api.ChatEvent{Kind: string(e.Kind), Text: e.Text, JobID: e.JobID}
 			if e.Tool != nil {

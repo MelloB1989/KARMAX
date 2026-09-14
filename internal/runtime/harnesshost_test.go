@@ -2,14 +2,11 @@ package runtime
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/browser"
-	"go.uber.org/zap"
 )
 
 // fakeBrowser stands in for *browser.Session: just enough to drive
@@ -54,48 +51,6 @@ func TestUtilityKindNeverGetsTheBrowser(t *testing.T) {
 		if got := browserMCPConfig(context.Background(), br, kind); got != "" {
 			t.Fatalf("%s: MCPConfig = %q, want empty for a kind not on the allowlist", kind, got)
 		}
-	}
-}
-
-// Chat and agent sessions get the skills directory, same as they get the
-// browser.
-func TestHarnessPluginDirForBrowserKinds(t *testing.T) {
-	for _, kind := range []string{"chat", "agent"} {
-		if got := harnessPluginDir(kind, "/skills"); got != "/skills" {
-			t.Fatalf("%s: PluginDir = %q, want /skills", kind, got)
-		}
-	}
-}
-
-// utility gets no skills either, for the same reason it gets no browser —
-// and, same as TestUtilityKindNeverGetsTheBrowser, "utility" alone would
-// pass against a hardcoded denylist of that one string, so an arbitrary
-// unlisted kind is checked too.
-func TestHarnessPluginDirForOtherKinds(t *testing.T) {
-	for _, kind := range []string{"utility", "some-kind-nobody-registered"} {
-		if got := harnessPluginDir(kind, "/skills"); got != "" {
-			t.Fatalf("%s: PluginDir = %q, want empty for a kind not on the allowlist", kind, got)
-		}
-	}
-}
-
-// A Materialise failure must not stop chat and agent sessions from working —
-// they run without --plugin-dir, the same as when the browser is closed.
-func TestMaterialiseFailureLeavesPluginDirEmpty(t *testing.T) {
-	dataDir := t.TempDir()
-	// A file where Materialise wants a directory forces os.MkdirAll to fail,
-	// standing in for an unwritable disk.
-	blocked := filepath.Join(dataDir, "blocked")
-	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	dir := materialiseSkills(blocked, zap.NewNop())
-	if dir != "" {
-		t.Fatalf("materialiseSkills = %q, want empty on failure", dir)
-	}
-	if got := harnessPluginDir("chat", dir); got != "" {
-		t.Fatalf("PluginDir = %q, want empty when nothing was materialised", got)
 	}
 }
 

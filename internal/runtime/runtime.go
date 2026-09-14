@@ -90,9 +90,6 @@ type KarmaxRuntime struct {
 	// feature is off, and every caller treats nil as "use the API path".
 	harness        *harness.Supervisor
 	harnessBreaker *harness.Breaker
-	// skillsDir is where the built-in skills were materialised, for
-	// harness.Options.PluginDir. Empty when materialising failed or never ran.
-	skillsDir string
 	// browserMCPCache holds the last --mcp-config probe, refreshed on the
 	// browser's own start/stop signal rather than once per turn. Nil exactly
 	// when harness is nil.
