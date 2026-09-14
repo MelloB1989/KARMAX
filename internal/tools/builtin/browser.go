@@ -34,7 +34,7 @@ func (t *BrowserTool) Manifest() tools.ToolManifest {
 		Name: "browser",
 		Description: "The operator's browser — one window they and you share, signed into whatever they have signed into. " +
 			"'open' puts a URL in front of them and raises the window (use this whenever a flow needs them to sign in or approve something, then tell them what to do there). " +
-			"'status' says whether it is running and what is open. 'start' opens it without navigating anywhere. " +
+			"'status' says whether it is running and what is open. 'start' opens it without navigating anywhere. 'stop' closes it (their sign-ins are kept). " +
 			"'tabs' lists open tabs with their ids. 'requests' lists captured network requests (filterable by tab/url/method/type/status). " +
 			"'request' returns one captured request in full, including its response body when one was kept. " +
 			"'fetch' replays a request from inside a tab via its own fetch(), so the tab's cookies apply — pass 'from' to copy a captured request's method/headers/body, or build one from scratch. " +
@@ -42,7 +42,7 @@ func (t *BrowserTool) Manifest() tools.ToolManifest {
 		Parameters: json.RawMessage(`{
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["open", "status", "start", "tabs", "requests", "request", "fetch", "eval"], "description": "What to do. Defaults to 'status'."},
+                "action": {"type": "string", "enum": ["open", "status", "start", "stop", "tabs", "requests", "request", "fetch", "eval"], "description": "What to do. Defaults to 'status'."},
                 "url": {"type": "string", "description": "The page to put in front of them, for 'open'. The URL to request, for 'fetch'."},
                 "tab": {"type": "string", "description": "A tab id, for 'requests'/'fetch'/'eval'. Defaults to the most recently active tab (or, for 'fetch' with 'from', that request's own tab)."},
                 "id": {"type": "string", "description": "A captured request id, for 'request'."},
@@ -83,6 +83,12 @@ func (t *BrowserTool) Execute(ctx context.Context, input map[string]any) (tools.
 			return tools.ErrorResult(err), nil
 		}
 		return tools.SuccessResult(map[string]any{"running": true, "profile": t.Session.Profile()}), nil
+
+	case "stop":
+		if err := t.Session.Stop(ctx); err != nil {
+			return tools.ErrorResult(err), nil
+		}
+		return tools.SuccessResult(map[string]any{"running": false}), nil
 
 	case "tabs":
 		tabs, err := t.Session.Tabs(ctx)

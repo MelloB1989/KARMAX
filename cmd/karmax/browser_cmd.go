@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -44,33 +45,97 @@ func session() *browser.Session {
 	return browser.Shared(dir)
 }
 
+// browserRoute decides whether start/open/status/stop drive the running
+// engine's own browser over its tool API, or a direct *browser.Session in
+// this CLI process's own short-lived life. The two are not the same
+// browser: requests/request/fetch/eval always went through the engine
+// (callBrowserTool, below) because they only make sense against whatever
+// browser is actually capturing traffic, but start/open/status/stop used
+// to call browser.Shared(dir) directly — a second Session, launching or
+// driving a browser the engine's own capture never sees. Routing all six
+// through the same decision closes that split: when an engine answers
+// /api/ping, everything goes through it; only a standalone CLI with no
+// engine running falls back to driving a browser of its own.
+//
+// reachable and callTool are fields, not a hard call to engineReachable/
+// callBrowserTool, so a test can inject fakes for both and assert on the
+// decision alone, without a live engine or a real browser.
+type browserRoute struct {
+	reachable func() bool
+	callTool  func(input map[string]any, timeout time.Duration) (map[string]any, error)
+}
+
+func defaultBrowserRoute() browserRoute {
+	return browserRoute{reachable: engineReachable, callTool: callBrowserTool}
+}
+
+// run picks whichever of the engine's tool API or direct actually executes
+// — direct is a closure so each command can shape its own map[string]any
+// result to match what the browser tool would have returned, letting the
+// caller print one way regardless of which branch ran.
+func (r browserRoute) run(toolInput map[string]any, timeout time.Duration, direct func() (map[string]any, error)) (map[string]any, error) {
+	if r.reachable() {
+		return r.callTool(toolInput, timeout)
+	}
+	return direct()
+}
+
+// engineReachable reports whether a KARMAX engine answers /api/ping. Kept
+// quick and cheap on purpose: this only decides which of two already-fast
+// paths start/open/status/stop take, so a machine with no engine running
+// must not feel like the CLI hung before falling back.
+func engineReachable() bool {
+	_, err := apiDo(http.MethodGet, "/api/ping", nil, 1500*time.Millisecond)
+	return err == nil
+}
+
 func browserStatusCmd() *cobra.Command {
+	route := defaultBrowserRoute()
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Whether it is open, and what is on it",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := context.Background()
-			s := session()
 			bin := hostpaths.Browser()
 			if bin == "" {
 				fmt.Println("No Chrome, Chromium or Edge on this machine.")
 				return nil
 			}
 			fmt.Println("browser: ", bin)
-			fmt.Println("profile: ", s.Profile())
-			if !s.Running(ctx) {
+
+			out, err := route.run(map[string]any{"action": "status"}, 20*time.Second, func() (map[string]any, error) {
+				ctx := context.Background()
+				s := session()
+				result := map[string]any{"profile": s.Profile(), "running": s.Running(ctx)}
+				if s.Running(ctx) {
+					if tabs, err := s.Tabs(ctx); err == nil {
+						list := make([]map[string]any, 0, len(tabs))
+						for _, t := range tabs {
+							list = append(list, map[string]any{"title": t.Title, "url": t.URL})
+						}
+						result["tabs"] = list
+					}
+				}
+				return result, nil
+			})
+			if err != nil {
+				return err
+			}
+
+			fmt.Println("profile: ", asStr(out["profile"]))
+			running, _ := out["running"].(bool)
+			if !running {
 				fmt.Println("status:   not running")
 				return nil
 			}
 			fmt.Println("status:   running")
-			tabs, err := s.Tabs(ctx)
-			if err != nil || len(tabs) == 0 {
+			tabs := asList(out["tabs"])
+			if len(tabs) == 0 {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "\nTITLE\tURL")
 			for _, t := range tabs {
-				fmt.Fprintf(w, "%s\t%s\n", t.Title, t.URL)
+				fmt.Fprintf(w, "%s\t%s\n", asStr(t["title"]), asStr(t["url"]))
 			}
 			return w.Flush()
 		},
@@ -78,11 +143,18 @@ func browserStatusCmd() *cobra.Command {
 }
 
 func browserStartCmd() *cobra.Command {
+	route := defaultBrowserRoute()
 	return &cobra.Command{
 		Use:   "start",
 		Short: "Open it",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := session().Start(context.Background()); err != nil {
+			_, err := route.run(map[string]any{"action": "start"}, 20*time.Second, func() (map[string]any, error) {
+				if err := session().Start(context.Background()); err != nil {
+					return nil, err
+				}
+				return map[string]any{"running": true}, nil
+			})
+			if err != nil {
 				return err
 			}
 			fmt.Println("Open. Sign into whatever you want the assistant to reach.")
@@ -92,27 +164,41 @@ func browserStartCmd() *cobra.Command {
 }
 
 func browserOpenCmd() *cobra.Command {
+	route := defaultBrowserRoute()
 	return &cobra.Command{
 		Use:   "open <url>",
 		Short: "Put a page in front of you",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tab, err := session().Open(context.Background(), args[0])
+			out, err := route.run(map[string]any{"action": "open", "url": args[0]}, 20*time.Second, func() (map[string]any, error) {
+				tab, err := session().Open(context.Background(), args[0])
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"opened": tab.URL}, nil
+			})
 			if err != nil {
 				return err
 			}
-			fmt.Println("Opened", tab.URL)
+			fmt.Println("Opened", asStr(out["opened"]))
 			return nil
 		},
 	}
 }
 
 func browserStopCmd() *cobra.Command {
+	route := defaultBrowserRoute()
 	return &cobra.Command{
 		Use:   "stop",
 		Short: "Close it (your sign-ins are kept)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := session().Stop(context.Background()); err != nil {
+			_, err := route.run(map[string]any{"action": "stop"}, 20*time.Second, func() (map[string]any, error) {
+				if err := session().Stop(context.Background()); err != nil {
+					return nil, err
+				}
+				return map[string]any{"running": false}, nil
+			})
+			if err != nil {
 				return err
 			}
 			fmt.Println("Closed. What you signed into is still there next time.")
@@ -121,13 +207,14 @@ func browserStopCmd() *cobra.Command {
 	}
 }
 
-// Network inspection: tabs/requests/request/fetch/eval. Unlike
-// status/start/open/stop above, these are thin clients over
-// POST /api/tools/browser — the same tool the model's own loop calls — not
-// direct callers into internal/browser. That keeps one code path deciding
-// what the browser is allowed to do, whether the caller is the harness or a
-// terminal. Flag names here are a fixed contract a skills package documents
-// verbatim; do not rename them.
+// Network inspection: tabs/requests/request/fetch/eval. These always went
+// through POST /api/tools/browser — the same tool the model's own loop
+// calls — never direct callers into internal/browser, because they only
+// make sense against whatever browser is actually capturing traffic.
+// status/start/open/stop now make the same choice, via browserRoute
+// (above): the engine's tool API when one answers, a direct
+// *browser.Session only when none does. Flag names here are a fixed
+// contract a skills package documents verbatim; do not rename them.
 
 // callBrowserTool posts one browser-tool action and returns its output
 // object, or an error built from whatever the tool reported.
