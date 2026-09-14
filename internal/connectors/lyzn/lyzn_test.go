@@ -371,6 +371,53 @@ func TestBlockedIsAQuestionNotAVerdict(t *testing.T) {
 	}
 }
 
+// TestBlockedSurvivesAnEmptyResponseBody covers send leaving out nil (see
+// api.go) when LYZN answers a /question POST with no body at all. The POST
+// has already succeeded by then — the task is correctly parked on LYZN — so
+// assigning into that nil map must not panic and fail the turn, which would
+// otherwise make the model retry into a 409 for a task that is not actually
+// broken.
+func TestBlockedSurvivesAnEmptyResponseBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // no body written at all
+	}))
+	defer srv.Close()
+	cr := creds(srv.URL, nil)
+
+	out, err := reportWork(context.Background(), cr, map[string]any{
+		"task_id": "t-1", "outcome": "blocked", "summary": "need the shared account's password",
+	})
+	if err != nil {
+		t.Fatalf("blocked with an empty response body returned an error instead of a result: %v", err)
+	}
+	result, ok := out.(map[string]any)
+	if !ok || result["blocked"] != true {
+		t.Fatalf("result = %+v, want blocked: true even when LYZN answered with no body", out)
+	}
+}
+
+// TestBlockedSurvivesALiteralNullResponseBody covers the other shape send
+// leaves out nil for: a body that is present but is the literal JSON `null`,
+// which json.Unmarshal happily accepts and leaves the target map nil.
+func TestBlockedSurvivesALiteralNullResponseBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("null"))
+	}))
+	defer srv.Close()
+	cr := creds(srv.URL, nil)
+
+	out, err := reportWork(context.Background(), cr, map[string]any{
+		"task_id": "t-1", "outcome": "blocked", "summary": "need the shared account's password",
+	})
+	if err != nil {
+		t.Fatalf("blocked with a literal null response body returned an error instead of a result: %v", err)
+	}
+	result, ok := out.(map[string]any)
+	if !ok || result["blocked"] != true {
+		t.Fatalf("result = %+v, want blocked: true even when LYZN answered with a literal null body", out)
+	}
+}
+
 func TestAReportWithoutASummaryIsRefused(t *testing.T) {
 	// The summary is the line a person reads on the receipt. A receipt with
 	// an empty line on it is worse than the work not being reported.

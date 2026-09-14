@@ -130,6 +130,14 @@ func reportWork(ctx context.Context, cr connectorkit.Credentials, in map[string]
 		if err != nil {
 			return nil, err
 		}
+		// send (api.go) leaves out nil when the response body is empty or the
+		// literal JSON `null` — and by this point the POST has already
+		// succeeded, so the task is correctly parked on LYZN. Assigning into
+		// a nil map here would panic and fail the turn for a task that is not
+		// actually broken.
+		if out == nil {
+			out = map[string]any{}
+		}
 		out["blocked"] = true
 		return out, nil
 	}
