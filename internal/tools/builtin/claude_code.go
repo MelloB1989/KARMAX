@@ -40,6 +40,12 @@ type ClaudeCodeTool struct {
 	// DataDir is where the access policy and KARMAX's own state live. Empty
 	// falls back to ~/.karmax, the same as everywhere else.
 	DataDir string
+	// Timeout bounds a single CLI turn. Zero means the default, 10 minutes.
+	// Tests shrink this to exercise the timeout path without waiting ten
+	// minutes for real; it is one of three ways a run ends early, along
+	// with an explicit stop and parent-context cancellation, and all three
+	// go through the same process-group kill in runCLIOnce.
+	Timeout time.Duration
 }
 
 // browserArgs attaches the operator's browser to one invocation.
@@ -248,13 +254,25 @@ func (t *ClaudeCodeTool) startBackground(input map[string]any, prompt string) to
 func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt string) (tools.ToolResult, error) {
 	ephemeral, _ := input["ephemeral"].(bool)
 
+	// Checked before anything else — including creating the working
+	// directory — because the race this closes is a stop landing between
+	// the lyzn-tasks recipe's claim and its harness step: the run must
+	// never start, not merely be interrupted once it has.
+	registryKey, _ := input["session_id"].(string)
+	if until, blocked := stoppedUntil(registryKey, time.Now()); blocked {
+		return tools.ToolResult{IsError: true, Error: fmt.Sprintf(
+			"claude_code: session %q was stopped and is blocked from new runs until %s",
+			registryKey, until.Format(time.RFC3339)),
+		}, nil
+	}
+
 	workingDir, _ := input["working_dir"].(string)
 	workingDir = hostpaths.Resolve(workingDir)
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		return tools.ErrorResult(fmt.Errorf("could not create working directory %s: %w", workingDir, err)), nil
 	}
 
-	rawSessionID, _ := input["session_id"].(string)
+	rawSessionID := registryKey
 	resumedFrom := ""
 
 	// A session_id that is not a valid UUID cannot be a Claude Code session:
@@ -295,7 +313,7 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 		sessionID = uuid.New().String()
 	}
 
-	output, cmdErr := t.runCLIOnce(ctx, workingDir, prompt, sessionID, resuming)
+	output, cmdErr := t.runCLIOnce(ctx, workingDir, prompt, sessionID, resuming, registryKey)
 
 	// A stale key -> uuid mapping (the transcript is gone: a Cleanup already
 	// ran, the machine was migrated, the db was restored) must not fail the
@@ -303,15 +321,21 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 	// once more — recovering with lost context is the right outcome for a
 	// key the mapping no longer backs, not a failure the operator sees as a
 	// receipt.
+	//
+	// Guarded against a stop: a cancelled run's output does not, in
+	// practice, contain "No conversation found", but this closes that
+	// door explicitly rather than by coincidence — a stop must never be
+	// followed by a retry that resurrects the run it just killed.
 	contextLost := false
-	if sessionKey != "" && resuming && cmdErr != nil && looksLikeMissingSession(output) {
+	if _, blocked := stoppedUntil(registryKey, time.Now()); !blocked &&
+		sessionKey != "" && resuming && cmdErr != nil && looksLikeMissingSession(output) {
 		contextLost = true
 		if t.Store != nil {
 			_ = t.Store.DeleteSessionKey(sessionKey)
 		}
 		sessionID = uuid.New().String()
 		resuming = false
-		output, cmdErr = t.runCLIOnce(ctx, workingDir, prompt, sessionID, resuming)
+		output, cmdErr = t.runCLIOnce(ctx, workingDir, prompt, sessionID, resuming, registryKey)
 	}
 
 	status := "completed"
@@ -392,7 +416,12 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 
 // runCLIOnce runs exactly one Claude Code CLI turn and returns its combined
 // output and whether the process failed.
-func (t *ClaudeCodeTool) runCLIOnce(ctx context.Context, workingDir, prompt, sessionID string, resuming bool) ([]byte, error) {
+//
+// registryKey is the caller's own identifier for this run — exactly as
+// given to Execute, e.g. "lyzn:<task id>" — used only to register the run
+// so harness.stop has something to find and cancel. It is deliberately not
+// sessionID: sessionID may be a freshly minted uuid the caller never saw.
+func (t *ClaudeCodeTool) runCLIOnce(ctx context.Context, workingDir, prompt, sessionID string, resuming bool, registryKey string) ([]byte, error) {
 	// How the harness is allowed to use its tools, which depends on whether the
 	// operator has said anything about what it may touch.
 	//
@@ -439,12 +468,34 @@ func (t *ClaudeCodeTool) runCLIOnce(ctx context.Context, workingDir, prompt, ses
 		}
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	timeout := t.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	// timeoutCtx is done for any of three reasons — the timeout above, an
+	// explicit stop calling the cancel func this run registers below, or
+	// ctx itself ending (e.g. engine shutdown) — and cmd.Cancel treats all
+	// three identically: SIGTERM the process group, SIGKILL it 5 seconds
+	// later if anything is still alive.
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(timeoutCtx, "claude", args...)
 	cmd.Dir = workingDir
 	cmd.Env = harnessEnv() // use claude's own auth, not KARMAX's gateway
+	setupProcessGroup(cmd)
+
+	done, unregister := registerRun(registryKey, workingDir, cancel)
+	defer unregister()
+
+	// cmd.Cancel replaces the default (which only kills cmd.Process) with a
+	// whole-group kill — see terminateGroup. WaitDelay bounds how long
+	// CombinedOutput can be blocked by a grandchild still holding the
+	// output pipe open once Cancel has run; WaitDelay's own kill only
+	// reaches cmd.Process, so it is terminateGroup's own SIGKILL, not
+	// this, that finishes off the rest of the group.
+	cmd.Cancel = func() error { return terminateGroup(cmd, done) }
+	cmd.WaitDelay = 5 * time.Second
 
 	return cmd.CombinedOutput()
 }
