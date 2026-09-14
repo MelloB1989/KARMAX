@@ -294,3 +294,71 @@ func TestNetworkCaptureAttachesToAlreadyRunningBrowser(t *testing.T) {
 		t.Errorf("RequestByID body = %q, want %q", got.ResponseBody, dataReq.ResponseBody)
 	}
 }
+
+// newLoadTimeFetchServer serves a page whose own inline script fires
+// fetch('/api/data') unconditionally at parse time — no setTimeout, no
+// user action, nothing waiting for capture to be ready. That immediacy is
+// the point: this is the traffic a poll-then-attach discovery loop (up to
+// networkDiscoveryInterval behind) has no chance of ever attaching in time
+// for, and it is exactly the "discover the site's own API" traffic the
+// whole feature exists to catch.
+func newLoadTimeFetchServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!doctype html><script>fetch('/api/data');</script>`)
+	})
+	mux.HandleFunc("/api/data", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestNetworkCaptureOnFirstOpen reproduces, against a real headless Chrome,
+// the failure live capture actually had: a page's own load-time requests —
+// fired during its very first navigation, before network capture ever had
+// a chance to attach — were silently dropped.
+//
+// Unlike every test above, this drives the engine's own entry point —
+// Session.Open, called exactly once — with no manual Page.navigate after
+// waiting out an attach, and no injected Eval/FetchInTab to stand in for
+// what the page does on its own. That distinction is the whole bug:
+// TestNetworkCaptureAndReplay passes because it deliberately waits for
+// capture to attach before navigating, which live traffic never does for
+// a tab Open just created.
+func TestNetworkCaptureOnFirstOpen(t *testing.T) {
+	s := testBrowser(t)
+	srv := newLoadTimeFetchServer(t)
+	ctx := context.Background()
+
+	tab, err := s.Open(ctx, srv.URL)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	var docReq, dataReq CapturedRequest
+	waitFor(t, 6*time.Second, func() bool {
+		for _, r := range s.Requests(RequestFilter{TabID: tab.ID}) {
+			switch {
+			case r.ResourceType == "document" && strings.Contains(r.URL, srv.URL):
+				docReq = r
+			case strings.Contains(r.URL, "/api/data"):
+				dataReq = r
+			}
+		}
+		return docReq.URL != "" && dataReq.Status == 200
+	})
+
+	if docReq.URL == "" {
+		t.Errorf("no document request captured for Open's own first navigation to %s — requests: %+v",
+			srv.URL, s.Requests(RequestFilter{TabID: tab.ID}))
+	}
+	if dataReq.Status != 200 {
+		t.Errorf("no load-time fetch('/api/data') captured (status=%d) — the page's own on-load request was missed",
+			dataReq.Status)
+	}
+}

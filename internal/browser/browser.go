@@ -60,8 +60,13 @@ type Session struct {
 	netStore  *requestStore
 	netMu     sync.Mutex
 	netCancel context.CancelFunc
-	attached  map[string]*tabCapture
-	netWG     sync.WaitGroup
+	// netCtx is capture's own long-lived context — valid whenever netCancel
+	// is non-nil — that a capture connection's lifetime is rooted in,
+	// rather than in whatever short-lived ctx the call that attached it
+	// (Open, say) happened to be given. See attachTabIfNeeded.
+	netCtx   context.Context
+	attached map[string]*tabCapture
+	netWG    sync.WaitGroup
 }
 
 // OnStateChange registers fn to run after the browser actually starts or
@@ -261,12 +266,53 @@ func (s *Session) Open(ctx context.Context, url string) (Tab, error) {
 		}
 	}
 
-	var tab Tab
-	if err := putJSON(ctx, endpoint+"/json/new?"+url, &tab); err != nil {
+	tab, err := s.openNewTab(ctx, endpoint, url)
+	if err != nil {
 		return Tab{}, err
 	}
 	_ = s.activate(ctx, endpoint, tab.ID)
 	s.closeBlanks(ctx, endpoint, tab.ID)
+	return tab, nil
+}
+
+// openNewTab creates a target and puts url in it, with network capture
+// attached and Network.enable's own reply waited on BEFORE the navigation
+// that loads url is ever sent — not after.
+//
+// The old, simpler way — PUT /json/new?<url>, which creates the tab and
+// starts that navigation in one shot — raced network capture's discovery
+// loop, which only attaches on its own ~400ms poll: a fast-loading page's
+// entire load, document request included, could complete before capture
+// ever attached to the tab. That is exactly the traffic this whole feature
+// exists to see — a page's own load-time calls to its own API — so it
+// cannot be left to a poll that might lose the race.
+//
+// Creating at about:blank first and attaching over that tab's own
+// WebSocketDebuggerURL before calling Page.navigate closes the gap:
+// attachTabIfNeeded doesn't return until Network.enable's reply is in
+// hand, so navigation is never sent while capture might still be dark.
+func (s *Session) openNewTab(ctx context.Context, endpoint, url string) (Tab, error) {
+	var tab Tab
+	if err := putJSON(ctx, endpoint+"/json/new", &tab); err != nil {
+		return Tab{}, err
+	}
+	if tab.WebSocketDebuggerURL != "" {
+		if tc, err := s.attachTabIfNeeded(ctx, tab.ID, tab.WebSocketDebuggerURL); err == nil {
+			if err := tc.conn.call(ctx, "Page.navigate", map[string]any{"url": url}, nil); err == nil {
+				tab.URL = url
+				return tab, nil
+			}
+		}
+	}
+	// Capture couldn't attach, or navigating over its connection failed (a
+	// dial refused, Network.enable errored, the target closed underneath
+	// us) — the person still needs the right page in front of them even
+	// without capture live for it, so fall back to the one-shot path. The
+	// about:blank tab this leaves behind is cleaned up by closeBlanks,
+	// which Open calls right after this returns.
+	if err := putJSON(ctx, endpoint+"/json/new?"+url, &tab); err != nil {
+		return Tab{}, err
+	}
 	return tab, nil
 }
 
