@@ -164,6 +164,19 @@ func WorkDir() string {
 	return workDir
 }
 
+// ResetWorkDirForTest clears WorkDir's memoized answer so the next call
+// re-reads $KARMAX_WORKDIR from scratch.
+//
+// WorkDir() is memoized once per process (see the package doc), which is
+// right for production but wrong for a cross-package test: whichever test
+// calls WorkDir() first, in whatever package, fixes the answer for every
+// test in that binary from then on. This exists so a test can stand a temp
+// directory in for the shared root deterministically, regardless of what
+// ran before it. Test-only: never call it from non-test code.
+func ResetWorkDirForTest() {
+	workOnce = sync.Once{}
+}
+
 // Resolve turns a working_dir value into an absolute path. Empty means the
 // shared default; an absolute path is used verbatim; anything else is a
 // subdirectory of WorkDir() rather than a path from the process's own

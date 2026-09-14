@@ -364,18 +364,59 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 // daemon giving up tasks it can no longer hold — where nothing should ever
 // resume into it again. Deleting a session that is already gone is not an
 // error.
+//
+// workingDir must name a concrete, per-task directory. hostpaths.Resolve("")
+// falls back to the SHARED hostpaths.WorkDir() root — the one directory every
+// coding-tool call on the machine uses — which is exactly right for starting
+// a task and exactly wrong here: os.RemoveAll on it would destroy the
+// operator's whole workspace, not one session's. So an empty (or
+// whitespace-only) workingDir, and anything else that resolves onto that
+// shared root or a directory above it (".", "..", a relative path that
+// normalises upward), is refused outright rather than honoured.
 func (t *ClaudeCodeTool) Cleanup(workingDir, sessionID string) error {
-	workingDir = hostpaths.Resolve(workingDir)
-	if err := chatlog.RemoveSession(workingDir, sessionID); err != nil {
+	resolved, err := resolveCleanupDir(workingDir)
+	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(workingDir); err != nil {
+	if err := chatlog.RemoveSession(resolved, sessionID); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(resolved); err != nil {
 		return err
 	}
 	if t.Store == nil || sessionID == "" {
 		return nil
 	}
 	return t.Store.DeleteCodingSessionsBySessionID(sessionID)
+}
+
+// resolveCleanupDir is hostpaths.Resolve, plus the one guard Cleanup needs
+// that no other caller does: refuse a workingDir that would make Cleanup
+// os.RemoveAll the shared hostpaths.WorkDir() root, or any directory above
+// it, instead of the single task directory it was meant to remove.
+func resolveCleanupDir(workingDir string) (string, error) {
+	root := hostpaths.WorkDir()
+	if strings.TrimSpace(workingDir) == "" {
+		return "", fmt.Errorf("claude_code: Cleanup refused an empty working_dir: it would resolve to the shared working directory %q and remove it entirely", root)
+	}
+	resolved := hostpaths.Resolve(workingDir)
+	if isAncestorOrSelf(resolved, root) {
+		return "", fmt.Errorf("claude_code: Cleanup refused: working_dir %q resolves to %q, which is the shared working directory %q or a directory above it", workingDir, resolved, root)
+	}
+	return resolved, nil
+}
+
+// isAncestorOrSelf reports whether root sits at or beneath dir in the
+// filesystem hierarchy — i.e. whether os.RemoveAll(dir) would remove root
+// too. A relative-path resolution error (different volumes, or one of the
+// two not being resolvable at all) is treated as "not an ancestor": it means
+// the two paths cannot share a tree, so dir cannot contain root.
+func isAncestorOrSelf(dir, root string) bool {
+	rel, err := filepath.Rel(dir, root)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func truncate(s string, n int) string {
