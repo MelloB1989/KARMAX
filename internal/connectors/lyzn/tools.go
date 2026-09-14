@@ -32,6 +32,7 @@ func (c *Connector) Tools() []connectorkit.Tool {
 			Description: "Take one approved task, so no other machine runs it too. " +
 				"The claim is a fifteen-minute loan: finish and report inside it, or LYZN puts the task back for someone else. " +
 				"Re-claiming a task this machine already holds is fine and is how a restarted run picks up where it stopped. " +
+				"A task this connector reported blocked comes back through this same call once its question has been answered. " +
 				"Returns the task and the conversation it came from.",
 			Parameters: json.RawMessage(`{
 				"type":"object",
@@ -44,9 +45,11 @@ func (c *Connector) Tools() []connectorkit.Tool {
 		},
 		{
 			Name: "lyzn.work.report",
-			Description: "Say what happened to a claimed task. LYZN closes it and prints a receipt the operator sees on their phone. " +
-				"Report honestly: 'done' prints a receipt saying the promise was kept, so use 'blocked' or 'failed' when it was not, and say why in the summary — a receipt for work nobody did is worse than no receipt. " +
-				"Posting the same result twice is safe; the first receipt is what comes back.",
+			Description: "Say what happened to a claimed task. 'done' closes it and prints a receipt the operator sees on their phone. " +
+				"'blocked' does not close it: it parks the task and asks the operator the question in your summary, and lyzn.work.claim " +
+				"resumes it once they answer — call lyzn.work.claim again with the same task_id rather than treating it as new work. " +
+				"'failed' closes it as not done. Report honestly — a receipt for work nobody did, or a task shown as failed when it is " +
+				"actually waiting on a person, is worse than no receipt at all.",
 			Parameters: json.RawMessage(`{
 				"type":"object",
 				"properties":{
@@ -118,15 +121,28 @@ func reportWork(ctx context.Context, cr connectorkit.Credentials, in map[string]
 		return nil, fmt.Errorf("lyzn: summary is required — it is the line a person reads on the receipt")
 	}
 
-	// LYZN's wire words are "success" and "failure"; the model's are the
-	// three a coding harness reports. Only one of them prints a kept promise,
-	// and anything unrecognised is a failure rather than a guess: a receipt
-	// wrongly saying "done" is the one mistake this connector must not make.
+	// "blocked" is not a verdict — it is neither a promise kept nor a
+	// promise broken, it is a task still open, waiting on something only
+	// the operator can give it. Routing it through the same call that
+	// closes a task would print a receipt for work that has not stopped.
+	if said == "blocked" {
+		out, err := question(ctx, cr, id, map[string]any{"text": summary})
+		if err != nil {
+			return nil, err
+		}
+		out["blocked"] = true
+		return out, nil
+	}
+
+	// LYZN's wire words are "success" and "failure"; the model's are the two
+	// verdicts left once blocked is handled above. Anything unrecognised is
+	// a failure rather than a guess: a receipt wrongly saying "done" is the
+	// one mistake a terminal report must not make.
 	outcome := outcomeFailure
 	switch said {
 	case "done", "success", "completed":
 		outcome = outcomeSuccess
-	case "blocked", "failed", "failure", "":
+	case "failed", "failure", "":
 		outcome = outcomeFailure
 	default:
 		outcome = outcomeFailure
