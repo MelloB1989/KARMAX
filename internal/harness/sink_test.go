@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +65,61 @@ func TestAToolCallIsAnnouncedWithItsIdentity(t *testing.T) {
 	}
 	if len(e.Tool.Locations) != 1 || e.Tool.Locations[0].Path != "/a/main.go" {
 		t.Errorf("locations wrong: %+v", e.Tool.Locations)
+	}
+}
+
+// The tool object carries its own input on the wire, not just a title derived
+// from it — a client's inspector view reads exactly what the call was given.
+func TestAToolCallCarriesItsInput(t *testing.T) {
+	got := collect(t,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/a/main.go"}}]}}`,
+	)
+	if len(got) != 1 || got[0].Tool == nil {
+		t.Fatalf("got %+v", got)
+	}
+	var in map[string]any
+	if err := json.Unmarshal(got[0].Tool.Input, &in); err != nil {
+		t.Fatalf("tool input is not json: %v", err)
+	}
+	if in["file_path"] != "/a/main.go" {
+		t.Errorf("input = %+v", in)
+	}
+}
+
+// A long string anywhere in a tool's input is cut live, off the wire — the
+// same cap a transcript read back from disk applies (chatlog.ToolCall.Input).
+func TestAToolCallsInputIsTruncatedLive(t *testing.T) {
+	long := strings.Repeat("x", maxInputRunes*2)
+	got := collect(t,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Write","input":{"file_path":"/a.txt","content":"`+long+`"}}]}}`,
+	)
+	if len(got) != 1 || got[0].Tool == nil {
+		t.Fatalf("got %+v", got)
+	}
+	var in map[string]any
+	if err := json.Unmarshal(got[0].Tool.Input, &in); err != nil {
+		t.Fatalf("tool input is not json: %v", err)
+	}
+	r := []rune(in["content"].(string))
+	if len(r) != maxInputRunes+1 || r[len(r)-1] != '…' {
+		t.Errorf("content not truncated: got %d runes", len(r))
+	}
+	if in["file_path"] != "/a.txt" {
+		t.Errorf("an untouched field changed: %+v", in["file_path"])
+	}
+}
+
+// A tool_update carries no input at all — only what the call resolved to,
+// the same asymmetry it already has with Output.
+func TestAToolUpdateCarriesNoInput(t *testing.T) {
+	got := collect(t,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}`,
+	)
+	if len(got) != 1 || got[0].Tool == nil {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].Tool.Input != nil {
+		t.Errorf("tool_update carried input: %s", got[0].Tool.Input)
 	}
 }
 

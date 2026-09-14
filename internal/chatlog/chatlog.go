@@ -35,10 +35,15 @@ type Message struct {
 // The same shape a live turn streams, so a reopened conversation and a running
 // one describe the same work in the same words.
 type ToolCall struct {
-	ID     string `json:"id"`
-	Title  string `json:"title,omitempty"`
-	Kind   string `json:"kind,omitempty"`
-	Status string `json:"status"` // always "completed": a transcript has no live calls
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	Kind  string `json:"kind,omitempty"`
+	// Status starts "completed" — a transcript has no live calls — and only
+	// moves to "failed" once a later record's tool_result names this call's
+	// id with is_error true. See applyToolResults.
+	Status string          `json:"status"`
+	Input  json.RawMessage `json:"input,omitempty"`
+	Output string          `json:"output,omitempty"`
 }
 
 // record is the subset of the CLI's line format this package reads.
@@ -58,6 +63,12 @@ type part struct {
 	ID    string          `json:"id"`
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
+
+	// tool_result only — a call's fate, read from a LATER record than the
+	// tool_use that started it. See applyToolResults.
+	ToolUseID string          `json:"tool_use_id"`
+	IsError   bool            `json:"is_error"`
+	Content   json.RawMessage `json:"content"`
 }
 
 // content is a turn's body, which the CLI writes in two shapes.
@@ -120,12 +131,26 @@ func sessionPath(dir, id string) string {
 	return filepath.Join(dir, id+".jsonl")
 }
 
+// toolResult is one tool_use call's outcome, read off whichever later record
+// carries its tool_result.
+type toolResult struct {
+	output string
+	failed bool
+}
+
 func Read(dir, id string) ([]Message, error) {
 	path := sessionPath(dir, id)
 	if path == "" {
 		return nil, fmt.Errorf("chatlog: %q is not a conversation id", id)
 	}
 	var out []Message
+	// Keyed by tool_use id. Filled in as tool_result records are seen, but
+	// only APPLIED once the whole file has been read (applyToolResults) —
+	// never inline, because the assistant-turn merge below can still append
+	// more calls to a Message already in `out`, and a pointer taken into its
+	// ToolCalls slice before such an append can be left pointing at a backing
+	// array the append has already abandoned.
+	results := map[string]toolResult{}
 	err := scan(path, func(r record) {
 		if r.Type != "user" && r.Type != "assistant" {
 			return
@@ -141,7 +166,16 @@ func Read(dir, id string) ([]Message, error) {
 					Title:  harness.ToolTitle(c.Name, c.Input),
 					Kind:   string(harness.ToolKindOf(c.Name)),
 					Status: "completed",
+					Input:  harness.TruncateToolInput(c.Input),
 				})
+			case "tool_result":
+				// Never itself part of a message — see the empty check below,
+				// which is what keeps a user record holding only tool_results
+				// from becoming a bubble of its own.
+				results[c.ToolUseID] = toolResult{
+					output: harness.TruncateOutput(harness.ToolResultText(c.Content)),
+					failed: c.IsError,
+				}
 			}
 		}
 		if msg.Text == "" && len(msg.ToolCalls) == 0 {
@@ -158,7 +192,30 @@ func Read(dir, id string) ([]Message, error) {
 		}
 		out = append(out, msg)
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	applyToolResults(out, results)
+	return out, nil
+}
+
+// applyToolResults folds each tool_result's fate into the call it answers, by
+// id, now that no ToolCalls slice in out will grow again — see Read's own
+// comment on why this cannot happen inline as each record is scanned.
+func applyToolResults(out []Message, results map[string]toolResult) {
+	for i := range out {
+		calls := out[i].ToolCalls
+		for j := range calls {
+			res, ok := results[calls[j].ID]
+			if !ok {
+				continue
+			}
+			calls[j].Output = res.output
+			if res.failed {
+				calls[j].Status = "failed"
+			}
+		}
+	}
 }
 
 // joinProse puts a paragraph break between two blocks of a turn's prose.

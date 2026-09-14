@@ -1,8 +1,10 @@
 package chatlog
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -185,6 +187,106 @@ func TestHistoryCarriesWholeToolCalls(t *testing.T) {
 	// A transcript has no live calls: everything in it already finished.
 	if calls[0].Status != "completed" {
 		t.Errorf("status = %q, want completed", calls[0].Status)
+	}
+}
+
+// Two tool calls interleaved with their own results — call, result, call,
+// result — must each resolve to the right one, and the assistant records
+// either side of the (skipped) user records must still merge into one turn.
+func TestHistoryAttachesOutputAndStatusToTheRightCall(t *testing.T) {
+	dir := t.TempDir()
+	lines := `{"type":"assistant","timestamp":"2026-09-14T10:00:00Z","message":{"content":[` +
+		`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}` + "\n" +
+		`{"type":"user","timestamp":"2026-09-14T10:00:01Z","message":{"content":[` +
+		`{"type":"tool_result","tool_use_id":"t1","is_error":false,"content":"file1\nfile2"}]}}` + "\n" +
+		`{"type":"assistant","timestamp":"2026-09-14T10:00:02Z","message":{"content":[` +
+		`{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"false"}}]}}` + "\n" +
+		`{"type":"user","timestamp":"2026-09-14T10:00:03Z","message":{"content":[` +
+		`{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"no such command"}]}}` + "\n" +
+		`{"type":"assistant","timestamp":"2026-09-14T10:00:04Z","message":{"content":[` +
+		`{"type":"text","text":"Done."}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "c1.jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := Read(dir, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The user records carried nothing but tool_results, so they must not have
+	// become messages of their own — every assistant record merges into one.
+	if len(msgs) != 1 || msgs[0].Role != "assistant" || msgs[0].Text != "Done." {
+		t.Fatalf("got %+v, want one assistant turn merged across the tool_result records", msgs)
+	}
+	calls := msgs[0].ToolCalls
+	if len(calls) != 2 {
+		t.Fatalf("got %d tool calls, want 2", len(calls))
+	}
+	if calls[0].ID != "t1" || calls[0].Status != "completed" || calls[0].Output != "file1\nfile2" {
+		t.Errorf("first call = %+v, want t1 completed with its own output", calls[0])
+	}
+	if calls[1].ID != "t2" || calls[1].Status != "failed" || calls[1].Output != "no such command" {
+		t.Errorf("second call = %+v, want t2 failed with its own output", calls[1])
+	}
+}
+
+// A tool_use's input reaches the client the same way its live counterpart
+// does: as JSON, with any long string field cut at 4000 runes.
+func TestToolCallInputIsTruncated(t *testing.T) {
+	dir := t.TempDir()
+	long := strings.Repeat("a", 4500)
+	line := `{"type":"assistant","timestamp":"2026-09-14T10:00:00Z","message":{"content":[` +
+		`{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"/a.txt","content":"` + long + `"}}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "c1.jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := Read(dir, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || len(msgs[0].ToolCalls) != 1 {
+		t.Fatalf("got %+v", msgs)
+	}
+	var in map[string]any
+	if err := json.Unmarshal(msgs[0].ToolCalls[0].Input, &in); err != nil {
+		t.Fatalf("input is not json: %v", err)
+	}
+	r := []rune(in["content"].(string))
+	if len(r) != 4001 || r[len(r)-1] != '…' {
+		t.Errorf("content not truncated: got %d runes", len(r))
+	}
+	if in["file_path"] != "/a.txt" {
+		t.Errorf("an untouched field changed: %+v", in["file_path"])
+	}
+}
+
+// A tool result can be a whole file. history caps it exactly as a live turn
+// does, so a giant result never bloats a conversation's history payload.
+func TestToolCallOutputIsCapped(t *testing.T) {
+	dir := t.TempDir()
+	long := strings.Repeat("x", 20000)
+	lines := `{"type":"assistant","timestamp":"2026-09-14T10:00:00Z","message":{"content":[` +
+		`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cat big.txt"}}]}}` + "\n" +
+		`{"type":"user","timestamp":"2026-09-14T10:00:01Z","message":{"content":[` +
+		`{"type":"tool_result","tool_use_id":"t1","content":"` + long + `"}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "c1.jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := Read(dir, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || len(msgs[0].ToolCalls) != 1 {
+		t.Fatalf("got %+v", msgs)
+	}
+	out := msgs[0].ToolCalls[0].Output
+	if len(out) > 16000+len("\n…") {
+		t.Errorf("output not capped: got %d bytes", len(out))
+	}
+	if !strings.HasSuffix(out, "\n…") {
+		t.Errorf("no truncation marker on a capped output: %q", out[max(0, len(out)-10):])
 	}
 }
 

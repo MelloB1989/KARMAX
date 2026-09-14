@@ -192,7 +192,7 @@ func TestTruncateOutputLeavesShortResultsAlone(t *testing.T) {
 // A tool result can be a whole file. The transcript shows a preview; the bytes
 // are of no use to it and paying to stream them is worse than useless.
 func TestTruncateOutputCapsAndMarks(t *testing.T) {
-	got := truncateOutput(strings.Repeat("x", 5000))
+	got := truncateOutput(strings.Repeat("x", maxToolOutput*2))
 	if len(got) > maxToolOutput+len("\n…") {
 		t.Errorf("got %d bytes, want at most %d", len(got), maxToolOutput+len("\n…"))
 	}
@@ -201,16 +201,96 @@ func TestTruncateOutputCapsAndMarks(t *testing.T) {
 	}
 }
 
-// Cutting mid-rune puts U+FFFD on screen. "→" is 3 bytes; 2048 = 3×682 + 2,
-// so naïve byte-slicing lands mid-rune, which proves the rune-boundary logic.
+// Cutting mid-rune puts U+FFFD on screen. "→" is 3 bytes, and the cap is not a
+// multiple of 3, so naïve byte-slicing at the cap lands mid-rune — which
+// proves the rune-boundary logic.
 func TestTruncateOutputCutsOnARuneBoundary(t *testing.T) {
-	got := truncateOutput(strings.Repeat("→", 1000))
+	repeats := maxToolOutput // 3 bytes each, comfortably over the cap
+	got := truncateOutput(strings.Repeat("→", repeats))
 	trimmed := strings.TrimSuffix(got, "\n…")
 	if !utf8.ValidString(trimmed) {
 		t.Error("truncation produced invalid UTF-8")
 	}
-	if len(got) >= len(strings.Repeat("→", 1000)) {
+	if len(got) >= len(strings.Repeat("→", repeats)) {
 		t.Error("truncation did not cap the result")
+	}
+}
+
+// A long string anywhere in a tool's input is cut, the same shape of cap
+// truncateOutput applies to a result — a giant file written through Write's
+// "content" field is exactly the case this protects the wire from.
+func TestTruncateJSONStringsCutsLongStringsAtAnyDepth(t *testing.T) {
+	long := strings.Repeat("a", maxInputRunes*2)
+	raw := json.RawMessage(`{"command":"echo hi","nested":{"note":"` + long + `"},"list":["short","` + long + `"]}`)
+
+	got := truncateJSONStrings(raw)
+	var v map[string]any
+	if err := json.Unmarshal(got, &v); err != nil {
+		t.Fatalf("truncated input is not valid json: %v", err)
+	}
+	if v["command"] != "echo hi" {
+		t.Errorf("a short top-level string must survive untouched: %+v", v["command"])
+	}
+	nested, ok := v["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested object lost: %+v", v)
+	}
+	assertTruncatedTo(t, nested["note"], maxInputRunes)
+	list, ok := v["list"].([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("list lost: %+v", v["list"])
+	}
+	if list[0] != "short" {
+		t.Errorf("a short list entry must survive untouched: %+v", list[0])
+	}
+	assertTruncatedTo(t, list[1], maxInputRunes)
+}
+
+func assertTruncatedTo(t *testing.T, v any, n int) {
+	t.Helper()
+	s, ok := v.(string)
+	if !ok {
+		t.Fatalf("not a string: %+v", v)
+	}
+	r := []rune(s)
+	if len(r) != n+1 || r[len(r)-1] != '…' {
+		t.Errorf("got %d runes ending %q, want %d plus the truncation mark", len(r), string(r[max(0, len(r)-1):]), n)
+	}
+}
+
+// Numbers must survive a walk-and-remarshal exactly as written: encoding/json's
+// default float64 both loses precision on a large id and can rewrite an
+// ordinary integer in exponent form. Checked against the raw bytes, not by
+// decoding them back into a plain map[string]any — THAT decode is exactly the
+// lossy path (float64) this test exists to rule out inside truncateJSONStrings
+// itself, so doing it again here would just hide the bug in the assertion.
+func TestTruncateJSONStringsPreservesNumbersAndShortStrings(t *testing.T) {
+	raw := json.RawMessage(`{"offset":42,"path":"/a/b.go","big":9007199254740993}`)
+	got := truncateJSONStrings(raw)
+	if !json.Valid(got) {
+		t.Fatalf("not valid json: %s", got)
+	}
+	s := string(got)
+	if !strings.Contains(s, `"path":"/a/b.go"`) {
+		t.Errorf("path changed: %s", s)
+	}
+	if !strings.Contains(s, `"offset":42`) {
+		t.Errorf("offset changed: %s", s)
+	}
+	if !strings.Contains(s, `"big":9007199254740993`) {
+		t.Errorf("a big integer lost precision: %s", s)
+	}
+}
+
+// Malformed or absent input must not be dropped — a tool call with input
+// nobody could truncate is still worth showing as it arrived.
+func TestTruncateJSONStringsPassesThroughWhatItCannotWalk(t *testing.T) {
+	if got := truncateJSONStrings(nil); got != nil {
+		t.Errorf("nil input: got %v", got)
+	}
+	broken := json.RawMessage(`{not json`)
+	if got := truncateJSONStrings(broken); string(got) != string(broken) {
+		t.Errorf("malformed input was altered: got %q, want %q", got, broken)
 	}
 }
 

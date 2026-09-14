@@ -153,6 +153,11 @@ type Options struct {
 	// new session or on the next resume. A conversation is a session, which is
 	// why per-conversation is the granularity this can honestly offer.
 	Thinking bool
+	// Effort is the CLI's --effort level for this turn. Empty means no flag
+	// at all, not some CLI-chosen default named "". Like Model, a live session
+	// spawned with a different value is closed and respawned with --resume
+	// before this turn runs — see open().
+	Effort string
 	// SessionID names a new session rather than letting one be minted.
 	//
 	// The chat needs the id it hands a client to BE the id of the transcript
@@ -233,28 +238,64 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	return turn, nil
 }
 
+// needsRespawn reports whether a live session must restart before this turn
+// to honour the model and effort the turn itself asked for.
+//
+// Only a turn's own request counts. The policy's model moves whenever the
+// breaker degrades or restores a tier, and a warm session is deliberately kept
+// through that (see open) — so a turn naming no model changes nothing, unless
+// an earlier turn pinned the session to one, which "no model" now undoes.
+func needsRespawn(sess *Session, model, effort string) bool {
+	if effort != sess.Effort {
+		return true
+	}
+	if model != "" {
+		return model != sess.Model
+	}
+	return sess.Pinned
+}
+
 // open returns a usable session, reusing, resuming or creating in that order.
 //
 // The order is the crash-safety story. A live process is reused; a dead one
 // whose transcript we know is resumed, which brings its context back; only a
 // genuinely new key starts cold.
 func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt Options) (*Session, error) {
+	requested := strings.TrimSpace(opt.Model)
+	wantModel := pol.Model
+	if requested != "" {
+		wantModel = requested
+	}
+	wantEffort := strings.TrimSpace(opt.Effort)
+
 	// A live process is reused whatever model it was started on. Killing a warm
 	// session to change tier would pay ~12.7k tokens of cold start to save a
 	// fraction of one turn, which is the opposite of what degrading is for.
+	//
+	// That does NOT hold when the turn itself asked for a different --model or
+	// --effort (needsRespawn): the CLI reads both once, at spawn, so the session
+	// is closed and falls through to the resume path below — the CLI session id
+	// and its transcript survive, only the process restarts with new flags. A
+	// session mid-turn is never closed for this; its next turn switches.
 	s.mu.Lock()
 	if sess, ok := s.live[key]; ok && sess.Alive() {
-		// Claimed here, under the same lock CloseIfIdle checks Busy() under —
-		// not left for Send to set once it starts. The caller unlocks and
-		// returns this pointer to whoever asked, who then calls Send in its
-		// own time; without the claim, the session sits in s.live looking
-		// idle for that whole gap, and a concurrent CloseIfIdle can win it.
-		sess.claim()
+		if sess.Busy() || !needsRespawn(sess, requested, wantEffort) {
+			// Claimed here, under the same lock CloseIfIdle checks Busy() under —
+			// not left for Send to set once it starts. The caller unlocks and
+			// returns this pointer to whoever asked, who then calls Send in its
+			// own time; without the claim, the session sits in s.live looking
+			// idle for that whole gap, and a concurrent CloseIfIdle can win it.
+			sess.claim()
+			s.mu.Unlock()
+			return sess, nil
+		}
+		delete(s.live, key)
 		s.mu.Unlock()
-		return sess, nil
+		sess.Close()
+	} else {
+		delete(s.live, key)
+		s.mu.Unlock()
 	}
-	delete(s.live, key)
-	s.mu.Unlock()
 
 	rec, err := s.store.GetHarnessSession(key)
 	if err != nil {
@@ -272,16 +313,12 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 		id = uuid.New().String()
 	}
 
-	model := pol.Model
-	if m := strings.TrimSpace(opt.Model); m != "" {
-		model = m
-	}
 	workdir := strings.TrimSpace(opt.Workdir)
 	if workdir == "" {
 		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
 	}
-	sess := &Session{Key: key, Kind: kind, ID: id, Model: model, Thinking: opt.Thinking,
-		MCPConfig: opt.MCPConfig}
+	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
+		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig}
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
 	// sweep can find; the reverse leaves a process nothing knows about.
@@ -291,7 +328,7 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 		started = rec.StartedAt
 	}
 	if err := s.store.SaveHarnessSession(SessionRecord{
-		Key: key, HarnessSessionID: id, Kind: kind, Model: model,
+		Key: key, HarnessSessionID: id, Kind: kind, Model: wantModel,
 		State: HarnessStarting, Workdir: workdir,
 		StartedAt: started, LastActivityAt: now,
 	}); err != nil {
@@ -313,7 +350,7 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	}
 
 	_ = s.store.SaveHarnessSession(SessionRecord{
-		Key: key, HarnessSessionID: sess.ID, Kind: kind, Model: model,
+		Key: key, HarnessSessionID: sess.ID, Kind: kind, Model: wantModel,
 		PID: sess.PID(), State: HarnessLive, Workdir: workdir,
 		StartedAt: started, LastActivityAt: time.Now(),
 	})
@@ -324,7 +361,7 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	s.mu.Unlock()
 
 	s.log.Info("harness: session open", "key", key, "kind", kind,
-		"model", model, "resumed", resume, "pid", sess.PID())
+		"model", wantModel, "resumed", resume, "pid", sess.PID())
 	return sess, nil
 }
 

@@ -16,6 +16,30 @@ func TestSpawnArgsCarryMCPConfig(t *testing.T) {
 	}
 }
 
+// --effort is appended only when set, right after --model — mirroring how
+// --fallback-model is conditional on the CLI's own degradation flag below it.
+func TestSpawnArgsCarryEffort(t *testing.T) {
+	args := spawnArgs(&Session{ID: "s", Model: "sonnet", Effort: "high"}, false, "")
+	model := slices.Index(args, "--model")
+	effort := slices.Index(args, "--effort")
+	if model < 0 || effort < 0 {
+		t.Fatalf("expected both --model and --effort, got %v", args)
+	}
+	if args[effort+1] != "high" {
+		t.Errorf("effort value = %q, want high", args[effort+1])
+	}
+	if effort < model {
+		t.Errorf("--effort must come after --model, got %v", args)
+	}
+}
+
+func TestSpawnArgsOmitEffortWhenUnset(t *testing.T) {
+	args := spawnArgs(&Session{ID: "s", Model: "sonnet"}, false, "")
+	if slices.Contains(args, "--effort") {
+		t.Errorf("empty effort must add no flag, got %v", args)
+	}
+}
+
 // Regression guard: --mcp-config is variadic (see claude_code.go's browserArgs)
 // and a future reorder must not put it ahead of an earlier flag.
 func TestSpawnArgsPlaceExtrasAfterPartialMessages(t *testing.T) {

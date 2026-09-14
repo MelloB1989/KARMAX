@@ -14,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/MelloB1989/karmax/internal/chatlog"
@@ -138,10 +139,27 @@ func (s *Server) handleChatDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
+// validChatEfforts is the CLI's own vocabulary (`claude --effort`, 2.1.270) —
+// anything else is refused rather than passed through to a flag that would
+// make the CLI itself reject the spawn.
+var validChatEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+
+// validChatModel matches the CLI's own alias vocabulary (fable, opus, sonnet,
+// haiku) as well as a full model name — loose on purpose, since a caller
+// naming a model KARMAX has never heard of should reach the CLI and fail
+// THERE, with the CLI's own error, rather than being second-guessed here
+// against a hardcoded list.
+var validChatModel = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,100}$`)
+
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ConversationID string `json:"conversationId"`
 		Message        string `json:"message"`
+		// Model and Effort override the chat kind's standing choice for THIS
+		// turn only. Empty means "use the configured default" / "no --effort
+		// flag" — see ChatTurnOptions.
+		Model  string `json:"model"`
+		Effort string `json:"effort"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -149,6 +167,16 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(body.Message) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "message is required"})
+		return
+	}
+	if body.Effort != "" && !validChatEfforts[body.Effort] {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "effort must be one of low, medium, high, xhigh, max"})
+		return
+	}
+	if body.Model != "" && !validChatModel.MatchString(body.Model) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "model must be at most 100 characters and contain only letters, digits, '.', '_', ':' or '-'",
+		})
 		return
 	}
 	if s.chatTurn == nil {
@@ -168,7 +196,57 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	opts := ChatTurnOptions{Model: body.Model, Effort: body.Effort}
 	streamTurn(w, id, isNew, func(sink func(harnessEvent)) (string, error) {
-		return s.chatTurn(r.Context(), id, body.Message, sink)
+		return s.chatTurn(r.Context(), id, body.Message, opts, sink)
+	})
+}
+
+// chatModelOption is one entry in GET /api/chat/options' models list.
+type chatModelOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// chatModelOptions is the harness CLI's own alias vocabulary (see
+// spawnArgs's --model), given human labels for a picker.
+var chatModelOptions = []chatModelOption{
+	{ID: "fable", Label: "Fable"},
+	{ID: "opus", Label: "Opus"},
+	{ID: "sonnet", Label: "Sonnet"},
+	{ID: "haiku", Label: "Haiku"},
+}
+
+// chatEffortOptions is the CLI's own --effort vocabulary, in the order a
+// picker should list them.
+var chatEffortOptions = []string{"low", "medium", "high", "xhigh", "max"}
+
+// handleChatOptions tells a client what it may put in a stream request's
+// model/effort fields, and what happens when it puts nothing. Only the
+// Claude harness understands either flag — a client talking to a codex brain
+// gets empty lists back and hides the pickers, rather than offering choices
+// that would 400 on every turn.
+func (s *Server) handleChatOptions(w http.ResponseWriter, r *http.Request) {
+	brain := s.brainName()
+	models := []chatModelOption{}
+	efforts := []string{}
+	if brain == "claude" {
+		models = chatModelOptions
+		efforts = chatEffortOptions
+	}
+	defaultModel := ""
+	if s.cfg != nil {
+		defaultModel = s.cfg.Harness.Kinds["chat"].Model
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"brain":   brain,
+		"models":  models,
+		"efforts": efforts,
+		// defaultModel/defaultEffort are what an empty field on the stream
+		// request actually does — a client shows this rather than a blank
+		// picker. defaultEffort is always "": no --effort flag has ever been a
+		// per-kind config, only a per-turn choice.
+		"defaultModel":  defaultModel,
+		"defaultEffort": "",
 	})
 }

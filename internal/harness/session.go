@@ -25,6 +25,13 @@ type Session struct {
 	Kind  string
 	ID    string // the CLI's session uuid, for --resume
 	Model string
+	// Pinned says Model was asked for by a turn rather than chosen by policy,
+	// so a later turn that asks for no model knows to go back to the default.
+	Pinned bool
+	// Effort is the CLI's --effort level (low|medium|high|xhigh|max). Fixed at
+	// spawn exactly like Model — the CLI reads it once, on the way up, and a
+	// running process cannot be told to think harder mid-turn.
+	Effort string
 	// Thinking is fixed when the process spawns, so like Model it takes
 	// effect on a new session or on the next resume — never mid-conversation.
 	Thinking bool
@@ -96,6 +103,9 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	}
 	if s.Model != "" {
 		args = append(args, "--model", s.Model)
+	}
+	if s.Effort != "" {
+		args = append(args, "--effort", s.Effort)
 	}
 	// The CLI's own degradation, one layer below the breaker's. The breaker
 	// acts on the account's published quota between turns; this catches a
@@ -262,6 +272,7 @@ func emit(sink func(Event), ev event) {
 				Kind:      toolKind(c.Name),
 				Status:    StatusInProgress,
 				Locations: toolLocations(c.Name, c.Input),
+				Input:     truncateJSONStrings(c.Input),
 			}})
 		}
 
