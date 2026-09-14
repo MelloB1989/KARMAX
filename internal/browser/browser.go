@@ -490,13 +490,42 @@ func origin(raw string) (string, bool) {
 // profile would be a second Chromium refusing to start on a locked profile.
 func Shared(dataDir string) *Session {
 	sharedMu.Lock()
-	defer sharedMu.Unlock()
 	if s, ok := shared[dataDir]; ok {
+		sharedMu.Unlock()
 		return s
 	}
 	s := New(dataDir)
 	shared[dataDir] = s
+	sharedMu.Unlock()
+
+	// The common case is not "the engine launches the browser" — it is a
+	// daemon restart finding the operator's Chrome still up, since that
+	// window outlives any one karmax process. Nothing else is guaranteed
+	// to ever call Start() or Open() on this exact Session: the harness's
+	// eval/fetch/requests/tabs actions never do. Without this, a Session
+	// handed out onto an already-running browser would sit there able to
+	// answer Tabs()/Eval() (both dial their own connection on demand) while
+	// silently capturing nothing, until something happened to call Open().
+	// Checking and starting off the calling goroutine keeps Shared() itself
+	// a cheap, synchronous map lookup; startNetworkCapture is idempotent
+	// and concurrency-safe, so a concurrent Start()/Open() racing this is
+	// harmless. Never launches a browser and never touches a tab — only
+	// Running() is consulted, which just asks an already-alive endpoint.
+	go s.beginCaptureIfAlreadyRunning()
+
 	return s
+}
+
+// beginCaptureIfAlreadyRunning starts network capture when this Session's
+// browser already answers — see Shared's own comment for why this exists.
+// A no-op when nothing is running yet; capture still begins normally the
+// first time something does call Start() or Open() on this Session.
+func (s *Session) beginCaptureIfAlreadyRunning() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if s.Running(ctx) {
+		s.startNetworkCapture()
+	}
 }
 
 var (

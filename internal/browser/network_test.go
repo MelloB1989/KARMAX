@@ -199,3 +199,98 @@ func TestNetworkCaptureAndReplay(t *testing.T) {
 		}
 	})
 }
+
+// TestNetworkCaptureAttachesToAlreadyRunningBrowser reproduces the live
+// topology this package actually ships into: the browser is already running
+// before whatever asks for network capture even exists — a daemon restart
+// finding the operator's Chrome still up, not a process that just launched
+// it. sessionA stands in for the run that launched the browser (a previous
+// karmax process, or the daemon before its last restart) and is never asked
+// to Start() or Open() again. sessionB is a brand-new Session value — same
+// profile dir, same port — that calls exactly what the runtime calls at
+// boot (browser.Shared) and nothing else: no Start(), no Open(). A second,
+// throwaway CDP client is attached to the same tab first, to mimic a
+// DevTools window already being open on it — capture must not assume it is
+// the only debugger attached to the target.
+func TestNetworkCaptureAttachesToAlreadyRunningBrowser(t *testing.T) {
+	if hostpaths.Browser() == "" {
+		t.Skip("no Chrome, Chromium or Edge on this machine")
+	}
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	sessionA := NewHeadless(dir)
+	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := sessionA.Start(startCtx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = sessionA.Stop(context.Background()) })
+
+	tabs, err := sessionA.Tabs(ctx)
+	if err != nil || len(tabs) != 1 {
+		t.Fatalf("Tabs: %v, %v (want the one about:blank tab a fresh launch starts with)", tabs, err)
+	}
+	tabID, wsURL := tabs[0].ID, tabs[0].WebSocketDebuggerURL
+
+	devtools, err := dialCDP(ctx, wsURL)
+	if err != nil {
+		t.Fatalf("dial pretend-devtools client: %v", err)
+	}
+	defer devtools.Close()
+
+	// The daemon-restart reconnect: a fresh Session value, pointed at the
+	// same profile dir, obtained the exact way internal/runtime obtains
+	// the one it hands to the "browser" tool.
+	sessionB := Shared(dir)
+	t.Cleanup(sessionB.stopNetworkCapture)
+
+	srv := newCaptureTestServer(t)
+
+	var conn *cdpConn
+	waitFor(t, 5*time.Second, func() bool {
+		sessionB.netMu.Lock()
+		tc, ok := sessionB.attached[tabID]
+		sessionB.netMu.Unlock()
+		if ok {
+			conn = tc.conn
+		}
+		return ok
+	})
+
+	if err := conn.call(ctx, "Page.navigate", map[string]any{"url": srv.URL}, nil); err != nil {
+		t.Fatalf("Page.navigate: %v", err)
+	}
+
+	var dataReq CapturedRequest
+	waitFor(t, 6*time.Second, func() bool {
+		for _, r := range sessionB.Requests(RequestFilter{URLContains: "/api/data"}) {
+			if r.Status == 200 && (r.ResponseBody != "" || r.BodyOmitted) {
+				dataReq = r
+				return true
+			}
+		}
+		return false
+	})
+
+	if dataReq.Method != "GET" {
+		t.Errorf("method = %q, want GET", dataReq.Method)
+	}
+	if dataReq.ResourceType != "fetch" {
+		t.Errorf("resource type = %q, want fetch", dataReq.ResourceType)
+	}
+	if dataReq.Status != 200 {
+		t.Errorf("status = %d, want 200", dataReq.Status)
+	}
+	if !strings.Contains(dataReq.ResponseBody, `"ok":true`) {
+		t.Errorf("response body = %q, want it to contain the JSON payload", dataReq.ResponseBody)
+	}
+
+	got, ok := sessionB.RequestByID(dataReq.ID)
+	if !ok {
+		t.Fatal("RequestByID: not found")
+	}
+	if got.ResponseBody != dataReq.ResponseBody {
+		t.Errorf("RequestByID body = %q, want %q", got.ResponseBody, dataReq.ResponseBody)
+	}
+}
