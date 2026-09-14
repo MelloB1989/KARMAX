@@ -306,7 +306,9 @@ func TestNoFieldMayBeCalledKind(t *testing.T) {
 
 func TestOnlyDoneEverPrintsAKeptPromise(t *testing.T) {
 	var sent map[string]any
+	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&sent)
 		_, _ = w.Write([]byte(`{"receipt":{"receiptId":"r-1"}}`))
 	}))
@@ -315,7 +317,6 @@ func TestOnlyDoneEverPrintsAKeptPromise(t *testing.T) {
 
 	for said, want := range map[string]string{
 		"done":      outcomeSuccess,
-		"blocked":   outcomeFailure,
 		"failed":    outcomeFailure,
 		"partially": outcomeFailure,
 		"":          outcomeFailure,
@@ -328,6 +329,45 @@ func TestOnlyDoneEverPrintsAKeptPromise(t *testing.T) {
 		if sent["outcome"] != want {
 			t.Fatalf("%q was reported as %v, wanted %s", said, sent["outcome"], want)
 		}
+		if !strings.HasSuffix(path, "/result") {
+			t.Fatalf("%q posted to %s, want the /result endpoint", said, path)
+		}
+	}
+}
+
+// The bug this catches: "blocked" is not a verdict. Reporting it through the
+// same call that closes a task prints a receipt for work that has not
+// stopped — a phantom failure for a task that is actually waiting on a
+// human, which nobody investigates because a failure looks explained.
+func TestBlockedIsAQuestionNotAVerdict(t *testing.T) {
+	var sent map[string]any
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&sent)
+		_, _ = w.Write([]byte(`{"task":{"taskId":"t-1","status":"blocked"}}`))
+	}))
+	defer srv.Close()
+	cr := creds(srv.URL, nil)
+
+	out, err := reportWork(context.Background(), cr, map[string]any{
+		"task_id": "t-1", "outcome": "blocked", "summary": "need the shared account's password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(path, "/question") {
+		t.Fatalf("posted to %s, want /question — a blocked task must not reach /result", path)
+	}
+	if _, wroteOutcome := sent["outcome"]; wroteOutcome {
+		t.Fatalf("a blocked report must not carry an outcome — it does not close the task: %v", sent)
+	}
+	if sent["text"] != "need the shared account's password" {
+		t.Fatalf("text = %v, want the summary carried as the question", sent["text"])
+	}
+	result, ok := out.(map[string]any)
+	if !ok || result["blocked"] != true {
+		t.Fatalf("result = %+v, want blocked: true, so the model knows the task is not closed", out)
 	}
 }
 
