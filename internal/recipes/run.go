@@ -101,7 +101,42 @@ func runStep(ctx context.Context, r *Recipe, k loopkit.Kit, b Bindings, s Step, 
 		if err != nil {
 			return nil, err
 		}
-		return k.Step(id, func() (string, error) { return k.Harness(ctx, p) })
+		sessionID, err := arg("session_id")
+		if err != nil {
+			return nil, err
+		}
+		workingDir, err := arg("working_dir")
+		if err != nil {
+			return nil, err
+		}
+		ephemeralRaw, err := arg("ephemeral")
+		if err != nil {
+			return nil, err
+		}
+		if sessionID == "" && workingDir == "" {
+			// The common case, unchanged: nothing here writes session_id or
+			// working_dir, so every existing recipe keeps calling Harness.
+			return k.Step(id, func() (string, error) { return k.Harness(ctx, p) })
+		}
+		spec := loopkit.HarnessSpec{
+			Prompt: p, SessionID: sessionID, WorkingDir: workingDir,
+			Ephemeral: boolArg(ephemeralRaw, true),
+		}
+		return k.Step(id, func() (string, error) {
+			res, err := k.HarnessWith(ctx, spec)
+			return res.Output, err
+		})
+
+	case VerbHarnessForget:
+		sessionID, err := arg("session_id")
+		if err != nil {
+			return nil, err
+		}
+		workingDir, err := arg("working_dir")
+		if err != nil {
+			return nil, err
+		}
+		return nil, k.Once(id, func() error { return k.HarnessForget(sessionID, workingDir) })
 
 	case VerbGateway:
 		p, err := text()
@@ -620,7 +655,9 @@ func render(s string, b Bindings) (string, error) {
 	if !strings.Contains(s, "{{") {
 		return s, nil
 	}
-	t, err := template.New("s").Option("missingkey=zero").Parse(s)
+	t, err := template.New("s").Option("missingkey=zero").
+		Funcs(template.FuncMap{"contains": strings.Contains}).
+		Parse(s)
 	if err != nil {
 		return "", fmt.Errorf("bad template %q: %w", s, err)
 	}
@@ -655,4 +692,19 @@ func intArg(s string, def int) int {
 		return n
 	}
 	return def
+}
+
+// boolArg parses a rendered field the way truthy reads a 'when', but with an
+// explicit default for the common case of a field being absent rather than
+// present-and-false — 'ephemeral' left out of a harness: step must not read
+// as false.
+func boolArg(s string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return def
+	}
 }
