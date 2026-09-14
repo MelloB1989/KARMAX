@@ -14,7 +14,6 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/harness"
-	"github.com/MelloB1989/karmax/internal/skills"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"go.uber.org/zap"
@@ -142,10 +141,6 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		rt.log.Warn("harness: could not write the shared session brief", zap.Error(err))
 	}
 
-	// Once per daemon start, not per turn: Materialise writes files, and doing
-	// that on every turn would be wasteful and racy.
-	rt.skillsDir = materialiseSkills(rt.cfg.Karmax.DataDir, rt.log)
-
 	// browserMCPCache wraps the same shared session browserMCPConfig used to
 	// probe directly, so chatTurn and harnessSenderFor.Send get it cached.
 	rt.browserMCPCache = newBrowserMCPCache(browser.Shared(rt.cfg.Karmax.DataDir))
@@ -221,21 +216,6 @@ func parseDur(s string, def time.Duration) time.Duration {
 func hostDataDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".karmax")
-}
-
-// materialiseSkills wraps skills.Materialise, turning a failure into a log
-// line and an empty directory rather than a startup error.
-//
-// Skills are an enhancement, not a precondition — the same treatment
-// browser.ErrNotRunning gets: a session that starts without --plugin-dir
-// still runs.
-func materialiseSkills(dataDir string, log *zap.Logger) string {
-	dir, err := skills.Materialise(dataDir)
-	if err != nil {
-		log.Warn("harness: could not materialise skills; sessions run without --plugin-dir", zap.Error(err))
-		return ""
-	}
-	return dir
 }
 
 var _ = config.HarnessConfig{}
@@ -558,29 +538,16 @@ func (c *browserMCPCache) invalidate() {
 	c.mu.Unlock()
 }
 
-// harnessPluginDir returns the --plugin-dir value for this kind, or "" when
-// the kind gets no browser (the shipped skills are the browser-session rules
-// and the built-in toolset, of no use to any other kind) or nothing was
-// materialised.
-func harnessPluginDir(kind, skillsDir string) string {
-	if !browserKinds[kind] || skillsDir == "" {
-		return ""
-	}
-	return skillsDir
-}
-
 // harnessSenderFor adapts the supervisor to what internal/agent expects,
 // keeping the agent package free of this one's types.
 type harnessSenderFor struct {
-	sup       *harness.Supervisor
-	browser   browserConfigger
-	skillsDir string
+	sup     *harness.Supervisor
+	browser browserConfigger
 }
 
 func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (agent.HarnessTurn, error) {
 	turn, err := h.sup.SendWith(ctx, key, kind, text, harness.Options{
 		MCPConfig: browserMCPConfig(ctx, h.browser, kind),
-		PluginDir: harnessPluginDir(kind, h.skillsDir),
 	})
 	if err != nil {
 		var open harness.ErrBreakerOpen
@@ -607,7 +574,7 @@ func (rt *KarmaxRuntime) wireHarnessBrains() {
 	if rt.harness == nil {
 		return
 	}
-	sender := harnessSenderFor{sup: rt.harness, browser: rt.browserMCPCache, skillsDir: rt.skillsDir}
+	sender := harnessSenderFor{sup: rt.harness, browser: rt.browserMCPCache}
 	for _, a := range rt.agents.List() {
 		// No fallback means a declined turn has nowhere to go, and the agent
 		// answers nothing at all. The metered path is worse than the harness;

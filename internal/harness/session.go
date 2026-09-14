@@ -28,10 +28,9 @@ type Session struct {
 	// Thinking is fixed when the process spawns, so like Model it takes
 	// effect on a new session or on the next resume — never mid-conversation.
 	Thinking bool
-	// MCPConfig and PluginDir are threaded from Options the same way Model and
-	// Thinking are, taking effect on the next spawn.
+	// MCPConfig is threaded from Options the same way Model and Thinking are,
+	// taking effect on the next spawn.
 	MCPConfig string
-	PluginDir string
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
@@ -66,15 +65,12 @@ type Session struct {
 	busy atomic.Bool
 }
 
-// extraArgs returns the flags granting the tools and skills in opt, for
-// whichever of MCPConfig and PluginDir are set.
+// extraArgs returns the flags granting the tools in opt, for when MCPConfig
+// is set.
 func extraArgs(opt Options) []string {
 	var args []string
 	if opt.MCPConfig != "" {
 		args = append(args, "--mcp-config", opt.MCPConfig)
-	}
-	if opt.PluginDir != "" {
-		args = append(args, "--plugin-dir", opt.PluginDir)
 	}
 	return args
 }
@@ -109,7 +105,7 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 		args = append(args, "--fallback-model", fallbackModel)
 	}
 	// No positional prompt here to collide with; still appended last, and tested.
-	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig, PluginDir: s.PluginDir})...)
+	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig})...)
 }
 
 // spawn starts a harness process for this session.
