@@ -51,6 +51,19 @@ func retryDelay(attempt int) time.Duration {
 	return d
 }
 
+// lyznSessionStaleCutoff is how far back the six-hour sweep looks before it
+// gives up on a coding_sessions row nobody reclaimed — a week, matching
+// harness.prune's own default cutoff in spirit.
+//
+// Kept as its own function, rather than inlined at the retryWorker call
+// site, so a test can invoke exactly the computation production uses. A
+// reviewer once replaced the call site's cutoff with time.Now() — widening
+// it to reap live sessions on the next tick — and the whole suite stayed
+// green, because nothing exercised this specific computation in isolation.
+func lyznSessionStaleCutoff(now time.Time) time.Time {
+	return now.AddDate(0, 0, -7)
+}
+
 // runLoopDurable executes a loop with a lease, a run record, and a retry.
 //
 // Replaces the previous fire-and-forget goroutine. The signature keeps the
@@ -333,10 +346,9 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			if _, err := rt.store.PruneMeter(time.Now().AddDate(0, 0, -90)); err != nil {
 				rt.log.Warn("could not prune the capability meter", zap.Error(err))
 			}
-			// A week, matching harness.prune's own default cutoff in spirit —
-			// anything this finds already fell through done, failed, expiry and
-			// unpair, so it is the tail, not the common case.
-			rt.pruneStaleLyznSessions(time.Now().AddDate(0, 0, -7))
+			// Anything this finds already fell through done, failed, expiry
+			// and unpair, so it is the tail, not the common case.
+			rt.pruneStaleLyznSessions(lyznSessionStaleCutoff(time.Now()))
 		case <-tick.C:
 			due, err := rt.store.DueLoopRetries(time.Now())
 			if err != nil {
