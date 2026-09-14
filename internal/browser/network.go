@@ -350,6 +350,7 @@ func (s *Session) startNetworkCapture() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.netCancel = cancel
+	s.netCtx = ctx
 	s.attached = map[string]*tabCapture{}
 	s.netMu.Unlock()
 
@@ -364,6 +365,7 @@ func (s *Session) stopNetworkCapture() {
 	s.netMu.Lock()
 	cancel := s.netCancel
 	s.netCancel = nil
+	s.netCtx = nil
 	s.netMu.Unlock()
 	if cancel == nil {
 		return
@@ -435,16 +437,44 @@ func (s *Session) syncNetworkTargets(ctx context.Context) {
 	}
 }
 
-// attachTab dials the tab's own DevTools endpoint and enables Network. The
-// read loop is registered with netWG before the (possibly slow) enable call,
-// so stopNetworkCapture's Wait always accounts for it — including the case
-// where cancellation lands mid-enable and this attach is abandoned.
-func (s *Session) attachTab(parent context.Context, tabID, wsURL string) {
-	conn, err := dialCDP(parent, wsURL)
-	if err != nil {
-		return
+// attachTabIfNeeded returns tabID's persistent capture connection,
+// attaching one first when none exists yet: dialing the tab's own DevTools
+// endpoint, enabling Network, and waiting for that command's own reply
+// before returning — so a caller that goes on to navigate the tab over the
+// returned connection knows capture is already live for whatever the
+// navigation is about to fire. Safe to call concurrently with the
+// discovery loop (syncNetworkTargets) or another attach for the same tab —
+// losing the race just means the connection just dialed is closed unused
+// and the winner's is returned instead; nothing double-attaches.
+//
+// The returned connection's own lifetime is rooted in the session's
+// long-lived capture context (s.netCtx), never callerCtx: callerCtx only
+// bounds the dial and the Network.enable round trip, and must not be able
+// to tear down ongoing capture just because the call that attached it — an
+// Open(), say — returned. The read loop is registered with netWG before
+// the (possibly slow) enable call, so stopNetworkCapture's Wait always
+// accounts for it, including the case where cancellation lands mid-enable
+// and this attach is abandoned.
+func (s *Session) attachTabIfNeeded(callerCtx context.Context, tabID, wsURL string) (*tabCapture, error) {
+	s.netMu.Lock()
+	if tc, ok := s.attached[tabID]; ok {
+		s.netMu.Unlock()
+		return tc, nil
 	}
-	tabCtx, cancel := context.WithCancel(parent)
+	root := s.netCtx
+	s.netMu.Unlock()
+	if root == nil {
+		// Defensive only: every path that can reach here calls Start()
+		// first, which always calls startNetworkCapture — so netCtx
+		// should never actually be nil here.
+		root = callerCtx
+	}
+
+	conn, err := dialCDP(callerCtx, wsURL)
+	if err != nil {
+		return nil, err
+	}
+	tabCtx, cancel := context.WithCancel(root)
 	conn.onEvent = func(method string, params json.RawMessage) {
 		s.handleNetworkEvent(tabID, conn, method, params)
 	}
@@ -455,15 +485,30 @@ func (s *Session) attachTab(parent context.Context, tabID, wsURL string) {
 		conn.readLoop(tabCtx)
 	}()
 
-	if err := conn.call(tabCtx, "Network.enable", struct{}{}, nil); err != nil {
+	if err := conn.call(callerCtx, "Network.enable", struct{}{}, nil); err != nil {
 		cancel()
 		conn.Close()
-		return
+		return nil, err
 	}
 
+	tc := &tabCapture{conn: conn, cancel: func() { cancel(); conn.Close() }}
 	s.netMu.Lock()
-	s.attached[tabID] = &tabCapture{conn: conn, cancel: func() { cancel(); conn.Close() }}
+	if existing, ok := s.attached[tabID]; ok {
+		// Lost the race — the discovery loop, or a concurrent Open(),
+		// attached this tab first. Keep theirs, drop what was just dialed.
+		s.netMu.Unlock()
+		tc.cancel()
+		return existing, nil
+	}
+	s.attached[tabID] = tc
 	s.netMu.Unlock()
+	return tc, nil
+}
+
+// attachTab is attachTabIfNeeded for the discovery loop, which only needs
+// the attach to happen and has no use for the connection itself.
+func (s *Session) attachTab(parent context.Context, tabID, wsURL string) {
+	_, _ = s.attachTabIfNeeded(parent, tabID, wsURL)
 }
 
 func (s *Session) detachAllTabs() {
