@@ -66,6 +66,19 @@ func (d *DryRun) Harness(_ context.Context, prompt string) (string, error) {
 	return "[the harness output would appear here]", nil
 }
 
+func (d *DryRun) HarnessWith(_ context.Context, spec loopkit.HarnessSpec) (loopkit.HarnessResult, error) {
+	d.record("run the harness on: %s (session=%s, workdir=%s)", oneLine(spec.Prompt), spec.SessionID, spec.WorkingDir)
+	return loopkit.HarnessResult{
+		Output:    "[the harness output would appear here]",
+		SessionID: spec.SessionID,
+	}, nil
+}
+
+func (d *DryRun) HarnessForget(sessionID, workingDir string) error {
+	d.record("forget the harness session %s (workdir=%s)", sessionID, workingDir)
+	return nil
+}
+
 func (d *DryRun) Gateway(_ context.Context, prompt string, _ ...loopkit.Tool) (string, error) {
 	d.record("ask the model: %s", oneLine(prompt))
 	return "[the model's answer would appear here]", nil
