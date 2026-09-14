@@ -187,3 +187,29 @@ func TestHistoryCarriesWholeToolCalls(t *testing.T) {
 		t.Errorf("status = %q, want completed", calls[0].Status)
 	}
 }
+
+// Prose either side of a tool call is two paragraphs, whether the CLI put the
+// blocks in one record or split the turn across several.
+func TestProseAcrossToolCallsKeepsItsParagraphs(t *testing.T) {
+	dir := t.TempDir()
+	lines := `{"type":"assistant","timestamp":"2026-09-14T10:00:00Z","message":{"content":[` +
+		`{"type":"text","text":"Let me check."},` +
+		`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}},` +
+		`{"type":"text","text":"Found the logs."}]}}` + "\n" +
+		`{"type":"assistant","timestamp":"2026-09-14T10:00:02Z","message":{"content":[` +
+		`{"type":"text","text":"## Root cause"}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "c1.jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := Read(dir, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	want := "Let me check.\n\nFound the logs.\n\n## Root cause"
+	if msgs[0].Text != want {
+		t.Errorf("text = %q, want %q", msgs[0].Text, want)
+	}
+}

@@ -134,7 +134,7 @@ func Read(dir, id string) ([]Message, error) {
 		for _, c := range r.Message.Content {
 			switch c.Type {
 			case "text":
-				msg.Text += c.Text
+				msg.Text = joinProse(msg.Text, c.Text)
 			case "tool_use":
 				msg.ToolCalls = append(msg.ToolCalls, ToolCall{
 					ID:     c.ID,
@@ -152,13 +152,26 @@ func Read(dir, id string) ([]Message, error) {
 		// records never split this way, so merging those would instead fuse
 		// two separate things the person typed into one bubble.
 		if n := len(out); n > 0 && msg.Role == "assistant" && out[n-1].Role == msg.Role {
-			out[n-1].Text += msg.Text
+			out[n-1].Text = joinProse(out[n-1].Text, msg.Text)
 			out[n-1].ToolCalls = append(out[n-1].ToolCalls, msg.ToolCalls...)
 			return
 		}
 		out = append(out, msg)
 	})
 	return out, err
+}
+
+// joinProse puts a paragraph break between two blocks of a turn's prose.
+//
+// The CLI writes the prose either side of each tool call as a block of its
+// own, and a block carries no separator: joined bare, "Let me check." and
+// "## Root cause" become "Let me check.## Root cause" — a sentence nobody
+// wrote, and a heading no renderer can find.
+func joinProse(a, b string) string {
+	if a == "" || b == "" {
+		return a + b
+	}
+	return strings.TrimRight(a, " \t\n") + "\n\n" + strings.TrimLeft(b, "\n")
 }
 
 func List(dir string) ([]Conversation, error) {
