@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -111,7 +110,10 @@ type KarmaxRuntime struct {
 	routedKinds []bus.EventKind
 
 	// recipeLoops are the YAML recipes currently loaded from disk.
-	recipeMu    sync.RWMutex
+	recipeMu sync.RWMutex
+	// recipeCtx is the context startRecipes runs the watcher under, kept so an
+	// enable or disable from the API can re-apply the recipes on the spot.
+	recipeCtx   context.Context
 	recipeLoops map[string]*recipes.Recipe
 
 	// wasmRunners hold the compiled signed loops, released on shutdown.
@@ -1309,20 +1311,11 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		rt.api.SetRunLoop(rt.RunLoopByName)
 		rt.api.SetChatTurn(rt.chatTurn)
 		rt.api.SetLoopHealth(func() (any, error) { return rt.LoopHealthReport() })
-		rt.api.SetListLoops(func() []api.LoopInfo {
-			out := make([]api.LoopInfo, 0, len(rt.loopkitLoops))
-			for _, l := range rt.loopkitLoops {
-				out = append(out, api.LoopInfo{
-					Name:        l.Name,
-					Description: l.Description,
-					Schedule:    l.Schedule.CronExpr(),
-					Webhook:     l.Webhook,
-					Events:      l.Events,
-				})
-			}
-			sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-			return out
-		})
+		// listLoopInfos (loopinfo.go) covers every tier, including disabled
+		// ones — this used to only walk rt.loopkitLoops, which misses the
+		// recipe and prompt tiers entirely and drops anything disabled.
+		rt.api.SetListLoops(rt.listLoopInfos)
+		rt.api.SetLoopsChanged(rt.ReapplyRecipes)
 	}
 
 	var wg sync.WaitGroup

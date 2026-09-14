@@ -162,6 +162,15 @@ func (c *Client) Fetch(ctx context.Context, e RegistryEntry) ([]byte, error) {
 	return body, nil
 }
 
+// GetRaw performs one bounded, guarded fetch of an arbitrary URL under this
+// registry. It exists for a companion file the index does not itself point
+// at — a workflow's loop.yaml, fetched to describe it without downloading the
+// signed .kloop just to read a manifest back out of it (see
+// internal/loopregistry's registry-detail lookup).
+func (c *Client) GetRaw(ctx context.Context, url string) ([]byte, error) {
+	return c.get(ctx, url)
+}
+
 // digest is the hex sha256 an index entry pins its artifact by.
 func digest(b []byte) string {
 	sum := sha256.Sum256(b)
