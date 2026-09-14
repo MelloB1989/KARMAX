@@ -9,6 +9,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/tools"
+	"github.com/MelloB1989/karmax/internal/tools/builtin"
 )
 
 // The session tools are the ONLY way anything reaches the supervisor.
@@ -206,6 +207,78 @@ func (t *harnessCloseTool) Execute(ctx context.Context, in map[string]any) (tool
 	// what was asked for.
 	rt.harness.Close(key)
 	return tools.SuccessResult(map[string]any{"closed": key}), nil
+}
+
+// harnessStopTool is the desktop app's Stop button: it targets a claude_code
+// run in flight (the lyzn-tasks recipe's "harness:" step, keyed by
+// session_id — see loophost.go's HarnessWith/HarnessForget), not a
+// harness.send/harness.list/harness.close conversation. Those live on
+// rt.harness, the Supervisor; this one reaches into
+// internal/tools/builtin's own package-level registry of in-flight CLI
+// calls, because ClaudeCodeTool is built fresh on every call and has
+// nowhere else to keep that state — see claude_code_runs.go.
+type harnessStopTool struct{ ref *harnessRef }
+
+func (t *harnessStopTool) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{
+		Name: "harness.stop",
+		Description: "Stop a claude_code run in progress and block that key from starting a new one for 30 " +
+			"minutes. Cancels the whole process group the CLI started — not just its direct process — then " +
+			"cleans up its transcript, its session-key mapping and its working directory, the same as " +
+			"harness.forget. Safe to call when nothing is running under the key.",
+		Parameters: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"session_id":{"type":"string","description":"The session_id (or session key, e.g. \"lyzn:<task id>\") exactly as it was passed to claude_code.call."},
+				"working_dir":{"type":"string","description":"Working directory to clean up when nothing is currently running under this key. Ignored when a run was in flight — its own resolved working directory is used instead."}
+			},
+			"required":["session_id"]
+		}`),
+	}
+}
+
+func (t *harnessStopTool) Execute(_ context.Context, in map[string]any) (tools.ToolResult, error) {
+	rt := t.ref.get()
+	if rt == nil {
+		return tools.ErrorResult(fmt.Errorf("the runtime is not ready")), nil
+	}
+	sessionID, _ := in["session_id"].(string)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return tools.ErrorResult(fmt.Errorf("session_id is required")), nil
+	}
+	givenDir, _ := in["working_dir"].(string)
+
+	// Bounded, not indefinite: a run that ignores every signal must not
+	// hang the operator's Stop button forever. terminateGroup's own
+	// SIGKILL escalation (5s) has already fired well within this by the
+	// time it would matter.
+	wasRunning, resolvedDir := builtin.StopRun(sessionID, 10*time.Second)
+
+	dir := resolvedDir
+	if !wasRunning {
+		dir = strings.TrimSpace(givenDir)
+	}
+
+	// Nothing to clean up without a directory: this is exactly the "stop
+	// with nothing running, and no working_dir given" case, and it must
+	// not be an error.
+	if dir != "" {
+		dataDir := ""
+		if rt.cfg != nil {
+			dataDir = rt.cfg.Karmax.DataDir
+		}
+		cleaner := &builtin.ClaudeCodeTool{Store: rt.store, DataDir: dataDir}
+		if err := cleaner.Cleanup(dir, sessionID); err != nil {
+			return tools.ErrorResult(err), nil
+		}
+	}
+
+	return tools.SuccessResult(map[string]any{
+		"session_id":  sessionID,
+		"was_running": wasRunning,
+		"working_dir": dir,
+	}), nil
 }
 
 func asBreakerOpen(err error, out *harness.ErrBreakerOpen) bool {

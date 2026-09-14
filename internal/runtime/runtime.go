@@ -487,6 +487,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&harnessSendTool{ref: harnessRT})
 	toolReg.Register(&harnessListTool{ref: harnessRT})
 	toolReg.Register(&harnessCloseTool{ref: harnessRT})
+	toolReg.Register(&harnessStopTool{ref: harnessRT})
 	toolReg.Register(&harnessShowTool{ref: harnessRT})
 	toolReg.Register(&harnessModelTool{ref: harnessRT})
 	toolReg.Register(&harnessTranscriptTool{ref: harnessRT})
