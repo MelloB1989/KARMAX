@@ -164,6 +164,20 @@ func WorkDir() string {
 	return workDir
 }
 
+// Resolve turns a working_dir value into an absolute path. Empty means the
+// shared default; an absolute path is used verbatim; anything else is a
+// subdirectory of WorkDir() rather than a path from the process's own
+// working directory, which is undefined for a daemon with no terminal.
+func Resolve(dir string) string {
+	if dir == "" {
+		return WorkDir()
+	}
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(WorkDir(), dir)
+}
+
 // WacliAPIURL returns the base URL of the local wacli HTTP API:
 // $KARMAX_WACLI_API_URL, defaulting to wacli's standard localhost port.
 func WacliAPIURL() string {

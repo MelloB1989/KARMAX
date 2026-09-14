@@ -26,6 +26,20 @@ func Dir(workdir string) string {
 	return filepath.Join(homeDir(), ".claude", "projects", Slug(workdir))
 }
 
+// RemoveSession deletes one session's transcript file — for an ephemeral
+// one-off run, and for the terminal cleanup of a durable one. Removing a
+// transcript that is already gone is not an error.
+func RemoveSession(workdir, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	err := os.Remove(filepath.Join(Dir(workdir), sessionID+".jsonl"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func homeDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

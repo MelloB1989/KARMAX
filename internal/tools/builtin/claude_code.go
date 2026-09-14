@@ -268,8 +268,9 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 	}
 
 	workingDir, _ := input["working_dir"].(string)
-	if workingDir == "" {
-		workingDir = hostpaths.WorkDir()
+	workingDir = hostpaths.Resolve(workingDir)
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		return tools.ErrorResult(fmt.Errorf("could not create working directory %s: %w", workingDir, err)), nil
 	}
 
 	// How the harness is allowed to use its tools, which depends on whether the
@@ -335,7 +336,7 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 	if ephemeral {
 		// One-off task: the session has no follow-up value — delete the
 		// transcript and don't persist it as a resumable coding session.
-		removeClaudeSession(workingDir, sessionID)
+		chatlog.RemoveSession(workingDir, sessionID)
 	} else if t.Store != nil {
 		_ = t.Store.SaveCodingSession(store.StoredCodingSession{
 			ID:          uuid.New().String(),
@@ -357,14 +358,24 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 	}), nil
 }
 
-// removeClaudeSession deletes a Claude Code session transcript
-// (~/.claude/projects/<dir-slug>/<session-id>.jsonl).
-func removeClaudeSession(workingDir, sessionID string) {
-	if sessionID == "" {
-		return
+// Cleanup deletes a coding session's durable state: its transcript, its
+// working directory, and its coding_sessions rows. The terminal moment in a
+// non-ephemeral session's life — done, failed, a question that expired, or a
+// daemon giving up tasks it can no longer hold — where nothing should ever
+// resume into it again. Deleting a session that is already gone is not an
+// error.
+func (t *ClaudeCodeTool) Cleanup(workingDir, sessionID string) error {
+	workingDir = hostpaths.Resolve(workingDir)
+	if err := chatlog.RemoveSession(workingDir, sessionID); err != nil {
+		return err
 	}
-	path := filepath.Join(chatlog.Dir(workingDir), sessionID+".jsonl")
-	_ = os.Remove(path)
+	if err := os.RemoveAll(workingDir); err != nil {
+		return err
+	}
+	if t.Store == nil || sessionID == "" {
+		return nil
+	}
+	return t.Store.DeleteCodingSessionsBySessionID(sessionID)
 }
 
 func truncate(s string, n int) string {
