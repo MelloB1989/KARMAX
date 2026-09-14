@@ -333,6 +333,10 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			if _, err := rt.store.PruneMeter(time.Now().AddDate(0, 0, -90)); err != nil {
 				rt.log.Warn("could not prune the capability meter", zap.Error(err))
 			}
+			// A week, matching harness.prune's own default cutoff in spirit —
+			// anything this finds already fell through done, failed, expiry and
+			// unpair, so it is the tail, not the common case.
+			rt.pruneStaleLyznSessions(time.Now().AddDate(0, 0, -7))
 		case <-tick.C:
 			due, err := rt.store.DueLoopRetries(time.Now())
 			if err != nil {
