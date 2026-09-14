@@ -521,6 +521,11 @@ type loopKit struct {
 	executionID string
 }
 
+// var _ loopkit.Kit = (*loopKit)(nil) catches a missing/mismatched method at
+// the definition site, rather than at the build of whichever caller happens
+// to need it next.
+var _ loopkit.Kit = (*loopKit)(nil)
+
 func (k *loopKit) Trigger() loopkit.Trigger { return k.trigger }
 
 func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
