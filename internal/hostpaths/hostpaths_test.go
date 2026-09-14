@@ -3,6 +3,7 @@ package hostpaths
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -44,5 +45,22 @@ func TestResolveFallsThroughToHomeThenName(t *testing.T) {
 
 	if got := resolve("KARMAX_NO_SUCH_OVERRIDE", "karmax-also-nonexistent"); got != "karmax-also-nonexistent" {
 		t.Fatalf("resolve() = %q, want the bare command name", got)
+	}
+}
+
+func TestResolve(t *testing.T) {
+	t.Setenv("KARMAX_WORKDIR", filepath.Join(t.TempDir(), "root"))
+	workOnce = sync.Once{} // WorkDir() memoizes; force it to read the env var above
+	root := WorkDir()
+
+	if got := Resolve(""); got != root {
+		t.Fatalf("empty = %q, want the shared root %q", got, root)
+	}
+	if got := Resolve("/absolute/elsewhere"); got != "/absolute/elsewhere" {
+		t.Fatalf("an absolute path must be used verbatim, got %q", got)
+	}
+	want := filepath.Join(root, "lyzn-tasks", "task-1")
+	if got := Resolve("lyzn-tasks/task-1"); got != want {
+		t.Fatalf("relative = %q, want %q", got, want)
 	}
 }

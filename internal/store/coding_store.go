@@ -101,3 +101,40 @@ func (s *Store) UpdateCodingSessionStatus(id, status, output string) error {
 	}
 	return nil
 }
+
+// DeleteCodingSessionsBySessionID removes every row for one session_id. A
+// session resumed across several turns accumulates one row per turn under
+// the same session_id (id is minted fresh each call), so this is the one
+// delete that reclaims all of them.
+func (s *Store) DeleteCodingSessionsBySessionID(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.exec(`DELETE FROM coding_sessions WHERE session_id = ?`, sessionID)
+	if err != nil {
+		return fmt.Errorf("delete coding sessions: %w", err)
+	}
+	return nil
+}
+
+// ListStaleCodingSessionIDs returns the distinct session ids matching prefix
+// whose most recent row was last touched before cutoff — the six-hour
+// backstop's own query.
+func (s *Store) ListStaleCodingSessionIDs(prefix string, cutoff time.Time) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.query(`SELECT DISTINCT session_id FROM coding_sessions WHERE session_id LIKE ? AND updated_at < ?`,
+		prefix+"%", cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("list stale coding sessions: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan stale coding session: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
