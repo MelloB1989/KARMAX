@@ -224,6 +224,10 @@ func (rt *KarmaxRuntime) startRecipes(ctx context.Context) {
 	// having reached the registry first. Existing files are never overwritten.
 	recipes.InstallBuiltins(dir, rt.log)
 
+	rt.recipeMu.Lock()
+	rt.recipeCtx = ctx
+	rt.recipeMu.Unlock()
+
 	w := recipes.NewWatcher(dir, rt.log, func(loaded []recipes.Loaded) {
 		rt.applyRecipes(ctx, loaded)
 	})
@@ -277,6 +281,20 @@ func (rt *KarmaxRuntime) startRecipes(ctx context.Context) {
 		})
 
 	rt.log.Info("watching recipes", zap.String("dir", dir))
+}
+
+// ReapplyRecipes schedules the recipes on disk again, so an operator's enable
+// or disable takes effect now. The watcher only notices the recipes directory,
+// and the disabled list lives beside it, so without this a paused recipe kept
+// firing until the next restart while the API reported it paused.
+func (rt *KarmaxRuntime) ReapplyRecipes() {
+	rt.recipeMu.RLock()
+	ctx := rt.recipeCtx
+	rt.recipeMu.RUnlock()
+	if ctx == nil {
+		return
+	}
+	rt.applyRecipes(ctx, recipes.LoadAll(recipes.Dir()))
 }
 
 // applyRecipes replaces the registered recipe loops with what is on disk now.

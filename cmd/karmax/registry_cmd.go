@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/loopregistry"
 	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/wasmloop"
 	"github.com/spf13/cobra"
@@ -20,6 +22,11 @@ import (
 // should not have to know whether that is a YAML recipe or a signed WASM
 // module — the difference belongs in what they are asked to approve, not in
 // which command they had to guess.
+//
+// The fetch, digest-check, and per-tier install itself live in
+// internal/loopregistry now, not here — the app's HTTP API needs the exact
+// same answers and cannot drive a terminal prompt to get them. What stays
+// here is the part that IS a terminal prompt: printing a preview and asking.
 
 func loopsBrowseCmd() *cobra.Command {
 	var all bool
@@ -35,7 +42,7 @@ func loopsBrowseCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			installed := installedNames()
+			installed := loopregistry.InstalledNames()
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "NAME\tKIND\tVERSION\tSTATE\tDESCRIPTION")
@@ -105,30 +112,25 @@ func loopsInstallCmd() *cobra.Command {
 	return cmd
 }
 
-// installRecipe writes a recipe to the recipes directory.
-//
-// No signature and no sandbox, because a recipe is not code: it is data KARMAX
-// interprets with its own tools, under the same Broker every other caller
-// passes. What it can do is the union of the verbs it uses, and those are
-// listed below before anything is written.
+// installRecipe previews a recipe and, once approved, writes it via
+// loopregistry.WriteRecipe. Parsing happens here (not just in the write path)
+// because the preview needs the parsed Recipe before anything is written.
 func installRecipe(e wasmloop.RegistryEntry, data []byte, yes bool) error {
-	dir := recipes.Dir()
-	path := filepath.Join(dir, e.Name+".yaml")
-
-	r, err := recipes.Parse(path, data)
+	r, err := loopregistry.ParseRecipeArtifact(e.Name, data)
 	if err != nil {
-		return fmt.Errorf("the registry's copy of %s is not a valid recipe: %w", e.Name, err)
+		return err
 	}
 
 	fmt.Printf("%s %s — %s\n", e.Name, e.Version, firstLine(e.Description))
 	fmt.Printf("  kind      recipe (one YAML file, interpreted — not compiled code)\n")
-	if trigger := recipeTrigger(r); trigger != "" {
+	if trigger := loopregistry.RecipeTrigger(r); trigger != "" {
 		fmt.Printf("  runs      %s\n", trigger)
 	}
 	fmt.Println("\nIt will:")
 	for _, line := range recipes.Describe(r) {
 		fmt.Println("  - " + line)
 	}
+	path := recipesPath(e.Name)
 	if _, err := os.Stat(path); err == nil {
 		fmt.Printf("\nThis REPLACES the %s recipe already on this machine.\n", e.Name)
 	}
@@ -137,18 +139,20 @@ func installRecipe(e wasmloop.RegistryEntry, data []byte, yes bool) error {
 		fmt.Println("Nothing installed.")
 		return nil
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	wrote, _, err := loopregistry.WriteRecipe(e.Name, data)
+	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return err
-	}
-	fmt.Printf("\nWrote %s. KARMAX picks it up without a restart.\n", path)
+	fmt.Printf("\nWrote %s. KARMAX picks it up without a restart.\n", wrote)
 	return nil
 }
 
-// installWorkflow runs the artifact through the same install path a local file
-// takes, so a registry download gets no shortcut past the checks.
+func recipesPath(name string) string { return filepath.Join(recipes.Dir(), name+".yaml") }
+
+// installWorkflow previews the artifact (openStore/trustFromEnv wire this
+// instance's own trust configuration, same as `karmax wloop install`) and,
+// once approved, installs it via loopregistry.InstallWorkflow — the same
+// digest and signature verification the API's install endpoint runs.
 func installWorkflow(e wasmloop.RegistryEntry, data []byte, yes, untrusted bool) error {
 	s, err := openStore()
 	if err != nil {
@@ -160,6 +164,10 @@ func installWorkflow(e wasmloop.RegistryEntry, data []byte, yes, untrusted bool)
 		Dir: wasmloop.Dir(), Broker: brokerStore{s},
 		Trust: trustFromEnv(false, untrusted), Actor: os.Getenv("USER"),
 	}
+	// Inspect once, unrelaxed, purely to show the preview and drive the
+	// interactive confirmation below — the tier the OPERATOR's own trust
+	// config reaches, not the lenient one loopregistry.InstallWorkflow uses
+	// internally to decide against allowUntrusted.
 	p, err := in.Inspect(data)
 	if err != nil {
 		return err
@@ -171,32 +179,22 @@ func installWorkflow(e wasmloop.RegistryEntry, data []byte, yes, untrusted bool)
 			fmt.Println("Nothing installed.")
 			return nil
 		}
+		untrusted = true
 	} else if !yes && !confirm("\nInstall it? [y/N] ") {
 		fmt.Println("Nothing installed.")
 		return nil
 	}
-	if _, err := in.Install(data); err != nil {
+	if _, _, err := loopregistry.InstallWorkflow(in, data, untrusted); err != nil {
+		if errors.Is(err, loopregistry.ErrUntrusted) {
+			// Can't happen: confirmUnreviewed above already turned untrusted on
+			// for exactly this case. Guarded anyway rather than assumed.
+			fmt.Println("Nothing installed.")
+			return nil
+		}
 		return err
 	}
 	fmt.Printf("\nInstalled %s %s. Restart KARMAX to run it.\n", e.Name, e.Version)
 	return nil
-}
-
-// installedNames is what is already here, across both tiers.
-func installedNames() map[string]bool {
-	out := map[string]bool{}
-	in := &wasmloop.Installer{Dir: wasmloop.Dir()}
-	if entries, err := in.Installed(); err == nil {
-		for _, e := range entries {
-			out[e.Name] = true
-		}
-	}
-	for _, l := range recipes.LoadAll(recipes.Dir()) {
-		if l.Recipe != nil {
-			out[l.Recipe.Name] = true
-		}
-	}
-	return out
 }
 
 func confirm(prompt string) bool {
@@ -204,20 +202,6 @@ func confirm(prompt string) bool {
 	var answer string
 	fmt.Scanln(&answer)
 	return answer == "y" || answer == "Y"
-}
-
-func recipeTrigger(r *recipes.Recipe) string {
-	switch {
-	case r.On.Schedule != "":
-		return r.On.Schedule
-	case r.On.Event != "":
-		return "on " + r.On.Event
-	case r.On.Webhook != "":
-		return "webhook " + r.On.Webhook
-	case r.On.Manual:
-		return "only when you run it"
-	}
-	return ""
 }
 
 func firstLine(s string) string {

@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
@@ -50,8 +51,12 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 		return events
 	}
 
+	// The operator's disabled list governs signed loops too. `loops disable`
+	// wrote a workflow's name there and the listing showed it paused, while
+	// this went on starting it from the lockfile's own Enabled alone.
+	disabled := loopinstall.LoadDisabledLoops()
 	for _, e := range entries {
-		if !e.Enabled {
+		if !e.Enabled || disabled[e.Name] {
 			continue
 		}
 		// Verified again on load, against the lockfile rather than only against

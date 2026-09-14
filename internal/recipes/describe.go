@@ -67,7 +67,7 @@ func Describe(r *Recipe) []string {
 
 	// Named tools are listed individually. "call KARMAX tools by name" is not
 	// something anybody can weigh; "call the tool whatsapp.send" is.
-	for _, name := range namedTools(r) {
+	for _, name := range NamedTools(r) {
 		out = append(out, "call the tool "+name)
 	}
 	for _, g := range r.Grants {
@@ -79,8 +79,10 @@ func Describe(r *Recipe) []string {
 	return out
 }
 
-// namedTools finds the tools a recipe's `tool:` steps name.
-func namedTools(r *Recipe) []string {
+// NamedTools finds the tools a recipe's `tool:` steps name. Exported so the
+// registry API can list what a recipe touches without re-walking its steps —
+// see internal/loopregistry's use for GET /api/loops/registry/{name}.
+func NamedTools(r *Recipe) []string {
 	seen := map[string]bool{}
 	var out []string
 	var walk func([]Step)

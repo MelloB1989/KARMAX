@@ -17,6 +17,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/loopregistry"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -50,8 +51,12 @@ type Server struct {
 	mdns         *mdnsAd
 	runLoop      func(name string) (bool, error)                                                                                          // injected: run a loopkit loop by name
 	listLoops    func() []LoopInfo                                                                                                        // injected: the daemon's ACTIVE loops
+	loopsChanged func()                                                                                                                   // injected: re-apply what can change without a restart
 	loopHealth   func() (any, error)                                                                                                      // injected: per-loop run health
 	chatTurn     func(ctx context.Context, conversationID, message string, opts ChatTurnOptions, onEvent func(ChatEvent)) (string, error) // injected: run one watched harness turn
+	// registryCache holds the public loop registry's index for a few minutes
+	// at a time — see internal/loopregistry.IndexCache and loops_registry.go.
+	registryCache *loopregistry.IndexCache
 }
 
 // ChatTurnOptions is one turn's own request to override the chat kind's
@@ -115,13 +120,26 @@ type ChatPlanEntry struct {
 	Priority   string `json:"priority,omitempty"`
 }
 
-// LoopInfo describes one active loop for GET /api/loops.
+// LoopInfo describes one loop for GET /api/loops — originally only the
+// running ones; extended (additively, so an old client reading a new
+// server's response still parses) to cover every tier the runtime knows
+// about, including ones the operator has turned off.
 type LoopInfo struct {
 	Name        string   `json:"name"`
-	Description string   `json:"description"`
+	Description string   `json:"description,omitempty"`
 	Schedule    string   `json:"schedule"`
 	Webhook     string   `json:"webhook,omitempty"`
 	Events      []string `json:"events,omitempty"`
+	// Kind distinguishes how this loop runs: "recipe" (interpreted YAML, hot-
+	// reloaded), "workflow" (signed WASM, needs a restart), "compiled" (built
+	// into this binary via the loopkit SDK), or "prompt" (a scheduled prompt
+	// fired straight at an agent — karmax.yaml's `loops:`, no loop code at all).
+	Kind string `json:"kind,omitempty"`
+	// Enabled is deliberately NOT omitempty: a disabled loop must read
+	// "enabled": false, and omitempty on a bool would drop exactly that value
+	// (Go's encoding/json treats false as the zero value) — the one case this
+	// field exists to show.
+	Enabled bool `json:"enabled"`
 }
 
 // SetRunLoop wires the manual loop-run callback (POST /api/loops/{name}/run).
@@ -132,6 +150,10 @@ func (s *Server) SetRunLoop(fn func(name string) (bool, error)) { s.runLoop = fn
 // what is failing, and what has gone quiet — which the static listing cannot
 // express.
 func (s *Server) SetLoopHealth(fn func() (any, error)) { s.loopHealth = fn }
+
+// SetLoopsChanged wires what runs after a loop is enabled or disabled, so the
+// tiers that can pick the change up live (recipes) do so without a restart.
+func (s *Server) SetLoopsChanged(fn func()) { s.loopsChanged = fn }
 
 // SetListLoops wires the live loop listing (GET /api/loops). This is the
 // daemon's truth — it includes runtime-registered loops (e.g. cold-scan) and
@@ -153,7 +175,8 @@ func (s *Server) SetChatTurn(fn func(ctx context.Context, conversationID, messag
 // harness KARMAX spawns can be handed something that reaches this engine's
 // API without also being able to drive every connector.
 func New(addr string, port int, token string, browserToken string, agents *agent.Registry, s *store.Store, sched *scheduler.Scheduler, mem *memory.ManagerFactory, cfg *config.KarmaxConfig, log *zap.Logger) *Server {
-	srv := &Server{addr: addr, port: port, token: strings.TrimSpace(token), browserToken: strings.TrimSpace(browserToken), agents: agents, store: s, scheduler: sched, mem: mem, cfg: cfg, log: log}
+	srv := &Server{addr: addr, port: port, token: strings.TrimSpace(token), browserToken: strings.TrimSpace(browserToken), agents: agents, store: s, scheduler: sched, mem: mem, cfg: cfg, log: log,
+		registryCache: loopregistry.NewIndexCache(5 * time.Minute)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", srv.handlePing)
@@ -189,8 +212,20 @@ func New(addr string, port int, token string, browserToken string, agents *agent
 	mux.HandleFunc("GET /api/activity", srv.auth(srv.handleActivity))
 	mux.HandleFunc("POST /api/jobs/{id}/run", srv.auth(srv.handleRunJob))
 	mux.HandleFunc("POST /api/loops/{name}/run", srv.auth(srv.handleRunLoop))
+	mux.HandleFunc("POST /api/loops/{name}/enable", srv.auth(srv.handleEnableLoop))
+	mux.HandleFunc("POST /api/loops/{name}/disable", srv.auth(srv.handleDisableLoop))
 	mux.HandleFunc("GET /api/loops", srv.auth(srv.handleListLoops))
 	mux.HandleFunc("GET /api/loops/health", srv.auth(srv.handleLoopHealth))
+	// Registry routes are registered before /api/loops/{name}/... below them
+	// would otherwise shadow: Go's ServeMux prefers the more specific pattern
+	// regardless of registration order, but "registry" here is a literal path
+	// segment competing with {name}, and the more specific literal always wins
+	// — kept in this order anyway because that IS the resolution a reader
+	// would expect, not because it is load-bearing.
+	mux.HandleFunc("GET /api/loops/registry", srv.auth(srv.handleLoopsRegistryList))
+	mux.HandleFunc("GET /api/loops/registry/{name}", srv.auth(srv.handleLoopsRegistryDetail))
+	mux.HandleFunc("POST /api/loops/registry/{name}/install", srv.auth(srv.handleLoopsRegistryInstall))
+	mux.HandleFunc("DELETE /api/loops/registry/{name}", srv.auth(srv.handleLoopsRegistryUninstall))
 	mux.HandleFunc("GET /api/memory/tree", srv.auth(srv.handleMemoryTree))
 	mux.HandleFunc("GET /api/memory/entries", srv.auth(srv.handleMemoryEntries))
 	mux.HandleFunc("GET /api/memory/cleanup/question", srv.auth(srv.handleCleanupQuestion))
