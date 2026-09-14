@@ -493,7 +493,7 @@ func (t *ClaudeCodeTool) runCLIOnce(ctx context.Context, workingDir, prompt, ses
 
 	cmd := exec.CommandContext(timeoutCtx, "claude", args...)
 	cmd.Dir = workingDir
-	cmd.Env = harnessEnv() // use claude's own auth, not KARMAX's gateway
+	cmd.Env = t.harnessCmdEnv() // use claude's own auth, not KARMAX's gateway; karmax itself resolvable on PATH
 	if t.EngineBrowserToken != "" {
 		// Least privilege, not a sandbox widening: this token is scoped
 		// server-side to the browser tool only (internal/api's
