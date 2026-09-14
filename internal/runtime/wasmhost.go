@@ -251,6 +251,14 @@ func (w *wasmKit) Harness(ctx context.Context, prompt string) (string, error) {
 	return w.mem().Harness(ctx, prompt)
 }
 
+func (w *wasmKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (loopkit.HarnessResult, error) {
+	return w.mem().HarnessWith(ctx, spec)
+}
+
+func (w *wasmKit) HarnessForget(sessionID, workingDir string) error {
+	return w.mem().HarnessForget(sessionID, workingDir)
+}
+
 // Gateway lends named host tools for one call, plus whatever this workflow
 // itself provides. Only host tools on the allowlist can be named, so a loop
 // cannot invent a capability by describing one — but its OWN tools travel
