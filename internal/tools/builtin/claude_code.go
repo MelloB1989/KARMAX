@@ -248,11 +248,39 @@ func (t *ClaudeCodeTool) startBackground(input map[string]any, prompt string) to
 func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt string) (tools.ToolResult, error) {
 	ephemeral, _ := input["ephemeral"].(bool)
 
-	sessionID, _ := input["session_id"].(string)
+	workingDir, _ := input["working_dir"].(string)
+	workingDir = hostpaths.Resolve(workingDir)
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		return tools.ErrorResult(fmt.Errorf("could not create working directory %s: %w", workingDir, err)), nil
+	}
+
+	rawSessionID, _ := input["session_id"].(string)
 	resumedFrom := ""
+
+	// A session_id that is not a valid UUID cannot be a Claude Code session:
+	// the CLI itself insists a session id "must be a valid UUID" and rejects
+	// anything else, whether passed to --session-id or --resume. The LYZN
+	// tasks recipe (and anything else wanting a resumable session keyed by
+	// something durable of its OWN — a task id — rather than a uuid it would
+	// have to invent and remember) passes a stable SESSION KEY instead. This
+	// is what resolves a key to the real uuid, through the store's own
+	// key -> uuid mapping (internal/store/coding_store.go).
+	sessionKey := ""
+	sessionID := rawSessionID
 	resuming := sessionID != ""
+	if sessionID != "" && !looksLikeUUID(sessionID) {
+		sessionKey = sessionID
+		sessionID = ""
+		if t.Store != nil {
+			if mapped, err := t.Store.GetSessionKey(sessionKey); err == nil && looksLikeUUID(mapped) {
+				sessionID = mapped
+			}
+		}
+		resuming = sessionID != ""
+	}
+
 	// Ephemeral one-off tasks never reuse or become resumable sessions.
-	if sessionID == "" && !ephemeral {
+	if sessionID == "" && sessionKey == "" && !ephemeral {
 		if reusable := findReusableCodingSession(t.Store, t.AgentID, "claude_code", prompt); reusable != nil {
 			sessionID = reusable.SessionID
 			resumedFrom = reusable.ID
@@ -267,12 +295,104 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 		sessionID = uuid.New().String()
 	}
 
-	workingDir, _ := input["working_dir"].(string)
-	workingDir = hostpaths.Resolve(workingDir)
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		return tools.ErrorResult(fmt.Errorf("could not create working directory %s: %w", workingDir, err)), nil
+	output, cmdErr := t.runCLIOnce(ctx, workingDir, prompt, sessionID, resuming)
+
+	// A stale key -> uuid mapping (the transcript is gone: a Cleanup already
+	// ran, the machine was migrated, the db was restored) must not fail the
+	// task standing on it. Drop the mapping, mint a fresh session, and try
+	// once more — recovering with lost context is the right outcome for a
+	// key the mapping no longer backs, not a failure the operator sees as a
+	// receipt.
+	contextLost := false
+	if sessionKey != "" && resuming && cmdErr != nil && looksLikeMissingSession(output) {
+		contextLost = true
+		if t.Store != nil {
+			_ = t.Store.DeleteSessionKey(sessionKey)
+		}
+		sessionID = uuid.New().String()
+		resuming = false
+		output, cmdErr = t.runCLIOnce(ctx, workingDir, prompt, sessionID, resuming)
 	}
 
+	status := "completed"
+	if cmdErr != nil {
+		status = "failed"
+	}
+
+	// Persist the key -> uuid mapping ONLY once the CLI has actually created
+	// the session it just ran — confirmed by the transcript it writes to
+	// disk on success, not by a clean exit code alone and never before the
+	// run. Persisting before the run, or trusting exit 0 without checking,
+	// leaves a mapping pointing at a session that was never created whenever
+	// the first turn fails — which reproduces this exact bug on the very
+	// next turn. Skipped for an ephemeral call: it deletes its own transcript
+	// below, and a mapping would then point at a session already gone —
+	// ephemeral sessions have no follow-up value, a mapping included.
+	if sessionKey != "" && status == "completed" && t.Store != nil && !ephemeral {
+		if sessionCreated(sessionID) {
+			if err := t.Store.SaveSessionKey(sessionKey, sessionID, "claude_code"); err != nil {
+				fmt.Fprintf(os.Stderr, "karmax: could not persist session key %q -> %s: %v\n", sessionKey, sessionID, err)
+			}
+		}
+	}
+	if contextLost {
+		fmt.Fprintf(os.Stderr, "karmax: session key %q's mapped session is gone (stale --resume); "+
+			"recovered with a fresh session %s instead of failing the task — prior context for this key is lost\n",
+			sessionKey, sessionID)
+	}
+
+	// coding_sessions rows (the six-hour sweep, the "Active Coding Sessions"
+	// list) key on whatever identity the CALLER gave this session: the
+	// stable key when there is one, so the sweep's own "lyzn:" prefix match
+	// keeps working unchanged; the CLI session id otherwise, exactly as
+	// before.
+	storedSessionID := sessionID
+	if sessionKey != "" {
+		storedSessionID = sessionKey
+	}
+
+	if ephemeral {
+		// One-off task: the session has no follow-up value — delete the
+		// transcript and don't persist it as a resumable coding session.
+		chatlog.RemoveSession(workingDir, sessionID)
+	} else if t.Store != nil {
+		_ = t.Store.SaveCodingSession(store.StoredCodingSession{
+			ID:          uuid.New().String(),
+			ToolType:    "claude_code",
+			SessionID:   storedSessionID,
+			Description: truncate(prompt, 200),
+			Status:      status,
+			AgentID:     t.AgentID,
+			Output:      truncate(string(output), 5000),
+		})
+	}
+
+	result := map[string]any{
+		"session_id":   storedSessionID,
+		"resumed_from": resumedFrom,
+		"output":       string(output),
+		"status":       status,
+		"ephemeral":    ephemeral,
+	}
+	if contextLost {
+		result["context_lost"] = true
+	}
+
+	if status == "failed" {
+		// A nonzero exit is a real failure, not something to launder into a
+		// SuccessResult: HarnessWith — and every other caller — reads
+		// IsError to decide whether the run actually worked, and the LYZN
+		// tasks recipe's harness: step aborts (rather than POSTing this text
+		// to /result as if it were the operator's answer) exactly when it
+		// does.
+		return tools.ToolResult{IsError: true, Error: truncate(string(output), 2000), Output: result}, nil
+	}
+	return tools.SuccessResult(result), nil
+}
+
+// runCLIOnce runs exactly one Claude Code CLI turn and returns its combined
+// output and whether the process failed.
+func (t *ClaudeCodeTool) runCLIOnce(ctx context.Context, workingDir, prompt, sessionID string, resuming bool) ([]byte, error) {
 	// How the harness is allowed to use its tools, which depends on whether the
 	// operator has said anything about what it may touch.
 	//
@@ -326,36 +446,47 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 	cmd.Dir = workingDir
 	cmd.Env = harnessEnv() // use claude's own auth, not KARMAX's gateway
 
-	output, err := cmd.CombinedOutput()
+	return cmd.CombinedOutput()
+}
 
-	status := "completed"
+// looksLikeUUID reports whether s is syntactically a session id the CLI
+// would accept, as opposed to a caller's own stable SESSION KEY.
+func looksLikeUUID(s string) bool {
+	_, err := uuid.Parse(s)
+	return err == nil
+}
+
+// looksLikeMissingSession reports whether a failed run looks like it hit a
+// session the CLI has no record of — the exact signal a stale key -> uuid
+// mapping produces on --resume.
+func looksLikeMissingSession(output []byte) bool {
+	return strings.Contains(string(output), "No conversation found")
+}
+
+// sessionCreated reports whether the CLI actually wrote a transcript for
+// sessionID anywhere under ~/.claude/projects — proof a --session-id run
+// minted a real, resumable session, rather than merely exiting 0.
+//
+// Found by matching the uuid's filename across every project directory,
+// NOT by recomputing chatlog.Dir(workingDir) and checking that one exact
+// path — confirmed live against the real CLI: it resolves symlinks in the
+// working directory before deriving its own project-directory slug, so a
+// working_dir under, say, macOS's /var/folders (a symlink to
+// /private/var/folders) lands its transcript under a "-private-var-..."
+// project directory, while chatlog.Slug(workingDir) computes "-var-..." from
+// the unresolved path — a mismatch that would make this report "not
+// created" for every successful run through a symlinked working directory,
+// and a mapping that then never gets persisted. A session id is a uuid, so a
+// filename collision across projects is not a real concern; matching on it
+// alone is both simpler and correct regardless of how any particular
+// working directory's symlinks resolve.
+func sessionCreated(sessionID string) bool {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		status = "failed"
+		return false
 	}
-
-	if ephemeral {
-		// One-off task: the session has no follow-up value — delete the
-		// transcript and don't persist it as a resumable coding session.
-		chatlog.RemoveSession(workingDir, sessionID)
-	} else if t.Store != nil {
-		_ = t.Store.SaveCodingSession(store.StoredCodingSession{
-			ID:          uuid.New().String(),
-			ToolType:    "claude_code",
-			SessionID:   sessionID,
-			Description: truncate(prompt, 200),
-			Status:      status,
-			AgentID:     t.AgentID,
-			Output:      truncate(string(output), 5000),
-		})
-	}
-
-	return tools.SuccessResult(map[string]any{
-		"session_id":   sessionID,
-		"resumed_from": resumedFrom,
-		"output":       string(output),
-		"status":       status,
-		"ephemeral":    ephemeral,
-	}), nil
+	matches, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sessionID+".jsonl"))
+	return err == nil && len(matches) > 0
 }
 
 // Cleanup deletes a coding session's durable state: its transcript, its
@@ -379,16 +510,45 @@ func (t *ClaudeCodeTool) Cleanup(workingDir, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	if err := chatlog.RemoveSession(resolved, sessionID); err != nil {
+
+	// sessionID may be a real CLI session id (unchanged behaviour) or a
+	// caller's stable SESSION KEY — see run(). A key names no transcript by
+	// itself, so it has to be resolved to the uuid it was mapped to before
+	// the transcript can be found and removed.
+	transcriptID := sessionID
+	sessionKey := ""
+	if sessionID != "" && !looksLikeUUID(sessionID) {
+		sessionKey = sessionID
+		transcriptID = ""
+		if t.Store != nil {
+			if mapped, err := t.Store.GetSessionKey(sessionKey); err == nil {
+				transcriptID = mapped
+			}
+		}
+	}
+
+	if err := chatlog.RemoveSession(resolved, transcriptID); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(resolved); err != nil {
 		return err
 	}
-	if t.Store == nil || sessionID == "" {
+	if t.Store == nil {
 		return nil
 	}
-	return t.Store.DeleteCodingSessionsBySessionID(sessionID)
+	// coding_sessions rows are keyed by whatever identity run() stored them
+	// under — the session key when there is one, the CLI session id
+	// otherwise — so deleting by sessionID here already matches either
+	// scheme without needing to know which one it is.
+	if sessionID != "" {
+		if err := t.Store.DeleteCodingSessionsBySessionID(sessionID); err != nil {
+			return err
+		}
+	}
+	if sessionKey != "" {
+		return t.Store.DeleteSessionKey(sessionKey)
+	}
+	return nil
 }
 
 // resolveCleanupDir is hostpaths.Resolve, plus the one guard Cleanup needs

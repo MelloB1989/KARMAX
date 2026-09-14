@@ -933,6 +933,30 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, next_action_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id, updated_at DESC)`,
+
+	// A caller's own stable identity for a ClaudeCodeTool session — a LYZN
+	// task id, say — mapped to the real CLI session uuid minted for it.
+	//
+	// The CLI accepts only a valid UUID as a session id, so a caller that
+	// wants a resumable session keyed by something durable of its own cannot
+	// hand that key to --session-id/--resume directly. This table is what
+	// lets it anyway: claude_code.go mints the uuid, runs the CLI with it,
+	// and writes the mapping here ONLY once the CLI has actually created that
+	// session — never before the run, which is what let a task's very first
+	// turn leave a mapping pointing at a session that had never existed.
+	//
+	// Not harness_sessions: that table tracks the OTHER coding-harness
+	// mechanism in this codebase, the long-lived internal/harness.Supervisor
+	// process (pid, state, turns, cost). This one is a plain lookup for the
+	// one-shot `claude --print` path ClaudeCodeTool.run drives, and knows
+	// nothing about a live process at all.
+	`CREATE TABLE IF NOT EXISTS coding_session_keys (
+		session_key  TEXT PRIMARY KEY,
+		session_uuid TEXT NOT NULL,
+		tool_type    TEXT NOT NULL DEFAULT '',
+		created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at   DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built
