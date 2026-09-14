@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -76,6 +78,15 @@ type KarmaxRuntime struct {
 	comms     *comms.Manager
 	api       *api.Server
 	console   *api.ConsoleServer
+
+	// apiBrowserToken and apiBaseURL let a harness this instance spawns (for a
+	// loop or a LYZN task — see loophost.go's HarnessWith) call back into this
+	// engine's own local API for `karmax browser ...` without ever holding
+	// the operator's full API token. apiBrowserToken is scoped server-side to
+	// the browser tool only (internal/api's browserScopedTools); both are ""
+	// when the API server is disabled (cfg.API.Enabled == false).
+	apiBrowserToken string
+	apiBaseURL      string
 
 	// broker decides what each loop, peer and connector may do.
 	broker *broker.Broker
@@ -494,11 +505,25 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&taskListTool{ref: harnessRT})
 	toolReg.Register(&taskUpdateTool{ref: harnessRT})
 
+	// apiBrowserToken/apiBaseURL are minted here — before either
+	// ClaudeCodeTool registration in this function needs them — and threaded
+	// through to the API server itself further down, when cfg.API.Enabled.
+	// See the KarmaxRuntime field doc above for what this is for.
+	var apiBrowserToken, apiBaseURL string
+	if cfg.API.Enabled {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return nil, fmt.Errorf("mint browser-scoped API token: %w", err)
+		}
+		apiBrowserToken = base64.RawURLEncoding.EncodeToString(raw)
+		apiBaseURL = fmt.Sprintf("http://localhost:%d", cfg.API.Port)
+	}
+
 	// One browser for the whole instance: the window the operator signs into is
 	// the window the harness attaches to.
 	browserSession := browser.Shared(cfg.Karmax.DataDir)
 	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: "", Browser: browserSession,
-		DataDir: cfg.Karmax.DataDir})
+		DataDir: cfg.Karmax.DataDir, EngineAPIURL: apiBaseURL, EngineBrowserToken: apiBrowserToken})
 	toolReg.Register(&builtin.BrowserTool{Session: browserSession})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
 	// Wired after construction: the runner belongs to the runtime, which does
@@ -996,7 +1021,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	var apiSrv *api.Server
 	if cfg.API.Enabled {
 		apiAddr := fmt.Sprintf("%s:%d", cfg.API.Host, cfg.API.Port)
-		apiSrv = api.New(apiAddr, cfg.API.Port, os.Getenv("KARMAX_API_TOKEN"), agentReg, s, sched, memFactory, cfg, log)
+		apiSrv = api.New(apiAddr, cfg.API.Port, os.Getenv("KARMAX_API_TOKEN"), apiBrowserToken, agentReg, s, sched, memFactory, cfg, log)
 	}
 
 	// The console is a SEPARATE listener from the API above, and deliberately
@@ -1072,6 +1097,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		comms:        commsMgr,
 		api:          apiSrv,
 		console:      consoleSrv,
+
+		apiBrowserToken: apiBrowserToken,
+		apiBaseURL:      apiBaseURL,
 	}
 	// The agent can now run what it writes, not just validate it — and it is
 	// told what the run did, since "started something" is not verification.
