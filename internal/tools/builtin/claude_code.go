@@ -46,6 +46,17 @@ type ClaudeCodeTool struct {
 	// with an explicit stop and parent-context cancellation, and all three
 	// go through the same process-group kill in runCLIOnce.
 	Timeout time.Duration
+	// EngineAPIURL and EngineBrowserToken, when both set, are handed to the
+	// spawned harness as KARMAX_API_URL/KARMAX_API_TOKEN (see runCLIOnce), so
+	// `karmax browser ...` run from inside it can reach this engine's own
+	// API. EngineBrowserToken must always be a token scoped server-side to
+	// the browser tool only (internal/api's browserScopedTools) — NEVER the
+	// operator's full API token, which authorizes every connector
+	// (WhatsApp, email, ...) and would hand a model-driven task the ability
+	// to send messages through the user's own accounts. Leaving either empty
+	// disables the injection entirely (today's behaviour: no such env vars).
+	EngineAPIURL       string
+	EngineBrowserToken string
 }
 
 // browserArgs attaches the operator's browser to one invocation.
@@ -483,6 +494,17 @@ func (t *ClaudeCodeTool) runCLIOnce(ctx context.Context, workingDir, prompt, ses
 	cmd := exec.CommandContext(timeoutCtx, "claude", args...)
 	cmd.Dir = workingDir
 	cmd.Env = harnessEnv() // use claude's own auth, not KARMAX's gateway
+	if t.EngineBrowserToken != "" {
+		// Least privilege, not a sandbox widening: this token is scoped
+		// server-side to the browser tool only (internal/api's
+		// browserScopedTools), so handing it to the harness does not grant
+		// anything harnessEnv() otherwise withholds. Deliberately never the
+		// full engine token — see the field doc on EngineBrowserToken.
+		cmd.Env = append(cmd.Env,
+			"KARMAX_API_URL="+t.EngineAPIURL,
+			"KARMAX_API_TOKEN="+t.EngineBrowserToken,
+		)
+	}
 	setupProcessGroup(cmd)
 
 	done, unregister := registerRun(registryKey, workingDir, cancel)
