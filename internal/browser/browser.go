@@ -44,11 +44,24 @@ import (
 // Session is the browser KARMAX runs. The zero value is not usable; call New.
 type Session struct {
 	dir string
+	// headless launches with no visible window. Only NewHeadless sets it —
+	// production always wants the operator's own window.
+	headless bool
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
 	port     int
 	onChange func(running bool)
+
+	// Network capture — see network.go. netStore outlives any one Start/Stop
+	// cycle, so a request captured before the browser was last stopped is
+	// still inspectable after; netCancel/attached/netWG exist only while
+	// capture is actually running.
+	netStore  *requestStore
+	netMu     sync.Mutex
+	netCancel context.CancelFunc
+	attached  map[string]*tabCapture
+	netWG     sync.WaitGroup
 }
 
 // OnStateChange registers fn to run after the browser actually starts or
@@ -91,7 +104,18 @@ func New(dir string) *Session {
 		}
 		dir = filepath.Join(home, ".karmax")
 	}
-	return &Session{dir: filepath.Join(dir, "browser")}
+	return &Session{
+		dir:      filepath.Join(dir, "browser"),
+		netStore: newRequestStore(maxCapturedRequests, maxTotalBodyBytes),
+	}
+}
+
+// NewHeadless is New, but the browser launches with no visible window — for
+// tests, and any caller that has no operator desktop to put a window on.
+func NewHeadless(dir string) *Session {
+	s := New(dir)
+	s.headless = true
+	return s
 }
 
 // Endpoint is the DevTools base URL, or "" when nothing is listening.
@@ -114,6 +138,10 @@ func (s *Session) Running(ctx context.Context) bool { return s.Endpoint(ctx) != 
 // explain.
 func (s *Session) Start(ctx context.Context) error {
 	if s.Running(ctx) {
+		// Already up — found again via the state file, most likely, after a
+		// daemon restart. startNetworkCapture is idempotent, so this is the
+		// only place that needs to cover both that case and a fresh launch.
+		s.startNetworkCapture()
 		return nil
 	}
 
@@ -133,15 +161,19 @@ func (s *Session) Start(ctx context.Context) error {
 	// --no-first-run and friends: this is a profile nobody has seen before, and
 	// a first-run wizard over the top of it is one more thing between somebody
 	// and signing into Gmail.
-	cmd := exec.Command(bin,
-		"--user-data-dir="+s.dir,
+	args := []string{
+		"--user-data-dir=" + s.dir,
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		"--remote-allow-origins=*",
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-features=Translate,MediaRouter",
-		"about:blank",
-	)
+	}
+	if s.headless {
+		args = append(args, "--headless=new")
+	}
+	args = append(args, "about:blank")
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout, cmd.Stderr = nil, nil
 	// Detached from KARMAX's own lifetime: restarting the daemon must not close
 	// a window somebody is halfway through signing into.
@@ -158,6 +190,7 @@ func (s *Session) Start(ctx context.Context) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if alive(ctx, port) {
+			s.startNetworkCapture()
 			s.notify(true)
 			return nil
 		}
@@ -176,6 +209,9 @@ type Tab struct {
 	Title string `json:"title"`
 	URL   string `json:"url"`
 	Type  string `json:"type"`
+	// WebSocketDebuggerURL is this page's own CDP endpoint — what network
+	// capture and Eval/FetchInTab dial directly, one socket per tab.
+	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl,omitempty"`
 }
 
 // Tabs lists the pages currently open.
@@ -291,6 +327,7 @@ func (s *Session) Stop(ctx context.Context) error {
 	// turn spawning concurrently — is told the browser is still up.
 	s.clearState()
 	s.notify(false)
+	s.stopNetworkCapture()
 
 	if endpoint != "" {
 		// Ask first. A killed Chromium leaves the profile marked as crashed and
