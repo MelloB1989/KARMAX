@@ -1,9 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/MelloB1989/karmax/internal/config"
+	"go.uber.org/zap"
 )
 
 // The wire carries two events the harness never emits, and they bracket the
@@ -164,6 +170,110 @@ func TestStreamTurnReportsFailureInBand(t *testing.T) {
 	_ = json.Unmarshal([]byte(lines[len(lines)-1]), &last)
 	if last["kind"] != "error" {
 		t.Fatalf("got %+v", last)
+	}
+}
+
+func newChatOptionsTestServer(t *testing.T, cfg *config.KarmaxConfig) *Server {
+	t.Helper()
+	return New("127.0.0.1:0", 0, "", "", nil, nil, nil, nil, cfg, zap.NewNop())
+}
+
+func postChatStream(srv *Server, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/api/chat/stream", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	srv.handleChatStream(w, r)
+	return w
+}
+
+// An effort outside the CLI's own vocabulary must not reach spawnArgs, where
+// it would just make the CLI itself reject the process.
+func TestHandleChatStreamRejectsInvalidEffort(t *testing.T) {
+	srv := newChatOptionsTestServer(t, &config.KarmaxConfig{})
+	w := postChatStream(srv, `{"message":"hi","effort":"turbo"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+// A model value outside the allowed charset is refused before it ever
+// reaches a shell-adjacent --model flag.
+func TestHandleChatStreamRejectsInvalidModel(t *testing.T) {
+	srv := newChatOptionsTestServer(t, &config.KarmaxConfig{})
+	w := postChatStream(srv, `{"message":"hi","model":"not a model!"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+// A well-formed model/effort pair passes validation and reaches the "brain
+// not running" branch — proving it got past the new checks rather than
+// failing on them.
+func TestHandleChatStreamAcceptsValidModelAndEffort(t *testing.T) {
+	srv := newChatOptionsTestServer(t, &config.KarmaxConfig{})
+	w := postChatStream(srv, `{"message":"hi","model":"opus","effort":"high"}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (no chatTurn wired): %s", w.Code, w.Body.String())
+	}
+}
+
+// Empty model/effort mean "use the defaults" — they must never be rejected.
+func TestHandleChatStreamAllowsEmptyModelAndEffort(t *testing.T) {
+	srv := newChatOptionsTestServer(t, &config.KarmaxConfig{})
+	w := postChatStream(srv, `{"message":"hi"}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (no chatTurn wired): %s", w.Code, w.Body.String())
+	}
+}
+
+// The Claude harness gets the real pickers, and the chat kind's own
+// configured model is what an empty request actually runs on.
+func TestHandleChatOptionsForClaudeBrain(t *testing.T) {
+	cfg := &config.KarmaxConfig{Harness: config.HarnessConfig{
+		Kinds: map[string]config.HarnessKindConfig{"chat": {Model: "sonnet"}},
+	}}
+	srv := newChatOptionsTestServer(t, cfg)
+	r := httptest.NewRequest(http.MethodGet, "/api/chat/options", nil)
+	w := httptest.NewRecorder()
+	srv.handleChatOptions(w, r)
+
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response is not json: %v", err)
+	}
+	if got["brain"] != "claude" {
+		t.Errorf("brain = %v, want claude", got["brain"])
+	}
+	models, ok := got["models"].([]any)
+	if !ok || len(models) != 4 {
+		t.Fatalf("models = %+v, want the 4 aliases", got["models"])
+	}
+	efforts, ok := got["efforts"].([]any)
+	if !ok || len(efforts) != 5 {
+		t.Fatalf("efforts = %+v, want the 5 levels", got["efforts"])
+	}
+	if got["defaultModel"] != "sonnet" {
+		t.Errorf("defaultModel = %v, want the configured chat kind's model", got["defaultModel"])
+	}
+	if got["defaultEffort"] != "" {
+		t.Errorf("defaultEffort = %v, want empty", got["defaultEffort"])
+	}
+}
+
+// A non-Claude brain (codex) offers no pickers at all — empty arrays, never
+// null, so a client can hide them without a nil check.
+func TestHandleChatOptionsForNonClaudeBrainIsEmptyNotNull(t *testing.T) {
+	cfg := &config.KarmaxConfig{Harness: config.HarnessConfig{Binary: "codex"}}
+	srv := newChatOptionsTestServer(t, cfg)
+	r := httptest.NewRequest(http.MethodGet, "/api/chat/options", nil)
+	w := httptest.NewRecorder()
+	srv.handleChatOptions(w, r)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"models":[]`) {
+		t.Errorf(`models must be "[]", not null, for a non-Claude brain: %s`, body)
+	}
+	if !strings.Contains(body, `"efforts":[]`) {
+		t.Errorf(`efforts must be "[]", not null, for a non-Claude brain: %s`, body)
 	}
 }
 

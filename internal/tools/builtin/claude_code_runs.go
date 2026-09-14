@@ -61,6 +61,18 @@ func registerRun(sessionID, workingDir string, cancel context.CancelFunc) (done 
 	}
 }
 
+// IsRunning reports whether sessionID currently has a claude_code CLI call in
+// flight. Read-only, unlike StopRun: a transcript viewer needs to know
+// whether a turn is live, not to end it.
+func IsRunning(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	runsMu.Lock()
+	defer runsMu.Unlock()
+	return runs[sessionID] != nil
+}
+
 // blockKey marks sessionID as stopped until stopBlockDuration after now.
 func blockKey(sessionID string, now time.Time) {
 	stopMu.Lock()

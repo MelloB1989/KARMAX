@@ -14,6 +14,7 @@
 package harness
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -149,6 +150,13 @@ type ToolEvent struct {
 	Status    Status     `json:"status"`
 	Locations []Location `json:"locations,omitempty"`
 	Output    string     `json:"output,omitempty"`
+	// Input is the tool_use call's own input, set only when this announces a
+	// call (KindTool) — a KindToolUpdate carries no input, only what the call
+	// resolved to, the same asymmetry Output already has. Truncated the same
+	// way chatlog.ToolCall.Input is (see truncateJSONStrings), so a live call
+	// and the same call read back from history describe themselves the same
+	// way.
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // Turn is one complete exchange: everything between sending a user message and
@@ -267,7 +275,7 @@ func toolResultText(raw json.RawMessage) string {
 }
 
 // maxToolOutput is as much of a result as a transcript can use.
-const maxToolOutput = 2048
+const maxToolOutput = 16000
 
 // truncateOutput caps a tool result at the adapter.
 //
@@ -284,3 +292,80 @@ func truncateOutput(s string) string {
 	}
 	return s[:cut] + "\n…"
 }
+
+// TruncateOutput exposes truncateOutput to internal/chatlog, so a tool call's
+// output is capped the same way whether it is read live off the wire or read
+// back from a transcript on disk.
+func TruncateOutput(s string) string { return truncateOutput(s) }
+
+// ToolResultText exposes toolResultText to internal/chatlog, so history reads
+// a tool_result's content the same way a live turn does.
+func ToolResultText(raw json.RawMessage) string { return toolResultText(raw) }
+
+// maxInputRunes is where a tool_use input's string field stops being useful
+// context and starts being a payload nothing on the wire needs in full — the
+// same shape of problem truncateOutput solves for a result, at the other end
+// of a call.
+const maxInputRunes = 4000
+
+// truncateJSONStrings walks a JSON value depth-first and cuts every string
+// leaf longer than maxInputRunes, re-marshaling the result.
+//
+// Decoded with UseNumber rather than into plain float64: encoding/json's
+// default numeric type loses precision on a large id and can remarshal an
+// ordinary integer in exponent form, and either would silently rewrite a
+// tool's own input into something it never was.
+func truncateJSONStrings(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		// Not JSON this can walk — malformed, or a shape the CLI has never
+		// sent before. Passed through unchanged rather than dropped: a tool
+		// call with input nobody could truncate is still worth showing.
+		return raw
+	}
+	out, err := json.Marshal(truncateJSONValue(v))
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(out)
+}
+
+func truncateJSONValue(v any) any {
+	switch x := v.(type) {
+	case string:
+		return truncateRunes(x, maxInputRunes)
+	case []any:
+		for i, e := range x {
+			x[i] = truncateJSONValue(e)
+		}
+		return x
+	case map[string]any:
+		for k, e := range x {
+			x[k] = truncateJSONValue(e)
+		}
+		return x
+	default:
+		return v
+	}
+}
+
+// truncateRunes cuts s to at most n runes, marking the cut with "…" — rune-safe
+// the same way truncateOutput is, but counted in runes rather than bytes
+// because that is the unit the input cap is specified in.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// TruncateToolInput exposes truncateJSONStrings to internal/chatlog, so a
+// tool call's input is capped the same way whether it is read live off the
+// wire or read back from a transcript on disk.
+func TruncateToolInput(raw json.RawMessage) json.RawMessage { return truncateJSONStrings(raw) }

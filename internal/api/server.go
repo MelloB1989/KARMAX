@@ -48,10 +48,20 @@ type Server struct {
 	log          *zap.Logger
 	httpSrv      *http.Server
 	mdns         *mdnsAd
-	runLoop      func(name string) (bool, error)                                                                    // injected: run a loopkit loop by name
-	listLoops    func() []LoopInfo                                                                                  // injected: the daemon's ACTIVE loops
-	loopHealth   func() (any, error)                                                                                // injected: per-loop run health
-	chatTurn     func(ctx context.Context, conversationID, message string, onEvent func(ChatEvent)) (string, error) // injected: run one watched harness turn
+	runLoop      func(name string) (bool, error)                                                                                          // injected: run a loopkit loop by name
+	listLoops    func() []LoopInfo                                                                                                        // injected: the daemon's ACTIVE loops
+	loopHealth   func() (any, error)                                                                                                      // injected: per-loop run health
+	chatTurn     func(ctx context.Context, conversationID, message string, opts ChatTurnOptions, onEvent func(ChatEvent)) (string, error) // injected: run one watched harness turn
+}
+
+// ChatTurnOptions is one turn's own request to override the chat kind's
+// standing choices — a client picking a brain or an effort level for this
+// message, not a config change. Empty Model means "the chat kind's configured
+// model"; empty Effort means no --effort flag at all, not some CLI default
+// named "" — see handleChatStream's validation and harness.Options.
+type ChatTurnOptions struct {
+	Model  string
+	Effort string
 }
 
 // ChatEvent is one thing worth telling a streaming chat client while a turn is
@@ -85,6 +95,10 @@ type ChatTool struct {
 	Status    string         `json:"status"`
 	Locations []ChatLocation `json:"locations,omitempty"`
 	Output    string         `json:"output,omitempty"`
+	// Input is the tool_use call's own input — set only on a "tool" event
+	// (the announcement); a "tool_update" carries no input, only what the
+	// call resolved to, the same asymmetry Output already has.
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // ChatLocation is a file a tool call touched.
@@ -127,7 +141,7 @@ func (s *Server) SetListLoops(fn func() []LoopInfo) { s.listLoops = fn }
 // SetChatTurn wires the streaming chat turn (POST /api/chat/stream). The
 // runtime adapts a harness.Event stream into ChatEvent so this package never
 // needs to import the harness for it.
-func (s *Server) SetChatTurn(fn func(ctx context.Context, conversationID, message string, onEvent func(ChatEvent)) (string, error)) {
+func (s *Server) SetChatTurn(fn func(ctx context.Context, conversationID, message string, opts ChatTurnOptions, onEvent func(ChatEvent)) (string, error)) {
 	s.chatTurn = fn
 }
 
@@ -158,6 +172,7 @@ func New(addr string, port int, token string, browserToken string, agents *agent
 	})
 	mux.HandleFunc("/api/chat", srv.auth(srv.handleChat))
 	mux.HandleFunc("POST /api/chat/stream", srv.auth(srv.handleChatStream))
+	mux.HandleFunc("GET /api/chat/options", srv.auth(srv.handleChatOptions))
 	mux.HandleFunc("GET /api/chat/conversations", srv.auth(srv.handleChatConversations))
 	mux.HandleFunc("GET /api/chat/conversations/{id}", srv.auth(srv.handleChatHistory))
 	mux.HandleFunc("DELETE /api/chat/conversations/{id}", srv.auth(srv.handleChatDelete))
@@ -200,6 +215,7 @@ func New(addr string, port int, token string, browserToken string, agents *agent
 	mux.HandleFunc("POST /api/browser/stop", srv.auth(srv.handleBrowserStop))
 	mux.HandleFunc("GET /api/tools", srv.auth(srv.handleListTools))
 	mux.HandleFunc("POST /api/tools/{name}", srv.auth(srv.handleCallTool))
+	mux.HandleFunc("GET /api/tasks/{taskId}/transcript", srv.auth(srv.handleTaskTranscript))
 
 	srv.httpSrv = &http.Server{
 		Addr:              addr,

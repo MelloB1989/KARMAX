@@ -23,7 +23,7 @@ var errChatHarnessUnavailable = errors.New("the brain is not running")
 // harness session id and the name of the transcript on disk: the three were
 // three different values once, and the result was a chat that worked and a
 // conversation that could never be listed, reopened or deleted.
-func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEvent func(api.ChatEvent)) (string, error) {
+func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, opts api.ChatTurnOptions, onEvent func(api.ChatEvent)) (string, error) {
 	if rt.harness == nil {
 		return "", errChatHarnessUnavailable
 	}
@@ -35,6 +35,12 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 		// a per-conversation directory nothing ever lists.
 		Workdir:   hostpaths.WorkDir(),
 		SessionID: id,
+		// Empty means the chat kind's own configured model / no --effort flag
+		// — see api.ChatTurnOptions and harness.Options.Model/Effort. A
+		// mismatch against the conversation's live session is what makes
+		// Supervisor.open close and respawn it before this turn runs.
+		Model:  opts.Model,
+		Effort: opts.Effort,
 		// Empty when the browser is closed — the normal case, not a failure.
 		// rt.browserMCPCache avoids probing the browser on every turn; see
 		// harnesshost.go.
@@ -53,6 +59,7 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, onEve
 					Status:    apiToolStatus(e.Tool.Status),
 					Locations: locs,
 					Output:    e.Tool.Output,
+					Input:     e.Tool.Input,
 				}
 			}
 			ev.Plan = apiChatPlan(e.Plan)
