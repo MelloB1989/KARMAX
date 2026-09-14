@@ -107,3 +107,105 @@ func TestCleanupRemovesAConcreteSubdirectory(t *testing.T) {
 		t.Fatalf("the shared working directory stand-in was removed: %v", err)
 	}
 }
+
+// TestCleanupRefusesTheWholeLyznTasksDirectory is the regression test for the
+// guard's backwards polarity (418cb02): it refused the shared root and
+// anything above it, but permitted everything else — including "lyzn-tasks"
+// itself, which resolves to <root>/lyzn-tasks, the one directory every task
+// directory lives under. Deleting it deletes every task, including ones
+// blocked awaiting an operator. "lyzn-tasks/" is what the recipe engine's own
+// `lyzn-tasks/{{ .id }}` template renders to when `.id` is empty, so both
+// spellings must refuse identically.
+func TestCleanupRefusesTheWholeLyznTasksDirectory(t *testing.T) {
+	for _, dir := range []string{"lyzn-tasks", "lyzn-tasks" + string(filepath.Separator)} {
+		t.Run(dir, func(t *testing.T) {
+			root := withStandInSharedRoot(t)
+			blocked := filepath.Join(root, "lyzn-tasks", "task-awaiting-operator", "note.txt")
+			if err := os.MkdirAll(filepath.Dir(blocked), 0o755); err != nil {
+				t.Fatalf("could not seed a task directory: %v", err)
+			}
+			if err := os.WriteFile(blocked, []byte("do not delete me"), 0o644); err != nil {
+				t.Fatalf("could not seed a task directory: %v", err)
+			}
+
+			tool := &ClaudeCodeTool{}
+			if err := tool.Cleanup(dir, "irrelevant-session"); err == nil {
+				t.Fatalf("Cleanup(%q, ...) succeeded; want a refusal", dir)
+			}
+			if _, err := os.Stat(blocked); err != nil {
+				t.Fatalf("a blocked task's directory was removed by Cleanup(%q, ...): %v", dir, err)
+			}
+		})
+	}
+}
+
+// TestCleanupRefusesAPathThatEscapesAboveTheSharedRoot covers a task id
+// containing "..", which filepath.Join's own normalisation turns into an
+// escape upward through the shared root rather than a subdirectory of it —
+// reachable from the six-hour sweep because the id ultimately comes from
+// LYZN.
+func TestCleanupRefusesAPathThatEscapesAboveTheSharedRoot(t *testing.T) {
+	root := withStandInSharedRoot(t)
+	sibling := filepath.Join(filepath.Dir(root), "escaped-neighbour")
+	canary := filepath.Join(sibling, "note.txt")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatalf("could not seed the sibling directory: %v", err)
+	}
+	if err := os.WriteFile(canary, []byte("do not delete me"), 0o644); err != nil {
+		t.Fatalf("could not seed the sibling directory: %v", err)
+	}
+
+	tool := &ClaudeCodeTool{}
+	if err := tool.Cleanup(filepath.Join("..", filepath.Base(sibling)), "irrelevant-session"); err == nil {
+		t.Fatal(`Cleanup("../escaped-neighbour", ...) succeeded; want a refusal`)
+	}
+	if _, err := os.Stat(canary); err != nil {
+		t.Fatalf("a directory outside the shared root was removed: %v", err)
+	}
+}
+
+// TestCleanupRefusesABareTopLevelDirectory covers hostpaths.WorkDir()
+// defaulting to the operator's home directory: a working_dir of "Documents"
+// resolves to <root>/Documents, one level under the shared root — exactly the
+// same shape as "lyzn-tasks" itself — and is otherwise indistinguishable from
+// a legitimate task-namespace directory.
+func TestCleanupRefusesABareTopLevelDirectory(t *testing.T) {
+	root := withStandInSharedRoot(t)
+	docs := filepath.Join(root, "Documents", "taxes.pdf")
+	if err := os.MkdirAll(filepath.Dir(docs), 0o755); err != nil {
+		t.Fatalf("could not seed Documents: %v", err)
+	}
+	if err := os.WriteFile(docs, []byte("do not delete me"), 0o644); err != nil {
+		t.Fatalf("could not seed Documents: %v", err)
+	}
+
+	tool := &ClaudeCodeTool{}
+	if err := tool.Cleanup("Documents", "irrelevant-session"); err == nil {
+		t.Fatal(`Cleanup("Documents", ...) succeeded; want a refusal`)
+	}
+	if _, err := os.Stat(docs); err != nil {
+		t.Fatalf("a real directory of the operator's home was removed: %v", err)
+	}
+}
+
+// TestCleanupRefusesAnAbsolutePathAnywhereOnDisk covers a working_dir supplied
+// as an absolute path, which hostpaths.Resolve uses verbatim regardless of
+// the shared root — reachable through harness.forget's own working_dir,
+// which the recipe engine's docs describe as unsigned, unsandboxed data
+// KARMAX interprets.
+func TestCleanupRefusesAnAbsolutePathAnywhereOnDisk(t *testing.T) {
+	withStandInSharedRoot(t)
+	elsewhere := t.TempDir()
+	canary := filepath.Join(elsewhere, "note.txt")
+	if err := os.WriteFile(canary, []byte("do not delete me"), 0o644); err != nil {
+		t.Fatalf("could not seed the unrelated directory: %v", err)
+	}
+
+	tool := &ClaudeCodeTool{}
+	if err := tool.Cleanup(elsewhere, "irrelevant-session"); err == nil {
+		t.Fatalf("Cleanup(%q, ...) succeeded; want a refusal", elsewhere)
+	}
+	if _, err := os.Stat(canary); err != nil {
+		t.Fatalf("an absolute path outside the shared root was removed: %v", err)
+	}
+}

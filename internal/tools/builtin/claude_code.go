@@ -370,9 +370,10 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 // coding-tool call on the machine uses — which is exactly right for starting
 // a task and exactly wrong here: os.RemoveAll on it would destroy the
 // operator's whole workspace, not one session's. So an empty (or
-// whitespace-only) workingDir, and anything else that resolves onto that
-// shared root or a directory above it (".", "..", a relative path that
-// normalises upward), is refused outright rather than honoured.
+// whitespace-only) workingDir, anything that resolves onto that shared root
+// or a directory above it, and anything that resolves onto a bare top-level
+// directory under it (the root's own "lyzn-tasks" folder, or an unrelated
+// directory like "Documents") is refused outright — see resolveCleanupDir.
 func (t *ClaudeCodeTool) Cleanup(workingDir, sessionID string) error {
 	resolved, err := resolveCleanupDir(workingDir)
 	if err != nil {
@@ -391,32 +392,55 @@ func (t *ClaudeCodeTool) Cleanup(workingDir, sessionID string) error {
 }
 
 // resolveCleanupDir is hostpaths.Resolve, plus the one guard Cleanup needs
-// that no other caller does: refuse a workingDir that would make Cleanup
-// os.RemoveAll the shared hostpaths.WorkDir() root, or any directory above
-// it, instead of the single task directory it was meant to remove.
+// that no other caller does: require workingDir to resolve to a concrete
+// per-task directory strictly beneath the shared hostpaths.WorkDir() root,
+// rather than merely rejecting the root itself and directories above it. The
+// difference matters: workingDir is externally supplied — a recipe's
+// harness.forget, or a task id from LYZN by way of the six-hour sweep — so
+// the only paths this may honour are ones that could not possibly be
+// anything other than one task's own directory.
 func resolveCleanupDir(workingDir string) (string, error) {
 	root := hostpaths.WorkDir()
 	if strings.TrimSpace(workingDir) == "" {
 		return "", fmt.Errorf("claude_code: Cleanup refused an empty working_dir: it would resolve to the shared working directory %q and remove it entirely", root)
 	}
 	resolved := hostpaths.Resolve(workingDir)
-	if isAncestorOrSelf(resolved, root) {
-		return "", fmt.Errorf("claude_code: Cleanup refused: working_dir %q resolves to %q, which is the shared working directory %q or a directory above it", workingDir, resolved, root)
+	if !isConcreteTaskDir(resolved, root) {
+		return "", fmt.Errorf("claude_code: Cleanup refused: working_dir %q resolves to %q, which is not a concrete task directory beneath the shared working directory %q", workingDir, resolved, root)
 	}
 	return resolved, nil
 }
 
-// isAncestorOrSelf reports whether root sits at or beneath dir in the
-// filesystem hierarchy — i.e. whether os.RemoveAll(dir) would remove root
-// too. A relative-path resolution error (different volumes, or one of the
-// two not being resolvable at all) is treated as "not an ancestor": it means
-// the two paths cannot share a tree, so dir cannot contain root.
-func isAncestorOrSelf(dir, root string) bool {
-	rel, err := filepath.Rel(dir, root)
+// isConcreteTaskDir reports whether resolved is a legitimate Cleanup target:
+// strictly beneath root — never root itself, and never a path that escapes
+// above it via ".." — and at least two path segments deep: a namespace
+// directory (e.g. "lyzn-tasks") plus a concrete id beneath it.
+//
+// The depth requirement is not pedantry. Without it, "lyzn-tasks" itself —
+// what an empty or trailing-slash task id renders `lyzn-tasks/{{ .id }}`
+// down to — sits exactly one level under root, indistinguishable by
+// ancestry alone from a real task directory, and deleting it deletes every
+// task, including ones blocked awaiting an operator. The same one-level
+// shape covers "Documents", which is a real directory of the operator's own
+// home whenever hostpaths.WorkDir() has defaulted there.
+func isConcreteTaskDir(resolved, root string) bool {
+	rel, err := filepath.Rel(root, resolved)
 	if err != nil {
 		return false
 	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	segments := strings.Split(filepath.ToSlash(rel), "/")
+	if len(segments) < 2 {
+		return false
+	}
+	for _, seg := range segments {
+		if strings.TrimSpace(seg) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func truncate(s string, n int) string {
