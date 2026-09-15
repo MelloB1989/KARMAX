@@ -537,6 +537,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	sandboxTool := &builtin.SandboxTool{Store: s}
 	toolReg.Register(sandboxTool)
 	toolReg.Register(&builtin.SandboxStatusTool{Store: s})
+	toolReg.Register(&builtin.DashboardTool{AgentID: ""})
 	toolReg.Register(&builtin.GogTool{Path: hostpaths.Gog(), DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
 	toolReg.Register(&builtin.GogSchemaTool{Path: hostpaths.Gog()})
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
