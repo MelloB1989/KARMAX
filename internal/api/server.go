@@ -250,6 +250,12 @@ func New(addr string, port int, token string, browserToken string, agents *agent
 	mux.HandleFunc("POST /api/browser/stop", srv.auth(srv.handleBrowserStop))
 	mux.HandleFunc("GET /api/tools", srv.auth(srv.handleListTools))
 	mux.HandleFunc("POST /api/tools/{name}", srv.auth(srv.handleCallTool))
+	mux.HandleFunc("GET /api/dashboards", srv.auth(srv.handleListDashboards))
+	mux.HandleFunc("GET /api/dashboards/{id}", srv.auth(srv.handleGetDashboard))
+	mux.HandleFunc("GET /api/dashboards/{id}/data/{name}", srv.auth(srv.handleGetDashboardData))
+	mux.HandleFunc("PATCH /api/dashboards/{id}", srv.auth(srv.handlePatchDashboard))
+	mux.HandleFunc("DELETE /api/dashboards/{id}", srv.auth(srv.handleDeleteDashboard))
+	mux.HandleFunc("PUT /api/dashboards/_kit/reference", srv.auth(srv.handlePutDashboardReference))
 	mux.HandleFunc("GET /api/tasks/{taskId}/transcript", srv.auth(srv.handleTaskTranscript))
 
 	srv.httpSrv = &http.Server{
@@ -300,10 +306,14 @@ const (
 )
 
 // browserScopedTools is the entire grant a browser-scoped token carries.
-// Keep this to exactly "browser" — connectors (WhatsApp, email, ...),
-// shell.exec, and every harness.* control tool must stay out of it. Widening
-// this list is exactly the mistake a second token exists to prevent.
-var browserScopedTools = map[string]bool{"browser": true}
+// "dashboard" joined "browser" here because it is the same shape of safe: it
+// writes only under <DataDir>/dashboards/ and its own dashboard-<id>.yaml
+// recipe, reaches no connector, and cannot name an arbitrary path or command
+// the way shell.exec or a harness.* control tool would. Connectors (WhatsApp,
+// email, ...), shell.exec, and every harness.* control tool must stay out of
+// it — widening this list beyond a tool that has been checked this way is
+// exactly the mistake a second token exists to prevent.
+var browserScopedTools = map[string]bool{"browser": true, "dashboard": true}
 
 // scopeAllowsTool reports whether a caller granted scope may invoke the
 // named tool. scopeFull always may; scopeBrowserOnly only for the allowlist
