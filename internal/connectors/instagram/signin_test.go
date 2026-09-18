@@ -69,7 +69,7 @@ func TestNormalizeTOTPSeedAcceptsWhatInstagramShows(t *testing.T) {
 		t.Errorf("not uppercased: %q", got)
 	}
 	if _, err := base32.StdEncoding.DecodeString(got); err != nil {
-		t.Errorf("result must decode with the same decoder goinsta uses: %v", err)
+		t.Errorf("result must decode with the same decoder the TOTP generator uses: %v", err)
 	}
 }
 
