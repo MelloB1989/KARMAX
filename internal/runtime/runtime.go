@@ -254,7 +254,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Registered so it can be seen and connected, but it stays off until
 	// KARMAX_ENABLE_INSTAGRAM=true: it drives an unofficial API that can get the
 	// operator's personal account restricted, and that is not a default.
-	connHost.Register(instagramconn.New())
+	igConn := instagramconn.New()
+	// The ledger is what makes the send tools available at all: without
+	// somewhere durable to record who has been contacted, they refuse rather
+	// than risk contacting somebody twice.
+	igConn.SetLedger(s)
+	connHost.Register(igConn)
 	// The public accounts. These are the only integrations that can make
 	// something visible to strangers with nobody having read it, so both are
 	// handed the list of names a post may not contain — built from this
