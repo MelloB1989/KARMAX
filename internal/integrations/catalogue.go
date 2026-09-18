@@ -14,13 +14,13 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/config"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
+	googleworkspaceconn "github.com/MelloB1989/karmax/internal/connectors/googleworkspace"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
@@ -44,7 +44,11 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	// configured for them, because "is my WhatsApp still paired" is a question
 	// worth answering even when nothing is using it yet.
 	reg.Register(whatsApp())
-	reg.Register(google())
+	// Google-through-gog is adapted from its connector rather than declared
+	// again here. It used to be a second hand-written manifest and a second
+	// copy of the health check, which is two places to keep agreeing about one
+	// integration.
+	reg.Register(integration.FromConnector(googleworkspaceconn.New(hostpaths.Gog(), nil), ""))
 
 	// The connectors, adapted through their own manifests — so a connector and a
 	// channel are the same kind of thing to `karmax login`, which is the point
@@ -115,48 +119,6 @@ func whatsApp() integration.Integration {
 		Kind:     integration.KindChannel,
 		SetupURL: "https://github.com/MelloB1989/wacli",
 	}, hostpaths.Wacli(), integration.CheckBinarySession(hostpaths.Wacli(), "status"))
-}
-
-// google is the gogcli session: one or more authorized Google accounts.
-func google() integration.Integration {
-	return integration.CLISession(integration.Manifest{
-		ID:          "google",
-		Name:        "Google",
-		Description: "Gmail, Calendar, Drive, Chat, Docs, Sheets and Tasks through the gog CLI.",
-		Kind:        integration.KindConnector,
-		SetupURL:    "https://github.com/openclaw/gogcli",
-	}, hostpaths.Gog(), googleHealth)
-}
-
-// googleHealth asks gog which accounts it holds.
-//
-// `gog auth status` is not the check it looks like: it describes the keyring
-// and exits 0 on a machine that has never authorized anybody. The question
-// worth answering is whether there is an account to act as, so this counts
-// them.
-func googleHealth(ctx context.Context, _ connectorkit.Credentials) error {
-	bin := hostpaths.Gog()
-	if _, err := exec.LookPath(bin); err != nil {
-		return fmt.Errorf("the gog CLI is not on this machine (%v)", err)
-	}
-	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(cctx, bin, "auth", "list", "--json", "--no-input").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("gog auth list: %v — %s", err, trunc(strings.TrimSpace(string(out)), 300))
-	}
-	var listed struct {
-		Accounts []struct {
-			Email string `json:"email"`
-		} `json:"accounts"`
-	}
-	if err := json.Unmarshal(out, &listed); err != nil {
-		return fmt.Errorf("gog auth list returned something unreadable: %v", err)
-	}
-	if len(listed.Accounts) == 0 {
-		return fmt.Errorf("no Google account is authorized yet")
-	}
-	return nil
 }
 
 // trunc keeps a CLI's complaint readable in an error line.

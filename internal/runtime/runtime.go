@@ -28,6 +28,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
+	googleworkspaceconn "github.com/MelloB1989/karmax/internal/connectors/googleworkspace"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	jiraconn "github.com/MelloB1989/karmax/internal/connectors/jira"
 	kekaconn "github.com/MelloB1989/karmax/internal/connectors/keka"
@@ -266,6 +267,26 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// existing yet. Publishing for real still needs real credentials.
 	connHost.RegisterUnconditional(xconn.New(forbidden.Guard, socialLimit))
 	connHost.RegisterUnconditional(linkedinconn.New(forbidden.Guard, socialLimit))
+	// Google through the gog CLI, as a connector so it obeys the connectors:
+	// allowlist and appears in `karmax login` like everything else.
+	// Unconditional for the same reason its Auth is AuthCLI: there is no
+	// credential for KARMAX to hold, so waiting for one would mean the tools
+	// never appearing at all.
+	gogRunner := &builtin.GogTool{Path: hostpaths.Gog(), DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")}
+	connHost.RegisterUnconditional(googleworkspaceconn.New(hostpaths.Gog(),
+		func(ctx context.Context, in map[string]any) (any, error) {
+			res, err := gogRunner.Execute(ctx, in)
+			if err != nil {
+				return nil, err
+			}
+			if res.IsError {
+				// The output travels with the error on purpose: gog puts the
+				// diagnosis in its body, and dropping it leaves the agent able
+				// to say only "google failed".
+				return res.Output, fmt.Errorf("%s", res.Error)
+			}
+			return res.Output, nil
+		}))
 
 	// Every connector is registered by now, so a name in `connectors:` that
 	// matched nothing is a typo rather than a connector yet to come. Said out
@@ -550,7 +571,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(sandboxTool)
 	toolReg.Register(&builtin.SandboxStatusTool{Store: s})
 	toolReg.Register(&builtin.DashboardTool{AgentID: ""})
-	toolReg.Register(&builtin.GogTool{Path: hostpaths.Gog(), DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
+	// Registered through the Google Workspace connector rather than here — see
+	// the registration above. GogTool remains as the thing that actually runs
+	// gog, because it owns the flag defaults and the exit-code reasons, and
+	// gog_schema.go resolves the binary through it.
 	toolReg.Register(&builtin.GogSchemaTool{Path: hostpaths.Gog()})
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
