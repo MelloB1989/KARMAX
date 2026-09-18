@@ -115,3 +115,28 @@ func TestNothingIsReportedWhenNoPolicyWasWritten(t *testing.T) {
 		t.Errorf("an install with no policy has nothing to warn about, got %v", unknown)
 	}
 }
+
+// A connector RegisterUnconditional calls is not always one Manage() allows,
+// and the earlier version of this got that wrong: Register quietly skipped
+// the id, RegisterUnconditional carried on regardless, and GrantFromManifest
+// then failed loudly trying to grant tools for a connector that was never
+// added — an ERROR log for something that was working exactly as configured.
+// Caught by actually running a build against a real narrowed config, not by
+// a unit test, which is why this one exists now.
+func TestRegisterUnconditionalRespectsThePolicyToo(t *testing.T) {
+	h := &Host{registry: map[string]connectorkit.Connector{}, log: zap.NewNop()}
+	h.Manage(config.RegistryConfig{Enabled: []string{"x"}})
+
+	h.RegisterUnconditional(fake{id: "x"})
+	h.RegisterUnconditional(fake{id: "linkedin"})
+
+	if _, ok := h.registry["linkedin"]; ok {
+		t.Fatal("a connector the policy excludes must not be registered by RegisterUnconditional either")
+	}
+	if !h.unconditional["x"] {
+		t.Error("the allowed connector must still be marked unconditional")
+	}
+	if h.unconditional["linkedin"] {
+		t.Error("the excluded connector must not be marked unconditional")
+	}
+}

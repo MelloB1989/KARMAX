@@ -283,11 +283,21 @@ func (h *Host) credentials(id string) (connectorkit.Credentials, error) {
 // Not a way around configuration. A real post still needs real credentials, and
 // the connector says so plainly when it lacks them.
 func (h *Host) RegisterUnconditional(c connectorkit.Connector) {
+	id := c.Manifest().ID
 	h.Register(c)
+	// Register itself already decided this id is not managed and quietly
+	// skipped it — Debug, not an error, is what that call logs. Continuing
+	// past that here would grant tools for a connector the registry never
+	// added, which GrantFromManifest cannot resolve: not a missing grant,
+	// an id that was correctly never let in. Same check, so the two stay
+	// in agreement instead of one being an operator's choice and the other
+	// an error line about it.
+	if !h.policy.Manages(id) {
+		return
+	}
 	if h.unconditional == nil {
 		h.unconditional = map[string]bool{}
 	}
-	id := c.Manifest().ID
 	h.unconditional[id] = true
 	// Grants normally land when the operator enables a connector. A connector
 	// that works without being enabled has to be granted here instead, or its
