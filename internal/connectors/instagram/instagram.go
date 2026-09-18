@@ -157,6 +157,21 @@ func (c *Connector) Tools() []connectorkit.Tool {
 			}`),
 			Call: c.passthrough,
 		},
+		{
+			Name: "instagram.commenters",
+			Description: "Who commented on a post, as a flat list of numeric ids — deduplicated, " +
+				"with the post's owner removed. Shaped for a loop: instagram.call can read the " +
+				"same comments but hands back objects, and a recipe can only walk an array of " +
+				"scalars.",
+			Parameters: json.RawMessage(`{
+				"type":"object",
+				"properties":{
+					"url":{"type":"string","description":"The post's URL. Either this or media_id."},
+					"media_id":{"type":"string","description":"The post's numeric id, if you already resolved it."}
+				}
+			}`),
+			Call: c.commenters,
+		},
 	}
 
 	// Sending is a separate decision from reading, and stays off even when the
@@ -381,6 +396,27 @@ func (c *Connector) passthrough(ctx context.Context, cr connectorkit.Credentials
 	defer c.mu.Unlock()
 	var out any
 	if err := c.h.call(ctx, "call", map[string]any{"method": method, "args": args}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// commenters lists who commented on a post, flat.
+func (c *Connector) commenters(ctx context.Context, cr connectorkit.Credentials, in map[string]any) (any, error) {
+	if _, err := c.ensure(ctx, cr); err != nil {
+		return nil, err
+	}
+	args := map[string]any{}
+	if v := str(in["url"]); v != "" {
+		args["url"] = v
+	}
+	if v := str(in["media_id"]); v != "" {
+		args["media_id"] = v
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out any
+	if err := c.h.call(ctx, "commenters", args, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
