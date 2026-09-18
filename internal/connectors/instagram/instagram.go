@@ -54,6 +54,14 @@ import (
 type Connector struct {
 	mu sync.Mutex
 	h  *helper
+
+	// allowed is the passthrough's read allowlist, fetched from the helper once
+	// and kept. Cached so that refusing a write costs nothing and — more to the
+	// point — can be refused before asking anybody to sign in: "that is
+	// read-only" teaches the boundary, where "you are not signed in" sends the
+	// caller off to fix the wrong thing.
+	allowedOnce sync.Once
+	allowedSet  map[string]bool
 }
 
 func New() *Connector { return &Connector{h: &helper{}} }
@@ -120,6 +128,30 @@ func (c *Connector) Tools() []connectorkit.Tool {
 				"properties":{"limit":{"type":"integer","description":"Maximum threads (default 10, max 30)."}}
 			}`),
 			Call: c.inbox,
+		},
+		{
+			Name: "instagram.reads",
+			Description: "List every Instagram read instagram.call will accept, with each one's " +
+				"arguments. Call this first rather than guessing a method name.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{}}`),
+			Call:       c.reads,
+		},
+		{
+			Name: "instagram.call",
+			Description: "Call one Instagram read directly — any method listed by instagram.reads, " +
+				"with its own arguments. Use this for anything the other tools do not cover: " +
+				"a post's comments, who someone follows, a user's recent media. " +
+				"READ-ONLY: sending, commenting, liking and following are not reachable here, " +
+				"because automated writing is what gets accounts restricted.",
+			Parameters: json.RawMessage(`{
+				"type":"object",
+				"properties":{
+					"method":{"type":"string","description":"An instagrapi read, e.g. \"media_comments\". instagram.reads lists them."},
+					"args":{"type":"object","description":"Named arguments for that method, e.g. {\"media_id\":\"123\",\"amount\":0}."}
+				},
+				"required":["method"]
+			}`),
+			Call: c.passthrough,
 		},
 	}
 }
@@ -221,6 +253,85 @@ func (c *Connector) inbox(ctx context.Context, cr connectorkit.Credentials, in m
 	defer c.mu.Unlock()
 	var out any
 	if err := c.h.call(ctx, "inbox", map[string]any{"limit": limit}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// reads lists what the passthrough accepts. No sign-in needed: it is a
+// question about this build, not about anybody's account.
+func (c *Connector) reads(ctx context.Context, _ connectorkit.Credentials, _ map[string]any) (any, error) {
+	if !Enabled() {
+		return nil, fmt.Errorf("instagram is off; set KARMAX_ENABLE_INSTAGRAM=true to turn it on")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out any
+	if err := c.h.call(ctx, "reads", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// readable returns the passthrough's allowlist, asking the helper once.
+//
+// A failure here is not fatal: the helper enforces the allowlist regardless, so
+// an empty answer costs a worse error message and nothing else. That is why the
+// caller treats an error as "no opinion" rather than as a refusal.
+func (c *Connector) readable(ctx context.Context) (map[string]bool, error) {
+	var err error
+	c.allowedOnce.Do(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		var out struct {
+			Reads []struct {
+				Method string `json:"method"`
+			} `json:"reads"`
+		}
+		if err = c.h.call(ctx, "reads", nil, &out); err != nil {
+			return
+		}
+		set := make(map[string]bool, len(out.Reads))
+		for _, r := range out.Reads {
+			set[r.Method] = true
+		}
+		c.allowedSet = set
+	})
+	return c.allowedSet, err
+}
+
+// passthrough calls one allowlisted instagrapi read.
+//
+// The allowlist lives in the helper rather than here, deliberately: it has to
+// be enforced next to the call it is protecting, so a future caller that
+// reaches the helper by another path cannot route around it.
+func (c *Connector) passthrough(ctx context.Context, cr connectorkit.Credentials, in map[string]any) (any, error) {
+	method, _ := in["method"].(string)
+	if strings.TrimSpace(method) == "" {
+		return nil, fmt.Errorf("instagram: name a method — instagram.reads lists them")
+	}
+	args, _ := in["args"].(map[string]any)
+	if args == nil {
+		args = map[string]any{}
+	}
+
+	// Before sign-in, so a request to write is answered with what it actually
+	// ran into. The helper checks this again next to the call itself; this copy
+	// is for the error message, not for the enforcement.
+	if known, err := c.readable(ctx); err == nil && len(known) > 0 && !known[method] {
+		return nil, fmt.Errorf("instagram: %q is not an allowed read. This passthrough is "+
+			"read-only by design — sending, commenting, liking and following are not "+
+			"reachable through it. instagram.reads lists what is", method)
+	}
+
+	if _, err := c.ensure(ctx, cr); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out any
+	if err := c.h.call(ctx, "call", map[string]any{"method": method, "args": args}, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

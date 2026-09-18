@@ -13,11 +13,64 @@
 # per line — a stray print() corrupts the stream and the Go side sees a parse
 # error instead of a result. Diagnostics go to stderr, which KARMAX logs.
 
+import datetime
+import inspect
 import json
 import os
 import stat
 import sys
 import traceback
+
+# Everything the passthrough will call, named exactly.
+#
+# AN ALLOWLIST, NEVER A DENYLIST. instagrapi gains methods between releases, and
+# a denylist hands each new one to the agent the day it lands — including the
+# next way to write. Adding to this list is a deliberate act.
+#
+# Reads only. The singular/plural pairs are the trap worth knowing about:
+# media_comments reads comments and media_comment POSTS one; media_likers reads
+# who liked and media_like likes. A substring rule gets those backwards, which
+# is why this is spelled out and a test asserts no known write method appears.
+READS = frozenset(
+    {
+        "account_info",
+        "media_pk_from_url",
+        "media_pk_from_code",
+        "media_code_from_pk",
+        "media_id",
+        "media_info",
+        "media_comments",
+        "media_likers",
+        "media_user",
+        "media_oembed",
+        "user_info",
+        "user_info_by_username",
+        "user_id_from_username",
+        "username_from_user_id",
+        "user_followers",
+        "user_following",
+        "user_medias",
+        "user_stories",
+        "direct_threads",
+        "direct_messages",
+        "direct_thread",
+        "direct_search",
+        "direct_pending_inbox",
+        "hashtag_info",
+        "hashtag_medias_top",
+        "hashtag_medias_recent",
+        "location_info",
+        "insights_media",
+        "insights_account",
+        "highlight_info",
+        "story_info",
+    }
+)
+
+# A reply has to fit through a pipe and then through an agent's context. A
+# follower list runs to tens of thousands, so an unbounded read is a way to
+# lose the conversation rather than a way to get an answer.
+MAX_RESULT_BYTES = 256 * 1024
 
 # Instagram's own anti-abuse signals. These are not retryable and they are not
 # ordinary errors: continuing past one risks the operator's account, not just
@@ -42,6 +95,26 @@ HARD_STOP = {
 def log(msg):
     """Diagnostics, on stderr, where they cannot corrupt the protocol."""
     print(msg, file=sys.stderr, flush=True)
+
+
+def to_jsonable(v):
+    """Flatten instagrapi's pydantic models into something JSON can carry.
+
+    model_dump(mode="json") rather than plain model_dump: the models hold
+    datetimes and URL objects that the plain dump leaves as Python objects, and
+    json.dumps then fails on a reply that looked fine right up to the moment it
+    was sent."""
+    if hasattr(v, "model_dump"):
+        return v.model_dump(mode="json")
+    if isinstance(v, (list, tuple, set)):
+        return [to_jsonable(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): to_jsonable(x) for k, x in v.items()}
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.isoformat()
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    return str(v)
 
 
 class Helper:
@@ -180,6 +253,72 @@ class Helper:
             )
         return {"count": len(out), "threads": out}
 
+    def reads(self, _params):
+        """What `call` will accept, with signatures.
+
+        Discovery rather than documentation: this list is generated from the
+        allowlist and the installed instagrapi, so it cannot drift from what the
+        passthrough will actually do the way a hand-written list in a tool
+        description would."""
+        from instagrapi import Client
+
+        out = []
+        for name in sorted(READS):
+            fn = getattr(Client, name, None)
+            sig = str(inspect.signature(fn)).replace("self, ", "").replace("(self)", "()") if fn else ""
+            doc = (inspect.getdoc(fn) or "").strip().split("\n")[0] if fn else ""
+            out.append({"method": name, "signature": sig, "summary": doc[:120]})
+        return {"count": len(out), "reads": out}
+
+    def call(self, params):
+        """Call one allowlisted instagrapi read.
+
+        This exists so the agent is not limited to the handful of reads anyone
+        thought to wrap. instagrapi has hundreds of methods and which one a task
+        needs is not predictable — but which ones can damage the account is, and
+        those are simply not reachable from here."""
+        method = (params.get("method") or "").strip()
+        args = params.get("args") or {}
+        if not isinstance(args, dict):
+            raise ValueError("instagram: 'args' must be an object of named arguments")
+
+        if method not in READS:
+            # Say what is available rather than only what is not: an agent that
+            # guessed a plausible name can correct itself from this, and one
+            # that wanted to write learns immediately that it cannot.
+            near = sorted(m for m in READS if method and (method in m or m in method))
+            hint = f" Did you mean: {', '.join(near[:5])}?" if near else ""
+            raise PermissionError(
+                f"instagram: {method!r} is not an allowed read. This passthrough is "
+                f"read-only by design — sending, commenting, liking and following are "
+                f"not reachable through it.{hint}"
+            )
+
+        # Checked against the class, not a signed-in client: a caller who
+        # misspelled an argument should be told so without first being sent to
+        # find credentials. Only the call itself needs a session.
+        from instagrapi import Client
+
+        unbound = getattr(Client, method)
+        shown = inspect.Signature(list(inspect.signature(unbound).parameters.values())[1:])
+        try:
+            shown.bind(**args)
+        except TypeError as e:
+            # Name the real signature. "unexpected keyword argument" alone
+            # leaves the agent guessing at what the right one was.
+            raise TypeError(f"instagram: {method}{shown} — {e}") from None
+
+        result = to_jsonable(getattr(self._require(), method)(**args))
+
+        encoded = json.dumps(result)
+        if len(encoded) > MAX_RESULT_BYTES:
+            raise ValueError(
+                f"instagram: {method} returned {len(encoded)} bytes, over the "
+                f"{MAX_RESULT_BYTES} limit. Ask for less — most of these reads take an "
+                f"'amount' argument."
+            )
+        return {"method": method, "result": result}
+
     def _require(self):
         if self.client is None:
             raise RuntimeError("instagram: not signed in — call login first")
@@ -191,6 +330,8 @@ METHODS = {
     "login": "login",
     "account": "account",
     "inbox": "inbox",
+    "call": "call",
+    "reads": "reads",
 }
 
 
