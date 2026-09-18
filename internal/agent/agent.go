@@ -1056,6 +1056,11 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Use multi-model session if available; otherwise fall back to legacy
 	if a.mainSession != nil {
+		// Marked before anything can send, so the fallback delivery below can
+		// ask what actually reached the chat during this turn. Truncated to the
+		// second because that is the resolution the store records at, and a
+		// finer mark would place an in-turn send before the turn began.
+		turnStart := time.Now().Truncate(time.Second)
 		// Acknowledge slow turns: if we're still thinking after a few seconds,
 		// send a lightweight "on it" to the originating chat so the operator
 		// knows the message landed and isn't dropped (high-effort turns take a
@@ -1125,6 +1130,12 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			if canonical == "comms_send" {
 				sentViaComms = true
 			}
+			// A harness session reaches comms.send through its shell, so the
+			// call arrives here named "Bash" and the name check above can never
+			// see it.
+			if commsSendShellCall(tc) {
+				sentViaComms = true
+			}
 			a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
 				"tool":  canonical,
 				"input": tc.Input,
@@ -1139,8 +1150,18 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		if evt.Kind == bus.EventCommsMessage && a.commsSend != nil && !sentViaComms {
 			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
 			target, _ := evt.Payload["channel_id"].(string)
+			// Last word on whether the chat was already answered: the store sees
+			// every outbound whatever produced it — a tool call, a harness shell
+			// command, a delegated session. Reading the turn's tool names alone
+			// missed the shell ones and sent the model's narration of a reply as
+			// a second message right behind the reply itself.
+			alreadyAnswered := a.repliedDuringTurn(target, turnStart)
+			if alreadyAnswered {
+				a.log.Info("chat already answered this turn; withholding the final text",
+					zap.String("target", target), zap.Int("len", len(response)))
+			}
 			reply := strings.TrimSpace(response)
-			if karmaxChannelID != "" && reply != "" {
+			if karmaxChannelID != "" && reply != "" && !alreadyAnswered {
 				if err := a.commsSend(karmaxChannelID, target, reply); err != nil {
 					a.log.Warn("fallback auto-reply failed",
 						zap.String("channel", karmaxChannelID), zap.Error(err))
@@ -1197,6 +1218,63 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	return a.handleEventLegacy(evt, userPrompt)
 }
 
+// ackMessage is the slow-turn acknowledgement. Named because the delivery check
+// has to tell it apart from a real answer: it goes to the same chat mid-turn,
+// and counting it as the reply would swallow the reply.
+const ackMessage = "👀 on it…"
+
+// repliedDuringTurn reports whether a real message has gone to this chat since
+// the turn began.
+//
+// The harness is the reason this exists. It reaches comms.send through its
+// shell, so the turn's tool records name "Bash" and nothing identifies the
+// send — while the harness's own final text is a report addressed to KARMAX
+// ("Sent. Confirmed the sender matches…"), not to the operator. Delivering that
+// on top of the answer is what the operator saw as KARMAX replying twice.
+//
+// The store is asked rather than the tool records because it is the one place
+// every outbound passes through, whichever engine, loop or delegated session
+// produced it.
+func (a *Agent) repliedDuringTurn(target string, since time.Time) bool {
+	if a.store == nil || target == "" {
+		return false
+	}
+	rows, err := a.store.ListChannelMessages(target, 10)
+	if err != nil {
+		// An unreadable history is not evidence of an answer: ghosting the
+		// operator is worse than repeating KARMAX.
+		a.log.Warn("could not check what already went to this chat", zap.Error(err))
+		return false
+	}
+	for _, r := range rows {
+		if !strings.EqualFold(r.Direction, "outbound") {
+			continue
+		}
+		if r.CreatedAt.Before(since) {
+			continue
+		}
+		if strings.TrimSpace(r.Content) == ackMessage {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// commsSendShellCall reports whether a tool record is a harness shell call that
+// invoked comms.send — `karmax tool call comms.send …`, in any of the spellings
+// the CLI accepts.
+func commsSendShellCall(tc karmahelper.ToolCallRecord) bool {
+	if !strings.EqualFold(tc.Name, "Bash") && !strings.EqualFold(tc.Name, "Shell") {
+		return false
+	}
+	cmd, _ := tc.Input["command"].(string)
+	if !strings.Contains(cmd, "karmax") {
+		return false
+	}
+	return strings.Contains(cmd, "comms.send") || strings.Contains(cmd, "comms_send")
+}
+
 // startAckWatchdog sends a lightweight acknowledgement to the originating chat
 // if the current turn is still running after a short delay, so the operator
 // sees the message was received even when reasoning takes a while. Returns a
@@ -1215,7 +1293,7 @@ func (a *Agent) startAckWatchdog(evt bus.Event) func() {
 		select {
 		case <-done:
 		case <-time.After(6 * time.Second):
-			if err := a.commsSend(channelID, target, "👀 on it…"); err != nil {
+			if err := a.commsSend(channelID, target, ackMessage); err != nil {
 				a.log.Warn("ack watchdog send failed", zap.Error(err))
 			} else {
 				a.log.Info("sent slow-turn ack", zap.String("channel", channelID))
