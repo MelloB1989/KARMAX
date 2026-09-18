@@ -29,12 +29,16 @@ import (
 	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
+	"go.uber.org/zap"
 )
 
 // Build returns the registry for this instance's configuration.
 func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	resolver := integration.NewResolver(db, configLookup(cfg))
 	reg := integration.NewRegistry(resolver)
+	// Before any Register call below: what this install manages is decided
+	// once, in karmax.yaml, and everything after it is filtered through.
+	reg.Manage(cfg.Integrations)
 
 	// The host-binary integrations. Registered whether or not a channel is
 	// configured for them, because "is my WhatsApp still paired" is a question
@@ -62,6 +66,17 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	for _, ch := range cfg.Comms.Channels {
 		if build, ok := channelIntegrations[strings.ToLower(ch.Type)]; ok {
 			reg.Register(build(ch.ID))
+		}
+	}
+
+	// A name in `integrations:` that matched nothing is a typo, and an
+	// allowlist entry that silently matches nothing looks exactly like one
+	// that is working. Warned rather than refused: one config may be shared
+	// across builds that do not all have the same integrations compiled in.
+	for _, name := range cfg.Integrations.Declared() {
+		if strings.TrimSpace(name) != "" && !reg.Known(name) {
+			zap.L().Warn("karmax.yaml names an integration this build does not have; skipping",
+				zap.String("integration", name))
 		}
 	}
 	return reg

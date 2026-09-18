@@ -179,6 +179,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Connectors are registered here and do nothing until the operator supplies
 	// credentials and enables them.
 	connHost := connectors.NewHost(s, b, brk, log)
+	// Before any Register call: what this install manages is decided once, in
+	// karmax.yaml, and everything below is filtered through it.
+	connHost.Manage(cfg.Connectors)
 	// One connector per GitHub account. The primary has no suffix, so a
 	// single-account install is unchanged; additional accounts are named and
 	// their tools qualified (github.issues@work), which is what lets the agent
@@ -263,6 +266,15 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// existing yet. Publishing for real still needs real credentials.
 	connHost.RegisterUnconditional(xconn.New(forbidden.Guard, socialLimit))
 	connHost.RegisterUnconditional(linkedinconn.New(forbidden.Guard, socialLimit))
+
+	// Every connector is registered by now, so a name in `connectors:` that
+	// matched nothing is a typo rather than a connector yet to come. Said out
+	// loud, because an allowlist entry that silently matches nothing is
+	// indistinguishable from one that is working.
+	if unknown := connHost.UnknownDeclared(); len(unknown) > 0 {
+		log.Warn("karmax.yaml names connectors this build does not have; they are being skipped",
+			zap.Strings("connectors", unknown))
+	}
 	startedAt := time.Now()
 
 	// Set provider env vars from config

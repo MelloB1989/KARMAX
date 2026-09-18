@@ -41,8 +41,8 @@ const callTimeout = 3 * time.Minute
 // Error is a failure the helper reported, carrying instagrapi's own exception
 // name so an operator searching for it finds what everyone else found.
 type Error struct {
-	Type     string
-	Message  string
+	Type    string
+	Message string
 	// HardStop marks Instagram's anti-abuse signals. Never retry one: they mean
 	// stop, and continuing past one risks the account rather than the call.
 	HardStop bool
