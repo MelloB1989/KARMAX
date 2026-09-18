@@ -957,6 +957,25 @@ var migrations = []string{
 		created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
 		updated_at   DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
+
+	// Who has already been written to, so nobody is written to twice.
+	//
+	// The primary key is the whole point: it is campaign+target, so a second
+	// attempt at the same person collides rather than sending. That makes
+	// "never contact anyone twice" a property of the database instead of a
+	// rule an agent is asked to follow — and the failure we are guarding
+	// against is exactly an agent that did not follow it.
+	`CREATE TABLE IF NOT EXISTS outreach_ledger (
+		id          TEXT PRIMARY KEY,
+		campaign    TEXT NOT NULL,
+		channel     TEXT NOT NULL,
+		target      TEXT NOT NULL,
+		state       TEXT NOT NULL,
+		detail      TEXT,
+		created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_outreach_campaign ON outreach_ledger(campaign)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

@@ -55,6 +55,10 @@ type Connector struct {
 	mu sync.Mutex
 	h  *helper
 
+	// ledger records who has already been contacted. Nil means sending is
+	// unavailable, which is the default.
+	ledger Ledger
+
 	// allowed is the passthrough's read allowlist, fetched from the helper once
 	// and kept. Cached so that refusing a write costs nothing and — more to the
 	// point — can be refused before asking anybody to sign in: "that is
@@ -118,7 +122,7 @@ func Enabled() bool {
 }
 
 func (c *Connector) Tools() []connectorkit.Tool {
-	return []connectorkit.Tool{
+	out := []connectorkit.Tool{
 		{
 			Name: "instagram.inbox",
 			Description: "Read recent Instagram direct message threads. Read-only: KARMAX does not send " +
@@ -154,6 +158,51 @@ func (c *Connector) Tools() []connectorkit.Tool {
 			Call: c.passthrough,
 		},
 	}
+
+	// Sending is a separate decision from reading, and stays off even when the
+	// connector itself is on. Reading someone's inbox and messaging their
+	// followers have different consequences; this connector has always refused
+	// the second, and that refusal remains the default.
+	if SendingEnabled() && c.ledger != nil {
+		out = append(out,
+			connectorkit.Tool{
+				Name: "instagram.send_dm",
+				Description: "Send ONE Instagram direct message. Pacing, a per-campaign cap and a " +
+					"ledger that refuses to contact the same person twice are enforced inside this " +
+					"tool — call it once per recipient rather than building a loop around something " +
+					"lower-level. The first time Instagram objects, the whole campaign stops and " +
+					"does not resume.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"campaign":{"type":"string","description":"Names this run, e.g. the post you are following up on. The cap and the ledger are counted per campaign."},
+						"user_id":{"type":"string","description":"The recipient's numeric Instagram id."},
+						"text":{"type":"string","description":"The message. Write a different one for each person — the same sentence sent to a batch is what reads as spam."}
+					},
+					"required":["campaign","user_id","text"]
+				}`),
+				Call: c.sendDM,
+			},
+			connectorkit.Tool{
+				Name: "instagram.reply_comment",
+				Description: "Post ONE reply to an Instagram comment. Same pacing, cap and ledger as " +
+					"instagram.send_dm, keyed by comment rather than by person — so somebody who " +
+					"commented three times can be answered three times.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"campaign":{"type":"string","description":"Names this run. Use a different campaign from the DM run: the two ledgers answer different questions."},
+						"media_id":{"type":"string","description":"The post being commented on."},
+						"comment_id":{"type":"string","description":"The comment being replied to. Omit to comment on the post itself."},
+						"text":{"type":"string","description":"The reply. It is public — say something that reads well under somebody else's comment."}
+					},
+					"required":["campaign","media_id","text"]
+				}`),
+				Call: c.replyComment,
+			},
+		)
+	}
+	return out
 }
 
 // Sources is empty. Polling Instagram on a schedule is exactly the behaviour
