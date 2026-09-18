@@ -320,6 +320,39 @@ class Helper:
             )
         return {"method": method, "result": result}
 
+    def commenters(self, params):
+        """Who commented on a post, as a flat list of ids.
+
+        instagram.call can already read comments, but it hands back objects and
+        a recipe loop cannot reach into one — foreach walks arrays of scalars
+        and nothing else. So this is the same read, shaped for that consumer:
+        deduplicated, the post's owner removed, ids as strings.
+
+        Strings because Instagram's ids are past what a float represents
+        exactly, and a JSON parser that coerces one turns a real id into a
+        different real id — a message to a stranger rather than a dropped
+        one."""
+        url = (params.get("url") or "").strip()
+        media_id = str(params.get("media_id") or "").strip()
+        if not url and not media_id:
+            raise ValueError("instagram: commenters needs a url or a media_id")
+
+        cl = self._require()
+        if not media_id:
+            media_id = str(cl.media_pk_from_url(url))
+
+        me = cl.account_info()
+        seen, out = set(), []
+        for c in cl.media_comments(media_id, amount=0):
+            uid = str(c.user.pk)
+            # The owner replying under their own post is not a commenter for
+            # this purpose, and messaging yourself is a bug people notice.
+            if uid == str(me.pk) or uid in seen:
+                continue
+            seen.add(uid)
+            out.append(uid)
+        return {"media_id": media_id, "count": len(out), "user_ids": out}
+
     def _warm(self):
         """Touch the messaging surface before writing to it.
 
@@ -380,6 +413,7 @@ METHODS = {
     "inbox": "inbox",
     "call": "call",
     "reads": "reads",
+    "commenters": "commenters",
     "send_dm": "send_dm",
     "reply_comment": "reply_comment",
 }
