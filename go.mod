@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/GitLoomHQ/gitloom-go v0.3.1-0.20260807203502-1080a035640d
-	github.com/MelloB1989/karma v1.21.3
+	github.com/MelloB1989/karma v1.27.0
 	github.com/MelloB1989/wacli v0.3.0
 	github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36
 	github.com/aws/aws-sdk-go-v2 v1.45.1
