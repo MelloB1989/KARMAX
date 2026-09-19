@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/loopinstall"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
@@ -50,8 +51,12 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 		return events
 	}
 
+	// The operator's disabled list governs signed loops too. `loops disable`
+	// wrote a workflow's name there and the listing showed it paused, while
+	// this went on starting it from the lockfile's own Enabled alone.
+	disabled := loopinstall.LoadDisabledLoops()
 	for _, e := range entries {
-		if !e.Enabled {
+		if !e.Enabled || disabled[e.Name] {
 			continue
 		}
 		// Verified again on load, against the lockfile rather than only against
@@ -251,6 +256,14 @@ func (w *wasmKit) Harness(ctx context.Context, prompt string) (string, error) {
 	return w.mem().Harness(ctx, prompt)
 }
 
+func (w *wasmKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (loopkit.HarnessResult, error) {
+	return w.mem().HarnessWith(ctx, spec)
+}
+
+func (w *wasmKit) HarnessForget(sessionID, workingDir string) error {
+	return w.mem().HarnessForget(sessionID, workingDir)
+}
+
 // Gateway lends named host tools for one call, plus whatever this workflow
 // itself provides. Only host tools on the allowlist can be named, so a loop
 // cannot invent a capability by describing one — but its OWN tools travel
@@ -423,10 +436,10 @@ func (w *wasmKit) OperatorChats() []string { return builtin.OperatorChats() }
 // runHostTool runs one read-only host command with a bounded output.
 //
 // The output is returned even when the command fails, because for these tools
-// the output IS the diagnosis: gws exits 2 with a JSON body saying Google needs
-// an interactive reauth, and gchat-watch classifies that to tell the operator
-// which command to run. Discarding it turned a specific, actionable message
-// into "it failed" and left a dead integration with no explanation.
+// the output IS the diagnosis: gog exits 4 and says which account is not
+// authorized, and gchat-watch classifies that to tell the operator which
+// command to run. Discarding it turned a specific, actionable message into "it
+// failed" and left a dead integration with no explanation.
 func runHostTool(ctx context.Context, bin string, args ...string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

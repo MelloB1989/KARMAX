@@ -46,6 +46,32 @@ type AwaitSpec struct {
 	Timeout time.Duration
 }
 
+// HarnessSpec is a durable, resumable Harness call — everything Harness
+// itself does not expose: a session identity, a working directory, and
+// whether the run may be resumed at all.
+type HarnessSpec struct {
+	Prompt string
+	// SessionID, when set, is passed as --resume/--session-id: the same
+	// value used twice is what makes a later call pick the conversation
+	// back up rather than starting cold. Empty behaves like Harness.
+	SessionID string
+	// WorkingDir, when relative, is a subdirectory of the shared work root
+	// rather than a path from the daemon's own (undefined) working
+	// directory. Empty uses the shared root, exactly like Harness.
+	WorkingDir string
+	// Ephemeral mirrors Harness's own behaviour when true: the transcript is
+	// deleted the moment this call returns, and nothing is kept to resume.
+	// Only a caller that wants a session to outlive one call sets it false.
+	Ephemeral bool
+}
+
+// HarnessResult is what a HarnessWith call produced.
+type HarnessResult struct {
+	Output string
+	// SessionID is the id the call actually ran under.
+	SessionID string
+}
+
 // SandboxSpec is a piece of work handed to a container.
 type SandboxSpec struct {
 	CaseID  string
@@ -122,6 +148,18 @@ type Kit interface {
 	// subscription, independent of the main model — ideal for web research and
 	// heavy work even when the main model is rate-limited.
 	Harness(ctx context.Context, prompt string) (string, error)
+
+	// HarnessWith is Harness with explicit control over session identity and
+	// working directory, for callers that need a conversation to survive
+	// past one call — a task that might ask a question and has to resume
+	// with its own context once it is answered, rather than starting cold.
+	HarnessWith(ctx context.Context, spec HarnessSpec) (HarnessResult, error)
+
+	// HarnessForget deletes a durable session's transcript, working
+	// directory and session records — the terminal cleanup for one started
+	// via HarnessWith with Ephemeral: false. Removing a session that does
+	// not exist, or was never durable, is not an error.
+	HarnessForget(sessionID, workingDir string) error
 
 	// Remember stores a durable, standalone fact in the operator's long-term
 	// memory (tagged with the loop name).
@@ -236,7 +274,7 @@ type Kit interface {
 	RunLoop(name string) error
 
 	// HostTool resolves a host-side dependency KARMAX knows about: "wacli" and
-	// "gws" return binary paths (env override → PATH → well-known locations),
+	// "gog" return binary paths (env override → PATH → well-known locations),
 	// "karmax" the KARMAX CLI itself, and "wacli-api" the local wacli HTTP API
 	// base URL. Returns the bare name when it cannot resolve further.
 	HostTool(name string) string

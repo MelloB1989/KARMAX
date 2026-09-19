@@ -152,7 +152,7 @@ const (
 	AuthAPIKey AuthKind = "apikey"
 	AuthOAuth2 AuthKind = "oauth2"
 	// AuthCLI delegates to a host binary that holds its own session — the wacli
-	// and gws pattern. Legitimate and already proven.
+	// and gog pattern. Legitimate and already proven.
 	AuthCLI AuthKind = "cli"
 )
 

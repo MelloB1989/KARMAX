@@ -1,5 +1,5 @@
 // Package hostpaths resolves the external binaries and directories KARMAX
-// shells out to (wacli, gws, its own CLI, the default working dir). Nothing is
+// shells out to (wacli, gog, its own CLI, the default working dir). Nothing is
 // hardcoded to a specific user: every path resolves via, in order,
 //  1. an explicit environment variable (set it in .env to override),
 //  2. a PATH lookup,
@@ -13,21 +13,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
 
 var (
-	wacliOnce  sync.Once
-	wacliPath  string
-	gwsOnce    sync.Once
-	gwsPath    string
-	binOnce    sync.Once
-	binPath    string
-	workOnce   sync.Once
-	workDir    string
-	wacliAPIMu sync.Once
-	wacliAPI   string
+	wacliOnce   sync.Once
+	wacliPath   string
+	gogOnce     sync.Once
+	gogPath     string
+	browserOnce sync.Once
+	browserPath string
+	binOnce     sync.Once
+	binPath     string
+	workOnce    sync.Once
+	workDir     string
+	wacliAPIMu  sync.Once
+	wacliAPI    string
 )
 
 // Wacli returns the wacli binary path: $KARMAX_WACLI_PATH, then PATH, then
@@ -40,13 +43,82 @@ func Wacli() string {
 	return wacliPath
 }
 
-// GWS returns the Google Workspace CLI path: $KARMAX_GWS_PATH, then PATH, then
-// ~/.hermes/node/bin/gws and ~/.local/bin/gws.
-func GWS() string {
-	gwsOnce.Do(func() {
-		gwsPath = resolve("KARMAX_GWS_PATH", "gws", ".hermes/node/bin/gws", ".local/bin/gws")
+// Gog returns the Google Workspace CLI path: $KARMAX_GOG_PATH, then PATH, then
+// the places a Go install and a Homebrew install put it.
+//
+// gogcli is the only Google CLI KARMAX knows about. The gws it replaced could
+// only do interactive browser OAuth against a Workspace whose reauth policy
+// logs an unattended process out every few hours — see
+// internal/tools/builtin/gog.go. It is also one fewer runtime on the host: gws
+// was an npm package and needed Node, while gogcli ships a static binary per
+// platform and builds with `go install`.
+func Gog() string {
+	gogOnce.Do(func() {
+		gogPath = resolve("KARMAX_GOG_PATH", "gog", "go/bin/gog", ".local/bin/gog")
 	})
-	return gwsPath
+	return gogPath
+}
+
+// Browser returns a Chromium-family browser this machine already has:
+// $KARMAX_BROWSER_PATH, then PATH, then where each platform installs Chrome,
+// Chromium and Edge. Empty when there is none.
+//
+// Chromium-family specifically, because the agent reaches the browser over the
+// DevTools protocol and Firefox and Safari do not speak it. Empty rather than a
+// bare name, because "no browser on this machine" is a thing the caller has to
+// tell somebody about, not a command to fail at later.
+func Browser() string {
+	browserOnce.Do(func() { browserPath = findBrowser() })
+	return browserPath
+}
+
+func findBrowser() string {
+	if v := strings.TrimSpace(os.Getenv("KARMAX_BROWSER_PATH")); v != "" {
+		return v
+	}
+	for _, name := range []string{
+		"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+		"microsoft-edge", "microsoft-edge-stable", "brave-browser",
+	} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	home, _ := os.UserHomeDir()
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		for _, app := range []string{
+			"Google Chrome.app/Contents/MacOS/Google Chrome",
+			"Chromium.app/Contents/MacOS/Chromium",
+			"Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			"Brave Browser.app/Contents/MacOS/Brave Browser",
+		} {
+			candidates = append(candidates, filepath.Join("/Applications", app))
+			if home != "" {
+				candidates = append(candidates, filepath.Join(home, "Applications", app))
+			}
+		}
+	case "windows":
+		for _, root := range []string{
+			os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA"),
+		} {
+			if root == "" {
+				continue
+			}
+			candidates = append(candidates,
+				filepath.Join(root, "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+				filepath.Join(root, "Chromium", "Application", "chrome.exe"),
+			)
+		}
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // KarmaxBin returns the karmax CLI path that delegated harnesses (Claude Code)
@@ -90,6 +162,33 @@ func WorkDir() string {
 		workDir = "."
 	})
 	return workDir
+}
+
+// ResetWorkDirForTest clears WorkDir's memoized answer so the next call
+// re-reads $KARMAX_WORKDIR from scratch.
+//
+// WorkDir() is memoized once per process (see the package doc), which is
+// right for production but wrong for a cross-package test: whichever test
+// calls WorkDir() first, in whatever package, fixes the answer for every
+// test in that binary from then on. This exists so a test can stand a temp
+// directory in for the shared root deterministically, regardless of what
+// ran before it. Test-only: never call it from non-test code.
+func ResetWorkDirForTest() {
+	workOnce = sync.Once{}
+}
+
+// Resolve turns a working_dir value into an absolute path. Empty means the
+// shared default; an absolute path is used verbatim; anything else is a
+// subdirectory of WorkDir() rather than a path from the process's own
+// working directory, which is undefined for a daemon with no terminal.
+func Resolve(dir string) string {
+	if dir == "" {
+		return WorkDir()
+	}
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(WorkDir(), dir)
 }
 
 // WacliAPIURL returns the base URL of the local wacli HTTP API:

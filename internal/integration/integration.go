@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
 
@@ -88,6 +89,9 @@ type Registry struct {
 	order  []string
 	status map[string]Status
 	creds  *Resolver
+	// policy is what karmax.yaml says this install manages. The zero value
+	// manages everything, so a caller that never sets it behaves as before.
+	policy config.RegistryConfig
 }
 
 // NewRegistry builds a registry over a credential resolver.
@@ -99,11 +103,52 @@ func NewRegistry(r *Resolver) *Registry {
 	}
 }
 
+// Manage limits what Register will accept, from karmax.yaml's `integrations:`.
+//
+// Set once, before anything is registered. Filtered here rather than at each
+// call site so an integration added later is covered without anybody
+// remembering to cover it.
+func (r *Registry) Manage(policy config.RegistryConfig) {
+	r.mu.Lock()
+	r.policy = policy
+	r.mu.Unlock()
+}
+
+// Declared returns the names the operator wrote, for a caller that wants to
+// warn about ones this build does not have.
+func (r *Registry) Declared() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.policy.Declared()
+}
+
+// Known reports whether an id — or the provider half of one — was registered.
+func (r *Registry) Known(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	name = strings.ToLower(strings.TrimSpace(name))
+	for id := range r.byID {
+		if strings.ToLower(id) == name {
+			return true
+		}
+		if base, _, found := strings.Cut(id, ":"); found && strings.ToLower(base) == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Register adds an integration. Registering twice replaces, so a channel and a
 // connector cannot both claim an id and silently disagree.
 func (r *Registry) Register(in Integration) {
 	id := in.Manifest().ID
 	if strings.TrimSpace(id) == "" {
+		return
+	}
+	r.mu.RLock()
+	managed := r.policy.Manages(id)
+	r.mu.RUnlock()
+	if !managed {
 		return
 	}
 	r.mu.Lock()

@@ -17,6 +17,10 @@ type KarmaxConfig struct {
 	Loops    []LoopConfig          `yaml:"loops"`
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 	Harness  HarnessConfig         `yaml:"harness"`
+	// Which services this install manages. Omitted means every one compiled
+	// in, so an upgrade never switches somebody's integrations off.
+	Connectors   RegistryConfig `yaml:"connectors"`
+	Integrations RegistryConfig `yaml:"integrations"`
 }
 
 // HarnessConfig runs coding harnesses as long-lived conversations.

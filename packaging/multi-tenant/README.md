@@ -17,7 +17,7 @@ karmax-tenant list             # every tenant, its ports and status
 |---|---|
 | KARMAX state | `~/.karmax/tenants/<name>` (`KARMAX_DATA_DIR`) |
 | WhatsApp session | `~/.wacli/tenants/<name>` (`WACLI_HOME`) |
-| Google credentials | `~/.config/gws/tenants/<name>` (`GOOGLE_WORKSPACE_CLI_CONFIG_DIR`) |
+| Google credentials | `~/.config/gogcli` per tenant (`GOG_HOME`) |
 | Env file | `~/.config/karmax/tenants/<name>.env` (mode 600) |
 | KARMAX API | `9200 + index` |
 | Webhook receiver | `9300 + index` |
@@ -28,7 +28,7 @@ Indices are reused when a tenant is removed, so ports stay compact.
 
 ## Google, specifically
 
-`gws` stores credentials in the OS keyring by default — which is **per OS user**,
+`gog` stores credentials in the OS keyring by default — which is **per OS user**,
 so tenants would overwrite each other. Each tenant therefore gets
 `GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file` plus its own config dir, keeping the
 tokens separate on disk.

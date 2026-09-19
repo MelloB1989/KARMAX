@@ -147,6 +147,31 @@ type Options struct {
 	// or on the next resume — never mid-conversation, which is not a thing a
 	// running process can do.
 	Model string
+	// Thinking asks for the reasoning stream, which is off by default.
+	//
+	// Applied when the process is spawned, so like Model it takes effect on a
+	// new session or on the next resume. A conversation is a session, which is
+	// why per-conversation is the granularity this can honestly offer.
+	Thinking bool
+	// Effort is the CLI's --effort level for this turn. Empty means no flag
+	// at all, not some CLI-chosen default named "". Like Model, a live session
+	// spawned with a different value is closed and respawned with --resume
+	// before this turn runs — see open().
+	Effort string
+	// SessionID names a new session rather than letting one be minted.
+	//
+	// The chat needs the id it hands a client to BE the id of the transcript
+	// on disk, because a conversation is its harness session: an id the caller
+	// cannot predict is a conversation it can never list, reopen or delete.
+	// Ignored when an existing session is being resumed — that one already has
+	// an id, and it wins.
+	SessionID string
+	// OnEvent watches the turn as it happens. Nil behaves exactly as before,
+	// which is what keeps every existing caller out of this change.
+	OnEvent func(Event)
+	// MCPConfig grants the tools in this JSON --mcp-config blob, such as the
+	// operator's browser. Empty grants none.
+	MCPConfig string
 }
 
 // Send is the whole caller-facing surface: give it a key and a message.
@@ -178,7 +203,7 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 		return Turn{}, err
 	}
 
-	turn, err := sess.Send(ctx, text, pol.TurnTimeout)
+	turn, err := sess.Send(ctx, text, pol.TurnTimeout, opt.OnEvent)
 
 	// Quota is reported per turn, so the breaker learns from every call
 	// including the ones that fail.
@@ -213,22 +238,64 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	return turn, nil
 }
 
+// needsRespawn reports whether a live session must restart before this turn
+// to honour the model and effort the turn itself asked for.
+//
+// Only a turn's own request counts. The policy's model moves whenever the
+// breaker degrades or restores a tier, and a warm session is deliberately kept
+// through that (see open) — so a turn naming no model changes nothing, unless
+// an earlier turn pinned the session to one, which "no model" now undoes.
+func needsRespawn(sess *Session, model, effort string) bool {
+	if effort != sess.Effort {
+		return true
+	}
+	if model != "" {
+		return model != sess.Model
+	}
+	return sess.Pinned
+}
+
 // open returns a usable session, reusing, resuming or creating in that order.
 //
 // The order is the crash-safety story. A live process is reused; a dead one
 // whose transcript we know is resumed, which brings its context back; only a
 // genuinely new key starts cold.
 func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt Options) (*Session, error) {
+	requested := strings.TrimSpace(opt.Model)
+	wantModel := pol.Model
+	if requested != "" {
+		wantModel = requested
+	}
+	wantEffort := strings.TrimSpace(opt.Effort)
+
 	// A live process is reused whatever model it was started on. Killing a warm
 	// session to change tier would pay ~12.7k tokens of cold start to save a
 	// fraction of one turn, which is the opposite of what degrading is for.
+	//
+	// That does NOT hold when the turn itself asked for a different --model or
+	// --effort (needsRespawn): the CLI reads both once, at spawn, so the session
+	// is closed and falls through to the resume path below — the CLI session id
+	// and its transcript survive, only the process restarts with new flags. A
+	// session mid-turn is never closed for this; its next turn switches.
 	s.mu.Lock()
 	if sess, ok := s.live[key]; ok && sess.Alive() {
+		if sess.Busy() || !needsRespawn(sess, requested, wantEffort) {
+			// Claimed here, under the same lock CloseIfIdle checks Busy() under —
+			// not left for Send to set once it starts. The caller unlocks and
+			// returns this pointer to whoever asked, who then calls Send in its
+			// own time; without the claim, the session sits in s.live looking
+			// idle for that whole gap, and a concurrent CloseIfIdle can win it.
+			sess.claim()
+			s.mu.Unlock()
+			return sess, nil
+		}
+		delete(s.live, key)
 		s.mu.Unlock()
-		return sess, nil
+		sess.Close()
+	} else {
+		delete(s.live, key)
+		s.mu.Unlock()
 	}
-	delete(s.live, key)
-	s.mu.Unlock()
 
 	rec, err := s.store.GetHarnessSession(key)
 	if err != nil {
@@ -237,21 +304,21 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 
 	resume := rec != nil && rec.HarnessSessionID != ""
 	id := ""
-	if resume {
+	switch {
+	case resume:
 		id = rec.HarnessSessionID
-	} else {
+	case strings.TrimSpace(opt.SessionID) != "":
+		id = strings.TrimSpace(opt.SessionID)
+	default:
 		id = uuid.New().String()
 	}
 
-	model := pol.Model
-	if m := strings.TrimSpace(opt.Model); m != "" {
-		model = m
-	}
 	workdir := strings.TrimSpace(opt.Workdir)
 	if workdir == "" {
 		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
 	}
-	sess := &Session{Key: key, Kind: kind, ID: id, Model: model}
+	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
+		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig}
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
 	// sweep can find; the reverse leaves a process nothing knows about.
@@ -261,7 +328,7 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 		started = rec.StartedAt
 	}
 	if err := s.store.SaveHarnessSession(SessionRecord{
-		Key: key, HarnessSessionID: id, Kind: kind, Model: model,
+		Key: key, HarnessSessionID: id, Kind: kind, Model: wantModel,
 		State: HarnessStarting, Workdir: workdir,
 		StartedAt: started, LastActivityAt: now,
 	}); err != nil {
@@ -283,23 +350,35 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	}
 
 	_ = s.store.SaveHarnessSession(SessionRecord{
-		Key: key, HarnessSessionID: sess.ID, Kind: kind, Model: model,
+		Key: key, HarnessSessionID: sess.ID, Kind: kind, Model: wantModel,
 		PID: sess.PID(), State: HarnessLive, Workdir: workdir,
 		StartedAt: started, LastActivityAt: time.Now(),
 	})
 
 	s.mu.Lock()
+	sess.claim() // same reasoning as the reuse path above
 	s.live[key] = sess
 	s.mu.Unlock()
 
 	s.log.Info("harness: session open", "key", key, "kind", kind,
-		"model", model, "resumed", resume, "pid", sess.PID())
+		"model", wantModel, "resumed", resume, "pid", sess.PID())
 	return sess, nil
 }
 
 // evictIfFull makes room by closing the least recently used session.
 //
 // Without a cap, one busy chat spawns processes until the machine gives out.
+//
+// Picks its victim with CloseIfIdle, not a bare Busy check followed by
+// Close: a session that looked idle when this loop read Busy(key) can start
+// a brand new, unrelated turn before the loop gets around to closing it —
+// evicting one conversation's cold start would then kill a completely
+// different conversation's in-flight turn. CloseIfIdle closes the TOCTOU
+// gap by checking Busy and removing the session from the live table in one
+// critical section, so there is nothing for a concurrent open() to land in
+// between. A candidate that loses that race (goes busy first) is simply
+// skipped, exactly as if it had looked busy from the start — the next LRU
+// candidate is tried instead.
 func (s *Supervisor) evictIfFull() {
 	s.mu.Lock()
 	over := len(s.live) >= s.cfg.MaxLive
@@ -313,23 +392,72 @@ func (s *Supervisor) evictIfFull() {
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].LastActivityAt.Before(recs[j].LastActivityAt) })
 	for _, r := range recs {
-		if s.busy(r.Key) {
-			continue // still working; evicting it would kill the turn
+		if s.CloseIfIdle(r.Key) {
+			s.log.Info("harness: at the session cap, evicted the least recently used", "key", r.Key)
+			return
 		}
-		s.log.Info("harness: at the session cap, evicting the least recently used", "key", r.Key)
-		s.Close(r.Key)
-		return
 	}
+	// Every live-or-idle session is genuinely busy right now, not merely
+	// idle-looking. Decision: exceed MaxLive rather than force a close —
+	// closing any of them here would either race the exact TOCTOU this
+	// function exists to avoid (if picked before it finishes its own turn)
+	// or kill a turn outright (if picked correctly, while busy). A session
+	// finishing its turn naturally, a moment later, is a far cheaper fix
+	// than a killed turn, and the cap is a soft resource limit, not a
+	// correctness one.
 	s.log.Warn("harness: at the session cap and every session is busy; not evicting")
 }
 
-// Close ends a session. Ephemeral kinds forget it entirely.
+// Close ends a session unconditionally. Ephemeral kinds forget it entirely.
 func (s *Supervisor) Close(key string) {
 	s.mu.Lock()
 	sess := s.live[key]
 	delete(s.live, key)
 	s.mu.Unlock()
+	s.teardown(key, sess)
+}
 
+// CloseIfIdle closes key only if it is not busy, checking Busy and removing
+// it from the live table in the same critical section — so nothing can
+// start a turn on it in the gap between deciding it is safe to close and
+// actually closing it, the way a separate Busy() call followed by Close()
+// could. Reports whether it actually closed (or cleaned up) anything.
+//
+// This alone is not the whole fix: it is only as safe as Busy() is
+// up-to-date, and open() is what keeps it that way — claiming a session busy
+// under s.mu the moment it is handed back for reuse, not leaving that for
+// Send to do once it gets around to running. See Session.claim.
+//
+// A key not present in the live table at all (ok is false) is not a reason
+// to refuse: nothing is running, so there is no turn to protect and no
+// TOCTOU to have — Reap and evictIfFull both iterate the STORE's Live/Idle
+// rows, which can name a key the live table no longer has an entry for
+// (already dead, never re-added). Treating that as "safe to close" runs
+// teardown with a nil session, which only reconciles the store's state; the
+// alternative — refusing and leaving the row claiming Live forever — is
+// worse than either scanning is worth guarding against.
+//
+// Shares Close's own shape for the slow part: the map mutation happens under
+// s.mu, the actual teardown (sess.Close(), which waits up to 3s for a SIGINT
+// before SIGKILL) happens after releasing it, so one stuck process being torn
+// down never blocks every other session — including a concurrent open() on
+// a different key.
+func (s *Supervisor) CloseIfIdle(key string) bool {
+	s.mu.Lock()
+	sess, ok := s.live[key]
+	if ok && sess.Busy() {
+		s.mu.Unlock()
+		return false
+	}
+	delete(s.live, key)
+	s.mu.Unlock()
+	s.teardown(key, sess) // sess is nil when !ok; teardown already handles that
+	return true
+}
+
+// teardown is the slow, unlocked part Close and CloseIfIdle share: stop the
+// process, then record or forget the session.
+func (s *Supervisor) teardown(key string, sess *Session) {
 	if sess != nil {
 		sess.Close()
 	}
@@ -344,8 +472,9 @@ func (s *Supervisor) Close(key string) {
 	_ = s.store.SetHarnessState(key, HarnessClosed, "", time.Now())
 }
 
-// busy reports whether a session has a turn in flight.
-func (s *Supervisor) busy(key string) bool {
+// Busy reports whether a session has a turn in flight, so a caller outside
+// this package can tell a live session from one safe to close.
+func (s *Supervisor) Busy(key string) bool {
 	s.mu.Lock()
 	sess := s.live[key]
 	s.mu.Unlock()
@@ -364,6 +493,15 @@ func (s *Supervisor) kill(key, state, reason string) {
 }
 
 // Reap closes sessions that have gone quiet past their kind's idle window.
+//
+// Runs every minute, against every session (startHarnessReaper), so this is
+// the call site F1 called the most dangerous of the two: closes via
+// CloseIfIdle, not a bare Busy check followed by Close, for the same reason
+// evictIfFull does — a session that was idle when LastActivityAt was read
+// can start a fresh turn before the close actually happens, and a plain
+// Busy-then-Close has no way to notice that in between. A session that
+// loses that race is simply left alone; being a minute past its idle
+// window is not going anywhere, so the next tick reaps it instead.
 func (s *Supervisor) Reap(now time.Time) {
 	recs, err := s.store.ListHarnessSessions(HarnessLive, HarnessIdle)
 	if err != nil {
@@ -371,19 +509,16 @@ func (s *Supervisor) Reap(now time.Time) {
 	}
 	for _, r := range recs {
 		pol := s.policy(r.Kind)
-		if pol.Idle <= 0 {
+		if pol.Idle <= 0 || now.Sub(r.LastActivityAt) <= pol.Idle {
 			continue
 		}
-		if s.busy(r.Key) {
-			// A long turn does not update LastActivityAt until it finishes, so
-			// without this the reaper closes the session doing the most work.
-			continue
-		}
-		if now.Sub(r.LastActivityAt) > pol.Idle {
-			s.log.Info("harness: closing an idle session", "key", r.Key,
+		if s.CloseIfIdle(r.Key) {
+			s.log.Info("harness: closed an idle session", "key", r.Key,
 				"idle_for", now.Sub(r.LastActivityAt).Round(time.Second).String())
-			s.Close(r.Key)
 		}
+		// Busy sessions are left for the next tick, a minute later — a long
+		// turn does not update LastActivityAt until it finishes, so without
+		// this the reaper would go after the session doing the most work.
 	}
 }
 
@@ -435,7 +570,12 @@ func (s *Supervisor) policy(kind string) Policy {
 	if p, ok := s.cfg.Policies[kind]; ok {
 		return withDefaults(p)
 	}
-	return withDefaults(Policy{})
+	// Same footgun as CheapModel itself (harnesshost.go): a kind nobody
+	// configured must not fall through to whatever the CLI defaults to.
+	// Cheap-by-default applies to every unconfigured kind, chat included --
+	// an operator who wants better for one pins it, and that config always
+	// wins over this fallback.
+	return withDefaults(Policy{Model: s.cfg.CheapModel})
 }
 
 func withDefaults(p Policy) Policy {

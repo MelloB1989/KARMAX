@@ -107,5 +107,17 @@ func report(ctx context.Context, cr connectorkit.Credentials, taskID string, bod
 	return out, err
 }
 
+// question parks a claimed task on something only the operator can answer,
+// instead of closing it. Unlike report, this is not terminal: LYZN keeps the
+// task pinned to this machine, and lyzn.work.claim resumes it — the same
+// call already used to take the task in the first place — once the question
+// has an answer.
+func question(ctx context.Context, cr connectorkit.Credentials, taskID string, body map[string]any) (map[string]any, error) {
+	var out map[string]any
+	err := send(ctx, cr, http.MethodPost,
+		"/daemons/work/"+url.PathEscape(taskID)+"/question", body, &out)
+	return out, err
+}
+
 // nowISO is the format every timestamp in this API speaks.
 func nowISO() string { return time.Now().UTC().Format(time.RFC3339) }

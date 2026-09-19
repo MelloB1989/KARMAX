@@ -65,7 +65,7 @@ session, and explicit save/search/forget/profile tools.
 | G5 | **Profile is one static blob.** ABOUT_ME.md mixes "who I am" with "what I'm doing this week"; the dynamic half goes stale between 12h profile-refresh runs. | supermemory static/dynamic split |
 | G6 | **Automations aren't self-proposing.** The loops marketplace exists, but nothing watches usage and says "you ask for this every Monday — install/schedule it?" | hermes suggestions |
 | G7 | **Episodes vanish.** Chat compaction summarizes-and-discards; sessions are never ingested as retrievable episodes. | supermemory conversations endpoint |
-| G8 | **Digital-life coverage is partial.** WhatsApp (deep), Google Chat, calendar/reminders, Google Workspace via gws. Missing as first-class surfaces: email triage, GitHub, browsing/research on a schedule, and a learned *voice* for writing as the operator. | — |
+| G8 | **Digital-life coverage is partial.** WhatsApp (deep), Google Chat, calendar/reminders, Google Workspace via gog. Missing as first-class surfaces: email triage, GitHub, browsing/research on a schedule, and a learned *voice* for writing as the operator. | — |
 
 ---
 
@@ -159,7 +159,7 @@ the approvals inbox, so it lands in familiar UX.
   recurring asks and repeated manual actions → proposes loops. ("You've asked
   for a CampX payment status 4 Mondays running — want a Monday-morning
   check-in loop?")
-- `integration-scan`: notices reachable tools (gws authed? gh authed? new
+- `integration-scan`: notices reachable tools (gog authed? gh authed? new
   wacli chats monitored?) → proposes the obvious automations from the
   marketplace catalog (`default`-tagged loops it doesn't have installed).
 - Marketplace catalog: `karmax loops browse` data, surfaced in the app.
@@ -175,7 +175,7 @@ where it's deterministic (propose-tool kinds), injected where it's judgment.
 
 | Loop | Trigger | What it does |
 | --- | --- | --- |
-| `mail-triage` | every 15m (gws) | New-mail sweep: junk→skip, FYI→digest, needs-reply→APPROVE with draft in operator's voice, operator-only→REMIND. The missing sibling of `wa-monitor`. |
+| `mail-triage` | every 15m (gog) | New-mail sweep: junk→skip, FYI→digest, needs-reply→APPROVE with draft in operator's voice, operator-only→REMIND. The missing sibling of `wa-monitor`. |
 | `calendar-prep` | 07:30 daily | For each meeting today: pull related memory/episodes/chat context → briefing note per meeting. |
 | `gh-watch` | event/webhook | Mentions, review requests, failing CI on owned repos → act (claude_code) or APPROVE. `gchat-watch` pattern applied to GitHub. |
 | `commitment-tracker` | daily | Cross-references promises in memory ("X said they'd get back by Friday") against reality; nudges or REMINDs. |
@@ -217,7 +217,7 @@ chats feed **third-party text straight into a harness running with
 | **Async delegation via completion queue** — `delegate_task(background=true)` returns a handle; the child runs on a daemon executor; completion is pushed to a queue and surfaces as a **new turn when the agent is idle** — never spliced mid-turn, prompt-cache safe. | `claude_code.call` **blocks the agent's single inbox worker for up to 10 minutes** — during a long delegation the clone is deaf to every WhatsApp message and loop event. Add `background: true` to claude_code.call: return a job id, run in a goroutine, publish `delegation.completed` on the bus (agent-routed) with task+result. The event-trigger machinery for this already exists. Biggest responsiveness win available. |
 | **IterationBudget** — hard per-turn tool-iteration caps (90 parent / 50 subagent) with graceful budget-exhaustion summary. | Cap `karmahelper.Session` tool loops; on exhaustion, summarize state honestly instead of erroring. Also caps runaway-loop token burn. |
 | **todo tool** — in-session task list the agent maintains; **re-injected after every context compression** so multi-step plans survive compaction. | KARMAX's agent has no working plan that survives compaction. A `plan` agent tool (persisted per-agent in the store, injected into dynamic context like coding sessions are) closes it. |
-| **tool_search (progressive disclosure)** — when deferrable tool schemas exceed ~10% of the context window, they're replaced by search/describe/call bridge tools. Core tools never defer. | The nexus agent ships ~24 tool schemas to a mini model every turn. Defer the long tail (`google_workspace.schema`, `wacli`, `whatsapp.monitor`, MCP tools) behind a `tool.find` bridge once the count grows; keep act-critical tools always-on. Worth it at ~30+ tools, not before. |
+| **tool_search (progressive disclosure)** — when deferrable tool schemas exceed ~10% of the context window, they're replaced by search/describe/call bridge tools. Core tools never defer. | The nexus agent ships ~24 tool schemas to a mini model every turn. Defer the long tail (`google.schema`, `wacli`, `whatsapp.monitor`, MCP tools) behind a `tool.find` bridge once the count grows; keep act-critical tools always-on. Worth it at ~30+ tools, not before. |
 | **session_search (FTS5)** — 3-mode recall over the raw conversation DB (discovery/scroll/browse), zero LLM cost. | KARMAX's `memory.retrieve` searches *distilled* memory only; raw history is unreachable. Add SQLite FTS5 over `chat_store` + `app_message_store` + episode records, exposed as a `history.search` tool (and via `karmax history search`). Pairs with roadmap 1d. |
 | **write_approval staging** — background-review writes can be gated: staged to a pending store, surfaced for out-of-band approve/reject. | Wire the Phase-2a background review into the **existing approvals/suggestions UX** for its first weeks ("KARMAX wants to remember: …"), then relax to auto-write once trusted. Solves cold-start trust in the learning loop. |
 

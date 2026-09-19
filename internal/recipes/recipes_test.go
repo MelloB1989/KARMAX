@@ -693,3 +693,172 @@ steps:
 		}
 	}
 }
+
+// A grant that does not parse is refused where it is written.
+//
+// The alternative is a step that fails at run time, hours later, in a log
+// nobody is reading — which is exactly how `grants:` came to be parsed,
+// rendered for the operator, and honoured by nothing at all.
+func TestGrantsMustNameACapabilityAndAValue(t *testing.T) {
+	body := func(grants string) []byte {
+		return []byte(`name: probe
+on:
+  schedule: "0 */5 * * * *"
+grants:
+` + grants + `
+steps:
+  - log: hello
+`)
+	}
+
+	if _, err := Parse("probe.yaml", body("  - http:api.example.com")); err != nil {
+		t.Fatalf("a well-formed grant was refused: %v", err)
+	}
+	if _, err := Parse("probe.yaml", body("  - tool:app.push")); err != nil {
+		t.Fatalf("a well-formed grant was refused: %v", err)
+	}
+
+	for _, bad := range []string{"  - http", "  - \"http:\"", "  - \":api.example.com\""} {
+		if _, err := Parse("probe.yaml", body(bad)); err == nil {
+			t.Errorf("%q was accepted as a grant", strings.TrimSpace(bad))
+		}
+	}
+}
+
+// The grants a recipe declares are the ones an operator is shown.
+func TestDescribeNamesEveryGrant(t *testing.T) {
+	r, err := Parse("probe.yaml", []byte(`name: probe
+on:
+  schedule: "0 */5 * * * *"
+grants:
+  - http:api.example.com
+  - tool:app.push
+steps:
+  - log: hello
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	said := strings.Join(Describe(r), "\n")
+	for _, want := range []string{"http:api.example.com", "tool:app.push"} {
+		if !strings.Contains(said, want) {
+			t.Errorf("Describe never mentions %q:\n%s", want, said)
+		}
+	}
+}
+
+// harnessRecordingKit records what HarnessWith/HarnessForget were called
+// with, so a test can assert on the spec rather than only on the reply.
+type harnessRecordingKit struct {
+	*DryRun
+	specs     []loopkit.HarnessSpec
+	forgotten []string
+}
+
+func (k *harnessRecordingKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (loopkit.HarnessResult, error) {
+	k.specs = append(k.specs, spec)
+	return k.DryRun.HarnessWith(ctx, spec)
+}
+
+func (k *harnessRecordingKit) HarnessForget(sessionID, workingDir string) error {
+	k.forgotten = append(k.forgotten, sessionID+"@"+workingDir)
+	return k.DryRun.HarnessForget(sessionID, workingDir)
+}
+
+func TestHarnessObjectFormCarriesSessionAndWorkdirThroughHarnessWith(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - harness:
+      text: "do the thing"
+      session_id: "lyzn:t1"
+      working_dir: "lyzn-tasks/t1"
+      ephemeral: "false"
+    as: reply
+`)
+	k := &harnessRecordingKit{DryRun: NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual})}
+	if err := Run(context.Background(), r, k); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.specs) != 1 {
+		t.Fatalf("got %d HarnessWith calls, want 1", len(k.specs))
+	}
+	got := k.specs[0]
+	if got.SessionID != "lyzn:t1" || got.WorkingDir != "lyzn-tasks/t1" || got.Ephemeral {
+		t.Errorf("spec = %+v, want session=lyzn:t1 workdir=lyzn-tasks/t1 ephemeral=false", got)
+	}
+}
+
+func TestHarnessPlainStringFormNeverTouchesHarnessWith(t *testing.T) {
+	// Every recipe that never wrote session_id/working_dir keeps calling
+	// plain Harness — the common case's shape must not change.
+	r := mustParse(t, "name: x\non:\n  manual: true\nsteps:\n  - harness: do the thing\n    as: reply\n")
+	k := &harnessRecordingKit{DryRun: NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual})}
+	if err := Run(context.Background(), r, k); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.specs) != 0 {
+		t.Fatalf("got %d HarnessWith calls, want 0", len(k.specs))
+	}
+}
+
+func TestHarnessForgetCallsThroughWithBothFields(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - harness.forget:
+      session_id: "lyzn:t1"
+      working_dir: "lyzn-tasks/t1"
+`)
+	k := &harnessRecordingKit{DryRun: NewDryRun(loopkit.Trigger{Kind: loopkit.TriggerManual})}
+	if err := Run(context.Background(), r, k); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.forgotten) != 1 || k.forgotten[0] != "lyzn:t1@lyzn-tasks/t1" {
+		t.Fatalf("forgotten = %v, want one call for lyzn:t1@lyzn-tasks/t1", k.forgotten)
+	}
+}
+
+func TestContainsIsAvailableInWhenConditions(t *testing.T) {
+	r := mustParse(t, `
+name: x
+on:
+  manual: true
+steps:
+  - when: '{{ contains .reply "STATUS: blocked" }}'
+    notify: { title: "BLOCKED-BRANCH" }
+    else:
+      - notify: { title: "OTHER-BRANCH" }
+`)
+	k := NewDryRun(loopkit.Trigger{
+		Kind:    loopkit.TriggerManual,
+		Payload: map[string]any{"reply": "STATUS: blocked\nSUMMARY: need a password"},
+	})
+	if err := Run(context.Background(), r, k); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(k.Report(), "BLOCKED-BRANCH") || strings.Contains(k.Report(), "OTHER-BRANCH") {
+		t.Errorf("a STATUS: blocked reply did not take the contains branch:\n%s", k.Report())
+	}
+}
+
+func TestBoolArg(t *testing.T) {
+	cases := []struct {
+		in   string
+		def  bool
+		want bool
+	}{
+		{"true", false, true}, {"false", true, false},
+		{"", true, true}, {"", false, false},
+		{"yes", false, true}, {"nonsense", true, true},
+	}
+	for _, c := range cases {
+		if got := boolArg(c.in, c.def); got != c.want {
+			t.Errorf("boolArg(%q, %v) = %v, want %v", c.in, c.def, got, c.want)
+		}
+	}
+}

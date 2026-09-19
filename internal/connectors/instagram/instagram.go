@@ -2,47 +2,73 @@
 //
 // READ THIS BEFORE ENABLING IT.
 //
-// Instagram has no API for a personal account. goinsta works by impersonating
-// the mobile app against Instagram's private endpoints, which means:
+// Instagram has no API for a personal account. This works by impersonating the
+// mobile app against Instagram's private endpoints, which means:
 //
 //   - It is against Instagram's terms of use. Accounts get restricted, and
 //     sometimes disabled, for automated access.
 //   - It breaks when Instagram changes anything, with no notice and no
 //     deprecation period.
-//   - The login is a real password (and a real 2FA seed), not a scoped token
-//     that can be revoked without changing the account's own credentials.
+//   - Signing in costs a real password (and a real 2FA seed), not a scoped
+//     token that can be revoked without changing the account's own credentials
+//     — unless you use the session route below, which costs neither.
 //
 // So this connector is deliberately the most conservative in KARMAX: disabled
-// unless explicitly enabled, read-only by default, and it says all of the above
-// at `karmax login instagram` rather than burying it in a comment nobody reads.
-// The session is cached so that enabling it costs one login rather than one per
-// call — repeated logins are what gets an account flagged fastest.
+// unless explicitly enabled, read-only, and it says all of the above at
+// `karmax login instagram` rather than burying it in a comment nobody reads.
+//
+// # Why there is a Python process behind this
+//
+// The client that actually keeps up with Instagram's private API is instagrapi,
+// and it is Python. Rather than reimplement years of other people's
+// reverse-engineering in Go and fall behind it immediately, KARMAX runs it as a
+// child process and talks to it over a pipe — see helper.go. The environment
+// for it is fetched on first use, not shipped, so an install that never enables
+// this connector never pays for it.
+//
+// # The session route
+//
+// `sessionid` is the cookie from a browser the operator is already signed into.
+// It is the preferred way in: no password is stored, no login flow runs, and
+// the account is not asked to authenticate a second time — repeated logins are
+// the strongest automation signal Instagram has. It is also the only route that
+// matches how somebody actually connects Instagram in the LYZN desktop app,
+// which signs them in through the shared browser and never collects a password.
 package instagram
 
 import (
 	"context"
 	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 	"unicode"
 
-	"github.com/Davincible/goinsta/v3"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
 
 // Connector is one Instagram account.
 type Connector struct {
-	mu      sync.Mutex
-	client  *goinsta.Instagram
-	loginAt time.Time
+	mu sync.Mutex
+	h  *helper
+
+	// ledger records who has already been contacted. Nil means sending is
+	// unavailable, which is the default.
+	ledger Ledger
+
+	// allowed is the passthrough's read allowlist, fetched from the helper once
+	// and kept. Cached so that refusing a write costs nothing and — more to the
+	// point — can be refused before asking anybody to sign in: "that is
+	// read-only" teaches the boundary, where "you are not signed in" sends the
+	// caller off to fix the wrong thing.
+	allowedOnce sync.Once
+	allowedSet  map[string]bool
 }
 
-func New() *Connector { return &Connector{} }
+func New() *Connector { return &Connector{h: &helper{}} }
 
 func (c *Connector) Manifest() connectorkit.Manifest {
 	return connectorkit.Manifest{
@@ -53,14 +79,20 @@ func (c *Connector) Manifest() connectorkit.Manifest {
 		Capabilities: []string{"http:i.instagram.com", "http:b.i.instagram.com"},
 		Config: []connectorkit.ConfigField{
 			{Key: "username", Description: "The account's username", Required: true},
-			{Key: "password", Description: "The account's password — stored by KARMAX, not a revocable token", Required: true, Secret: true},
-			{Key: "totp_seed", Description: "The 2FA seed, if the account has two-factor enabled", Secret: true},
+			{Key: "sessionid", Description: "The sessionid cookie from a browser you are already " +
+				"signed into. Preferred: no password is stored and no second login happens.", Secret: true},
+			{Key: "password", Description: "The account's password — only needed without a sessionid, " +
+				"and stored by KARMAX rather than being a revocable token", Secret: true},
+			{Key: "totp_seed", Description: "The 2FA seed, if the account has two-factor enabled " +
+				"and you are signing in with a password", Secret: true},
 		},
 	}
 }
 
 // Auth is a password, which is the whole problem with this integration and is
-// stated rather than dressed up as something safer.
+// stated rather than dressed up as something safer. A sessionid is no better in
+// kind — it is a bearer credential for the whole account — but it is at least
+// one the operator can revoke by logging out, without changing their password.
 func (c *Connector) Auth() connectorkit.AuthMethod {
 	return connectorkit.AuthMethod{Kind: connectorkit.AuthAPIKey, APIKeyField: "password"}
 }
@@ -70,11 +102,11 @@ func (c *Connector) Health(ctx context.Context, cr connectorkit.Credentials) err
 		return fmt.Errorf("instagram is off — it uses an unofficial API that can get the account " +
 			"restricted, so it stays off until KARMAX_ENABLE_INSTAGRAM=true is set")
 	}
-	client, err := c.connect(cr)
+	who, err := c.ensure(ctx, cr)
 	if err != nil {
 		return err
 	}
-	if client.Account == nil {
+	if who == "" {
 		return fmt.Errorf("instagram: signed in but the account did not come back")
 	}
 	return nil
@@ -90,7 +122,7 @@ func Enabled() bool {
 }
 
 func (c *Connector) Tools() []connectorkit.Tool {
-	return []connectorkit.Tool{
+	out := []connectorkit.Tool{
 		{
 			Name: "instagram.inbox",
 			Description: "Read recent Instagram direct message threads. Read-only: KARMAX does not send " +
@@ -101,68 +133,173 @@ func (c *Connector) Tools() []connectorkit.Tool {
 			}`),
 			Call: c.inbox,
 		},
+		{
+			Name: "instagram.reads",
+			Description: "List every Instagram read instagram.call will accept, with each one's " +
+				"arguments. Call this first rather than guessing a method name.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{}}`),
+			Call:       c.reads,
+		},
+		{
+			Name: "instagram.call",
+			Description: "Call one Instagram read directly — any method listed by instagram.reads, " +
+				"with its own arguments. Use this for anything the other tools do not cover: " +
+				"a post's comments, who someone follows, a user's recent media. " +
+				"READ-ONLY: sending, commenting, liking and following are not reachable here, " +
+				"because automated writing is what gets accounts restricted.",
+			Parameters: json.RawMessage(`{
+				"type":"object",
+				"properties":{
+					"method":{"type":"string","description":"An instagrapi read, e.g. \"media_comments\". instagram.reads lists them."},
+					"args":{"type":"object","description":"Named arguments for that method, e.g. {\"media_id\":\"123\",\"amount\":0}."}
+				},
+				"required":["method"]
+			}`),
+			Call: c.passthrough,
+		},
+		{
+			Name: "instagram.commenters",
+			Description: "Who commented on a post, as a flat list of numeric ids — deduplicated, " +
+				"with the post's owner removed. Shaped for a loop: instagram.call can read the " +
+				"same comments but hands back objects, and a recipe can only walk an array of " +
+				"scalars.",
+			Parameters: json.RawMessage(`{
+				"type":"object",
+				"properties":{
+					"url":{"type":"string","description":"The post's URL. Either this or media_id."},
+					"media_id":{"type":"string","description":"The post's numeric id, if you already resolved it."}
+				}
+			}`),
+			Call: c.commenters,
+		},
 	}
+
+	// Sending is a separate decision from reading, and stays off even when the
+	// connector itself is on. Reading someone's inbox and messaging their
+	// followers have different consequences; this connector has always refused
+	// the second, and that refusal remains the default.
+	if SendingEnabled() && c.ledger != nil {
+		out = append(out,
+			connectorkit.Tool{
+				Name: "instagram.send_dm",
+				Description: "Send ONE Instagram direct message. Pacing, a per-campaign cap and a " +
+					"ledger that refuses to contact the same person twice are enforced inside this " +
+					"tool — call it once per recipient rather than building a loop around something " +
+					"lower-level. The first time Instagram objects, the whole campaign stops and " +
+					"does not resume.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"campaign":{"type":"string","description":"Names this run, e.g. the post you are following up on. The cap and the ledger are counted per campaign."},
+						"user_id":{"type":"string","description":"The recipient's numeric Instagram id."},
+						"text":{"type":"string","description":"The message. Write a different one for each person — the same sentence sent to a batch is what reads as spam."}
+					},
+					"required":["campaign","user_id","text"]
+				}`),
+				Call: c.sendDM,
+			},
+			connectorkit.Tool{
+				Name: "instagram.reply_comment",
+				Description: "Post ONE reply to an Instagram comment. Same pacing, cap and ledger as " +
+					"instagram.send_dm, keyed by comment rather than by person — so somebody who " +
+					"commented three times can be answered three times.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"campaign":{"type":"string","description":"Names this run. Use a different campaign from the DM run: the two ledgers answer different questions."},
+						"media_id":{"type":"string","description":"The post being commented on."},
+						"comment_id":{"type":"string","description":"The comment being replied to. Omit to comment on the post itself."},
+						"text":{"type":"string","description":"The reply. It is public — say something that reads well under somebody else's comment."}
+					},
+					"required":["campaign","media_id","text"]
+				}`),
+				Call: c.replyComment,
+			},
+		)
+	}
+	return out
 }
 
 // Sources is empty. Polling Instagram on a schedule is exactly the behaviour
 // that gets an account flagged, so events are not offered at all.
 func (c *Connector) Sources() []connectorkit.EventSource { return nil }
 
-// connect signs in, reusing the session.
+// Close stops the helper. The signed-in session goes with it.
+func (c *Connector) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.h.stop()
+}
+
+// ensure signs in if the helper is not already holding a session, and returns
+// whose account it is.
 //
-// Cached deliberately: repeated logins from one account are the strongest
-// signal of automation Instagram has, so a session is kept for as long as it
-// lasts rather than logging in per call.
-func (c *Connector) connect(cr connectorkit.Credentials) (*goinsta.Instagram, error) {
+// The helper is asked rather than remembered here: it may have been restarted
+// underneath us, and a cached "yes, signed in" on this side would then send
+// every call into a process that is not. Asking costs one local pipe round
+// trip and no Instagram traffic at all.
+func (c *Connector) ensure(ctx context.Context, cr connectorkit.Credentials) (string, error) {
 	if !Enabled() {
-		return nil, fmt.Errorf("instagram is off; set KARMAX_ENABLE_INSTAGRAM=true to turn it on")
+		return "", fmt.Errorf("instagram is off; set KARMAX_ENABLE_INSTAGRAM=true to turn it on")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.client != nil && time.Since(c.loginAt) < 12*time.Hour {
-		return c.client, nil
+
+	var ping struct {
+		LoggedIn bool `json:"logged_in"`
+	}
+	if err := c.h.call(ctx, "ping", nil, &ping); err != nil {
+		return "", err
+	}
+	if ping.LoggedIn {
+		var acct struct {
+			Username string `json:"username"`
+		}
+		if err := c.h.call(ctx, "account", nil, &acct); err == nil {
+			return acct.Username, nil
+		}
+		// Falling through to a fresh login: the helper thinks it is signed in
+		// but cannot say as whom, which is the shape of a session Instagram
+		// has since invalidated.
 	}
 
 	user := strings.TrimSpace(cr.Get("username"))
+	session := strings.TrimSpace(cr.Get("sessionid"))
 	pass := strings.TrimSpace(cr.Get("password"))
-	if user == "" || pass == "" {
-		return nil, fmt.Errorf("instagram: a username and password are required")
-	}
-
-	// A cached session on disk survives restarts, which is one fewer login.
-	if path := sessionPath(user); path != "" {
-		if insta, err := goinsta.Import(path); err == nil && insta != nil {
-			c.client, c.loginAt = insta, time.Now()
-			return insta, nil
-		}
-	}
-
-	var insta *goinsta.Instagram
 	seed := strings.TrimSpace(cr.Get("totp_seed"))
-	if seed != "" {
-		normalized, err := normalizeTOTPSeed(seed)
-		if err != nil {
-			return nil, fmt.Errorf("instagram: the 2FA seed is not usable — %w. "+
-				"Paste the base32 secret from the authenticator setup screen "+
-				"(behind \"can't scan the QR code\"); spaces and case do not matter", err)
-		}
-		insta = goinsta.New(user, pass, normalized)
+
+	if session == "" && (user == "" || pass == "") {
+		return "", fmt.Errorf("instagram: needs either a sessionid from a browser you are " +
+			"signed into, or a username and password")
+	}
+
+	params := map[string]any{"username": user}
+	if session != "" {
+		params["sessionid"] = session
 	} else {
-		insta = goinsta.New(user, pass)
+		params["password"] = pass
+		if seed != "" {
+			normalized, err := normalizeTOTPSeed(seed)
+			if err != nil {
+				return "", fmt.Errorf("instagram: the 2FA seed is not usable — %w. "+
+					"Paste the base32 secret from the authenticator setup screen "+
+					"(behind \"can't scan the QR code\"); spaces and case do not matter", err)
+			}
+			params["totp_seed"] = normalized
+		}
 	}
-	if err := insta.Login(); err != nil {
-		return nil, signInError(err, seed != "")
+
+	var out struct {
+		Username string `json:"username"`
 	}
-	if path := sessionPath(user); path != "" {
-		_ = insta.Export(path)
+	if err := c.h.call(ctx, "login", params, &out); err != nil {
+		return "", loginFailed(err, seed != "", session != "")
 	}
-	c.client, c.loginAt = insta, time.Now()
-	return insta, nil
+	return out.Username, nil
 }
 
 func (c *Connector) inbox(ctx context.Context, cr connectorkit.Credentials, in map[string]any) (any, error) {
-	client, err := c.connect(cr)
-	if err != nil {
+	if _, err := c.ensure(ctx, cr); err != nil {
 		return nil, err
 	}
 	limit := 10
@@ -176,53 +313,135 @@ func (c *Connector) inbox(ctx context.Context, cr connectorkit.Credentials, in m
 		limit = 10
 	}
 
-	inbox := client.Inbox
-	if err := inbox.Sync(); err != nil {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out any
+	if err := c.h.call(ctx, "inbox", map[string]any{"limit": limit}, &out); err != nil {
 		return nil, err
 	}
-	items := make([]map[string]any, 0, limit)
-	for i, conv := range inbox.Conversations {
-		if i >= limit {
-			break
-		}
-		last := ""
-		if len(conv.Items) > 0 {
-			last = conv.Items[0].Text
-		}
-		items = append(items, map[string]any{
-			"thread_id":   conv.ID,
-			"title":       conv.Title,
-			"last":        last,
-			"last_active": time.UnixMicro(conv.LastActivityAt).Format(time.RFC3339),
-		})
-	}
-	return map[string]any{"count": len(items), "threads": items}, nil
+	return out, nil
 }
 
-// sessionPath is where the cached login lives, 0600 like any other credential.
-func sessionPath(user string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+// reads lists what the passthrough accepts. No sign-in needed: it is a
+// question about this build, not about anybody's account.
+func (c *Connector) reads(ctx context.Context, _ connectorkit.Credentials, _ map[string]any) (any, error) {
+	if !Enabled() {
+		return nil, fmt.Errorf("instagram is off; set KARMAX_ENABLE_INSTAGRAM=true to turn it on")
 	}
-	dir := filepath.Join(home, ".karmax", "instagram")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return ""
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out any
+	if err := c.h.call(ctx, "reads", nil, &out); err != nil {
+		return nil, err
 	}
-	return filepath.Join(dir, safeName(user)+".session")
+	return out, nil
 }
 
-func safeName(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '.' {
-			b.WriteRune(r)
+// readable returns the passthrough's allowlist, asking the helper once.
+//
+// A failure here is not fatal: the helper enforces the allowlist regardless, so
+// an empty answer costs a worse error message and nothing else. That is why the
+// caller treats an error as "no opinion" rather than as a refusal.
+func (c *Connector) readable(ctx context.Context) (map[string]bool, error) {
+	var err error
+	c.allowedOnce.Do(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		var out struct {
+			Reads []struct {
+				Method string `json:"method"`
+			} `json:"reads"`
+		}
+		if err = c.h.call(ctx, "reads", nil, &out); err != nil {
+			return
+		}
+		set := make(map[string]bool, len(out.Reads))
+		for _, r := range out.Reads {
+			set[r.Method] = true
+		}
+		c.allowedSet = set
+	})
+	return c.allowedSet, err
+}
+
+// passthrough calls one allowlisted instagrapi read.
+//
+// The allowlist lives in the helper rather than here, deliberately: it has to
+// be enforced next to the call it is protecting, so a future caller that
+// reaches the helper by another path cannot route around it.
+func (c *Connector) passthrough(ctx context.Context, cr connectorkit.Credentials, in map[string]any) (any, error) {
+	method, _ := in["method"].(string)
+	if strings.TrimSpace(method) == "" {
+		return nil, fmt.Errorf("instagram: name a method — instagram.reads lists them")
+	}
+	args, _ := in["args"].(map[string]any)
+	if args == nil {
+		args = map[string]any{}
+	}
+
+	// Before sign-in, so a request to write is answered with what it actually
+	// ran into. The helper checks this again next to the call itself; this copy
+	// is for the error message, not for the enforcement.
+	if known, err := c.readable(ctx); err == nil && len(known) > 0 && !known[method] {
+		return nil, fmt.Errorf("instagram: %q is not an allowed read. This passthrough is "+
+			"read-only by design — sending, commenting, liking and following are not "+
+			"reachable through it. instagram.reads lists what is", method)
+	}
+
+	if _, err := c.ensure(ctx, cr); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out any
+	if err := c.h.call(ctx, "call", map[string]any{"method": method, "args": args}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// commenters lists who commented on a post, flat.
+func (c *Connector) commenters(ctx context.Context, cr connectorkit.Credentials, in map[string]any) (any, error) {
+	if _, err := c.ensure(ctx, cr); err != nil {
+		return nil, err
+	}
+	args := map[string]any{}
+	if v := str(in["url"]); v != "" {
+		args["url"] = v
+	}
+	if v := str(in["media_id"]); v != "" {
+		args["media_id"] = v
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out any
+	if err := c.h.call(ctx, "commenters", args, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// loginFailed turns a helper failure into something the operator can act on.
+//
+// The helper reports instagrapi's own exception name, so the common cases are
+// named rather than guessed at from message text — but signInError still does
+// the text reading underneath, because the 2FA advice it carries is the part
+// people actually need and it is worth keeping however the error arrived.
+func loginFailed(err error, hadSeed, hadSession bool) error {
+	var he *Error
+	if errors.As(err, &he) {
+		switch {
+		case he.Type == "LoginRequired" && hadSession:
+			return fmt.Errorf("instagram: that sessionid is no longer valid — it expires when the " +
+				"account signs out anywhere. Sign in again in the browser and copy a fresh one")
+		case he.HardStop:
+			return fmt.Errorf("instagram: %s — Instagram is refusing this account for now, which "+
+				"usually means it was flagged. Open the app, confirm it is you, and leave it alone "+
+				"for a while before trying again: %s", he.Type, he.Message)
 		}
 	}
-	if b.Len() == 0 {
-		return "account"
-	}
-	return b.String()
+	return signInError(err, hadSeed)
 }
 
 // signInError says what actually went wrong, in terms the operator can act on.
@@ -264,11 +483,11 @@ func signInError(err error, hadSeed bool) error {
 
 // normalizeTOTPSeed turns what Instagram shows you into what the decoder wants.
 //
-// goinsta hands the seed to base32.StdEncoding.DecodeString, which rejects
-// spaces and REQUIRES padding to a multiple of eight. Instagram presents the
-// secret lowercase in space-separated groups of four and never pads it — so
-// copying it exactly as displayed fails, and the error names a byte offset
-// rather than the space or the missing padding that caused it.
+// The seed goes to a base32 decoder that rejects spaces and REQUIRES padding to
+// a multiple of eight. Instagram presents the secret lowercase in
+// space-separated groups of four and never pads it — so copying it exactly as
+// displayed fails, and the error names a byte offset rather than the space or
+// the missing padding that caused it.
 //
 // Case is already handled upstream; whitespace, separators and padding are not.
 func normalizeTOTPSeed(seed string) (string, error) {

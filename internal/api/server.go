@@ -17,9 +17,11 @@ import (
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/loopregistry"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -31,29 +33,113 @@ const Version = "0.2.0"
 // Server is the HTTP API the KARMAX phone app talks to. It binds to 0.0.0.0 so
 // it is reachable over both the LAN and Tailscale.
 type Server struct {
-	addr       string
-	port       int
-	token      string
-	agents     *agent.Registry
-	store      *store.Store
-	scheduler  *scheduler.Scheduler
-	mem        *memory.ManagerFactory
-	cfg        *config.KarmaxConfig
-	log        *zap.Logger
-	httpSrv    *http.Server
-	mdns       *mdnsAd
-	runLoop    func(name string) (bool, error) // injected: run a loopkit loop by name
-	listLoops  func() []LoopInfo               // injected: the daemon's ACTIVE loops
-	loopHealth func() (any, error)             // injected: per-loop run health
+	addr  string
+	port  int
+	token string
+	// browserToken is a second, narrower credential: a caller authenticated
+	// with it may run ONLY the tools in browserScopedTools, never the full
+	// tool surface s.token grants. "" means no scoped token was configured —
+	// scoped auth is simply unavailable, not silently widened.
+	browserToken string
+	agents       *agent.Registry
+	store        *store.Store
+	scheduler    *scheduler.Scheduler
+	mem          *memory.ManagerFactory
+	cfg          *config.KarmaxConfig
+	log          *zap.Logger
+	httpSrv      *http.Server
+	mdns         *mdnsAd
+	runLoop      func(name string) (bool, error)                                                                                          // injected: run a loopkit loop by name
+	listLoops    func() []LoopInfo                                                                                                        // injected: the daemon's ACTIVE loops
+	loopsChanged func()                                                                                                                   // injected: re-apply what can change without a restart
+	loopHealth   func() (any, error)                                                                                                      // injected: per-loop run health
+	chatTurn     func(ctx context.Context, conversationID, message string, opts ChatTurnOptions, onEvent func(ChatEvent)) (string, error) // injected: run one watched harness turn
+	// registryCache holds the public loop registry's index for a few minutes
+	// at a time — see internal/loopregistry.IndexCache and loops_registry.go.
+	registryCache *loopregistry.IndexCache
 }
 
-// LoopInfo describes one active loop for GET /api/loops.
+// ChatTurnOptions is one turn's own request to override the chat kind's
+// standing choices — a client picking a brain or an effort level for this
+// message, not a config change. Empty Model means "the chat kind's configured
+// model"; empty Effort means no --effort flag at all, not some CLI default
+// named "" — see handleChatStream's validation and harness.Options.
+type ChatTurnOptions struct {
+	Model  string
+	Effort string
+}
+
+// ChatEvent is one thing worth telling a streaming chat client while a turn is
+// still running. It is this package's own type, not harness.Event, because
+// internal/api must not import internal/harness — the runtime adapter that
+// wires SetChatTurn is where a harness.Event becomes one of these.
+type ChatEvent struct {
+	Kind string
+	// Text carries the payload for three different Kinds — "message",
+	// "thought" and "error" — never all at once, so a client must switch on
+	// Kind before reading it.
+	Text  string
+	Tool  *ChatTool
+	Plan  []ChatPlanEntry
+	JobID string
+	// Model, DurationMS and CostUSD carry a "meta" event's footer facts as
+	// their own typed fields rather than smuggled through Text/JobID, so a
+	// numeric duration never has to round-trip through a string.
+	Model      string
+	DurationMS int64
+	CostUSD    float64
+}
+
+// ChatTool is a tool call on its way to a client. A "tool" carries all of it;
+// a "tool_update" carries only ID, Status and Output, and the client merges by
+// id — which is what makes two calls to one tool two lines.
+type ChatTool struct {
+	ID        string         `json:"id"`
+	Title     string         `json:"title,omitempty"`
+	Kind      string         `json:"kind,omitempty"`
+	Status    string         `json:"status"`
+	Locations []ChatLocation `json:"locations,omitempty"`
+	Output    string         `json:"output,omitempty"`
+	// Input is the tool_use call's own input — set only on a "tool" event
+	// (the announcement); a "tool_update" carries no input, only what the
+	// call resolved to, the same asymmetry Output already has.
+	Input json.RawMessage `json:"input,omitempty"`
+}
+
+// ChatLocation is a file a tool call touched.
+type ChatLocation struct {
+	Path string `json:"path"`
+	Line int    `json:"line,omitempty"`
+}
+
+// ChatPlanEntry is one line of the agent's plan.
+type ChatPlanEntry struct {
+	Content    string `json:"content"`
+	Status     string `json:"status"`
+	ActiveForm string `json:"activeForm,omitempty"`
+	Priority   string `json:"priority,omitempty"`
+}
+
+// LoopInfo describes one loop for GET /api/loops — originally only the
+// running ones; extended (additively, so an old client reading a new
+// server's response still parses) to cover every tier the runtime knows
+// about, including ones the operator has turned off.
 type LoopInfo struct {
 	Name        string   `json:"name"`
-	Description string   `json:"description"`
+	Description string   `json:"description,omitempty"`
 	Schedule    string   `json:"schedule"`
 	Webhook     string   `json:"webhook,omitempty"`
 	Events      []string `json:"events,omitempty"`
+	// Kind distinguishes how this loop runs: "recipe" (interpreted YAML, hot-
+	// reloaded), "workflow" (signed WASM, needs a restart), "compiled" (built
+	// into this binary via the loopkit SDK), or "prompt" (a scheduled prompt
+	// fired straight at an agent — karmax.yaml's `loops:`, no loop code at all).
+	Kind string `json:"kind,omitempty"`
+	// Enabled is deliberately NOT omitempty: a disabled loop must read
+	// "enabled": false, and omitempty on a bool would drop exactly that value
+	// (Go's encoding/json treats false as the zero value) — the one case this
+	// field exists to show.
+	Enabled bool `json:"enabled"`
 }
 
 // SetRunLoop wires the manual loop-run callback (POST /api/loops/{name}/run).
@@ -65,15 +151,32 @@ func (s *Server) SetRunLoop(fn func(name string) (bool, error)) { s.runLoop = fn
 // express.
 func (s *Server) SetLoopHealth(fn func() (any, error)) { s.loopHealth = fn }
 
+// SetLoopsChanged wires what runs after a loop is enabled or disabled, so the
+// tiers that can pick the change up live (recipes) do so without a restart.
+func (s *Server) SetLoopsChanged(fn func()) { s.loopsChanged = fn }
+
 // SetListLoops wires the live loop listing (GET /api/loops). This is the
 // daemon's truth — it includes runtime-registered loops (e.g. cold-scan) and
 // excludes operator-disabled ones, unlike a CLI process's local registry.
 func (s *Server) SetListLoops(fn func() []LoopInfo) { s.listLoops = fn }
 
+// SetChatTurn wires the streaming chat turn (POST /api/chat/stream). The
+// runtime adapts a harness.Event stream into ChatEvent so this package never
+// needs to import the harness for it.
+func (s *Server) SetChatTurn(fn func(ctx context.Context, conversationID, message string, opts ChatTurnOptions, onEvent func(ChatEvent)) (string, error)) {
+	s.chatTurn = fn
+}
+
 // New builds the API server. token (from KARMAX_API_TOKEN) gates everything
 // except /api/ping; an empty token disables auth (development only).
-func New(addr string, port int, token string, agents *agent.Registry, s *store.Store, sched *scheduler.Scheduler, mem *memory.ManagerFactory, cfg *config.KarmaxConfig, log *zap.Logger) *Server {
-	srv := &Server{addr: addr, port: port, token: strings.TrimSpace(token), agents: agents, store: s, scheduler: sched, mem: mem, cfg: cfg, log: log}
+// browserToken, when non-empty, is a second bearer credential accepted
+// alongside token — but a request authenticated with it may only call the
+// tools in browserScopedTools (see auth and handleCallTool). It exists so a
+// harness KARMAX spawns can be handed something that reaches this engine's
+// API without also being able to drive every connector.
+func New(addr string, port int, token string, browserToken string, agents *agent.Registry, s *store.Store, sched *scheduler.Scheduler, mem *memory.ManagerFactory, cfg *config.KarmaxConfig, log *zap.Logger) *Server {
+	srv := &Server{addr: addr, port: port, token: strings.TrimSpace(token), browserToken: strings.TrimSpace(browserToken), agents: agents, store: s, scheduler: sched, mem: mem, cfg: cfg, log: log,
+		registryCache: loopregistry.NewIndexCache(5 * time.Minute)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", srv.handlePing)
@@ -91,6 +194,11 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 		_ = pprof.Lookup("goroutine").WriteTo(w, 2)
 	})
 	mux.HandleFunc("/api/chat", srv.auth(srv.handleChat))
+	mux.HandleFunc("POST /api/chat/stream", srv.auth(srv.handleChatStream))
+	mux.HandleFunc("GET /api/chat/options", srv.auth(srv.handleChatOptions))
+	mux.HandleFunc("GET /api/chat/conversations", srv.auth(srv.handleChatConversations))
+	mux.HandleFunc("GET /api/chat/conversations/{id}", srv.auth(srv.handleChatHistory))
+	mux.HandleFunc("DELETE /api/chat/conversations/{id}", srv.auth(srv.handleChatDelete))
 	mux.HandleFunc("/api/messages", srv.auth(srv.handleMessages))
 	mux.HandleFunc("POST /api/conversation/reset", srv.auth(srv.handleResetConversation))
 	mux.HandleFunc("/api/push/register", srv.auth(srv.handlePushRegister))
@@ -104,8 +212,20 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("GET /api/activity", srv.auth(srv.handleActivity))
 	mux.HandleFunc("POST /api/jobs/{id}/run", srv.auth(srv.handleRunJob))
 	mux.HandleFunc("POST /api/loops/{name}/run", srv.auth(srv.handleRunLoop))
+	mux.HandleFunc("POST /api/loops/{name}/enable", srv.auth(srv.handleEnableLoop))
+	mux.HandleFunc("POST /api/loops/{name}/disable", srv.auth(srv.handleDisableLoop))
 	mux.HandleFunc("GET /api/loops", srv.auth(srv.handleListLoops))
 	mux.HandleFunc("GET /api/loops/health", srv.auth(srv.handleLoopHealth))
+	// Registry routes are registered before /api/loops/{name}/... below them
+	// would otherwise shadow: Go's ServeMux prefers the more specific pattern
+	// regardless of registration order, but "registry" here is a literal path
+	// segment competing with {name}, and the more specific literal always wins
+	// — kept in this order anyway because that IS the resolution a reader
+	// would expect, not because it is load-bearing.
+	mux.HandleFunc("GET /api/loops/registry", srv.auth(srv.handleLoopsRegistryList))
+	mux.HandleFunc("GET /api/loops/registry/{name}", srv.auth(srv.handleLoopsRegistryDetail))
+	mux.HandleFunc("POST /api/loops/registry/{name}/install", srv.auth(srv.handleLoopsRegistryInstall))
+	mux.HandleFunc("DELETE /api/loops/registry/{name}", srv.auth(srv.handleLoopsRegistryUninstall))
 	mux.HandleFunc("GET /api/memory/tree", srv.auth(srv.handleMemoryTree))
 	mux.HandleFunc("GET /api/memory/entries", srv.auth(srv.handleMemoryEntries))
 	mux.HandleFunc("GET /api/memory/cleanup/question", srv.auth(srv.handleCleanupQuestion))
@@ -120,8 +240,23 @@ func New(addr string, port int, token string, agents *agent.Registry, s *store.S
 	mux.HandleFunc("GET /api/device/actions", srv.auth(srv.handleDeviceActions))
 	mux.HandleFunc("POST /api/device/actions/{id}/complete", srv.auth(srv.handleCompleteDeviceAction))
 	mux.HandleFunc("GET /api/integrations", srv.auth(srv.handleIntegrations))
+	mux.HandleFunc("GET /api/connect", srv.auth(srv.handleConnectList))
+	mux.HandleFunc("POST /api/connect/{id}", srv.auth(srv.handleConnect))
+	mux.HandleFunc("GET /api/access", srv.auth(srv.handleGetAccess))
+	mux.HandleFunc("PUT /api/access", srv.auth(srv.handlePutAccess))
+	mux.HandleFunc("GET /api/browser", srv.auth(srv.handleBrowserStatus))
+	mux.HandleFunc("POST /api/browser/start", srv.auth(srv.handleBrowserStart))
+	mux.HandleFunc("POST /api/browser/open", srv.auth(srv.handleBrowserOpen))
+	mux.HandleFunc("POST /api/browser/stop", srv.auth(srv.handleBrowserStop))
 	mux.HandleFunc("GET /api/tools", srv.auth(srv.handleListTools))
 	mux.HandleFunc("POST /api/tools/{name}", srv.auth(srv.handleCallTool))
+	mux.HandleFunc("GET /api/dashboards", srv.auth(srv.handleListDashboards))
+	mux.HandleFunc("GET /api/dashboards/{id}", srv.auth(srv.handleGetDashboard))
+	mux.HandleFunc("GET /api/dashboards/{id}/data/{name}", srv.auth(srv.handleGetDashboardData))
+	mux.HandleFunc("PATCH /api/dashboards/{id}", srv.auth(srv.handlePatchDashboard))
+	mux.HandleFunc("DELETE /api/dashboards/{id}", srv.auth(srv.handleDeleteDashboard))
+	mux.HandleFunc("PUT /api/dashboards/_kit/reference", srv.auth(srv.handlePutDashboardReference))
+	mux.HandleFunc("GET /api/tasks/{taskId}/transcript", srv.auth(srv.handleTaskTranscript))
 
 	srv.httpSrv = &http.Server{
 		Addr:              addr,
@@ -154,20 +289,111 @@ func (s *Server) Stop() {
 	_ = s.httpSrv.Shutdown(ctx)
 }
 
-// auth wraps a handler with bearer-token authentication when a token is set.
+// toolScope says how much of the tool surface a request may use, decided
+// once by auth() and carried on the request context from there.
+type toolScope int
+
+const (
+	// scopeFull is the operator's own unrestricted token (s.token) — every
+	// route, every tool. It is also what a request gets when auth is
+	// disabled entirely (s.token == "", development only): that has always
+	// meant unrestricted, and stays that way.
+	scopeFull toolScope = iota
+	// scopeBrowserOnly is a request authenticated with s.browserToken: only
+	// the tools in browserScopedTools are permitted. See handleCallTool and
+	// handleListTools.
+	scopeBrowserOnly
+)
+
+// browserScopedTools is the entire grant a browser-scoped token carries.
+// "dashboard" joined "browser" here because it is the same shape of safe: it
+// writes only under <DataDir>/dashboards/ and its own dashboard-<id>.yaml
+// recipe, reaches no connector, and cannot name an arbitrary path or command
+// the way shell.exec or a harness.* control tool would. Connectors (WhatsApp,
+// email, ...), shell.exec, and every harness.* control tool must stay out of
+// it — widening this list beyond a tool that has been checked this way is
+// exactly the mistake a second token exists to prevent.
+var browserScopedTools = map[string]bool{"browser": true, "dashboard": true}
+
+// scopeAllowsTool reports whether a caller granted scope may invoke the
+// named tool. scopeFull always may; scopeBrowserOnly only for the allowlist
+// above, matched the same way agent.Agent.ExecuteTool matches names (dotted
+// or canonical).
+func scopeAllowsTool(scope toolScope, name string) bool {
+	if scope == scopeFull {
+		return true
+	}
+	return browserScopedTools[tools.CanonicalName(name)]
+}
+
+// filterManifestsForScope narrows a tool listing to what the given scope may
+// actually call — so GET /api/tools never advertises a tool POST
+// /api/tools/{name} would then 403 on.
+func filterManifestsForScope(scope toolScope, manifests []tools.ToolManifest) []tools.ToolManifest {
+	if scope == scopeFull {
+		return manifests
+	}
+	out := make([]tools.ToolManifest, 0, len(manifests))
+	for _, m := range manifests {
+		if browserScopedTools[tools.CanonicalName(m.Name)] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// scopeCtxKey is the request-context key auth() tags a request's granted
+// scope under.
+type scopeCtxKey struct{}
+
+// scopeFromContext reports the scope a request was authenticated with.
+// Deny-by-default: a context nobody tagged — a handler reached some way
+// other than through auth() below, as a couple of tests do directly — comes
+// back scopeBrowserOnly, the narrower of the two. scopeFull is only ever
+// returned for a context auth() itself tagged that way, at the one place a
+// full-token (or auth-disabled) request is verified.
+func scopeFromContext(ctx context.Context) toolScope {
+	if sc, ok := ctx.Value(scopeCtxKey{}).(toolScope); ok {
+		return sc
+	}
+	return scopeBrowserOnly
+}
+
+// auth wraps a handler with bearer-token authentication when a token is set,
+// and tags the request context with which of the two tokens (if either)
+// authenticated it — see toolScope.
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.token != "" {
-			header := r.Header.Get("Authorization")
-			supplied := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-			if !strings.HasPrefix(header, "Bearer ") || supplied != s.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
-				return
-			}
+		if s.token == "" {
+			// Auth disabled entirely (development only) — unrestricted, as
+			// before this change.
+			next(w, r.WithContext(context.WithValue(r.Context(), scopeCtxKey{}, scopeFull)))
+			return
 		}
-		next(w, r)
+
+		header := r.Header.Get("Authorization")
+		supplied := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+		hasBearer := strings.HasPrefix(header, "Bearer ")
+
+		switch {
+		case hasBearer && supplied == s.token:
+			next(w, r.WithContext(context.WithValue(r.Context(), scopeCtxKey{}, scopeFull)))
+		case hasBearer && s.browserToken != "" && supplied == s.browserToken:
+			next(w, r.WithContext(context.WithValue(r.Context(), scopeCtxKey{}, scopeBrowserOnly)))
+		default:
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		}
 	}
 }
+
+// BrowserToken returns the browser-scoped token this server was built with
+// (New's browserToken parameter), or "" if none was configured.
+func (s *Server) BrowserToken() string { return s.browserToken }
+
+// BaseURL is where this server can be reached over loopback — the other half
+// of what a spawned harness needs to call back into it (see
+// internal/tools/builtin/claude_code.go's EngineAPIURL/EngineBrowserToken).
+func (s *Server) BaseURL() string { return fmt.Sprintf("http://localhost:%d", s.port) }
 
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	agentID := ""
@@ -871,11 +1097,11 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		add("discord", "Discord", "off", "not configured")
 	}
 
-	// Google Workspace
-	if gws := lookGWS(); gws != "" {
-		add("google_workspace", "Google Workspace", "available", gws)
+	// Google, through gogcli.
+	if gog := lookGoogleCLI(); gog != "" {
+		add("google", "Google", "available", gog)
 	} else {
-		add("google_workspace", "Google Workspace", "missing", "install + auth the gws CLI")
+		add("google", "Google", "missing", "install gogcli and run `gog auth add`")
 	}
 
 	// Coding harnesses
@@ -944,14 +1170,19 @@ func firstLine(s string) string {
 	return s
 }
 
-func lookGWS() string {
-	p := hostpaths.GWS()
-	// hostpaths falls back to the bare command name; only report it as
-	// available if it actually resolves to something runnable.
-	if p == "gws" {
+// lookGoogleCLI reports where gogcli is, or "" if this host has no Google CLI.
+func lookGoogleCLI() string { return runnable(hostpaths.Gog(), "gog") }
+
+// runnable reports a resolved path only when something is actually there.
+//
+// hostpaths falls back to the bare command name when it finds nothing, so a
+// path equal to the name proves nothing on its own.
+func runnable(p, name string) string {
+	if p == name {
 		if _, err := exec.LookPath(p); err != nil {
 			return ""
 		}
+		return p
 	}
 	if _, err := os.Stat(p); err != nil {
 		if _, lerr := exec.LookPath(p); lerr != nil {
@@ -970,7 +1201,7 @@ func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no agent available"})
 		return
 	}
-	manifests := ag.ToolManifests()
+	manifests := filterManifestsForScope(scopeFromContext(r.Context()), ag.ToolManifests())
 	out := make([]map[string]any, 0, len(manifests))
 	for _, m := range manifests {
 		var params any
@@ -984,11 +1215,30 @@ func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agent": ag.Def().ID, "tools": out})
 }
 
+// executeAgentTool calls ag.ExecuteTool. It exists as a package-level var,
+// rather than being called directly, purely so a test can substitute a spy
+// and prove a scope-denied request never reaches it — see
+// internal/api/tool_scope_test.go.
+var executeAgentTool = func(ctx context.Context, ag *agent.Agent, name string, input map[string]any) (tools.ToolResult, error) {
+	return ag.ExecuteTool(ctx, name, input)
+}
+
 // handleCallTool executes one of the agent's tools by name with a JSON input
 // body — the exact call the harness model would make. This is what gives the
 // karmax CLI (and delegated coding harnesses) full parity with the harness.
 func (s *Server) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+
+	// The scope gate: checked before anything else touches the agent or the
+	// request body, so a scoped token calling a tool outside its allowlist
+	// never reaches ExecuteTool — see toolScope and browserScopedTools above.
+	if scope := scopeFromContext(r.Context()); !scopeAllowsTool(scope, name) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error": fmt.Sprintf("tool %q is not permitted for this token's scope", name),
+		})
+		return
+	}
+
 	ag := s.resolveAgent(r.URL.Query().Get("agent"))
 	if ag == nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no agent available"})
@@ -1019,7 +1269,7 @@ func (s *Server) handleCallTool(w http.ResponseWriter, r *http.Request) {
 		ctx = connectorkit.WithActor(ctx, member)
 	}
 
-	res, err := ag.ExecuteTool(ctx, name, input)
+	res, err := executeAgentTool(ctx, ag, name, input)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
@@ -1047,6 +1297,15 @@ func (s *Server) resolveAgent(id string) *agent.Agent {
 		return nil
 	}
 	return s.defaultAgent()
+}
+
+// brainName is the harness CLI the config selected ("claude" or "codex"),
+// read from the same config the harness was built with.
+func (s *Server) brainName() string {
+	if s.cfg != nil && strings.TrimSpace(s.cfg.Harness.Binary) != "" {
+		return s.cfg.Harness.Binary
+	}
+	return "claude"
 }
 
 // localAddresses returns the http base URLs a client can use to reach KARMAX

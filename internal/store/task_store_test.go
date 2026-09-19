@@ -145,6 +145,118 @@ func TestASilentRoundKeepsWhatTheOperatorWasLastTold(t *testing.T) {
 	}
 }
 
+// The progress blob a long run writes must survive being read back exactly,
+// or a script trusting it to know who was already messaged is trusting
+// nothing.
+func TestProgressRoundTripsOnATaskRow(t *testing.T) {
+	s := newTestStore(t)
+	task, _ := s.CreateTask(Task{Goal: "paced send", Status: TaskRunning})
+
+	want := TaskProgress{Sent: 3, Attempted: 4, Total: 700, LastAt: time.Now().UTC().Truncate(time.Second)}
+	if err := s.SetTaskProgress(task.ID, want); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := s.GetTask(task.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetTask: ok=%v err=%v", ok, err)
+	}
+	p, err := DecodeProgress(got.Progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Sent != want.Sent || p.Attempted != want.Attempted || p.Total != want.Total || !p.LastAt.Equal(want.LastAt) {
+		t.Errorf("progress = %+v, want %+v", p, want)
+	}
+}
+
+// A paused run must be visible to whatever is watching it — the whole point
+// of status being the control channel is that a reader can see the pause
+// took, not just that the write did not error.
+func TestStatusPausedIsVisibleToAReader(t *testing.T) {
+	s := newTestStore(t)
+	task, _ := s.CreateTask(Task{Goal: "paced send", Status: TaskRunning})
+
+	if err := s.SetTaskStatus(task.ID, TaskPaused); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetTask(task.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetTask: ok=%v err=%v", ok, err)
+	}
+	if got.Status != TaskPaused {
+		t.Errorf("status = %q, want %q", got.Status, TaskPaused)
+	}
+}
+
+// Cancelling must not erase progress. It is the worst failure this system
+// can have: a resume that cannot see who was already messaged risks sending
+// the same person twice.
+func TestCancelledLeavesProgressIntact(t *testing.T) {
+	s := newTestStore(t)
+	task, _ := s.CreateTask(Task{Goal: "paced send", Status: TaskRunning})
+
+	sent := TaskProgress{Sent: 41, Attempted: 42, Total: 700}
+	if err := s.SetTaskProgress(task.ID, sent); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskStatus(task.ID, TaskCancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := s.GetTask(task.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetTask: ok=%v err=%v", ok, err)
+	}
+	if got.Status != TaskCancelled {
+		t.Errorf("status = %q, want %q", got.Status, TaskCancelled)
+	}
+	p, err := DecodeProgress(got.Progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != sent {
+		t.Errorf("progress after cancel = %+v, want %+v intact", p, sent)
+	}
+}
+
+// A progress ping is a field-level write. It must not erase an error a
+// previous round recorded — that error is exactly what a script (or an
+// operator) investigating a stall needs to see, and UpdateTask writes
+// last_error unconditionally when it is not told to leave it alone.
+func TestProgressDoesNotClobberLastError(t *testing.T) {
+	s := newTestStore(t)
+	task, _ := s.CreateTask(Task{Goal: "paced send", Status: TaskRunning})
+	if err := s.UpdateTask(task.ID, TaskUpdate{LastError: "recipient 12 rate-limited"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskProgress(task.ID, TaskProgress{Sent: 13, Attempted: 13}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.GetTask(task.ID)
+	if got.LastError != "recipient 12 rate-limited" {
+		t.Errorf("last_error = %q, want it left alone by a progress ping", got.LastError)
+	}
+}
+
+// The same clobber applies to next_action_at. A status flip must not disturb
+// a scheduled retry it knows nothing about.
+func TestStatusDoesNotClobberNextActionAt(t *testing.T) {
+	s := newTestStore(t)
+	task, _ := s.CreateTask(Task{Goal: "paced send", Status: TaskRunning})
+	future := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
+	if err := s.UpdateTask(task.ID, TaskUpdate{NextActionAt: &future}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskStatus(task.ID, TaskPaused); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.GetTask(task.ID)
+	if got.NextActionAt == nil || !got.NextActionAt.Equal(future) {
+		t.Errorf("next_action_at = %v, want %v left alone", got.NextActionAt, future)
+	}
+}
+
 // A task that failed must stay visible. Pruning it away leaves the operator
 // with no record that something they asked for never happened.
 func TestPruningKeepsFailures(t *testing.T) {

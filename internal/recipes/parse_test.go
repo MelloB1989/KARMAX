@@ -311,19 +311,20 @@ steps:
 func TestEveryVerbParsesInItsDocumentedForm(t *testing.T) {
 	// The map form for each verb that requires fields, with those fields.
 	mapForms := map[string]string{
-		VerbHTTP:      "url: https://example.com",
-		VerbTool:      "name: whatsapp.read",
-		VerbNotify:    "title: t",
-		VerbPropose:   "title: t\n      action: a",
-		VerbRemind:    "title: t",
-		VerbSend:      "to: x\n      text: y",
-		VerbRemember:  "fact: something",
-		VerbCaseOpen:  "key: k\n      title: t",
-		VerbCaseGet:   "key: k",
-		VerbCaseState: "case: c\n      state: s",
-		VerbCaseLog:   "case: c\n      kind: note\n      payload: p",
-		VerbAwait:     "event: e",
-		VerbSandbox:   "repo: o/r\n      branch: main\n      task: t",
+		VerbHTTP:          "url: https://example.com",
+		VerbTool:          "name: whatsapp.read",
+		VerbNotify:        "title: t",
+		VerbPropose:       "title: t\n      action: a",
+		VerbRemind:        "title: t",
+		VerbSend:          "to: x\n      text: y",
+		VerbRemember:      "fact: something",
+		VerbCaseOpen:      "key: k\n      title: t",
+		VerbCaseGet:       "key: k",
+		VerbCaseState:     "case: c\n      state: s",
+		VerbCaseLog:       "case: c\n      kind: note\n      payload: p",
+		VerbAwait:         "event: e",
+		VerbSandbox:       "repo: o/r\n      branch: main\n      task: t",
+		VerbHarnessForget: "session_id: \"s1\"\n      working_dir: \"w1\"",
 	}
 	for verb, fields := range mapForms {
 		t.Run(verb+" as fields", func(t *testing.T) {
