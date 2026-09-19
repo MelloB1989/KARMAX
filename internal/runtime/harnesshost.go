@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/harness"
@@ -138,6 +140,17 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	if err := writeRootBrief(hostDataDir()); err != nil {
 		rt.log.Warn("harness: could not write the shared session brief", zap.Error(err))
 	}
+
+	// browserMCPCache wraps the same shared session browserMCPConfig used to
+	// probe directly, so chatTurn and harnessSenderFor.Send get it cached.
+	rt.browserMCPCache = newBrowserMCPCache(browser.Shared(rt.cfg.Karmax.DataDir))
+
+	// --mcp-config is fixed when a warm session spawns, so a session outlives
+	// the browser state that justified it. Recycling on start and stop is how
+	// the next turn gets a process with the current flags; invalidating the
+	// cache on the same signal is how it gets a current --mcp-config to spawn
+	// with in the first place.
+	browser.Shared(rt.cfg.Karmax.DataDir).OnStateChange(rt.onBrowserStateChange)
 
 	// Every pid in the table belongs to a process this daemon no longer owns.
 	sup.ReapOrphans()
@@ -307,12 +320,235 @@ and prefer one clear question to a menu of options when you genuinely cannot
 proceed. Do not narrate what you are about to do and then stop.
 `
 
+// browserKinds is an allowlist, not a "skip these" list: a kind not named
+// here gets no browser, so a kind added later (utility included, whenever the
+// categories plan lands) stays browser-less without this file changing.
+var browserKinds = map[string]bool{
+	"chat":  true,
+	"agent": true,
+}
+
+// harnessRecycler is what recycling idle browser-taking sessions needs from
+// the supervisor, small enough to fake in tests.
+type harnessRecycler interface {
+	Live() []string
+	// CloseIfIdle closes key only if it is not busy, checking and removing it
+	// from the live table atomically — a separate Busy-then-Close here would
+	// reopen the exact TOCTOU CloseIfIdle exists to close: the session can
+	// become busy in the gap between the two calls, and Close does not
+	// re-check.
+	CloseIfIdle(key string) bool
+}
+
+// recycleIdleBrowserSessions closes idle sessions of the kinds that take a
+// browser, so the next turn respawns one with --mcp-config matching whatever
+// the browser just became. A busy session is left alone: closing it mid-turn
+// would kill a running answer in front of the operator — CloseIfIdle is what
+// guarantees that atomically rather than as two calls a scheduler can split.
+//
+// Each close runs on its own goroutine: a stubborn process can take up to 3s
+// to give up its SIGKILL fallback, and with MaxLive sessions to consider,
+// closing them one at a time would make one recycling pass take minutes
+// instead of seconds. The caller (onBrowserStateChange) already runs this
+// off the browser's own Start/Stop call path, but a slow pass still delays
+// the log line and leaves stale processes around longer than it has to.
+func recycleIdleBrowserSessions(sup harnessRecycler, kindOf map[string]string, kinds map[string]bool) {
+	var wg sync.WaitGroup
+	for _, key := range sup.Live() {
+		if !kinds[kindOf[key]] {
+			continue
+		}
+		wg.Add(1)
+		go func(key string) {
+			defer wg.Done()
+			sup.CloseIfIdle(key)
+		}(key)
+	}
+	wg.Wait()
+}
+
+// onBrowserStateChange is the browser's start/stop signal, registered once at
+// startup, and called synchronously from inside browser.Session.Start/Stop
+// (see notify) — so whatever this does runs on the operator's own "start
+// browser"/"stop browser" click, and must stay fast. Which direction it
+// fired doesn't change what to do: either way, a warm session's baked-in
+// flags are stale and the fix is the same.
+func (rt *KarmaxRuntime) onBrowserStateChange(running bool) {
+	if rt.harness == nil {
+		return
+	}
+	// A pure flag flip — no I/O — so it costs nothing to do inline. The next
+	// turn that calls browserMCPConfig probes again and repopulates it
+	// lazily.
+	if rt.browserMCPCache != nil {
+		rt.browserMCPCache.invalidate()
+	}
+	// The recycling pass is a different matter: it can close several
+	// sessions, and a stubborn process takes up to 3s to give up its own
+	// SIGKILL fallback (recycleIdleBrowserSessions parallelises that across
+	// sessions, but the pass as a whole is still real work). Running it here
+	// would make Start/Stop hang for however long that takes; off to a
+	// goroutine is how they return immediately instead.
+	go rt.recycleForBrowserStateChange(running)
+}
+
+// recycleForBrowserStateChange is onBrowserStateChange's slow part, moved
+// off the browser's own Start/Stop call path.
+func (rt *KarmaxRuntime) recycleForBrowserStateChange(running bool) {
+	rows, err := rt.store.ListHarnessSessions()
+	if err != nil {
+		return
+	}
+	kindOf := make(map[string]string, len(rows))
+	for _, r := range rows {
+		kindOf[r.Key] = r.Kind
+	}
+	recycleIdleBrowserSessions(rt.harness, kindOf, browserKinds)
+	rt.log.Info("harness: browser state changed, recycled idle sessions", zap.Bool("running", running))
+}
+
+// browserConfigger is the one method chatTurn and the harness sender need
+// from the operator's browser, small enough to fake in tests.
+type browserConfigger interface {
+	MCPConfigJSON(ctx context.Context) (string, error)
+}
+
+// browserMCPConfig returns the --mcp-config value to attach for this kind, or
+// "" when there is none: the kind doesn't get a browser, or the browser isn't
+// running. browser.ErrNotRunning is the normal case — the browser is usually
+// closed — so it is never treated as a failure here.
+func browserMCPConfig(ctx context.Context, br browserConfigger, kind string) string {
+	if br == nil || !browserKinds[kind] {
+		return ""
+	}
+	cfg, err := br.MCPConfigJSON(ctx)
+	if err != nil {
+		return ""
+	}
+	return cfg
+}
+
+// browserMCPCache stops browserMCPConfig's network probe from running on
+// every chat and agent turn against an already-running session.
+// --mcp-config is fixed the moment a session spawns (Session.open only reads
+// opt.MCPConfig when it actually starts a process — see extraArgs), so a
+// value recomputed on a later, warm turn is thrown away; the loopback GET to
+// /json/version behind it, and up to alive's 1.5s timeout when the port file
+// is stale, was paid for nothing.
+//
+// Populated lazily on the first miss, so a cold start — nothing cached yet —
+// still gets a correct config before the spawn that needs it. Invalidated,
+// not reprobed, by onBrowserStateChange: the browser's start/stop signal
+// fires synchronously inside browser.Session.Start/Stop (see
+// zzz_scratch_blocking_test.go's own investigation of that call chain), so
+// invalidate must stay a pure flag flip — the actual reprobe happens lazily
+// on whichever turn asks next.
+//
+// Implements browserConfigger itself, so it is a drop-in wherever
+// browser.Shared(...) used to be handed straight to browserMCPConfig or
+// harnessSenderFor.
+type browserMCPCache struct {
+	br browserConfigger
+
+	// mu guards valid/cfg/err/gen: turns call MCPConfigJSON from whatever
+	// goroutine is running that turn, and onBrowserStateChange calls
+	// invalidate from the browser's own goroutine — genuinely concurrent,
+	// not merely theoretically so.
+	mu    sync.Mutex
+	valid bool
+	cfg   string
+	err   error
+	// gen counts invalidations. refresh captures it before starting its own
+	// probe (up to browser.Shared's ~1.5s alive timeout, run unlocked) and
+	// compares it after: if invalidate bumped gen while that probe was in
+	// flight, the probe's answer describes a browser state that has already
+	// been superseded, and writing it to valid/cfg/err would silently undo
+	// the invalidation — pinning the cache to the pre-transition answer
+	// until some unrelated later toggle happens to invalidate it again. See
+	// refresh's own comment.
+	gen uint64
+}
+
+func newBrowserMCPCache(br browserConfigger) *browserMCPCache {
+	return &browserMCPCache{br: br}
+}
+
+// MCPConfigJSON returns the cached answer, probing for the first time (or
+// again, after an invalidate) when there isn't one yet.
+//
+// A nil receiver is handled explicitly, not just guarded against at the call
+// site: rt.browserMCPCache boxed into the browserConfigger interface is a
+// non-nil interface holding a nil pointer, so browserMCPConfig's own `br ==
+// nil` check would not catch it, and the call would reach here.
+func (c *browserMCPCache) MCPConfigJSON(ctx context.Context) (string, error) {
+	if c == nil {
+		return "", browser.ErrNotRunning
+	}
+	c.mu.Lock()
+	if c.valid {
+		cfg, err := c.cfg, c.err
+		c.mu.Unlock()
+		return cfg, err
+	}
+	c.mu.Unlock()
+	return c.refresh(ctx)
+}
+
+// refresh does the one real probe and remembers the answer, whichever it
+// is: the browser being closed caches exactly as validly as it running —
+// that is the normal state, not a miss to keep retrying.
+//
+// The probe runs unlocked (it is the up-to-1.5s loopback call, not a memory
+// operation), so a concurrent invalidate can fire — and complete — while it
+// is still in flight. Without the generation check below, that race is
+// reproducible deterministically, not just theoretically: start a refresh,
+// block it mid-probe, call invalidate, let the probe finish — the write at
+// the bottom of this function would set valid back to true holding the
+// answer from before whatever invalidate was announcing, and nothing short
+// of another, unrelated invalidate would ever look again. Comparing gen
+// before writing is what lets this refresh recognise its own answer as
+// already stale and discard it instead of caching it.
+func (c *browserMCPCache) refresh(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	gen := c.gen
+	c.mu.Unlock()
+
+	cfg, err := c.br.MCPConfigJSON(ctx)
+
+	c.mu.Lock()
+	if c.gen == gen {
+		c.valid, c.cfg, c.err = true, cfg, err
+	}
+	// else: invalidated while the probe was in flight. valid is already
+	// false from that invalidate; leave it there rather than overwrite it
+	// with an answer that predates it. The caller that triggered THIS probe
+	// still gets what it asked for below — only the cache write is skipped.
+	c.mu.Unlock()
+	return cfg, err
+}
+
+// invalidate discards the cached answer so the next MCPConfigJSON call
+// probes again. Deliberately does no I/O itself: onBrowserStateChange calls
+// this synchronously from inside the browser's own Start/Stop, which must
+// not block on a network round trip it doesn't need yet.
+func (c *browserMCPCache) invalidate() {
+	c.mu.Lock()
+	c.valid = false
+	c.gen++
+	c.mu.Unlock()
+}
+
 // harnessSenderFor adapts the supervisor to what internal/agent expects,
 // keeping the agent package free of this one's types.
-type harnessSenderFor struct{ sup *harness.Supervisor }
+type harnessSenderFor struct {
+	sup     *harness.Supervisor
+	browser browserConfigger
+}
 
 func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (agent.HarnessTurn, error) {
-	turn, err := h.sup.Send(ctx, key, kind, text)
+	turn, err := h.sup.SendWith(ctx, key, kind, text, harness.Options{
+		MCPConfig: browserMCPConfig(ctx, h.browser, kind),
+	})
 	if err != nil {
 		var open harness.ErrBreakerOpen
 		if asBreakerOpen(err, &open) {
@@ -338,7 +574,7 @@ func (rt *KarmaxRuntime) wireHarnessBrains() {
 	if rt.harness == nil {
 		return
 	}
-	sender := harnessSenderFor{sup: rt.harness}
+	sender := harnessSenderFor{sup: rt.harness, browser: rt.browserMCPCache}
 	for _, a := range rt.agents.List() {
 		// No fallback means a declined turn has nowhere to go, and the agent
 		// answers nothing at all. The metered path is worse than the harness;

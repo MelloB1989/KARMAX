@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -39,6 +41,10 @@ type Host struct {
 
 	// unconditional are connectors whose tools exist without credentials.
 	unconditional map[string]bool
+
+	// policy is what karmax.yaml says this install manages. The zero value
+	// manages everything, so a caller that never sets it behaves as before.
+	policy config.RegistryConfig
 }
 
 func NewHost(s *store.Store, b *bus.Log, brk *broker.Broker, log *zap.Logger) *Host {
@@ -46,10 +52,64 @@ func NewHost(s *store.Store, b *bus.Log, brk *broker.Broker, log *zap.Logger) *H
 		registry: map[string]connectorkit.Connector{}}
 }
 
+// Manage limits what Register will accept, from karmax.yaml's `connectors:`.
+//
+// Set once before anything is registered. Filtering here rather than at each
+// of the fifteen Register calls means a connector added later is covered
+// without anybody remembering to cover it — which is the failure this kind of
+// policy always has.
+func (h *Host) Manage(policy config.RegistryConfig) {
+	h.policy = policy
+}
+
 // Register makes a connector available to be configured. It does nothing until
-// the operator supplies credentials and enables it.
+// the operator supplies credentials and enables it, and nothing at all if this
+// install does not manage it.
 func (h *Host) Register(c connectorkit.Connector) {
-	h.registry[c.Manifest().ID] = c
+	id := c.Manifest().ID
+	if !h.policy.Manages(id) {
+		// Said once per connector at debug: on an install that has narrowed
+		// the list deliberately, a warning per skipped connector on every boot
+		// is noise about something working as asked.
+		h.log.Debug("connector not managed by this install", zap.String("connector", id))
+		return
+	}
+	h.registry[id] = c
+}
+
+// UnknownDeclared lists names in the policy that this build has no connector
+// for, so the caller can warn about them.
+//
+// A typo in an allowlist is otherwise completely silent — `githbu` simply
+// means no GitHub, with nothing anywhere saying why. Warned rather than
+// refused, matching how a tool name the build does not have is handled: it is
+// legitimate to share one config across builds that do not all have the same
+// connectors compiled in.
+func (h *Host) UnknownDeclared() []string {
+	if !h.policy.Restricts() {
+		return nil
+	}
+	known := map[string]bool{}
+	for id := range h.registry {
+		known[strings.ToLower(id)] = true
+		// `github:work` is also known as `github`, so listing the provider is
+		// not reported as a typo.
+		if base, _, found := strings.Cut(id, ":"); found {
+			known[strings.ToLower(base)] = true
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range h.policy.Declared() {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n == "" || known[n] || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Available lists every registered connector.
@@ -223,11 +283,21 @@ func (h *Host) credentials(id string) (connectorkit.Credentials, error) {
 // Not a way around configuration. A real post still needs real credentials, and
 // the connector says so plainly when it lacks them.
 func (h *Host) RegisterUnconditional(c connectorkit.Connector) {
+	id := c.Manifest().ID
 	h.Register(c)
+	// Register itself already decided this id is not managed and quietly
+	// skipped it — Debug, not an error, is what that call logs. Continuing
+	// past that here would grant tools for a connector the registry never
+	// added, which GrantFromManifest cannot resolve: not a missing grant,
+	// an id that was correctly never let in. Same check, so the two stay
+	// in agreement instead of one being an operator's choice and the other
+	// an error line about it.
+	if !h.policy.Manages(id) {
+		return
+	}
 	if h.unconditional == nil {
 		h.unconditional = map[string]bool{}
 	}
-	id := c.Manifest().ID
 	h.unconditional[id] = true
 	// Grants normally land when the operator enables a connector. A connector
 	// that works without being enabled has to be granted here instead, or its

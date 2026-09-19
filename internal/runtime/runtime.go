@@ -2,11 +2,12 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/broker"
+	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/clock"
 	"github.com/MelloB1989/karmax/internal/comms"
@@ -26,6 +28,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/connectors"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
+	googleworkspaceconn "github.com/MelloB1989/karmax/internal/connectors/googleworkspace"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	jiraconn "github.com/MelloB1989/karmax/internal/connectors/jira"
 	kekaconn "github.com/MelloB1989/karmax/internal/connectors/keka"
@@ -76,6 +79,15 @@ type KarmaxRuntime struct {
 	api       *api.Server
 	console   *api.ConsoleServer
 
+	// apiBrowserToken and apiBaseURL let a harness this instance spawns (for a
+	// loop or a LYZN task — see loophost.go's HarnessWith) call back into this
+	// engine's own local API for `karmax browser ...` without ever holding
+	// the operator's full API token. apiBrowserToken is scoped server-side to
+	// the browser tool only (internal/api's browserScopedTools); both are ""
+	// when the API server is disabled (cfg.API.Enabled == false).
+	apiBrowserToken string
+	apiBaseURL      string
+
 	// broker decides what each loop, peer and connector may do.
 	broker *broker.Broker
 
@@ -89,13 +101,20 @@ type KarmaxRuntime struct {
 	// feature is off, and every caller treats nil as "use the API path".
 	harness        *harness.Supervisor
 	harnessBreaker *harness.Breaker
+	// browserMCPCache holds the last --mcp-config probe, refreshed on the
+	// browser's own start/stop signal rather than once per turn. Nil exactly
+	// when harness is nil.
+	browserMCPCache *browserMCPCache
 
 	// routedKinds are the event kinds that reach agent inboxes, computed at
 	// construction and consumed once the runtime starts.
 	routedKinds []bus.EventKind
 
 	// recipeLoops are the YAML recipes currently loaded from disk.
-	recipeMu    sync.RWMutex
+	recipeMu sync.RWMutex
+	// recipeCtx is the context startRecipes runs the watcher under, kept so an
+	// enable or disable from the API can re-apply the recipes on the spot.
+	recipeCtx   context.Context
 	recipeLoops map[string]*recipes.Recipe
 
 	// wasmRunners hold the compiled signed loops, released on shutdown.
@@ -161,6 +180,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Connectors are registered here and do nothing until the operator supplies
 	// credentials and enables them.
 	connHost := connectors.NewHost(s, b, brk, log)
+	// Before any Register call: what this install manages is decided once, in
+	// karmax.yaml, and everything below is filtered through it.
+	connHost.Manage(cfg.Connectors)
 	// One connector per GitHub account. The primary has no suffix, so a
 	// single-account install is unchanged; additional accounts are named and
 	// their tools qualified (github.issues@work), which is what lets the agent
@@ -232,7 +254,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Registered so it can be seen and connected, but it stays off until
 	// KARMAX_ENABLE_INSTAGRAM=true: it drives an unofficial API that can get the
 	// operator's personal account restricted, and that is not a default.
-	connHost.Register(instagramconn.New())
+	igConn := instagramconn.New()
+	// The ledger is what makes the send tools available at all: without
+	// somewhere durable to record who has been contacted, they refuse rather
+	// than risk contacting somebody twice.
+	igConn.SetLedger(s)
+	connHost.Register(igConn)
 	// The public accounts. These are the only integrations that can make
 	// something visible to strangers with nobody having read it, so both are
 	// handed the list of names a post may not contain — built from this
@@ -245,6 +272,35 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// existing yet. Publishing for real still needs real credentials.
 	connHost.RegisterUnconditional(xconn.New(forbidden.Guard, socialLimit))
 	connHost.RegisterUnconditional(linkedinconn.New(forbidden.Guard, socialLimit))
+	// Google through the gog CLI, as a connector so it obeys the connectors:
+	// allowlist and appears in `karmax login` like everything else.
+	// Unconditional for the same reason its Auth is AuthCLI: there is no
+	// credential for KARMAX to hold, so waiting for one would mean the tools
+	// never appearing at all.
+	gogRunner := &builtin.GogTool{Path: hostpaths.Gog(), DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")}
+	connHost.RegisterUnconditional(googleworkspaceconn.New(hostpaths.Gog(),
+		func(ctx context.Context, in map[string]any) (any, error) {
+			res, err := gogRunner.Execute(ctx, in)
+			if err != nil {
+				return nil, err
+			}
+			if res.IsError {
+				// The output travels with the error on purpose: gog puts the
+				// diagnosis in its body, and dropping it leaves the agent able
+				// to say only "google failed".
+				return res.Output, fmt.Errorf("%s", res.Error)
+			}
+			return res.Output, nil
+		}))
+
+	// Every connector is registered by now, so a name in `connectors:` that
+	// matched nothing is a typo rather than a connector yet to come. Said out
+	// loud, because an allowlist entry that silently matches nothing is
+	// indistinguishable from one that is working.
+	if unknown := connHost.UnknownDeclared(); len(unknown) > 0 {
+		log.Warn("karmax.yaml names connectors this build does not have; they are being skipped",
+			zap.Strings("connectors", unknown))
+	}
 	startedAt := time.Now()
 
 	// Set provider env vars from config
@@ -479,6 +535,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&harnessSendTool{ref: harnessRT})
 	toolReg.Register(&harnessListTool{ref: harnessRT})
 	toolReg.Register(&harnessCloseTool{ref: harnessRT})
+	toolReg.Register(&harnessStopTool{ref: harnessRT})
 	toolReg.Register(&harnessShowTool{ref: harnessRT})
 	toolReg.Register(&harnessModelTool{ref: harnessRT})
 	toolReg.Register(&harnessTranscriptTool{ref: harnessRT})
@@ -488,7 +545,26 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&taskListTool{ref: harnessRT})
 	toolReg.Register(&taskUpdateTool{ref: harnessRT})
 
-	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: ""})
+	// apiBrowserToken/apiBaseURL are minted here — before either
+	// ClaudeCodeTool registration in this function needs them — and threaded
+	// through to the API server itself further down, when cfg.API.Enabled.
+	// See the KarmaxRuntime field doc above for what this is for.
+	var apiBrowserToken, apiBaseURL string
+	if cfg.API.Enabled {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return nil, fmt.Errorf("mint browser-scoped API token: %w", err)
+		}
+		apiBrowserToken = base64.RawURLEncoding.EncodeToString(raw)
+		apiBaseURL = fmt.Sprintf("http://localhost:%d", cfg.API.Port)
+	}
+
+	// One browser for the whole instance: the window the operator signs into is
+	// the window the harness attaches to.
+	browserSession := browser.Shared(cfg.Karmax.DataDir)
+	toolReg.Register(&builtin.ClaudeCodeTool{Store: s, AgentID: "", Browser: browserSession,
+		DataDir: cfg.Karmax.DataDir, EngineAPIURL: apiBaseURL, EngineBrowserToken: apiBrowserToken})
+	toolReg.Register(&builtin.BrowserTool{Session: browserSession})
 	toolReg.Register(&builtin.SubagentTool{Store: s, AgentID: "", Registry: toolReg})
 	// Wired after construction: the runner belongs to the runtime, which does
 	// not exist yet here. See the assignment further down.
@@ -499,7 +575,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	sandboxTool := &builtin.SandboxTool{Store: s}
 	toolReg.Register(sandboxTool)
 	toolReg.Register(&builtin.SandboxStatusTool{Store: s})
-	toolReg.Register(&builtin.GogTool{DefaultAccount: os.Getenv("KARMAX_GOOGLE_ACCOUNT")})
+	toolReg.Register(&builtin.DashboardTool{AgentID: ""})
+	// Registered through the Google Workspace connector rather than here — see
+	// the registration above. GogTool remains as the thing that actually runs
+	// gog, because it owns the flag defaults and the exit-code reasons, and
+	// gog_schema.go resolves the binary through it.
+	toolReg.Register(&builtin.GogSchemaTool{Path: hostpaths.Gog()})
 	toolReg.Register(&builtin.SelfRemindTool{Clock: clk, AgentID: ""})
 	toolReg.Register(&builtin.CapabilitiesTool{Registry: toolReg, Store: s, AgentID: ""})
 	toolReg.Register(&builtin.ToolSearchTool{Registry: toolReg})
@@ -511,8 +592,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		DefaultChannelID: commsMgr.DefaultChannelID,
 		KnownChannelID:   commsMgr.HasChannel,
 	})
-	toolReg.Register(&builtin.GoogleWorkspaceTool{GWSPath: hostpaths.GWS()})
-	toolReg.Register(&builtin.GoogleWorkspaceSchemaLookupTool{GWSPath: hostpaths.GWS()})
 	// WhatsApp comes from wacli itself.
 	//
 	// It publishes its capabilities as karma tools — 29 of them, covering
@@ -592,6 +671,13 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// What the operator has been building. KARMAX has recorded every delegated
 	// engineering task since the first one; nothing could read them back.
 	toolReg.Register(&builtin.ActivityTool{Store: s, AgentID: ""})
+	// Registers a long-running background job as a tracked task before a turn
+	// hands the work to a detached process — see longrun.go. task.start opens
+	// the row, task.progress is the detached process's write-and-control-
+	// signal, task.status is the pause button (and a plain read/list).
+	toolReg.Register(&builtin.TaskStartTool{Store: s, AgentID: ""})
+	toolReg.Register(&builtin.TaskProgressTool{Store: s})
+	toolReg.Register(&builtin.TaskStatusTool{Store: s})
 
 	memFactory := memory.NewFactory(filepath.Join(dataDir, "memory"), s, log)
 	forbidden.attach(memFactory)
@@ -757,49 +843,49 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			},
 		})
 
-		// Brain monitor: pings the actual brain the agent depends on and alerts
-		// the operator (app + WhatsApp, fixed text — NOT model-composed, since a
-		// dead brain can't write) the moment it goes down, and again when it
-		// recovers. This is why the operator is never silently deaf again: a
-		// codex-style usage-limit outage now announces itself. Latched so it
-		// alerts on transitions, not every tick.
-		mainProvider, mainModel := a0.Provider, a0.Model
+		// Brain monitor: pings the actual brain the agent depends on — the
+		// harness (Claude Code via the supervisor; see
+		// docs/CLAUDE-ONLY-ORCHESTRATOR.md), not the metered API path nothing
+		// in this daemon actually answers on — and alerts the operator (app +
+		// WhatsApp, fixed text — NOT model-composed, since a dead brain can't
+		// write) the moment it goes down, and again when it recovers. Latched
+		// so it alerts on transitions, not every tick.
+		//
+		// An open circuit breaker is reported as healthy-but-paused, never as
+		// down: it means the daemon is deliberately declining to spend quota
+		// right now, which is the system working as designed. Reporting that
+		// as an outage would replace one false alarm with another that fires
+		// on exactly the schedule a quota pause is likeliest to happen on.
+		// checkBrainHealth (brainmonitor.go) makes that distinction the same
+		// way harnesstools.go's asBreakerOpen does.
+		//
+		// Rides the cheapest kind ("classify" — see the tier table in
+		// CLAUDE-ONLY-ORCHESTRATOR.md) on its own session key, never an
+		// operator-priority kind: a ten-minute health check must not spend a
+		// share of the operator's own quota.
 		waChannelID2, _ := commsMgr.FindChannelIDByType("whatsapp")
-		brainDown := false
+		brainLatch := &brainMonitorLatch{}
 		loopkit.Register(loopkit.Loop{
 			Name:        "brain-monitor",
-			Description: "Pings the agent's model every few minutes and alerts you (app + WhatsApp) if the brain goes down or comes back — so an LLM outage never silently deafens KARMAX.",
+			Description: "Pings the harness (the agent's real brain) every few minutes on the cheapest tier and alerts you (app + WhatsApp) if it goes down or comes back — so an outage never silently deafens KARMAX. A paused circuit breaker (quota policy) is never reported as down.",
 			Schedule:    loopkit.Every("10m"),
 			Run: func(ctx context.Context, k loopkit.Kit) error {
+				h := harnessRT.get()
+				if h == nil || h.harness == nil {
+					return nil // harness disabled: nothing to monitor
+				}
 				pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				defer cancel()
-				// MaxTokens must be generous enough for a THINKING model to finish:
-				// claude-sonnet-4.6/opus emit internal thinking first, so a tiny
-				// budget (8) is consumed before any text and the call fails with a
-				// misleading "context deadline exceeded" — making the monitor cry
-				// wolf even when the brain is perfectly healthy. 256 completes the
-				// "OK" reply reliably (verified: 8 & 64 fail, 256 works).
-				sess := karmahelper.NewSession(karmahelper.SessionConfig{
-					Kind:     "runtime",
-					Provider: mainProvider, Model: mainModel, MaxTokens: 256, FallbackModels: fbs,
-				}, nil)
-				resp, _, _, perr := sess.Chat(pctx, "Reply with the single word OK.")
-				healthy := perr == nil && strings.TrimSpace(resp) != ""
-				switch {
-				case !healthy && !brainDown:
-					brainDown = true
-					reason := "no response"
-					if perr != nil {
-						reason = perr.Error()
-					}
-					msg := fmt.Sprintf("⚠️ KARMAX brain is DOWN (model %s: %.140s). Your messages won't be answered until it recovers.", mainModel, reason)
+				event, reason := brainLatch.tick(pctx, h.harness)
+				switch event {
+				case brainMonitorAlertDown:
+					msg := fmt.Sprintf("⚠️ KARMAX brain is DOWN (harness: %.140s). Your messages won't be answered until it recovers.", reason)
 					builtin.PushAppNotification(s, waAgentID, "alert", "⚠️ KARMAX brain is down", msg)
 					if waChannelID2 != "" && waTarget != "" {
 						_ = commsMgr.Send(waChannelID2, waTarget, msg)
 					}
 					k.Logf("brain-monitor: DOWN (%s)", reason)
-				case healthy && brainDown:
-					brainDown = false
+				case brainMonitorAlertRecovered:
 					msg := "✅ KARMAX brain is back online. Resend anything I missed."
 					builtin.PushAppNotification(s, waAgentID, "update", "✅ KARMAX brain recovered", msg)
 					if waChannelID2 != "" && waTarget != "" {
@@ -979,7 +1065,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	var apiSrv *api.Server
 	if cfg.API.Enabled {
 		apiAddr := fmt.Sprintf("%s:%d", cfg.API.Host, cfg.API.Port)
-		apiSrv = api.New(apiAddr, cfg.API.Port, os.Getenv("KARMAX_API_TOKEN"), agentReg, s, sched, memFactory, cfg, log)
+		apiSrv = api.New(apiAddr, cfg.API.Port, os.Getenv("KARMAX_API_TOKEN"), apiBrowserToken, agentReg, s, sched, memFactory, cfg, log)
 	}
 
 	// The console is a SEPARATE listener from the API above, and deliberately
@@ -1055,6 +1141,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		comms:        commsMgr,
 		api:          apiSrv,
 		console:      consoleSrv,
+
+		apiBrowserToken: apiBrowserToken,
+		apiBaseURL:      apiBaseURL,
 	}
 	// The agent can now run what it writes, not just validate it — and it is
 	// told what the run did, since "started something" is not verification.
@@ -1241,7 +1330,9 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// redundancy at all: they share one base URL and die with one process.
 	karmahelper.SetTransportFallback(func(c context.Context, prompt string) (string, error) {
 		tool := &builtin.ClaudeCodeTool{Store: rt.store, AgentID: rt.loopDefaultAgent,
-			MemoryMgr: rt.memory.For(rt.loopDefaultAgent, rt.loopNamespace())}
+			MemoryMgr: rt.memory.For(rt.loopDefaultAgent, rt.loopNamespace()),
+			Browser:   browser.Shared(rt.cfg.Karmax.DataDir),
+			DataDir:   rt.cfg.Karmax.DataDir}
 		res, err := tool.Execute(c, map[string]any{"prompt": prompt, "ephemeral": true})
 		if err != nil {
 			return "", err
@@ -1260,21 +1351,13 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// loop list (the daemon's truth — includes runtime-registered loops).
 	if rt.api != nil {
 		rt.api.SetRunLoop(rt.RunLoopByName)
+		rt.api.SetChatTurn(rt.chatTurn)
 		rt.api.SetLoopHealth(func() (any, error) { return rt.LoopHealthReport() })
-		rt.api.SetListLoops(func() []api.LoopInfo {
-			out := make([]api.LoopInfo, 0, len(rt.loopkitLoops))
-			for _, l := range rt.loopkitLoops {
-				out = append(out, api.LoopInfo{
-					Name:        l.Name,
-					Description: l.Description,
-					Schedule:    l.Schedule.CronExpr(),
-					Webhook:     l.Webhook,
-					Events:      l.Events,
-				})
-			}
-			sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-			return out
-		})
+		// listLoopInfos (loopinfo.go) covers every tier, including disabled
+		// ones — this used to only walk rt.loopkitLoops, which misses the
+		// recipe and prompt tiers entirely and drops anything disabled.
+		rt.api.SetListLoops(rt.listLoopInfos)
+		rt.api.SetLoopsChanged(rt.ReapplyRecipes)
 	}
 
 	var wg sync.WaitGroup

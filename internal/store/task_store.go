@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -22,6 +23,17 @@ const (
 	TaskBlocked = "blocked"
 	TaskDone    = "done"
 	TaskFailed  = "failed"
+)
+
+// Long-run states. A detached script owns these, not the due-tasks poller
+// above: Running/Paused/Cancelled never appear in DueTasks, so a paced send
+// and the polling queue share a table without sharing a scheduler. Status is
+// the whole control channel — a script re-reads it before each unit of work,
+// idling on Paused and stopping cleanly on Cancelled.
+const (
+	TaskRunning   = "running"
+	TaskPaused    = "paused"
+	TaskCancelled = "cancelled"
 )
 
 // Task is one piece of work owned until it is finished.
@@ -182,6 +194,17 @@ type TaskUpdate struct {
 	// BumpAttempt counts a round that ran, which is what stops a task that
 	// cannot make progress from running forever.
 	BumpAttempt bool
+	// KeepLastError leaves last_error untouched instead of the default
+	// write-through (see UpdateTask). A full round-based update wants the
+	// opposite — a round that ran and produced no error must clear the one
+	// the round before it left — but a field-level write like
+	// SetTaskProgress must not silently erase an error a previous round
+	// recorded just because this call has nothing to say about it.
+	KeepLastError bool
+	// KeepNextActionAt leaves next_action_at untouched, for the same reason:
+	// a progress ping or a status flip must not cancel a scheduled retry it
+	// knows nothing about.
+	KeepNextActionAt bool
 }
 
 // UpdateTask records a round's outcome.
@@ -205,11 +228,17 @@ func (s *Store) UpdateTask(id string, u TaskUpdate) error {
 	}
 	// Written even when empty: a round that succeeded must clear the error the
 	// previous one left, or a finished task carries a stale failure forever.
-	sets = append(sets, "last_error = ?")
-	args = append(args, u.LastError)
+	// A caller writing only one field (KeepLastError) opts out, because for
+	// it "empty" means "I have nothing to say," not "there is no error."
+	if !u.KeepLastError {
+		sets = append(sets, "last_error = ?")
+		args = append(args, u.LastError)
+	}
 
-	sets = append(sets, "next_action_at = ?")
-	args = append(args, u.NextActionAt)
+	if !u.KeepNextActionAt {
+		sets = append(sets, "next_action_at = ?")
+		args = append(args, u.NextActionAt)
+	}
 
 	if u.BumpAttempt {
 		sets = append(sets, "attempts = attempts + 1")
@@ -218,6 +247,53 @@ func (s *Store) UpdateTask(id string, u TaskUpdate) error {
 
 	_, err := s.exec(`UPDATE tasks SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	return err
+}
+
+// TaskProgress is a long run's ledger, JSON-encoded into the progress column.
+// Attempted counts a send tried, Sent one that succeeded — a script writes
+// Attempted before the request and Sent after it, so a crash between the two
+// is visible on resume rather than silently retried or silently skipped.
+type TaskProgress struct {
+	Sent      int       `json:"sent"`
+	Attempted int       `json:"attempted"`
+	Total     int       `json:"total"`
+	LastAt    time.Time `json:"last_at"`
+}
+
+// EncodeProgress renders progress the way the TEXT column holds it.
+func EncodeProgress(p TaskProgress) string {
+	b, _ := json.Marshal(p)
+	return string(b)
+}
+
+// DecodeProgress reads a task's progress column back into TaskProgress. A
+// task that has not reported yet has an empty column, which decodes to the
+// zero value rather than an error.
+func DecodeProgress(raw string) (TaskProgress, error) {
+	var p TaskProgress
+	if strings.TrimSpace(raw) == "" {
+		return p, nil
+	}
+	err := json.Unmarshal([]byte(raw), &p)
+	return p, err
+}
+
+// SetTaskProgress records one round's progress. Built on UpdateTask, so it
+// touches only the progress column (plus updated_at) — status, last_error
+// and next_action_at are whatever the task already had.
+func (s *Store) SetTaskProgress(id string, p TaskProgress) error {
+	return s.UpdateTask(id, TaskUpdate{
+		Progress: EncodeProgress(p), KeepLastError: true, KeepNextActionAt: true,
+	})
+}
+
+// SetTaskStatus flips the control channel — status alone. Also built on
+// UpdateTask, which leaves progress untouched when TaskUpdate.Progress is
+// empty: this is what makes cancelling safe. A cancelled run's ledger must
+// survive it, or a later resume has no record of who was already messaged
+// and risks sending twice.
+func (s *Store) SetTaskStatus(id, status string) error {
+	return s.UpdateTask(id, TaskUpdate{Status: status, KeepLastError: true, KeepNextActionAt: true})
 }
 
 // ReleaseStuckTasks brings back tasks left mid-round when the daemon died.

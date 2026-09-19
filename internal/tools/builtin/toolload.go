@@ -40,7 +40,7 @@ func (t *LoadToolTool) Manifest() tools.ToolManifest {
 				"names": {
 					"type": "array",
 					"items": {"type": "string"},
-					"description": "Tool names from your index, e.g. [\"google_workspace\", \"whatsapp.read\"]."
+					"description": "Tool names from your index, e.g. [\"google\", \"whatsapp.read\"]."
 				}
 			},
 			"required": ["names"]

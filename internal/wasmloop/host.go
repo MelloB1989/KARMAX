@@ -67,7 +67,7 @@ var hostDescriptions = map[string]string{
 	FnTrigger:     "see what triggered it",
 	FnAsk:         "ask your agent questions (which can use its tools)",
 	FnConfig:      "read the settings you gave it at install",
-	FnHostTool:    "learn where wacli and gws live (a path, not permission to run them)",
+	FnHostTool:    "learn where wacli and gog live (a path, not permission to run them)",
 	FnHarness:     "run a coding harness — shell, files and web research",
 	FnGateway:     "ask the main model directly",
 	FnSession:     "hold a long-lived conversation with a coding harness",
@@ -607,7 +607,7 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 		// The error travels in the payload rather than being returned, so the
 		// guest still receives the output. For an integration the output IS
 		// often the diagnosis — an auth failure's JSON is what lets a loop say
-		// "run gws auth login" instead of "it failed".
+		// "run gog auth add" instead of "it failed".
 		out, err := r.kit.Tool(ctx, in.Name, in.Input)
 		return json.Marshal(map[string]any{"output": out, "error": errText(err)})
 

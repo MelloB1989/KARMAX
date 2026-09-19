@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/broker"
+	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
@@ -223,6 +224,10 @@ func (rt *KarmaxRuntime) startRecipes(ctx context.Context) {
 	// having reached the registry first. Existing files are never overwritten.
 	recipes.InstallBuiltins(dir, rt.log)
 
+	rt.recipeMu.Lock()
+	rt.recipeCtx = ctx
+	rt.recipeMu.Unlock()
+
 	w := recipes.NewWatcher(dir, rt.log, func(loaded []recipes.Loaded) {
 		rt.applyRecipes(ctx, loaded)
 	})
@@ -278,6 +283,20 @@ func (rt *KarmaxRuntime) startRecipes(ctx context.Context) {
 	rt.log.Info("watching recipes", zap.String("dir", dir))
 }
 
+// ReapplyRecipes schedules the recipes on disk again, so an operator's enable
+// or disable takes effect now. The watcher only notices the recipes directory,
+// and the disabled list lives beside it, so without this a paused recipe kept
+// firing until the next restart while the API reported it paused.
+func (rt *KarmaxRuntime) ReapplyRecipes() {
+	rt.recipeMu.RLock()
+	ctx := rt.recipeCtx
+	rt.recipeMu.RUnlock()
+	if ctx == nil {
+		return
+	}
+	rt.applyRecipes(ctx, recipes.LoadAll(recipes.Dir()))
+}
+
 // applyRecipes replaces the registered recipe loops with what is on disk now.
 func (rt *KarmaxRuntime) applyRecipes(ctx context.Context, loaded []recipes.Loaded) {
 	rt.recipeMu.Lock()
@@ -315,19 +334,28 @@ func (rt *KarmaxRuntime) applyRecipes(ctx context.Context, loaded []recipes.Load
 		next[r.Name] = r
 	}
 
-	// Recipes that vanished stop being scheduled and lose their timers, so a
-	// deleted file cannot wake anything later.
+	// Recipes that vanished stop being scheduled, lose their timers and lose
+	// what they were allowed to reach, so a deleted file cannot wake anything
+	// later or leave a permission behind for a file of the same name.
 	for name := range rt.recipeLoops {
 		if _, still := next[name]; !still {
 			_ = rt.scheduler.RemoveJob("recipe:" + name)
 			if n, err := rt.store.CancelLoopTimers("recipe:" + name); err == nil && n > 0 {
 				rt.log.Info("disarmed timers for a removed recipe", zap.String("recipe", name))
 			}
+			if err := rt.revokeRecipeGrants(name); err != nil {
+				rt.log.Warn("could not withdraw a removed recipe's grants",
+					zap.String("recipe", name), zap.Error(err))
+			}
 			rt.log.Info("recipe removed", zap.String("recipe", name))
 		}
 	}
 
 	for name, r := range next {
+		// Grants are applied on every pass, not only when the trigger changed:
+		// editing `grants:` and leaving `on:` alone is the ordinary way to give
+		// a recipe something it turned out to need.
+		rt.applyRecipeGrants(name, r)
 		if prev, ok := rt.recipeLoops[name]; ok && prev.On == r.On {
 			rt.recipeLoops[name] = r
 			continue
@@ -345,6 +373,60 @@ func (rt *KarmaxRuntime) applyRecipes(ctx context.Context, loaded []recipes.Load
 		rt.log.Info("recipe loaded", zap.String("recipe", name), zap.Int("steps", len(r.Steps)))
 	}
 	rt.recipeLoops = next
+}
+
+// revokeRecipeGrants withdraws everything a recipe held.
+func (rt *KarmaxRuntime) revokeRecipeGrants(name string) error {
+	if rt.broker == nil {
+		return nil
+	}
+	return rt.broker.RevokeAll(broker.LoopSubject("recipe:" + name))
+}
+
+// applyRecipeGrants gives a recipe exactly what its own file asks for.
+//
+// Recipes could be scheduled and could not do anything that needed permission:
+// `grants:` was parsed, rendered by Describe for the operator to read, and then
+// read by nothing. Every recipe with an `http:` step was refused at run time,
+// once per tick, in a log — which is how a shipped recipe can go months without
+// ever having worked.
+//
+// Replaced rather than merged, like a workflow upgrade: a recipe that no longer
+// asks for a host must not keep it because an earlier version did.
+//
+// The recipes directory is the trust boundary here, not this list. Anyone who
+// can write a file there can already make KARMAX run steps; what this adds is
+// that the permissions are declared in one place a person can read, instead of
+// being inferred from every URL buried in the steps.
+func (rt *KarmaxRuntime) applyRecipeGrants(name string, r *recipes.Recipe) {
+	if rt.broker == nil {
+		return
+	}
+	subject := broker.LoopSubject("recipe:" + name)
+	if err := rt.broker.RevokeAll(subject); err != nil {
+		rt.log.Warn("could not clear a recipe's previous grants",
+			zap.String("recipe", name), zap.Error(err))
+		return
+	}
+	for _, g := range r.Grants {
+		class, value, ok := strings.Cut(g, ":")
+		if !ok {
+			// Parse already refused this shape; a recipe that reached here
+			// without it is not one to guess about.
+			continue
+		}
+		if err := rt.broker.Grant(store.Grant{
+			Subject: subject, Capability: class, Value: value,
+			GrantedBy: "recipe:" + r.Path,
+		}); err != nil {
+			rt.log.Warn("could not grant what a recipe asks for",
+				zap.String("recipe", name), zap.String("grant", g), zap.Error(err))
+		}
+	}
+	if len(r.Grants) > 0 {
+		rt.log.Info("recipe granted what it asks for",
+			zap.String("recipe", name), zap.Strings("grants", r.Grants))
+	}
 }
 
 // RunRecipe executes one recipe by name.
@@ -457,6 +539,11 @@ type loopKit struct {
 	executionID string
 }
 
+// var _ loopkit.Kit = (*loopKit)(nil) catches a missing/mismatched method at
+// the definition site, rather than at the build of whichever caller happens
+// to need it next.
+var _ loopkit.Kit = (*loopKit)(nil)
+
 func (k *loopKit) Trigger() loopkit.Trigger { return k.trigger }
 
 func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
@@ -555,17 +642,44 @@ func isTransportFailure(err error) bool {
 }
 
 func (k *loopKit) Harness(ctx context.Context, prompt string) (string, error) {
-	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID, Namespace: k.namespace,
-		MemoryMgr: k.mem}
-	// Loop work is one-off: no follow-up value in keeping the session around.
-	res, err := tool.Execute(ctx, map[string]any{"prompt": prompt, "ephemeral": true})
+	res, err := k.HarnessWith(ctx, loopkit.HarnessSpec{Prompt: prompt, Ephemeral: true})
 	if err != nil {
 		return "", err
 	}
-	if res.IsError {
-		return "", fmt.Errorf("harness: %s", res.Error)
+	return res.Output, nil
+}
+
+// HarnessWith is Harness with a caller-chosen session and working directory.
+func (k *loopKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (loopkit.HarnessResult, error) {
+	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID, Namespace: k.namespace,
+		MemoryMgr: k.mem, Browser: browser.Shared(k.rt.cfg.Karmax.DataDir),
+		DataDir: k.rt.cfg.Karmax.DataDir,
+		// Least privilege: this lets `karmax browser ...` inside the harness
+		// reach this engine's own API, and ONLY the browser tool — see
+		// KarmaxRuntime.apiBrowserToken and internal/api's scope allowlist.
+		// Never the operator's full API token.
+		EngineAPIURL: k.rt.apiBaseURL, EngineBrowserToken: k.rt.apiBrowserToken}
+	res, err := tool.Execute(ctx, map[string]any{
+		"prompt": spec.Prompt, "session_id": spec.SessionID,
+		"working_dir": spec.WorkingDir, "ephemeral": spec.Ephemeral,
+	})
+	if err != nil {
+		return loopkit.HarnessResult{}, err
 	}
-	return loopToolField(res, "output"), nil
+	if res.IsError {
+		return loopkit.HarnessResult{}, fmt.Errorf("harness: %s", res.Error)
+	}
+	return loopkit.HarnessResult{
+		Output:    loopToolField(res, "output"),
+		SessionID: loopToolField(res, "session_id"),
+	}, nil
+}
+
+// HarnessForget is the terminal cleanup for a session started through
+// HarnessWith — see (*builtin.ClaudeCodeTool).Cleanup.
+func (k *loopKit) HarnessForget(sessionID, workingDir string) error {
+	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID, DataDir: k.rt.cfg.Karmax.DataDir}
+	return tool.Cleanup(workingDir, sessionID)
 }
 
 func (k *loopKit) RunLoop(name string) error {
@@ -718,8 +832,8 @@ func (k *loopKit) HostTool(name string) string {
 			return k.wacliPath
 		}
 		return hostpaths.Wacli()
-	case "gws":
-		return hostpaths.GWS()
+	case "gog":
+		return hostpaths.Gog()
 	case "karmax":
 		return hostpaths.KarmaxBin()
 	case "wacli-api":

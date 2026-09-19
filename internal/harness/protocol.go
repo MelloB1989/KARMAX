@@ -14,8 +14,11 @@
 package harness
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // event is one line of --output-format stream-json.
@@ -31,8 +34,22 @@ type event struct {
 
 	// assistant / user
 	Message struct {
+		// Model names the brain that answered, for the transcript's footer.
+		Model   string         `json:"model"`
 		Content []contentBlock `json:"content"`
 	} `json:"message"`
+
+	// stream_event, only present with --include-partial-messages
+	StreamEvent struct {
+		Type  string `json:"type"` // content_block_delta | message_start | …
+		Delta struct {
+			Type string `json:"type"` // text_delta | thinking_delta
+			Text string `json:"text"`
+			// Reasoning arrives under its own key, not under Text. Reading
+			// Text for a thinking_delta yields empty thoughts, silently.
+			Thinking string `json:"thinking"`
+		} `json:"delta"`
+	} `json:"event"`
 
 	// rate_limit_event
 	RateLimitInfo *RateLimit `json:"rate_limit_info"`
@@ -57,8 +74,9 @@ type contentBlock struct {
 	Input json.RawMessage `json:"input"`
 
 	// tool_result
-	ToolUseID string `json:"tool_use_id"`
-	IsError   bool   `json:"is_error"`
+	ToolUseID string          `json:"tool_use_id"`
+	IsError   bool            `json:"is_error"`
+	Content   json.RawMessage `json:"content"`
 }
 
 // Usage is what one turn consumed.
@@ -113,6 +131,34 @@ type ToolCall struct {
 	Command string
 }
 
+// ToolEvent is the streaming view of one tool call: announced, then revised.
+//
+// Deliberately not ToolCall, which is the settled record of a call inside a
+// Turn and carries the raw Input and Command the audit allowlist reads. That
+// one has consumers — the allowlist audit, harnessbrain, the chat's ticket
+// extraction — and keeps its name and shape.
+//
+// A KindToolUpdate carries only ID, Status and Output: the consumer merges it
+// into the call it already has, the way ACP's tool_call_update does.
+type ToolEvent struct {
+	// ID is stable for the life of the call. Without it a completion can only
+	// be matched by name, and a second call to the same tool resolves the
+	// wrong one.
+	ID        string     `json:"id"`
+	Title     string     `json:"title,omitempty"`
+	Kind      ToolKind   `json:"kind,omitempty"`
+	Status    Status     `json:"status"`
+	Locations []Location `json:"locations,omitempty"`
+	Output    string     `json:"output,omitempty"`
+	// Input is the tool_use call's own input, set only when this announces a
+	// call (KindTool) — a KindToolUpdate carries no input, only what the call
+	// resolved to, the same asymmetry Output already has. Truncated the same
+	// way chatlog.ToolCall.Input is (see truncateJSONStrings), so a live call
+	// and the same call read back from history describe themselves the same
+	// way.
+	Input json.RawMessage `json:"input,omitempty"`
+}
+
 // Turn is one complete exchange: everything between sending a user message and
 // the result event that closes it.
 type Turn struct {
@@ -120,9 +166,14 @@ type Turn struct {
 	ToolCalls []ToolCall
 	Usage     Usage
 	CostUSD   float64
-	Limits    *RateLimit
-	NumTurns  int
-	Err       error
+	// Model and Duration are what the transcript's footer reports. The CLI
+	// names the model on every assistant message and the elapsed time on the
+	// result, so neither has to be measured here.
+	Model    string
+	Duration time.Duration
+	Limits   *RateLimit
+	NumTurns int
+	Err      error
 }
 
 // userEvent is the single line written to stdin to ask a question.
@@ -170,3 +221,151 @@ func shellCommand(name string, input json.RawMessage) string {
 	}
 	return ""
 }
+
+// PlanEntry is one line of the agent's plan.
+//
+// Claude Code keeps a plan in TodoWrite's input, so that is where this is read
+// from; ACP delivers the same thing as a `plan` session update.
+type PlanEntry struct {
+	Content    string `json:"content"`
+	Status     string `json:"status"` // pending | in_progress | completed
+	ActiveForm string `json:"activeForm,omitempty"`
+	Priority   string `json:"priority,omitempty"`
+}
+
+// planFrom reads a plan out of a TodoWrite call's input.
+//
+// Every field is optional on purpose: the todo shape has changed upstream
+// before, and losing the whole plan over one renamed key is not a trade worth
+// making.
+func planFrom(input json.RawMessage) []PlanEntry {
+	var in struct {
+		Todos []PlanEntry `json:"todos"`
+	}
+	if json.Unmarshal(input, &in) != nil || len(in.Todos) == 0 {
+		return nil
+	}
+	return in.Todos
+}
+
+// toolResultText reads a tool_result's content.
+//
+// The CLI writes it either as a plain string or as a list of blocks, and
+// handling only one shape silently drops half the results — which is exactly
+// the bug internal/chatlog had with message content.
+func toolResultText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []contentBlock
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, bl := range blocks {
+		if bl.Type == "text" {
+			b.WriteString(bl.Text)
+		}
+	}
+	return b.String()
+}
+
+// maxToolOutput is as much of a result as a transcript can use.
+const maxToolOutput = 16000
+
+// truncateOutput caps a tool result at the adapter.
+//
+// Capping here rather than at each consumer keeps one number in one place, and
+// keeps a result that happens to be a whole file off the wire entirely.
+func truncateOutput(s string) string {
+	if len(s) <= maxToolOutput {
+		return s
+	}
+	// Back up to a rune start: slicing mid-rune renders as U+FFFD.
+	cut := maxToolOutput
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n…"
+}
+
+// TruncateOutput exposes truncateOutput to internal/chatlog, so a tool call's
+// output is capped the same way whether it is read live off the wire or read
+// back from a transcript on disk.
+func TruncateOutput(s string) string { return truncateOutput(s) }
+
+// ToolResultText exposes toolResultText to internal/chatlog, so history reads
+// a tool_result's content the same way a live turn does.
+func ToolResultText(raw json.RawMessage) string { return toolResultText(raw) }
+
+// maxInputRunes is where a tool_use input's string field stops being useful
+// context and starts being a payload nothing on the wire needs in full — the
+// same shape of problem truncateOutput solves for a result, at the other end
+// of a call.
+const maxInputRunes = 4000
+
+// truncateJSONStrings walks a JSON value depth-first and cuts every string
+// leaf longer than maxInputRunes, re-marshaling the result.
+//
+// Decoded with UseNumber rather than into plain float64: encoding/json's
+// default numeric type loses precision on a large id and can remarshal an
+// ordinary integer in exponent form, and either would silently rewrite a
+// tool's own input into something it never was.
+func truncateJSONStrings(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		// Not JSON this can walk — malformed, or a shape the CLI has never
+		// sent before. Passed through unchanged rather than dropped: a tool
+		// call with input nobody could truncate is still worth showing.
+		return raw
+	}
+	out, err := json.Marshal(truncateJSONValue(v))
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(out)
+}
+
+func truncateJSONValue(v any) any {
+	switch x := v.(type) {
+	case string:
+		return truncateRunes(x, maxInputRunes)
+	case []any:
+		for i, e := range x {
+			x[i] = truncateJSONValue(e)
+		}
+		return x
+	case map[string]any:
+		for k, e := range x {
+			x[k] = truncateJSONValue(e)
+		}
+		return x
+	default:
+		return v
+	}
+}
+
+// truncateRunes cuts s to at most n runes, marking the cut with "…" — rune-safe
+// the same way truncateOutput is, but counted in runes rather than bytes
+// because that is the unit the input cap is specified in.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// TruncateToolInput exposes truncateJSONStrings to internal/chatlog, so a
+// tool call's input is capped the same way whether it is read live off the
+// wire or read back from a transcript on disk.
+func TruncateToolInput(raw json.RawMessage) json.RawMessage { return truncateJSONStrings(raw) }

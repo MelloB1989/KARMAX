@@ -15,21 +15,22 @@ import (
 // otherwise be missing entirely.
 
 var verbDescriptions = map[string]string{
-	VerbAsk:         "ask your agent to do something, with all of its tools",
-	VerbHarness:     "run a coding harness — shell, files and web research",
-	VerbGateway:     "ask the main model directly",
-	VerbHTTP:        "make HTTP requests",
-	VerbTool:        "call KARMAX tools by name",
-	VerbRecall:      "read your long-term memory",
-	VerbRemember:    "WRITE to your long-term memory",
-	VerbNotify:      "send you notifications",
-	VerbPropose:     "ask for approval before acting — from you, or from anyone holding a role",
-	VerbRemind:      "put reminders on your list",
-	VerbSend:        "SEND MESSAGES AS YOU — to a WhatsApp contact, or into a shared channel",
-	VerbCaseHistory: "read what has already happened on this piece of work",
-	VerbCaseSay:     "speak in this piece of work's own thread, where its people can see it",
-	VerbSleep:       "wait, and resume later",
-	VerbLog:         "write to KARMAX's log",
+	VerbAsk:           "ask your agent to do something, with all of its tools",
+	VerbHarness:       "run a coding harness — shell, files and web research",
+	VerbHarnessForget: "release a harness session's disk — its transcript and working directory",
+	VerbGateway:       "ask the main model directly",
+	VerbHTTP:          "make HTTP requests",
+	VerbTool:          "call KARMAX tools by name",
+	VerbRecall:        "read your long-term memory",
+	VerbRemember:      "WRITE to your long-term memory",
+	VerbNotify:        "send you notifications",
+	VerbPropose:       "ask for approval before acting — from you, or from anyone holding a role",
+	VerbRemind:        "put reminders on your list",
+	VerbSend:          "SEND MESSAGES AS YOU — to a WhatsApp contact, or into a shared channel",
+	VerbCaseHistory:   "read what has already happened on this piece of work",
+	VerbCaseSay:       "speak in this piece of work's own thread, where its people can see it",
+	VerbSleep:         "wait, and resume later",
+	VerbLog:           "write to KARMAX's log",
 
 	VerbCaseOpen:  "open or rejoin a case — a shared thread of work",
 	VerbCaseGet:   "look up a case, without creating one",
@@ -66,7 +67,7 @@ func Describe(r *Recipe) []string {
 
 	// Named tools are listed individually. "call KARMAX tools by name" is not
 	// something anybody can weigh; "call the tool whatsapp.send" is.
-	for _, name := range namedTools(r) {
+	for _, name := range NamedTools(r) {
 		out = append(out, "call the tool "+name)
 	}
 	for _, g := range r.Grants {
@@ -78,8 +79,10 @@ func Describe(r *Recipe) []string {
 	return out
 }
 
-// namedTools finds the tools a recipe's `tool:` steps name.
-func namedTools(r *Recipe) []string {
+// NamedTools finds the tools a recipe's `tool:` steps name. Exported so the
+// registry API can list what a recipe touches without re-walking its steps —
+// see internal/loopregistry's use for GET /api/loops/registry/{name}.
+func NamedTools(r *Recipe) []string {
 	seen := map[string]bool{}
 	var out []string
 	var walk func([]Step)

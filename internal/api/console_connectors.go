@@ -100,7 +100,7 @@ func (s *ConsoleServer) summariseConnector(m connectorkit.Manifest, health map[s
 	if err != nil || cred == nil {
 		if self, ok := s.connectorByID(m.ID); ok {
 			if connectors.SelfConfigured(self, connectorkit.Credentials{Config: map[string]string{}}) {
-				sum.Status = "degraded"
+				sum.Status = "checking"
 				sum.Detail = "Configured outside the console; checking shortly"
 				return sum
 			}
@@ -108,7 +108,11 @@ func (s *ConsoleServer) summariseConnector(m connectorkit.Manifest, health map[s
 		sum.Detail = "No credentials saved yet"
 		return sum
 	}
-	sum.Status = "degraded"
+	// "checking", not "degraded". Both mean the prober has not come round yet,
+	// but a console reading "degraded" for a connector that was just saved
+	// correctly sends somebody looking for a fault that is really a
+	// forty-five-second wait — see connectors.probeDelay.
+	sum.Status = "checking"
 	sum.Detail = "Credentials saved; checking shortly"
 	sum.LastCheckedAt = rfc3339Ptr(cred.UpdatedAt)
 	return sum

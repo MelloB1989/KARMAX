@@ -20,6 +20,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/config"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
+	googleworkspaceconn "github.com/MelloB1989/karmax/internal/connectors/googleworkspace"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
@@ -28,18 +29,26 @@ import (
 	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
+	"go.uber.org/zap"
 )
 
 // Build returns the registry for this instance's configuration.
 func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	resolver := integration.NewResolver(db, configLookup(cfg))
 	reg := integration.NewRegistry(resolver)
+	// Before any Register call below: what this install manages is decided
+	// once, in karmax.yaml, and everything after it is filtered through.
+	reg.Manage(cfg.Integrations)
 
 	// The host-binary integrations. Registered whether or not a channel is
 	// configured for them, because "is my WhatsApp still paired" is a question
 	// worth answering even when nothing is using it yet.
 	reg.Register(whatsApp())
-	reg.Register(googleWorkspace())
+	// Google-through-gog is adapted from its connector rather than declared
+	// again here. It used to be a second hand-written manifest and a second
+	// copy of the health check, which is two places to keep agreeing about one
+	// integration.
+	reg.Register(integration.FromConnector(googleworkspaceconn.New(hostpaths.Gog(), nil), ""))
 
 	// The connectors, adapted through their own manifests — so a connector and a
 	// channel are the same kind of thing to `karmax login`, which is the point
@@ -61,6 +70,17 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	for _, ch := range cfg.Comms.Channels {
 		if build, ok := channelIntegrations[strings.ToLower(ch.Type)]; ok {
 			reg.Register(build(ch.ID))
+		}
+	}
+
+	// A name in `integrations:` that matched nothing is a typo, and an
+	// allowlist entry that silently matches nothing looks exactly like one
+	// that is working. Warned rather than refused: one config may be shared
+	// across builds that do not all have the same integrations compiled in.
+	for _, name := range cfg.Integrations.Declared() {
+		if strings.TrimSpace(name) != "" && !reg.Known(name) {
+			zap.L().Warn("karmax.yaml names an integration this build does not have; skipping",
+				zap.String("integration", name))
 		}
 	}
 	return reg
@@ -101,15 +121,12 @@ func whatsApp() integration.Integration {
 	}, hostpaths.Wacli(), integration.CheckBinarySession(hostpaths.Wacli(), "status"))
 }
 
-// googleWorkspace is the gws CLI's OAuth session.
-func googleWorkspace() integration.Integration {
-	return integration.CLISession(integration.Manifest{
-		ID:          "google_workspace",
-		Name:        "Google Workspace",
-		Description: "Calendar, Gmail, Drive, Chat and Tasks through the gws CLI.",
-		Kind:        integration.KindConnector,
-		SetupURL:    "https://github.com/MelloB1989/google-workspace-cli",
-	}, hostpaths.GWS(), integration.CheckBinarySession(hostpaths.GWS(), "auth", "status"))
+// trunc keeps a CLI's complaint readable in an error line.
+func trunc(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // discord is a bot token.

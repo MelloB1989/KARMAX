@@ -1,0 +1,580 @@
+// Package browser is the operator's browser: one window they and the agent
+// both use.
+//
+// Connecting anything that is not WhatsApp means signing in, and signing in
+// means a browser. The old answer was to print a consent URL and hope somebody
+// pasted it into the right profile; then, separately, to give the agent a
+// browser of its own, logged into nothing. Two browsers, two sessions, and the
+// agent could never see what the person had just signed into.
+//
+// So there is one. KARMAX launches a Chromium with a profile it owns, headed,
+// with the DevTools protocol listening on loopback. The person signs into
+// Google, Instagram, LinkedIn — whatever they want reachable — in that window.
+// When an agent then needs the web, Playwright MCP attaches to the same browser
+// over that endpoint and finds the sessions already there.
+//
+// The profile is KARMAX's own, never the person's daily Chrome profile. That is
+// the boundary that makes this honest: what the agent can reach is exactly what
+// the operator deliberately signed into here, and closing the session is one
+// directory to delete.
+//
+// The DevTools endpoint is bound to 127.0.0.1. Any process running as this user
+// can drive the browser through it — the same is true of the person's own
+// keychain, and of every other CLI session on the box, but it is worth knowing
+// rather than discovering.
+package browser
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/MelloB1989/karmax/internal/hostpaths"
+)
+
+// Session is the browser KARMAX runs. The zero value is not usable; call New.
+type Session struct {
+	dir string
+	// headless launches with no visible window. Only NewHeadless sets it —
+	// production always wants the operator's own window.
+	headless bool
+
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	port     int
+	onChange func(running bool)
+
+	// Network capture — see network.go. netStore outlives any one Start/Stop
+	// cycle, so a request captured before the browser was last stopped is
+	// still inspectable after; netCancel/attached/netWG exist only while
+	// capture is actually running.
+	netStore  *requestStore
+	netMu     sync.Mutex
+	netCancel context.CancelFunc
+	// netCtx is capture's own long-lived context — valid whenever netCancel
+	// is non-nil — that a capture connection's lifetime is rooted in,
+	// rather than in whatever short-lived ctx the call that attached it
+	// (Open, say) happened to be given. See attachTabIfNeeded.
+	netCtx   context.Context
+	attached map[string]*tabCapture
+	netWG    sync.WaitGroup
+}
+
+// OnStateChange registers fn to run after the browser actually starts or
+// stops. There is one caller — the daemon recycling harness sessions whose
+// --mcp-config was fixed at spawn — so a second call simply replaces the
+// first rather than fanning out.
+func (s *Session) OnStateChange(fn func(running bool)) {
+	s.mu.Lock()
+	s.onChange = fn
+	s.mu.Unlock()
+}
+
+func (s *Session) notify(running bool) {
+	s.mu.Lock()
+	fn := s.onChange
+	s.mu.Unlock()
+	if fn != nil {
+		fn(running)
+	}
+}
+
+// state is what survives a KARMAX restart, so a browser the person left open
+// is found again rather than duplicated.
+type state struct {
+	Port int `json:"port"`
+	PID  int `json:"pid"`
+}
+
+// New returns the session rooted at dir, which is created on first start.
+//
+// An empty dir falls back to ~/.karmax rather than to a relative path: a CLI
+// invocation with no karmax.yaml to read would otherwise put a browser profile
+// in whatever directory it happened to be run from, and find a different one
+// the next time.
+func New(dir string) *Session {
+	if strings.TrimSpace(dir) == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "."
+		}
+		dir = filepath.Join(home, ".karmax")
+	}
+	return &Session{
+		dir:      filepath.Join(dir, "browser"),
+		netStore: newRequestStore(maxCapturedRequests, maxTotalBodyBytes),
+	}
+}
+
+// NewHeadless is New, but the browser launches with no visible window — for
+// tests, and any caller that has no operator desktop to put a window on.
+func NewHeadless(dir string) *Session {
+	s := New(dir)
+	s.headless = true
+	return s
+}
+
+// Endpoint is the DevTools base URL, or "" when nothing is listening.
+func (s *Session) Endpoint(ctx context.Context) string {
+	port := s.knownPort()
+	if port == 0 || !alive(ctx, port) {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+// Running reports whether the browser is up and answering.
+func (s *Session) Running(ctx context.Context) bool { return s.Endpoint(ctx) != "" }
+
+// Start launches the browser, or returns quietly if one is already up.
+//
+// It waits for the DevTools endpoint to answer rather than returning as soon as
+// the process exists: a caller that immediately tries to open a tab would
+// otherwise race the browser's startup and get a connection refused it cannot
+// explain.
+func (s *Session) Start(ctx context.Context) error {
+	if s.Running(ctx) {
+		// Already up — found again via the state file, most likely, after a
+		// daemon restart. startNetworkCapture is idempotent, so this is the
+		// only place that needs to cover both that case and a fresh launch.
+		s.startNetworkCapture()
+		return nil
+	}
+
+	bin := hostpaths.Browser()
+	if bin == "" {
+		return errors.New("no Chrome, Chromium or Edge on this machine — install one and try again")
+	}
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return fmt.Errorf("browser profile directory: %w", err)
+	}
+
+	port, err := freePort()
+	if err != nil {
+		return err
+	}
+
+	// --no-first-run and friends: this is a profile nobody has seen before, and
+	// a first-run wizard over the top of it is one more thing between somebody
+	// and signing into Gmail.
+	args := []string{
+		"--user-data-dir=" + s.dir,
+		fmt.Sprintf("--remote-debugging-port=%d", port),
+		"--remote-allow-origins=*",
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-features=Translate,MediaRouter",
+	}
+	if s.headless {
+		args = append(args, "--headless=new")
+	}
+	args = append(args, "about:blank")
+	cmd := exec.Command(bin, args...)
+	cmd.Stdout, cmd.Stderr = nil, nil
+	// Detached from KARMAX's own lifetime: restarting the daemon must not close
+	// a window somebody is halfway through signing into.
+	detach(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start browser: %w", err)
+	}
+
+	s.mu.Lock()
+	s.cmd, s.port = cmd, port
+	s.mu.Unlock()
+	s.saveState(state{Port: port, PID: cmd.Process.Pid})
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if alive(ctx, port) {
+			s.startNetworkCapture()
+			s.notify(true)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return errors.New("the browser started but never answered on its DevTools port")
+}
+
+// Tab is one open page.
+type Tab struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
+	Type  string `json:"type"`
+	// WebSocketDebuggerURL is this page's own CDP endpoint — what network
+	// capture and Eval/FetchInTab dial directly, one socket per tab.
+	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl,omitempty"`
+}
+
+// Tabs lists the pages currently open.
+func (s *Session) Tabs(ctx context.Context) ([]Tab, error) {
+	endpoint := s.Endpoint(ctx)
+	if endpoint == "" {
+		return nil, ErrNotRunning
+	}
+	var all []Tab
+	if err := getJSON(ctx, endpoint+"/json/list", &all); err != nil {
+		return nil, err
+	}
+	pages := make([]Tab, 0, len(all))
+	for _, t := range all {
+		if t.Type == "page" {
+			pages = append(pages, t)
+		}
+	}
+	return pages, nil
+}
+
+// ErrNotRunning is returned when something needs the browser and it is not up.
+var ErrNotRunning = errors.New("the browser is not running")
+
+// Open puts a URL in front of the person, starting the browser if needed.
+//
+// An existing tab on the same origin is reused and raised rather than adding a
+// third Gmail tab to a window that already has two — the point is to show
+// somebody a page, not to accumulate them.
+func (s *Session) Open(ctx context.Context, url string) (Tab, error) {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return Tab{}, errors.New("no URL to open")
+	}
+	if err := s.Start(ctx); err != nil {
+		return Tab{}, err
+	}
+	endpoint := s.Endpoint(ctx)
+
+	if tabs, err := s.Tabs(ctx); err == nil {
+		for _, t := range tabs {
+			if sameOrigin(t.URL, url) {
+				if err := s.activate(ctx, endpoint, t.ID); err == nil {
+					return t, nil
+				}
+			}
+		}
+	}
+
+	tab, err := s.openNewTab(ctx, endpoint, url)
+	if err != nil {
+		return Tab{}, err
+	}
+	_ = s.activate(ctx, endpoint, tab.ID)
+	s.closeBlanks(ctx, endpoint, tab.ID)
+	return tab, nil
+}
+
+// openNewTab creates a target and puts url in it, with network capture
+// attached and Network.enable's own reply waited on BEFORE the navigation
+// that loads url is ever sent — not after.
+//
+// The old, simpler way — PUT /json/new?<url>, which creates the tab and
+// starts that navigation in one shot — raced network capture's discovery
+// loop, which only attaches on its own ~400ms poll: a fast-loading page's
+// entire load, document request included, could complete before capture
+// ever attached to the tab. That is exactly the traffic this whole feature
+// exists to see — a page's own load-time calls to its own API — so it
+// cannot be left to a poll that might lose the race.
+//
+// Creating at about:blank first and attaching over that tab's own
+// WebSocketDebuggerURL before calling Page.navigate closes the gap:
+// attachTabIfNeeded doesn't return until Network.enable's reply is in
+// hand, so navigation is never sent while capture might still be dark.
+func (s *Session) openNewTab(ctx context.Context, endpoint, url string) (Tab, error) {
+	var tab Tab
+	if err := putJSON(ctx, endpoint+"/json/new", &tab); err != nil {
+		return Tab{}, err
+	}
+	if tab.WebSocketDebuggerURL != "" {
+		if tc, err := s.attachTabIfNeeded(ctx, tab.ID, tab.WebSocketDebuggerURL); err == nil {
+			if err := tc.conn.call(ctx, "Page.navigate", map[string]any{"url": url}, nil); err == nil {
+				tab.URL = url
+				return tab, nil
+			}
+		}
+	}
+	// Capture couldn't attach, or navigating over its connection failed (a
+	// dial refused, Network.enable errored, the target closed underneath
+	// us) — the person still needs the right page in front of them even
+	// without capture live for it, so fall back to the one-shot path. The
+	// about:blank tab this leaves behind is cleaned up by closeBlanks,
+	// which Open calls right after this returns.
+	if err := putJSON(ctx, endpoint+"/json/new?"+url, &tab); err != nil {
+		return Tab{}, err
+	}
+	return tab, nil
+}
+
+// closeBlanks tidies away the placeholder the window started with.
+//
+// Chromium needs something to open, so the launch passes about:blank; leaving
+// it behind means every browser somebody is asked to sign into has an empty
+// tab sitting next to the one that matters.
+func (s *Session) closeBlanks(ctx context.Context, endpoint, keep string) {
+	tabs, err := s.Tabs(ctx)
+	if err != nil || len(tabs) < 2 {
+		return
+	}
+	for _, t := range tabs {
+		if t.ID == keep || t.URL != "about:blank" {
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/json/close/"+t.ID, nil)
+		if err != nil {
+			continue
+		}
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}
+}
+
+// Stop closes the browser. Sessions signed into it survive in the profile.
+//
+// Real Chromium is in no hurry to shut down: the polite /json/close request
+// below can take a while to answer, and the process itself keeps its
+// DevTools port answering for as long as it is still alive. Everything this
+// session advertises — Running, Endpoint, MCPConfigJSON — must fail closed
+// the moment Stop is called, not once that slow teardown finally finishes;
+// otherwise a session spawned mid-Stop gets handed a --mcp-config pointing
+// at an endpoint already being torn down. So the endpoint and pid this call
+// still needs are captured FIRST, the state is cleared and onChange notified
+// SECOND, and only then does the slow part — asking nicely, then SIGINT —
+// run against the values captured up front.
+func (s *Session) Stop(ctx context.Context) error {
+	endpoint := s.Endpoint(ctx)
+	s.mu.Lock()
+	cmd := s.cmd
+	s.cmd = nil
+	s.mu.Unlock()
+
+	// The SIGINT fallback below needs the pid from the state file when this
+	// Session did not spawn the process itself (e.g. after a daemon
+	// restart) — read it now, before clearState removes that file.
+	var fallbackPID int
+	if cmd == nil {
+		if st, ok := s.loadState(); ok {
+			fallbackPID = st.PID
+		}
+	}
+
+	// From here on, nothing — not this call's own callers, not a harness
+	// turn spawning concurrently — is told the browser is still up.
+	s.clearState()
+	s.notify(false)
+	s.stopNetworkCapture()
+
+	if endpoint != "" {
+		// Ask first. A killed Chromium leaves the profile marked as crashed and
+		// greets the person with a restore bar the next time they open it.
+		ctxQuit, cancel := context.WithTimeout(ctx, 3*time.Second)
+		req, _ := http.NewRequestWithContext(ctxQuit, http.MethodGet, endpoint+"/json/close", nil)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+		cancel()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Signal(os.Interrupt)
+	} else if fallbackPID > 0 {
+		if p, err := os.FindProcess(fallbackPID); err == nil {
+			_ = p.Signal(os.Interrupt)
+		}
+	}
+	return nil
+}
+
+// Profile is where the browser keeps its data, for a caller that wants to say
+// so out loud.
+func (s *Session) Profile() string { return s.dir }
+
+func (s *Session) activate(ctx context.Context, endpoint, id string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/json/activate/"+id, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("activate tab: %s", resp.Status)
+	}
+	return nil
+}
+
+func (s *Session) knownPort() int {
+	s.mu.Lock()
+	port := s.port
+	s.mu.Unlock()
+	if port != 0 {
+		return port
+	}
+	if st, ok := s.loadState(); ok {
+		s.mu.Lock()
+		s.port = st.Port
+		s.mu.Unlock()
+		return st.Port
+	}
+	return 0
+}
+
+func (s *Session) statePath() string { return filepath.Join(s.dir, "session.json") }
+
+func (s *Session) saveState(st state) {
+	b, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(s.statePath(), b, 0o600)
+}
+
+func (s *Session) loadState() (state, bool) {
+	b, err := os.ReadFile(s.statePath())
+	if err != nil {
+		return state{}, false
+	}
+	var st state
+	if err := json.Unmarshal(b, &st); err != nil {
+		return state{}, false
+	}
+	return st, st.Port > 0
+}
+
+func (s *Session) clearState() {
+	s.mu.Lock()
+	s.port = 0
+	s.mu.Unlock()
+	_ = os.Remove(s.statePath())
+}
+
+// alive reports whether a DevTools endpoint is answering on this port.
+func alive(ctx context.Context, port int) bool {
+	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	var v struct {
+		Browser string `json:"Browser"`
+	}
+	return getJSON(ctx, fmt.Sprintf("http://127.0.0.1:%d/json/version", port), &v) == nil && v.Browser != ""
+}
+
+func freePort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("no free port for the browser: %w", err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+func getJSON(ctx context.Context, url string, out any) error {
+	return doJSON(ctx, http.MethodGet, url, out)
+}
+
+func putJSON(ctx context.Context, url string, out any) error {
+	return doJSON(ctx, http.MethodPut, url, out)
+}
+
+func doJSON(ctx context.Context, method, url string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s %s: %s", method, url, resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// sameOrigin compares scheme and host, so a second click on "connect Google"
+// raises the tab already sitting on the consent screen.
+func sameOrigin(a, b string) bool {
+	oa, ok := origin(a)
+	if !ok {
+		return false
+	}
+	ob, ok := origin(b)
+	return ok && oa == ob
+}
+
+func origin(raw string) (string, bool) {
+	i := strings.Index(raw, "://")
+	if i < 0 {
+		return "", false
+	}
+	rest := raw[i+3:]
+	if j := strings.IndexAny(rest, "/?#"); j >= 0 {
+		rest = rest[:j]
+	}
+	if rest == "" {
+		return "", false
+	}
+	return strings.ToLower(raw[:i] + "://" + rest), true
+}
+
+// Shared returns the one session for a data directory.
+//
+// The tool, the HTTP API and the coding harness all mean the same window when
+// they say "the browser", and a second Session object pointed at the same
+// profile would be a second Chromium refusing to start on a locked profile.
+func Shared(dataDir string) *Session {
+	sharedMu.Lock()
+	if s, ok := shared[dataDir]; ok {
+		sharedMu.Unlock()
+		return s
+	}
+	s := New(dataDir)
+	shared[dataDir] = s
+	sharedMu.Unlock()
+
+	// The common case is not "the engine launches the browser" — it is a
+	// daemon restart finding the operator's Chrome still up, since that
+	// window outlives any one karmax process. Nothing else is guaranteed
+	// to ever call Start() or Open() on this exact Session: the harness's
+	// eval/fetch/requests/tabs actions never do. Without this, a Session
+	// handed out onto an already-running browser would sit there able to
+	// answer Tabs()/Eval() (both dial their own connection on demand) while
+	// silently capturing nothing, until something happened to call Open().
+	// Checking and starting off the calling goroutine keeps Shared() itself
+	// a cheap, synchronous map lookup; startNetworkCapture is idempotent
+	// and concurrency-safe, so a concurrent Start()/Open() racing this is
+	// harmless. Never launches a browser and never touches a tab — only
+	// Running() is consulted, which just asks an already-alive endpoint.
+	go s.beginCaptureIfAlreadyRunning()
+
+	return s
+}
+
+// beginCaptureIfAlreadyRunning starts network capture when this Session's
+// browser already answers — see Shared's own comment for why this exists.
+// A no-op when nothing is running yet; capture still begins normally the
+// first time something does call Start() or Open() on this Session.
+func (s *Session) beginCaptureIfAlreadyRunning() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if s.Running(ctx) {
+		s.startNetworkCapture()
+	}
+}
+
+var (
+	sharedMu sync.Mutex
+	shared   = map[string]*Session{}
+)
