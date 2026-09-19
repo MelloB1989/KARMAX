@@ -11,19 +11,27 @@ import (
 type sheet struct {
 	disposition string
 	confidence  float64
-	urgency     float64
-	risk        float64
-	remember    float64
-	effort      string
+	// mass is the probability on the chosen disposition. It defaults to
+	// confidence when unset, but the two are different numbers and the
+	// threshold is cut against this one.
+	mass     float64
+	urgency  float64
+	risk     float64
+	remember float64
+	effort   string
 }
 
 func result(s sheet) *jev.Result {
+	mass := s.mass
+	if mass == 0 {
+		mass = s.confidence
+	}
 	answers := jev.Answers{
 		QDisposition: {
 			Type:          jev.TypeChoice,
 			Choice:        s.disposition,
 			Confidence:    s.confidence,
-			Probabilities: map[string]float64{s.disposition: s.confidence},
+			Probabilities: map[string]float64{s.disposition: mass, "handle": 1 - mass},
 		},
 		QUrgency:  {Type: jev.TypeScore, Score: s.urgency, Confidence: 0.9},
 		QRisk:     {Type: jev.TypeScore, Score: s.risk, Confidence: 0.9},
@@ -159,5 +167,58 @@ func TestThresholdDefaults(t *testing.T) {
 	}
 	if got.Remember != DefaultThresholds.Remember {
 		t.Errorf("Remember = %v, want the default", got.Remember)
+	}
+}
+
+// The threshold is cut against the mass on the chosen option, not against the
+// shape of the distribution. Across five options a clear winner still scores
+// around 0.5 on shape, so cutting on confidence made drop almost unreachable
+// while letting a 0.24 remember silence an event.
+func TestSilentVerdictsAreCutOnMassNotConfidence(t *testing.T) {
+	// Low shape-confidence, but nearly all the mass on drop: this is a drop.
+	v := Decide(result(sheet{disposition: "drop", confidence: 0.40, mass: 0.88}), Hint{}, DefaultThresholds)
+	if v.Action != ActionDrop {
+		t.Errorf("action = %q, want drop when the mass is there", v.Action)
+	}
+	if v.Mass != 0.88 {
+		t.Errorf("mass = %v, want it reported", v.Mass)
+	}
+
+	// High shape-confidence, but the mass is split: this is not.
+	v = Decide(result(sheet{disposition: "drop", confidence: 0.95, mass: 0.50}), Hint{}, DefaultThresholds)
+	if v.Action != ActionHandle {
+		t.Errorf("action = %q, want handle when the mass is short", v.Action)
+	}
+}
+
+// remember silences an event exactly as drop does, and additionally writes to
+// the operator's memory, so it clears the same bar.
+func TestUnsureRememberIsNotSilent(t *testing.T) {
+	v := Decide(result(sheet{disposition: "remember", confidence: 0.24, mass: 0.24, remember: 0.9}),
+		Hint{}, DefaultThresholds)
+	if v.Silent() {
+		t.Fatalf("a 0.24 remember must not silence the event: %+v", v)
+	}
+	if v.Action != ActionHandle {
+		t.Errorf("action = %q, want handle", v.Action)
+	}
+}
+
+func TestConfidentRememberStillFiles(t *testing.T) {
+	v := Decide(result(sheet{disposition: "remember", confidence: 0.6, mass: 0.85, remember: 0.9}),
+		Hint{}, DefaultThresholds)
+	if v.Action != ActionRemember {
+		t.Fatalf("action = %q, want remember when the mass is there", v.Action)
+	}
+}
+
+// Acting verdicts are not silencing, so they are never held back by the bar —
+// handling something on a weak signal is free, staying silent is not.
+func TestActingVerdictsAreNotGatedOnMass(t *testing.T) {
+	for _, disposition := range []string{"handle", "delegate", "escalate"} {
+		v := Decide(result(sheet{disposition: disposition, confidence: 0.2, mass: 0.2}), Hint{}, DefaultThresholds)
+		if v.Action != Action(disposition) {
+			t.Errorf("%s was downgraded to %q on a low mass", disposition, v.Action)
+		}
 	}
 }
