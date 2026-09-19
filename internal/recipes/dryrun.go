@@ -3,6 +3,7 @@ package recipes
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,6 +60,23 @@ func (d *DryRun) Ask(_ context.Context, prompt string) (string, error) {
 func (d *DryRun) Observe(_ context.Context, prompt string) (string, error) {
 	d.record("ask the agent, with no way to send a message: %s", oneLine(prompt))
 	return "[the agent's answer would appear here]", nil
+}
+
+// Decide reports the questions rather than answering them: a dry run has no
+// probabilities to offer, and inventing some would make a branch look decided.
+func (d *DryRun) Decide(_ context.Context, _ any, questions loopkit.Questions) (*loopkit.Decision, error) {
+	ids := make([]string, 0, len(questions))
+	for id := range questions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	d.record("weigh %d judgement(s): %s", len(ids), strings.Join(ids, ", "))
+
+	answers := make(map[string]loopkit.Answer, len(questions))
+	for id, q := range questions {
+		answers[id] = loopkit.Answer{Type: q.Type}
+	}
+	return &loopkit.Decision{Model: "dry-run", Answers: answers}, nil
 }
 
 func (d *DryRun) Harness(_ context.Context, prompt string) (string, error) {

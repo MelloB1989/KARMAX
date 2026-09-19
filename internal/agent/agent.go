@@ -61,6 +61,10 @@ type Agent struct {
 	// workflows exist, and the agent must not.
 	lentToolsFor func(bus.Event) []tools.Tool
 
+	// screener is System One: the cheap pass that decides whether an event is
+	// worth a turn at all. Nil means every event gets one.
+	screener Screener
+
 	// conversations archives the OPERATOR's conversations in GitLoom. Nil when
 	// GitLoom is not configured. See conversation.go.
 	conversations *Conversations
@@ -158,6 +162,14 @@ func (a *Agent) isFromOperator(chatID string) bool {
 	}
 	return a.operatorChats[n]
 }
+
+// IsOperatorChat reports whether a chat belongs to the operator.
+//
+// Exported because the screener needs exactly this answer and must not compute
+// its own: the operator floor is a safety property, and two derivations of
+// "is this the operator" is one too many. The agent's set carries the
+// WHATSAPP_TARGET fallback that a bare environment lookup does not.
+func (a *Agent) IsOperatorChat(chatID string) bool { return a.isFromOperator(chatID) }
 
 // SetCommsChannels injects available channel info so the agent can build
 // context about which channels are available for sending messages.
@@ -938,6 +950,15 @@ func (a *Agent) handleOne(evt bus.Event) {
 	a.lastEvent = time.Now()
 	a.mu.Unlock()
 
+	// System One. An event it settles never reaches a model: the turn is closed
+	// as done, because deciding it needed nothing IS handling it.
+	screened, proceed := a.screen(evt)
+	if !proceed {
+		a.finishTurn(evt, store.TurnOK, "")
+		return
+	}
+	evt = screened
+
 	if err := a.handleEvent(evt); err != nil {
 		a.finishTurn(evt, store.TurnFailed, err.Error())
 		streak := a.recordEventError(err)
@@ -1053,7 +1074,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx
+	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).context()
 	if dynamicCtx != "" && a.mainSession == nil {
 		userPrompt = dynamicCtx + userPrompt
 	}
@@ -1080,7 +1101,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// argument, or the model could choose whose mailbox it reads.
 		turnCtx = connectorkit.WithActor(turnCtx, a.actingMember(evt))
 		lent := a.lentTools(evt)
-		brain := a.thinkingBrain()
+		brain := a.brainFor(evt)
 		brain.SetTurnContext(dynamicCtx)
 		response, toolCalls, err := brain.ProcessMessageWithheld(turnCtx, userPrompt, lent, nil)
 		turnCancel()
@@ -1109,7 +1130,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 				"2. If you literally CANNOT (you're missing information — e.g. you don't have the credentials/file/detail it needs), say so plainly in ONE sentence and ask the one specific thing you need. Never a vague \"standing by\".\n" +
 				"Do not just acknowledge again. Act or state the blocker."
 			rctx, rcancel := context.WithTimeout(a.ctx, 3*time.Minute)
-			resp2, tc2, err2 := a.thinkingBrain().ProcessMessageWithheld(rctx, nudge, nil, nil)
+			resp2, tc2, err2 := brain.ProcessMessageWithheld(rctx, nudge, nil, nil)
 			rcancel()
 			if err2 == nil && strings.TrimSpace(resp2) != "" {
 				response = cleanOutboundResponse(resp2)

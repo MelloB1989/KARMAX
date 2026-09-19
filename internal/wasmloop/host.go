@@ -56,6 +56,7 @@ const (
 	FnRunLoop     = "run_loop"
 	FnShortForget = "short_forget"
 	FnOperators   = "operator_chats"
+	FnDecide      = "decide"
 )
 
 var hostDescriptions = map[string]string{
@@ -83,6 +84,7 @@ var hostDescriptions = map[string]string{
 	FnRunLoop:     "trigger your other loops",
 	FnShortForget: "clear its short-term working notes",
 	FnOperators:   "know which chats are yours rather than someone else's",
+	FnDecide:      "weigh a judgement call with the fast probability model",
 }
 
 // capabilityFor maps a host function to the Broker capability it needs, so the
@@ -108,6 +110,7 @@ var capabilityFor = map[string]func(*Runner) (class, value string){
 	FnChatSave:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
 	FnRunLoop:     func(r *Runner) (string, string) { return "tool", "loop.run" },
 	FnShortForget: func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
+	FnDecide:      func(r *Runner) (string, string) { return "tool", "reflex.decide" },
 }
 
 // Error codes returned to the guest. Negative so a length can be positive.
@@ -140,6 +143,9 @@ type Kit interface {
 	// Tool calls one of KARMAX's tools by name. Integrations reach a loop
 	// through here and nowhere else, so adding one costs no ABI.
 	Tool(ctx context.Context, name string, input map[string]any) (string, error)
+	// Decide answers typed questions with probabilities. The questions are the
+	// loop's own, so they arrive as JSON and go back as JSON.
+	Decide(ctx context.Context, state any, questionsJSON []byte) ([]byte, error)
 	ShortSet(group, key, value string, ttlSeconds int) error
 	ShortGet(group, key string) (string, bool, error)
 	ShortAll(group string) ([]ShortMemory, error)
@@ -506,6 +512,22 @@ func (r *Runner) dispatch(ctx context.Context, name, req string) ([]byte, error)
 			return nil, err
 		}
 		return json.Marshal(map[string]any{"answer": answer})
+
+	case FnDecide:
+		var in struct {
+			State     json.RawMessage `json:"state"`
+			Questions json.RawMessage `json:"questions"`
+		}
+		if err := json.Unmarshal([]byte(req), &in); err != nil {
+			return nil, err
+		}
+		var state any
+		if len(in.State) > 0 {
+			if err := json.Unmarshal(in.State, &state); err != nil {
+				return nil, fmt.Errorf("decide: state is not valid JSON: %w", err)
+			}
+		}
+		return r.kit.Decide(ctx, state, in.Questions)
 
 	case FnHTTP:
 		return r.doHTTP(ctx, req)
