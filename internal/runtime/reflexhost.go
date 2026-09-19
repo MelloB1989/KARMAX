@@ -29,6 +29,15 @@ func (rt *KarmaxRuntime) screenEvent(ctx context.Context, evt bus.Event) (bus.Ev
 	if !rt.reflex.Available() {
 		return evt, true
 	}
+	if reason, skip := rt.agentIgnores(evt); skip {
+		// Screening something the agent discards unread is pure cost. Worse, a
+		// monitored chat is wa-monitor's to judge, with far more context than
+		// this has — so paying here buys a second, poorer opinion and files
+		// strangers' chatter into the operator's memory on the strength of it.
+		rt.log.Debug("not screening an event the agent does not handle",
+			zap.String("kind", string(evt.Kind)), zap.String("reason", reason))
+		return evt, true
+	}
 	v := rt.reflex.Screen(ctx, evt, rt.hintFor(evt))
 	rt.recordVerdict(evt, v)
 
@@ -48,6 +57,22 @@ func (rt *KarmaxRuntime) screenEvent(ctx context.Context, evt bus.Event) (bus.Ev
 	// what the agent is told, which rides along on the event.
 	annotate(&evt, v)
 	return evt, true
+}
+
+// agentIgnores reports events the agent will not act on whatever reflex says.
+//
+// Mirrors the early return in Agent.handleEvent: a message from a chat that is
+// not the operator's is left to the event loops, so the turn does nothing with
+// it. Screening it would decide something nobody reads.
+func (rt *KarmaxRuntime) agentIgnores(evt bus.Event) (string, bool) {
+	if evt.Kind != bus.EventCommsMessage {
+		return "", false
+	}
+	chatID, _ := evt.Payload["channel_id"].(string)
+	if rt.isOperatorChat(evt.AgentID, chatID) {
+		return "", false
+	}
+	return "a monitored chat, handled by the event loops", true
 }
 
 // hintFor is what the router knows that the event does not. Operator status is
