@@ -976,6 +976,19 @@ var migrations = []string{
 		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_outreach_campaign ON outreach_ledger(campaign)`,
+
+	// What reflex decided about each event, and the probabilities behind it.
+	// Thresholds are model-version specific and can only be retuned against
+	// real traffic, so the numbers are kept rather than just the outcome.
+	`CREATE TABLE IF NOT EXISTS reflex_verdicts (
+		event_id    TEXT PRIMARY KEY,
+		event_kind  TEXT NOT NULL DEFAULT '',
+		agent_id    TEXT NOT NULL DEFAULT '',
+		action      TEXT NOT NULL,
+		verdict     TEXT NOT NULL DEFAULT '',
+		created_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_reflex_action ON reflex_verdicts(action, created_at DESC)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

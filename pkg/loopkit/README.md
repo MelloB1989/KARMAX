@@ -52,6 +52,7 @@ Schedules: `loopkit.Cron("0 */15 * * * *")` (cron **with seconds**) or
 | Method | What it does |
 |---|---|
 | `Ask(ctx, prompt)` | Run through the main agent (full toolset + memory + judgement). Uses the agent's model budget. |
+| `Decide(ctx, state, questions)` | Put typed questions to the fast probability model and get numbers to branch on. Far cheaper and quicker than `Ask`, and it answers every question in one pass — so ask them all at once. An error means unavailable, not "no". |
 | `Harness(ctx, prompt)` | Run directly through the Claude Code CLI (web/file/shell) — great for web research, independent of the main model's rate limits. |
 | `Remember(fact)` | Store a durable fact in long-term memory. |
 | `Recall(query, limit)` | Semantic search over memory. |

@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/MelloB1989/karmax/internal/mcp"
+	"github.com/MelloB1989/karmax/internal/reflex"
 )
 
 type KarmaxConfig struct {
@@ -17,6 +18,7 @@ type KarmaxConfig struct {
 	Loops    []LoopConfig          `yaml:"loops"`
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 	Harness  HarnessConfig         `yaml:"harness"`
+	Reflex   reflex.Config         `yaml:"reflex"`
 	// Which services this install manages. Omitted means every one compiled
 	// in, so an upgrade never switches somebody's integrations off.
 	Connectors   RegistryConfig `yaml:"connectors"`

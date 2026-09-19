@@ -46,6 +46,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/mesh"
 	"github.com/MelloB1989/karmax/internal/recipes"
+	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/review"
 	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
@@ -153,6 +154,11 @@ type KarmaxRuntime struct {
 	// its ticket names. Installed by the GitHub connector when an App is
 	// configured; nil means the broader fallback.
 	repoTokenMinter RepoTokenMinter
+
+	// reflex is System One: the cheap probability model every event is
+	// screened by before anything expensive looks at it. Nil-safe — an
+	// unconfigured reflex passes every event through untouched.
+	reflex *reflex.Evaluator
 
 	// startedAt is when this process came up. A loop that has not succeeded
 	// yet is judged against this rather than against the epoch, so a restart
@@ -1182,11 +1188,25 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// closes over the runtime and the runtime does not exist until now.
 	for _, a := range agentReg.List() {
 		a.SetLentTools(rt.lentToolsForEvent)
+		a.SetScreener(rt.screenEvent)
 	}
 
 	// The tools were registered before the agents; this is the runtime they
 	// were waiting for.
 	harnessRT.rt = rt
+
+	// System One. An error here is a misconfiguration worth refusing to start
+	// over; a missing key is not, and returns a nil evaluator that passes every
+	// event straight through.
+	rt.reflex, err = reflex.New(cfg.Reflex, log.Named("reflex"))
+	if err != nil {
+		return nil, fmt.Errorf("reflex: %w", err)
+	}
+	if rt.reflex != nil {
+		log.Info("reflex screening is on",
+			zap.String("model", cfg.Reflex.Model),
+			zap.Float64("drop_threshold", rt.reflex.Thresholds().Drop))
+	}
 
 	return rt, nil
 }
