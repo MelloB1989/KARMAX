@@ -45,6 +45,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
@@ -66,9 +67,33 @@ type Connector struct {
 	// caller off to fix the wrong thing.
 	allowedOnce sync.Once
 	allowedSet  map[string]bool
+
+	// browser reads the sessionid out of the shared browser, for when nothing
+	// is stored. Nil when this build has no browser to borrow from.
+	browser BrowserSession
+
+	// signedIn runs after a fresh sign-in succeeds, off the calling goroutine.
+	signedIn func()
 }
 
+// BrowserSession returns the sessionid of whoever is signed into Instagram in
+// the shared browser, or "" when nobody is (or the browser is not running).
+type BrowserSession func(ctx context.Context) (string, error)
+
+// browserReadTimeout bounds asking the browser. It is a loopback call, and a
+// browser that is not running should cost a moment, not a call's budget.
+const browserReadTimeout = 5 * time.Second
+
 func New() *Connector { return &Connector{h: &helper{}} }
+
+// SetBrowserSession lets the connector sign in as whoever is signed into the
+// shared browser, which is how a person connects Instagram in the desktop app:
+// they sign in there, and nothing asks them to find a cookie and paste it.
+func (c *Connector) SetBrowserSession(fn BrowserSession) { c.browser = fn }
+
+// OnSignIn registers fn to run after each fresh sign-in, so whatever shows the
+// connector's state can learn it works without waiting for the next check.
+func (c *Connector) OnSignIn(fn func()) { c.signedIn = fn }
 
 func (c *Connector) Manifest() connectorkit.Manifest {
 	return connectorkit.Manifest{
@@ -109,7 +134,37 @@ func (c *Connector) Health(ctx context.Context, cr connectorkit.Credentials) err
 	if who == "" {
 		return fmt.Errorf("instagram: signed in but the account did not come back")
 	}
-	return nil
+	// ensure answers from the helper's memory of the sign-in; a health check
+	// is the one place worth asking Instagram whether the session still works.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.h.call(ctx, "account", map[string]any{"fresh": true}, nil)
+}
+
+// Configured reports whether there is anything to sign in with — a stored
+// session or password, or a shared browser signed into Instagram — so a
+// person who signed in only there is not told Instagram is not set up.
+func (c *Connector) Configured(cr connectorkit.Credentials) bool {
+	if strings.TrimSpace(cr.Get("sessionid")) != "" ||
+		(strings.TrimSpace(cr.Get("username")) != "" && strings.TrimSpace(cr.Get("password")) != "") {
+		return true
+	}
+	return c.browserSession(context.Background()) != ""
+}
+
+// browserSession asks the shared browser for a sessionid, or "".
+func (c *Connector) browserSession(ctx context.Context) string {
+	if c.browser == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, browserReadTimeout)
+	defer cancel()
+	sid, err := c.browser(ctx)
+	if err != nil {
+		logf("instagram: could not read the shared browser's session: %v", err)
+		return ""
+	}
+	return strings.TrimSpace(sid)
 }
 
 // Enabled reports whether the operator has explicitly turned this on.
@@ -125,8 +180,8 @@ func (c *Connector) Tools() []connectorkit.Tool {
 	out := []connectorkit.Tool{
 		{
 			Name: "instagram.inbox",
-			Description: "Read recent Instagram direct message threads. Read-only: KARMAX does not send " +
-				"on Instagram, because automated sending is what gets accounts banned.",
+			Description: "Read recent Instagram direct message threads. Read-only; sending is " +
+				"instagram.send_dm, which exists only where the operator turned sending on.",
 			Parameters: json.RawMessage(`{
 				"type":"object",
 				"properties":{"limit":{"type":"integer","description":"Maximum threads (default 10, max 30)."}}
@@ -268,11 +323,55 @@ func (c *Connector) ensure(ctx context.Context, cr connectorkit.Credentials) (st
 	pass := strings.TrimSpace(cr.Get("password"))
 	seed := strings.TrimSpace(cr.Get("totp_seed"))
 
-	if session == "" && (user == "" || pass == "") {
-		return "", fmt.Errorf("instagram: needs either a sessionid from a browser you are " +
-			"signed into, or a username and password")
+	// What was stored wins; the shared browser is the way in when nothing was.
+	borrowed := false
+	if session == "" && pass == "" {
+		if session = c.browserSession(ctx); session != "" {
+			borrowed = true
+		}
 	}
 
+	if session == "" && (user == "" || pass == "") {
+		return "", fmt.Errorf("instagram: not signed in — sign into Instagram in the browser " +
+			"KARMAX shares with you (`karmax browser open https://www.instagram.com/`), or store " +
+			"a sessionid or a username and password with `karmax login instagram`")
+	}
+
+	who, err := c.login(ctx, user, session, pass, seed)
+	if err != nil && !borrowed && session != "" && isLoginRequired(err) {
+		// The stored session was signed out; the browser may hold a newer one.
+		if fresh := c.browserSession(ctx); fresh != "" && fresh != session {
+			borrowed = true
+			who, err = c.login(ctx, "", fresh, "", "")
+		}
+	}
+	if err != nil {
+		if borrowed && isLoginRequired(err) {
+			return "", fmt.Errorf("instagram: Instagram refused the session in the shared " +
+				"browser — it ends when the account signs out anywhere. Sign in again there " +
+				"(`karmax browser open https://www.instagram.com/`) and try again")
+		}
+		var he *Error
+		if !errors.As(err, &he) {
+			// Not Instagram's answer — a seed that would not decode, or a
+			// helper that could not start — so it is already the whole story.
+			return "", err
+		}
+		return "", loginFailed(err, seed != "" && !borrowed, session != "")
+	}
+	if c.signedIn != nil {
+		go c.signedIn()
+	}
+	return who, nil
+}
+
+func isLoginRequired(err error) bool {
+	var he *Error
+	return errors.As(err, &he) && he.Type == "LoginRequired"
+}
+
+// login signs the helper in with one set of credentials. Called with c.mu held.
+func (c *Connector) login(ctx context.Context, user, session, pass, seed string) (string, error) {
 	params := map[string]any{"username": user}
 	if session != "" {
 		params["sessionid"] = session
@@ -293,7 +392,7 @@ func (c *Connector) ensure(ctx context.Context, cr connectorkit.Credentials) (st
 		Username string `json:"username"`
 	}
 	if err := c.h.call(ctx, "login", params, &out); err != nil {
-		return "", loginFailed(err, seed != "", session != "")
+		return "", err
 	}
 	return out.Username, nil
 }
