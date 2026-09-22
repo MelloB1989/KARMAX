@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -124,3 +125,18 @@ func TestScheduleRendering(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func TestALoopHarnessGetsTheRunsBudget(t *testing.T) {
+	if got := harnessBudget(context.Background()); got != 0 {
+		t.Fatalf("no deadline must mean the tool's own default, got %v", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), loopRunTimeout)
+	defer cancel()
+	got := harnessBudget(ctx)
+	if got <= 10*time.Minute {
+		t.Fatalf("a fresh run's harness got %v; want more than the 10-minute turn default", got)
+	}
+	if got > loopRunTimeout-harnessReserve {
+		t.Fatalf("a fresh run's harness got %v, leaving no time to report what it did", got)
+	}
+}

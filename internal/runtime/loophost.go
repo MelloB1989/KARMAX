@@ -658,7 +658,11 @@ func (k *loopKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (lo
 		// reach this engine's own API, and ONLY the browser tool — see
 		// KarmaxRuntime.apiBrowserToken and internal/api's scope allowlist.
 		// Never the operator's full API token.
-		EngineAPIURL: k.rt.apiBaseURL, EngineBrowserToken: k.rt.apiBrowserToken}
+		EngineAPIURL: k.rt.apiBaseURL, EngineBrowserToken: k.rt.apiBrowserToken,
+		// The run's own deadline is the limit, not a CLI turn's ten-minute
+		// default: a loop exists to do one job, and cutting its harness off
+		// with minutes of the run left only buys a retry of the same work.
+		Timeout: harnessBudget(ctx)}
 	res, err := tool.Execute(ctx, map[string]any{
 		"prompt": spec.Prompt, "session_id": spec.SessionID,
 		"working_dir": spec.WorkingDir, "ephemeral": spec.Ephemeral,
@@ -673,6 +677,28 @@ func (k *loopKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (lo
 		Output:    loopToolField(res, "output"),
 		SessionID: loopToolField(res, "session_id"),
 	}, nil
+}
+
+// harnessReserve is held back from a run for what the loop does with the
+// harness's answer — reporting it, cleaning up — which a harness allowed the
+// whole run would leave no time for.
+const harnessReserve = 90 * time.Second
+
+// harnessBudget is how long a loop's harness may take: what the run has left,
+// less the reserve. 0 (the tool's own default) when the run has no deadline.
+func harnessBudget(ctx context.Context) time.Duration {
+	d, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	left := time.Until(d)
+	if left > 2*harnessReserve {
+		return left - harnessReserve
+	}
+	if left > 0 {
+		return left
+	}
+	return 0
 }
 
 // HarnessForget is the terminal cleanup for a session started through
@@ -1109,8 +1135,8 @@ func (k *loopKit) Sleep(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 	// Refused rather than silently truncated by the run timeout: a loop that
-	// asked to wait an hour and was cancelled at twelve minutes would look like
-	// it had waited, and act on it.
+	// asked to wait an hour and was cancelled when the run ran out would look
+	// like it had waited, and act on it.
 	if d >= loopRunTimeout {
 		return fmt.Errorf("sleep: %s is longer than a run can live (%s) — use After for waits this long",
 			d, loopRunTimeout)
