@@ -228,6 +228,12 @@ func TestScopeAllowsToolMatchesTheAllowlistExactly(t *testing.T) {
 		{scopeBrowserOnly, "email.send", false},
 		{scopeBrowserOnly, "whatsapp.send_message", false},
 		{scopeBrowserOnly, "harness.send", false},
+		// The paced, ledgered Instagram tools, by either spelling — and no
+		// other name that merely starts the same way.
+		{scopeBrowserOnly, "instagram.send_dm", true},
+		{scopeBrowserOnly, "instagram_reply_comment", true},
+		{scopeBrowserOnly, "instagram.commenters", true},
+		{scopeBrowserOnly, "instagram.follow", false},
 		{scopeFull, "shell.exec", true},
 		{scopeFull, "anything.at.all", true},
 	}

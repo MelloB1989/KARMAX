@@ -313,7 +313,20 @@ const (
 // email, ...), shell.exec, and every harness.* control tool must stay out of
 // it — widening this list beyond a tool that has been checked this way is
 // exactly the mistake a second token exists to prevent.
-var browserScopedTools = map[string]bool{"browser": true, "dashboard": true}
+//
+// Instagram's tools are the one connector checked this way. The browser this
+// token already drives is signed into the same account, so they add no reach —
+// what they add is the rules: every send paced, capped per campaign, ledgered
+// so nobody is messaged twice, and stopped for good the first time Instagram
+// objects. A harness without them does the same work through the page or its
+// own client with none of that, which is how an account was restricted before.
+// They exist only where the operator turned Instagram on, and the send tools
+// only where they also turned sending on.
+var browserScopedTools = map[string]bool{
+	"browser": true, "dashboard": true,
+	"instagram_reads": true, "instagram_call": true, "instagram_inbox": true,
+	"instagram_commenters": true, "instagram_send_dm": true, "instagram_reply_comment": true,
+}
 
 // scopeAllowsTool reports whether a caller granted scope may invoke the
 // named tool. scopeFull always may; scopeBrowserOnly only for the allowlist
