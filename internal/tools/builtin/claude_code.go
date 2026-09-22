@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/chatlog"
+	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	"github.com/MelloB1989/karmax/internal/fsscope"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -158,8 +159,23 @@ func (t *ClaudeCodeTool) memoryContext(prompt string) string {
 		"- `" + karmaxBin + " notify \"<title>\" \"<body>\"` — notify the operator via their phone app (feed + push). Use for results, alerts, or anything they should see.\n" +
 		"- `" + karmaxBin + " send \"<target>\" \"<message>\"` — send a WhatsApp message through the operator's account.\n" +
 		"- `" + karmaxBin + " ask \"<prompt>\"` — ask the orchestrator agent (it has the operator's full context and judgement).\n" +
-		"- `" + karmaxBin + " tool list` and `" + karmaxBin + " tool call <name> --json '<input>'` — list and invoke ANY harness tool (calendar.add, reminder.add, propose, google, whatsapp.read, scheduler.add, …).\n\n" +
-		"----\n\n# TASK\n\n")
+		"- `" + karmaxBin + " tool list` and `" + karmaxBin + " tool call <name> --json '<input>'` — list and invoke ANY harness tool (calendar.add, reminder.add, propose, google, whatsapp.read, scheduler.add, …).\n" +
+		"- `" + karmaxBin + " tool call dashboard --json '{\"action\":\"components\"}'`, then `save` — build a dashboard the operator sees in the desktop app.\n")
+	if instagramconn.Enabled() {
+		// Named here because the alternative a harness reaches for — the page
+		// itself, or its own instagrapi script — has none of the pacing, the
+		// cap or the ledger, and that is what got an account restricted.
+		sb.WriteString("- Instagram, as the account signed into the shared browser: `" + karmaxBin +
+			" tool call instagram.commenters --json '{\"url\":\"<post url>\"}'` for who commented, and " +
+			"`instagram.call` with `media_comments` for the comments themselves.")
+		if instagramconn.SendingEnabled() {
+			sb.WriteString(" `instagram.reply_comment` and `instagram.send_dm` send ONE reply or message per call, " +
+				"paced, capped and ledgered so nobody is contacted twice — use them, never the page or your own " +
+				"Instagram client, and stop when one says the campaign is stopped or capped.")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n----\n\n# TASK\n\n")
 	return sb.String()
 }
 
