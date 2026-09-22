@@ -34,6 +34,9 @@ import (
 // can be faked in a test without a database.
 type Ledger interface {
 	ClaimOutreach(campaign, channel, target string) (bool, error)
+	// ReleaseOutreach hands back a claim whose send never started, so the
+	// target is not written off for a message that was never attempted.
+	ReleaseOutreach(campaign, target string) error
 	SettleOutreach(campaign, target, state, detail string) error
 	CountOutreach(campaign string) (int, error)
 	CampaignStopped(campaign string) (bool, string, error)
@@ -162,12 +165,14 @@ func (c *Connector) sendDM(ctx context.Context, cr connectorkit.Credentials, in 
 		return map[string]any{"sent": false, "skipped": true, "reason": skip}, nil
 	}
 
+	// Neither of these reaches Instagram, so the claim goes back: marking the
+	// person contacted over a sign-in that failed would skip them for good.
 	if _, err := c.ensure(ctx, cr); err != nil {
-		_ = c.ledger.SettleOutreach(campaign, target, stateFailed, err.Error())
+		_ = c.ledger.ReleaseOutreach(campaign, target)
 		return nil, err
 	}
 	if err := pace(ctx); err != nil {
-		_ = c.ledger.SettleOutreach(campaign, target, stateFailed, "cancelled before sending")
+		_ = c.ledger.ReleaseOutreach(campaign, target)
 		return nil, err
 	}
 
@@ -206,11 +211,11 @@ func (c *Connector) replyComment(ctx context.Context, cr connectorkit.Credential
 	}
 
 	if _, err := c.ensure(ctx, cr); err != nil {
-		_ = c.ledger.SettleOutreach(campaign, target, stateFailed, err.Error())
+		_ = c.ledger.ReleaseOutreach(campaign, target)
 		return nil, err
 	}
 	if err := pace(ctx); err != nil {
-		_ = c.ledger.SettleOutreach(campaign, target, stateFailed, "cancelled before sending")
+		_ = c.ledger.ReleaseOutreach(campaign, target)
 		return nil, err
 	}
 

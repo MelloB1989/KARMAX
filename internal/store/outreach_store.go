@@ -75,6 +75,17 @@ VALUES (?, ?, ?, ?, ?, '', datetime('now'), datetime('now'))`,
 	return true, nil
 }
 
+// ReleaseOutreach drops a claim that never became a send — the sign-in failed,
+// or the run was cancelled while pacing. Only a claim still `attempted` goes:
+// once a send has settled, its row is the record that it happened.
+func (s *Store) ReleaseOutreach(campaign, target string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.exec(`DELETE FROM outreach_ledger WHERE id = ? AND state = ?`,
+		outreachID(campaign, target), OutreachAttempted)
+	return err
+}
+
 // SettleOutreach records how a claimed target turned out.
 func (s *Store) SettleOutreach(campaign, target, state, detail string) error {
 	s.mu.Lock()
