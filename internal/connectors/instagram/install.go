@@ -11,11 +11,13 @@ package instagram
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -29,6 +31,62 @@ const installTimeout = 10 * time.Minute
 
 func logf(format string, args ...any) {
 	zap.L().Info(fmt.Sprintf(format, args...))
+}
+
+// provisioning is the one install in flight, shared by every caller.
+var (
+	provisionMu sync.Mutex
+	provisionAt *provisionRun
+)
+
+type provisionRun struct {
+	done   chan struct{}
+	python string
+	err    error
+}
+
+// errInstalling is what a caller that gives up on a first-time install hears.
+var errInstalling = errors.New("instagram: still setting up the helper — the first use downloads " +
+	"Python and instagrapi, which takes a minute or two. Try again shortly")
+
+// provision is ensureInstalled on its own clock. The install runs under its
+// own timeout rather than the caller's, because the first callers are short —
+// a 25-second health check, a harness shell command — and one of them giving
+// up must not kill a half-built venv and send the next caller back to the
+// start of the download.
+func provision(ctx context.Context, dir string) (string, error) {
+	provisionMu.Lock()
+	run := provisionAt
+	if run == nil {
+		run = &provisionRun{done: make(chan struct{})}
+		provisionAt = run
+		go func() {
+			run.python, run.err = ensureInstalled(context.Background(), dir)
+			provisionMu.Lock()
+			provisionAt = nil
+			provisionMu.Unlock()
+			close(run.done)
+		}()
+	}
+	provisionMu.Unlock()
+
+	select {
+	case <-run.done:
+		return run.python, run.err
+	case <-ctx.Done():
+		return "", errInstalling
+	}
+}
+
+// Prepare installs the helper's environment without signing in or touching
+// Instagram, so the first real call does not pay for the download.
+func (c *Connector) Prepare(ctx context.Context) error {
+	dir, err := helperDir()
+	if err != nil {
+		return err
+	}
+	_, err = provision(ctx, dir)
+	return err
 }
 
 // ensureInstalled returns the interpreter to run the helper with, provisioning

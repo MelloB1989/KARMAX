@@ -38,6 +38,19 @@ var installSource []byte
 // mid-login leaves the account's state ambiguous, which is worse than waiting.
 const callTimeout = 3 * time.Minute
 
+// readTimeout is for the reads that page. instagrapi waits 5–10s before every
+// request, a post's comments arrive twenty to a page, and a call cut short
+// kills the helper and the session with it.
+const readTimeout = 10 * time.Minute
+
+func timeoutFor(method string) time.Duration {
+	switch method {
+	case "commenters", "call":
+		return readTimeout
+	}
+	return callTimeout
+}
+
 // Error is a failure the helper reported, carrying instagrapi's own exception
 // name so an operator searching for it finds what everyone else found.
 type Error struct {
@@ -117,7 +130,7 @@ func (h *helper) start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("instagram: no home directory to install into: %w", err)
 	}
-	python, err := ensureInstalled(ctx, dir)
+	python, err := provision(ctx, dir)
 	if err != nil {
 		return err
 	}
@@ -200,7 +213,7 @@ func (h *helper) call(ctx context.Context, method string, params map[string]any,
 		return fmt.Errorf("instagram: the helper stopped listening: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeoutFor(method))
 	defer cancel()
 
 	type read struct {
