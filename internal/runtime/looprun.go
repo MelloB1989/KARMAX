@@ -35,8 +35,9 @@ const (
 	// restart or a brief outage; more just delays the moment someone is told.
 	maxAttempts = 3
 	// leaseTTL must exceed the run timeout, or a slow run loses its lease and a
-	// second copy starts alongside it — the exact overlap this prevents.
-	loopRunTimeout = 12 * time.Minute
+	// second copy starts alongside it — the exact overlap this prevents. The
+	// run stays under fifteen minutes too, the claim a LYZN task is lent for.
+	loopRunTimeout = 14 * time.Minute
 	leaseTTL       = 15 * time.Minute
 	// retryBase is the first backoff; it doubles per attempt (1m, 2m, 4m).
 	retryBase = time.Minute
