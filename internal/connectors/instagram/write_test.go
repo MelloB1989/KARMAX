@@ -45,6 +45,16 @@ func (f *fakeLedger) ClaimOutreach(campaign, _, target string) (bool, error) {
 	return true, nil
 }
 
+func (f *fakeLedger) ReleaseOutreach(campaign, target string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := campaign + "/" + target
+	if _, settled := f.settled[k]; !settled {
+		delete(f.claimed, k)
+	}
+	return nil
+}
+
 func (f *fakeLedger) SettleOutreach(campaign, target, state, detail string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -246,5 +256,21 @@ func TestPacingStillRespectsCancellation(t *testing.T) {
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Error("cancellation must not wait out the full pause")
+	}
+}
+
+func TestASendThatNeverStartedLeavesThePersonReachable(t *testing.T) {
+	// Sign-in fails before anything reaches Instagram. Writing the person off
+	// for that would skip them on every later run.
+	t.Setenv("KARMAX_ENABLE_INSTAGRAM", "")
+	f := newFake()
+	c := New()
+	c.SetLedger(f)
+	if _, err := c.sendDM(context.Background(), connectorkit.Credentials{},
+		map[string]any{"campaign": "camp", "user_id": "1001", "text": "hello"}); err == nil {
+		t.Fatal("a send with the connector off must fail")
+	}
+	if ok, _ := f.ClaimOutreach("camp", "instagram.dm", "1001"); !ok {
+		t.Error("the failed sign-in kept the claim, so this person can never be messaged")
 	}
 }
