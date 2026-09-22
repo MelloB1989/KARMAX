@@ -17,9 +17,11 @@ import datetime
 import inspect
 import json
 import os
+import re
 import stat
 import sys
 import traceback
+from urllib.parse import unquote
 
 # Everything the passthrough will call, named exactly.
 #
@@ -72,6 +74,9 @@ READS = frozenset(
 # lose the conversation rather than a way to get an answer.
 MAX_RESULT_BYTES = 256 * 1024
 
+# The most comments `commenters` reads from one post.
+MAX_COMMENTS = 1000
+
 # Instagram's own anti-abuse signals. These are not retryable and they are not
 # ordinary errors: continuing past one risks the operator's account, not just
 # the call. The Go side refuses to retry anything flagged here.
@@ -121,19 +126,34 @@ class Helper:
     def __init__(self):
         self.client = None
         self.username = None
+        # Who signed in, as Instagram said at login. Kept so answering "as
+        # whom?" is not a request of its own: instagrapi paces every request by
+        # 5-10s, and an extra one before each call doubles what a run sends.
+        self.identity = None
+        self._warmed = False
+
+    def forget(self):
+        """Drop a session Instagram has refused, so the next call signs in
+        afresh — possibly with a newer session from the browser — rather than
+        replaying the dead one."""
+        self.client = None
+        self.username = None
+        self.identity = None
         self._warmed = False
 
     # ---- session -----------------------------------------------------------
 
-    def _settings_path(self, username):
+    def _settings_path(self, key):
         """Where the device fingerprint lives, 0600 in a 0700 directory.
 
         Reused across runs deliberately: a new device every login is one of the
-        strongest automation signals Instagram has."""
+        strongest automation signals Instagram has. Keyed by username, and by
+        the account's numeric id too, because a session borrowed from the
+        browser arrives with no username — only the id it starts with."""
         home = os.path.expanduser("~")
         d = os.path.join(home, ".karmax", "instagram")
         os.makedirs(d, mode=0o700, exist_ok=True)
-        safe = "".join(c for c in username.lower() if c.isalnum() or c in "._") or "account"
+        safe = "".join(c for c in str(key).lower() if c.isalnum() or c in "._") or "account"
         return os.path.join(d, safe + ".settings.json")
 
     def _save_settings(self, path):
@@ -189,10 +209,18 @@ class Helper:
         cl = self._new_client()
 
         # A stored fingerprint is only reusable when we know whose it is.
-        settings_path = self._settings_path(username) if username else None
-        if settings_path and os.path.exists(settings_path):
+        keys = [username] if username else []
+        if sessionid:
+            match = re.match(r"^\d+", unquote(sessionid))
+            if match:
+                keys.append(match.group())
+        for key in keys:
+            settings_path = self._settings_path(key)
+            if not os.path.exists(settings_path):
+                continue
             try:
                 cl.load_settings(settings_path)
+                break
             except Exception as e:
                 # A corrupt settings file must not be fatal — it is a cache.
                 log(f"settings unreadable, starting fresh: {type(e).__name__}")
@@ -214,18 +242,26 @@ class Helper:
         self.client = cl
         info = cl.account_info()
         self.username = info.username
+        self.identity = {"username": info.username, "pk": str(info.pk), "full_name": info.full_name}
 
         # Settings are keyed by the account that actually came back, which is
         # not always the one asked for — a sessionid names its own account, and
         # writing it under a guessed username is how two accounts end up
         # sharing one fingerprint.
         self._save_settings(self._settings_path(info.username))
+        self._save_settings(self._settings_path(info.pk))
 
-        return {"username": info.username, "pk": str(info.pk), "full_name": info.full_name}
+        return dict(self.identity)
 
-    def account(self, _params):
-        info = self._require().account_info()
-        return {"username": info.username, "pk": str(info.pk), "full_name": info.full_name}
+    def account(self, params):
+        """Who is signed in. From memory unless `fresh` asks Instagram, which
+        is what a health check wants and what nothing else needs."""
+        cl = self._require()
+        if self.identity and not (params or {}).get("fresh"):
+            return dict(self.identity)
+        info = cl.account_info()
+        self.identity = {"username": info.username, "pk": str(info.pk), "full_name": info.full_name}
+        return dict(self.identity)
 
     def inbox(self, params):
         """Recent direct message threads. Read-only, as this connector has
@@ -341,13 +377,15 @@ class Helper:
         if not media_id:
             media_id = str(cl.media_pk_from_url(url))
 
-        me = cl.account_info()
+        me = self.account({})["pk"]
         seen, out = set(), []
-        for c in cl.media_comments(media_id, amount=0):
+        # Bounded: every page is a paced request, and a post with thousands of
+        # comments is far past what one campaign's cap will ever reach.
+        for c in cl.media_comments(media_id, amount=MAX_COMMENTS):
             uid = str(c.user.pk)
             # The owner replying under their own post is not a commenter for
             # this purpose, and messaging yourself is a bug people notice.
-            if uid == str(me.pk) or uid in seen:
+            if uid == me or uid in seen:
                 continue
             seen.add(uid)
             out.append(uid)
@@ -462,6 +500,8 @@ def main():
             except Exception as e:  # noqa: BLE001 — every failure is a reply
                 log(f"{method} failed: {type(e).__name__}")
                 log(traceback.format_exc(limit=3))
+                if type(e).__name__ == "LoginRequired":
+                    helper.forget()
                 resp = {"id": rid, "ok": False, "error": classify(e)}
 
         sys.stdout.write(json.dumps(resp) + "\n")
