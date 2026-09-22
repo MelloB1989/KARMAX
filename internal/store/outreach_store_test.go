@@ -151,3 +151,26 @@ func TestAClaimNeedsBothACampaignAndATarget(t *testing.T) {
 		t.Error("an empty target would claim a row that matches nobody")
 	}
 }
+
+func TestAReleasedClaimCanBeTakenAgainButASettledOneCannot(t *testing.T) {
+	s := newTestStore(t)
+	if ok, _ := s.ClaimOutreach("camp-1", "instagram.dm", "1001"); !ok {
+		t.Fatal("setup claim failed")
+	}
+	if err := s.ReleaseOutreach("camp-1", "1001"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.ClaimOutreach("camp-1", "instagram.dm", "1001"); !ok {
+		t.Fatal("a released claim must be claimable again — nothing was ever sent")
+	}
+
+	if err := s.SettleOutreach("camp-1", "1001", OutreachSent, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReleaseOutreach("camp-1", "1001"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.ClaimOutreach("camp-1", "instagram.dm", "1001"); ok {
+		t.Error("releasing a sent message's row let the same person be messaged twice")
+	}
+}
