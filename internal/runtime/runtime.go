@@ -155,6 +155,10 @@ type KarmaxRuntime struct {
 	// configured; nil means the broader fallback.
 	repoTokenMinter RepoTokenMinter
 
+	// pending holds event triggers that arrived while a loop was running, so a
+	// busy loop delays a message instead of destroying it.
+	pending *pendingTriggers
+
 	// reflex is System One: the cheap probability model every event is
 	// screened by before anything expensive looks at it. Nil-safe — an
 	// unconfigured reflex passes every event through untouched.
@@ -1135,6 +1139,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		voice:        voiceReg,
 		routedKinds:  routedKinds,
 		mesh:         meshNode,
+		pending:      newPendingTriggers(),
 		startedAt:    startedAt,
 		wasmByName:   map[string]*wasmloop.Runner{},
 		attributions: newAttributions(),
