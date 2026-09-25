@@ -89,6 +89,17 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 	if err != nil {
 		rt.log.Warn("loop lease failed; running anyway", zap.String("loop", l.Name), zap.Error(err))
 	} else if !got {
+		// A schedule may safely skip a tick; an event may not. The trigger
+		// carries a message that exists nowhere else — the bus offset has
+		// already moved past it — so it waits for the loop instead of being
+		// thrown away. See loopqueue.go.
+		if trigger.Kind == loopkit.TriggerEvent && rt.pending.add(l.Name, trigger) {
+			rt.log.Info("loop is busy; queued this event for when it finishes",
+				zap.String("loop", l.Name),
+				zap.String("conversation", conversationOf(trigger)),
+				zap.Int("waiting", rt.pending.waiting(l.Name)))
+			return
+		}
 		rt.log.Info("loop already running; skipping this trigger",
 			zap.String("loop", l.Name), zap.String("trigger", trigger.Kind))
 		return
@@ -97,6 +108,8 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 		if err := rt.store.ReleaseLoopLease(l.Name, owner); err != nil {
 			rt.log.Warn("could not release loop lease", zap.String("loop", l.Name), zap.Error(err))
 		}
+		// After the lease is gone, so a queued event can take it.
+		rt.drainPending(parent, l)
 	}()
 
 	executionID := execution
