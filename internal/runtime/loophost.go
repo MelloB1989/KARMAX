@@ -159,9 +159,17 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 		}
 		rt.bus.Consume(ctx, bus.SubLoopEvent, kinds,
 			func(_ context.Context, evt bus.Event) error {
+				if rt.tooStaleForLoops(evt) {
+					return nil
+				}
 				payload := map[string]any{"event_kind": string(evt.Kind)}
 				for pk, pv := range evt.Payload {
 					payload[pk] = pv
+				}
+				// Carried so a trigger that waits in the queue can be judged
+				// again when it finally runs.
+				if !evt.Timestamp.IsZero() {
+					payload[payloadEventAt] = evt.Timestamp.UTC().Format(time.RFC3339Nano)
 				}
 				for _, name := range loopEvents[evt.Kind] {
 					if l, found := rt.loopkitLoops[name]; found {
@@ -176,6 +184,9 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 	if len(rt.loopWebhooks) > 0 {
 		rt.bus.Consume(ctx, bus.SubLoopWebhook, []bus.EventKind{bus.EventWebhookFired},
 			func(_ context.Context, evt bus.Event) error {
+				if rt.tooStaleForLoops(evt) {
+					return nil
+				}
 				route, _ := evt.Payload["route"].(string)
 				name, ok := rt.loopWebhooks[route]
 				if !ok {
@@ -259,6 +270,9 @@ func (rt *KarmaxRuntime) startRecipes(ctx context.Context) {
 
 	rt.bus.Consume(ctx, bus.SubRecipeEvent, nil,
 		func(_ context.Context, evt bus.Event) error {
+			if rt.tooStaleForLoops(evt) {
+				return nil
+			}
 			rt.recipeMu.RLock()
 			var fire []string
 			for name, r := range rt.recipeLoops {

@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"sync"
+	"time"
 
+	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
@@ -134,6 +136,52 @@ func (rt *KarmaxRuntime) drainPending(parent context.Context, l loopkit.Loop) {
 		zap.String("loop", l.Name), zap.Int("events", len(waiting)))
 
 	for _, t := range waiting {
+		// Waiting behind long runs can age a message past the point where
+		// answering it helps anyone.
+		if queuedTooLong(t) {
+			rt.log.Warn("dropped a queued event that went stale while waiting",
+				zap.String("loop", l.Name), zap.String("conversation", conversationOf(t)))
+			continue
+		}
 		go rt.runLoopDurable(parent, l, t, 1)
 	}
+}
+
+// payloadEventAt carries an event's own time through a loop trigger.
+const payloadEventAt = "event_at"
+
+// queuedTooLong applies the freshness rule to a trigger that has been waiting.
+// A trigger with no recorded time is not evidence of age and is run.
+func queuedTooLong(t loopkit.Trigger) bool {
+	raw, _ := t.Payload[payloadEventAt].(string)
+	if raw == "" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return false
+	}
+	kind, _ := t.Payload["event_kind"].(string)
+	_, stale := staleEvent(bus.Event{Kind: bus.EventKind(kind), Timestamp: at})
+	return stale
+}
+
+// tooStaleForLoops applies the agent router's freshness rule to loops.
+//
+// The router has refused stale events for a long time — a conversation is
+// perishable, and answering a seven-week-old message is worse than not
+// answering it. The loop subscribers never had the same check, so when history
+// was replayed onto the bus on 27 Sep the router logged "skipped an event too
+// old to act on" for each one while wa-monitor, reading the same events, went
+// on to reply to three-month-old conversations in ten chats. Same event, same
+// age, opposite outcome, because only one of the two readers asked how old it
+// was.
+func (rt *KarmaxRuntime) tooStaleForLoops(evt bus.Event) bool {
+	age, stale := staleEvent(evt)
+	if stale {
+		rt.log.Warn("loops skipped an event too old to act on",
+			zap.String("kind", string(evt.Kind)), zap.String("event", evt.ID),
+			zap.Duration("age", age.Round(time.Minute)))
+	}
+	return stale
 }

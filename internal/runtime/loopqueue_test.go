@@ -2,8 +2,11 @@ package runtime
 
 import (
 	"testing"
+	"time"
 
+	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
+	"go.uber.org/zap"
 )
 
 func event(chat, body string) loopkit.Trigger {
@@ -136,5 +139,44 @@ func TestConversationKeys(t *testing.T) {
 		if got := conversationOf(tc.trigger); got != tc.want {
 			t.Errorf("%s: key = %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+// The backstop. On 27 Sep the agent router refused every replayed event as too
+// old while wa-monitor, reading the same events, answered them.
+func TestLoopsRefuseWhatTheRouterRefuses(t *testing.T) {
+	rt := &KarmaxRuntime{log: zap.NewNop()}
+	old := bus.Event{Kind: bus.EventCommsMessage, Timestamp: time.Now().Add(-2270 * time.Hour)}
+	if !rt.tooStaleForLoops(old) {
+		t.Fatal("a three-month-old message reached the loops")
+	}
+	if _, routerStale := staleEvent(old); !routerStale {
+		t.Fatal("the router and the loops disagree about the same event")
+	}
+	fresh := bus.Event{Kind: bus.EventCommsMessage, Timestamp: time.Now().Add(-time.Minute)}
+	if rt.tooStaleForLoops(fresh) {
+		t.Fatal("a one-minute-old message was refused")
+	}
+}
+
+// A message that waits behind long runs is judged again when it drains.
+func TestAQueuedMessageThatWentStaleIsNotRun(t *testing.T) {
+	stale := event("a@g.us", "old")
+	stale.Payload["event_kind"] = string(bus.EventCommsMessage)
+	stale.Payload[payloadEventAt] = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	if !queuedTooLong(stale) {
+		t.Error("an hour-old message would still be answered after draining")
+	}
+
+	fresh := event("a@g.us", "new")
+	fresh.Payload["event_kind"] = string(bus.EventCommsMessage)
+	fresh.Payload[payloadEventAt] = time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339Nano)
+	if queuedTooLong(fresh) {
+		t.Error("a thirty-second-old message was dropped from the queue")
+	}
+
+	// No recorded time is not evidence of age.
+	if queuedTooLong(event("a@g.us", "untimed")) {
+		t.Error("an untimed trigger was treated as stale")
 	}
 }

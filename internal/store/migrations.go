@@ -425,10 +425,21 @@ var migrations = []string{
 
 	// Carry the old events table across so the operator's history survives the
 	// switch. Ordered by time so seq matches the order things actually happened.
+	//
+	// Only into an EMPTY log. This list is replayed on every store open, and
+	// retention prunes event_log while leaving the old table untouched — so
+	// without the guard, every open after a prune re-inserted the pruned history
+	// under fresh sequence numbers, and every subscriber read months-old events
+	// as new. On 27 Sep that put 27,447 events from June to August on the live
+	// bus at once, and wa-monitor answered three-month-old conversations in ten
+	// chats, a client's among them. OR IGNORE only skips rows still present;
+	// it was never protection against rows that had been deliberately removed.
 	`INSERT OR IGNORE INTO event_log (event_id, workspace, kind, agent_id, payload, meta, created_at)
 	 SELECT id, 'default', kind, agent_id,
 	        COALESCE(NULLIF(payload, ''), '{}'), COALESCE(NULLIF(meta, ''), '{}'), created_at
-	 FROM events ORDER BY created_at ASC`,
+	 FROM events
+	 WHERE NOT EXISTS (SELECT 1 FROM event_log)
+	 ORDER BY created_at ASC`,
 
 	// 020_timers — "wait three days, then continue" as durable state.
 	`CREATE TABLE IF NOT EXISTS timers (
