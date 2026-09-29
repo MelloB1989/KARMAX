@@ -1222,6 +1222,9 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// Started before anything can ask for a session, and it reaps the previous
 	// process's orphans on the way up.
 	rt.harness = rt.startHarness()
+	// Before anything can open a model session: every claude-code session
+	// runs on the harness, and one opened before this would find no path.
+	rt.wireClaudeCodeInference()
 	if rt.harness != nil {
 		rt.startHarnessReaper(ctx)
 		// Brains are wired AFTER agents start, further down. An agent's API

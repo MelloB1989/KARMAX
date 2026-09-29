@@ -48,6 +48,7 @@ type MainModelConfig struct {
 func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.Store, agentID string, log *zap.Logger) (*MainModelSession, error) {
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
 		Kind:           "main",
+		SessionKey:     "main/" + agentID,
 		Provider:       cfg.Provider,
 		Model:          cfg.Model,
 		SystemPrompt:   cfg.SystemPrompt,

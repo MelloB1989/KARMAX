@@ -57,6 +57,10 @@ type SessionConfig struct {
 	// losing.
 	Kind    string
 	AgentID string
+	// SessionKey, for a claude-code session, names the Claude Code
+	// conversation its turns continue. Sessions that share a key share a warm
+	// conversation across instances; without one each Session gets its own.
+	SessionKey string
 }
 
 // Usage is one model call's cost, as reported to the meter.
@@ -125,6 +129,11 @@ type Session struct {
 	// caller's lock for its whole length, so this is only ever one turn's.
 	actorMu sync.RWMutex
 	actor   string
+
+	// ccKey is this session's own Claude Code conversation, when it has no
+	// configured SessionKey.
+	ccKey     string
+	ccKeyOnce sync.Once
 }
 
 // setActor records whose behalf the current turn acts on.
@@ -197,7 +206,12 @@ func NewSession(cfg SessionConfig, agentTools []tools.Tool) *Session {
 	// of whichever turn is running. This is the default path — the one every
 	// turn without lent or withheld tools takes — so a nil source here means
 	// the actor is lost on almost every call.
-	s.kai = buildKarmaAI(cfg, agentTools, rec, s.currentActor)
+	// A claude-code session has no API client at all. Building one would
+	// resolve an unknown provider name, and an unknown provider falls through
+	// to real OpenAI.
+	if !IsClaudeCode(cfg.Provider) {
+		s.kai = buildKarmaAI(cfg, agentTools, rec, s.currentActor)
+	}
 	return s
 }
 
@@ -256,6 +270,9 @@ func (s *Session) ChatWithExtraTools(ctx context.Context, userMessage string, ex
 // eventually use, whatever the instructions around it say. A pass that must not
 // speak is handed no way to speak.
 func (s *Session) ChatWithTurnTools(ctx context.Context, userMessage string, extra []tools.Tool, withhold map[string]bool) (string, []ToolCallRecord, TokenInfo, error) {
+	if IsClaudeCode(s.cfg.Provider) {
+		return s.chatViaClaudeCode(ctx, userMessage, turnToolSet(s.tools, extra, withhold))
+	}
 	if len(extra) == 0 && len(withhold) == 0 {
 		return s.chat(ctx, userMessage, s.kai, s.tools)
 	}
@@ -264,6 +281,9 @@ func (s *Session) ChatWithTurnTools(ctx context.Context, userMessage string, ext
 }
 
 func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI, turnTools []tools.Tool) (string, []ToolCallRecord, TokenInfo, error) {
+	if IsClaudeCode(s.cfg.Provider) {
+		return s.chatViaClaudeCode(ctx, userMessage, turnTools)
+	}
 	// Taken from the caller's context, before the model sees anything — never
 	// from a tool argument, or the model could choose whose mailbox it reads.
 	s.setActor(connectorkit.ActorFrom(ctx))

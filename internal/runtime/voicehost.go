@@ -109,6 +109,23 @@ func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
 	b.session.SetHistory(models.AIChatHistory{Messages: []models.AIMessage{{
 		Role: models.Assistant, Message: greeting,
 	}}})
+	// On Claude Code the call's session is a process that has not started
+	// yet, and starting it would otherwise land on the caller's first
+	// question. Warm it while the greeting plays: the brief, the
+	// instructions, and what has already been said.
+	if b.brief != "" {
+		b.session.SetContext(b.brief)
+	}
+	if prime := b.session.PrimeTurn("A phone call has just connected, and you have already said to the caller: \"" +
+		greeting + "\". Nothing has been said back yet. Reply to this message with only: ok"); prime != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if err := prime(ctx); err != nil {
+				b.log.Warn("voice: could not warm the call's session", zap.Error(err))
+			}
+		}()
+	}
 	return greeting
 }
 

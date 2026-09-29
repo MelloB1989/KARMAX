@@ -955,6 +955,7 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 	}
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
 		Kind:           "loop-gateway",
+		SessionKey:     "loop-gateway/" + k.loopName,
 		AgentID:        k.agentID,
 		Provider:       provider,
 		Model:          model,
@@ -1009,6 +1010,7 @@ func (k *loopKit) Summarize(ctx context.Context, prompt string) (string, error) 
 	}
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
 		Kind:           "loop-summarize",
+		SessionKey:     "loop-summarize/" + k.loopName,
 		Provider:       provider,
 		Model:          model,
 		MaxTokens:      1200,
