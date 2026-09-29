@@ -89,6 +89,7 @@ func (mm *MemoryModel) retrievalTools() []tools.Tool {
 func (mm *MemoryModel) Retrieve(ctx context.Context, query string) (string, error) {
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
 		Kind:           "memory",
+		SessionKey:     "memory/" + mm.namespace,
 		Provider:       mm.cfg.Provider,
 		Model:          mm.cfg.Model,
 		SystemPrompt:   memoryRetrieverPrompt,

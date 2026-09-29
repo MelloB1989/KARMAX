@@ -125,9 +125,21 @@ func callToolField(name, field string, input map[string]any, timeout time.Durati
 // callToolAs runs a tool on one member's behalf, for connectors that
 // authenticate as an individual.
 func callToolAs(member, name string, input map[string]any, timeout time.Duration) error {
-	path := "/api/tools/" + url.PathEscape(name)
+	return callToolIn(member, "", name, input, timeout)
+}
+
+// callToolIn invokes a tool, optionally one granted only to a running turn.
+func callToolIn(member, turn, name string, input map[string]any, timeout time.Duration) error {
+	q := url.Values{}
 	if member != "" {
-		path += "?as=" + url.QueryEscape(member)
+		q.Set("as", member)
+	}
+	if turn != "" {
+		q.Set("turn", turn)
+	}
+	path := "/api/tools/" + url.PathEscape(name)
+	if len(q) > 0 {
+		path += "?" + q.Encode()
 	}
 	out, err := apiPOSTJSON(path, input, timeout)
 	if err != nil {
