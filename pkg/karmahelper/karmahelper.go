@@ -359,6 +359,22 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	for i, fb := range s.cfg.FallbackModels {
 		log.Printf("[karmahelper] trying fallback model %d: %s/%s", i+1, fb.Provider, fb.Model)
 
+		// A Claude Code fallback cannot be built as an API client: an unknown
+		// provider resolves to real OpenAI. It runs on its own path instead.
+		// The user's message is already in history, and that path adds it,
+		// so it comes off first.
+		if IsClaudeCode(fb.Provider) {
+			if n := len(s.history.Messages); n > 0 && s.history.Messages[n-1].Role == models.User {
+				s.history.Messages = s.history.Messages[:n-1]
+			}
+			out, recs, info, ccErr := s.chatViaClaudeCode(ctx, userMessage, turnTools)
+			if ccErr == nil {
+				log.Printf("[karmahelper] fallback to claude-code succeeded")
+				return out, recs, info, nil
+			}
+			log.Printf("[karmahelper] fallback to claude-code failed: %v", ccErr)
+			continue
+		}
 		fbCfg := s.cfg
 		fbCfg.Provider = fb.Provider
 		fbCfg.Model = fb.Model
@@ -662,6 +678,21 @@ func isStaleIDError(err error) bool {
 }
 
 // chatWithRetry wraps ChatCompletionManaged with exponential backoff retry logic.
+// completeManaged runs one completion, on the path that honours tools.
+//
+// karma's Bedrock tool loop lives only on its streaming path; the plain
+// completion sends Bedrock no tools at all. Measured: a call brain on Bedrock
+// with a memory lookup, a hang-up and a hand-off available answered "I don't
+// have access to a lookup tool" — every tool silently gone. So Bedrock streams,
+// with the chunks discarded, which returns the same final response and runs
+// the tool loop on the way.
+func completeManaged(kai *ai.KarmaAI, history *models.AIChatHistory) (*models.AIChatResponse, error) {
+	if kai.Model.GetModelProvider() == ai.Bedrock {
+		return kai.ChatCompletionStreamManaged(history, func(models.StreamedResponse) error { return nil })
+	}
+	return kai.ChatCompletionManaged(history)
+}
+
 func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatHistory, maxRetries int) (*models.AIChatResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -676,7 +707,7 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 			}
 		}
 
-		resp, err := kai.ChatCompletionManaged(history)
+		resp, err := completeManaged(kai, history)
 		if err == nil {
 			cleaned := strings.TrimSpace(CleanContent(resp.AIResponse))
 			// Check for empty response

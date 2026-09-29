@@ -202,3 +202,39 @@ func TestUnkeyedSessionsDoNotShareAConversation(t *testing.T) {
 		t.Fatal("a session's key is not stable")
 	}
 }
+
+// A claude-code fallback built as an API client would resolve to real OpenAI.
+// When the primary fails, the fallback must run on Claude Code — and the
+// user's message must be in history once, not twice.
+func TestClaudeCodeFallbackRunsOnClaudeCode(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("ANTHROPIC_API_KEY", "test")
+	var ran bool
+	installRunner(t, func(_ context.Context, turn ClaudeCodeTurn) (string, error) {
+		ran = true
+		if !strings.HasSuffix(turn.Prompt, "is anyone there") {
+			t.Errorf("the fallback lost the message: %q", turn.Prompt)
+		}
+		return "yes, still here", nil
+	})
+	s := NewSession(SessionConfig{
+		Provider: "anthropic", Model: "claude-haiku-4-5", Kind: "voice", MaxRetries: 1,
+		FallbackModels: []FallbackModel{{Provider: ProviderClaudeCode, Model: "haiku"}},
+	}, nil)
+	out, _, _, err := s.Chat(context.Background(), "is anyone there")
+	if err != nil {
+		t.Fatalf("the fallback did not save the turn: %v", err)
+	}
+	if !ran || out != "yes, still here" {
+		t.Fatalf("out = %q, ran = %v", out, ran)
+	}
+	users := 0
+	for _, m := range s.GetHistory().Messages {
+		if m.Role == "user" && m.Message == "is anyone there" {
+			users++
+		}
+	}
+	if users != 1 {
+		t.Fatalf("the message is in history %d times, want 1", users)
+	}
+}

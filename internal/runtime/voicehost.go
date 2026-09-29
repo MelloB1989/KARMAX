@@ -134,7 +134,10 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	// reach is in context before the model speaks, so it rarely needs the tool
 	// round-trip — the difference between one model pass and two, which on a
 	// phone is the difference between an answer and a pause.
-	if hits := b.lookup.linesFor(u.Text, 5); len(hits) > 0 {
+	lookupStart := time.Now()
+	hits := b.lookup.linesWithin(u.Text, 5, preAnswerLookupBudget)
+	lookupTook := time.Since(lookupStart)
+	if len(hits) > 0 {
 		b.session.SetContext(b.brief + "\n## Memory matching what they just said\n- " +
 			strings.Join(hits, "\n- ") + "\n")
 	} else {
@@ -143,7 +146,14 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	if u.Interrupted {
 		b.markLastReplyUnheard()
 	}
+	modelStart := time.Now()
 	text, calls, _, err := b.session.Chat(ctx, u.Text)
+	// Where a reply's time went, per turn: on a phone the total is the
+	// product, and a slow reply is only fixable once it says which half was slow.
+	b.log.Info("voice: turn timing",
+		zap.Duration("lookup", lookupTook.Round(time.Millisecond)),
+		zap.Duration("model", time.Since(modelStart).Round(time.Millisecond)),
+		zap.Int("memory_hits", len(hits)), zap.Int("tool_calls", len(calls)))
 	if err != nil {
 		return voice.Reply{}, err
 	}
@@ -297,6 +307,24 @@ func pickVoiceModel(a *agent.Agent) voiceModel {
 	ns := def.Memory.Namespace
 	if ns == "" {
 		ns = def.ID
+	}
+	// A dedicated call model wins. It exists because a call's budget is a
+	// second or two per reply, and the engine that suits the rest of KARMAX
+	// may not meet it: on Claude Code a reply measured 8 to 11 seconds, on
+	// Haiku over Bedrock 1.1 plain and 2.1 with a tool. If it fails, the call
+	// falls back to the memory model rather than going silent.
+	if v := def.VoiceModelCfg; v.Model != "" {
+		var fallbacks []karmahelper.FallbackModel
+		// Configured fallbacks first — another model on the same fast
+		// provider rides out one model's capacity trouble at the same speed —
+		// then the memory model, slower but on a different engine entirely.
+		for _, f := range def.VoiceFallbackModels {
+			fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: f.Provider, Model: f.Model})
+		}
+		if m := def.MemoryModelCfg; m.Model != "" && (m.Provider != v.Provider || m.Model != v.Model) {
+			fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: m.Provider, Model: m.Model})
+		}
+		return voiceModel{v.Provider, v.Model, ns, fallbacks}
 	}
 	// A fallback, because a transient provider error on a phone call otherwise
 	// becomes an apology. NOT the agent's own list verbatim: probing showed it
@@ -467,25 +495,11 @@ func (t *voiceMemoryLookup) Execute(ctx context.Context, input map[string]any) (
 	if t.store == nil && t.mem == nil {
 		return tools.ErrorResult(fmt.Errorf("memory is not available on this instance")), nil
 	}
-	// Each word searched separately and merged, because the store matches by
-	// substring and a two-word query only hits entries carrying the exact pair.
-	seen := map[string]bool{}
-	var lines []string
-	for _, word := range strings.Fields(query) {
-		for _, line := range t.search(word, 6) {
-			if seen[line] {
-				continue
-			}
-			seen[line] = true
-			lines = append(lines, line)
-			if len(lines) >= 8 {
-				break
-			}
-		}
-		if len(lines) >= 8 {
-			break
-		}
-	}
+	// The same lookup that runs before every reply: the whole query first,
+	// word by word only if that finds nothing. The substring store this once
+	// searched word by word is gone — memory is GitLoom, which ranks whole
+	// queries, and a per-word loop paid a network round trip for each word.
+	lines := t.linesWithin(query, 8, toolLookupBudget)
 	if len(lines) == 0 {
 		return tools.SuccessResult(map[string]any{
 			"found": 0, "note": "nothing in memory matches — say so rather than guessing",
@@ -694,25 +708,78 @@ func (t *voiceMemoryLookup) linesFor(text string, limit int) []string {
 	}
 	seen := map[string]bool{}
 	var lines []string
-	for _, word := range strings.Fields(strings.ToLower(text)) {
-		word = strings.Trim(word, ".,'\"?!()")
-		// Short connectives match everything and retrieve nothing.
-		if len(word) < 4 || voiceStopWords[word] {
-			continue
-		}
-		for _, line := range t.search(word, 4) {
+	add := func(found []string) bool {
+		for _, line := range found {
 			if seen[line] {
 				continue
 			}
 			seen[line] = true
 			lines = append(lines, line)
 			if len(lines) >= limit {
-				return lines
+				return true
 			}
+		}
+		return false
+	}
+
+	// The whole sentence first, as one search. Memory is GitLoom, where every
+	// search is a network round trip plus a fetch per hit, and ranking a
+	// sentence is what its retrieval is built for. Searching word by word paid
+	// that three or four times over — three seconds a turn, measured, before
+	// the model had even started.
+	if add(t.search(text, limit)) || len(lines) > 0 {
+		return lines
+	}
+
+	// Word by word only when the sentence found nothing, and only within a
+	// budget: a lookup that finds nothing must not also cost the caller the
+	// pause it was meant to save.
+	deadline := time.Now().Add(lookupWordBudget)
+	for _, word := range strings.Fields(strings.ToLower(text)) {
+		if time.Now().After(deadline) {
+			break
+		}
+		word = strings.Trim(word, ".,'\"?!()")
+		// Short connectives match everything and retrieve nothing.
+		if len(word) < 4 || voiceStopWords[word] {
+			continue
+		}
+		if add(t.search(word, 4)) {
+			return lines
 		}
 	}
 	return lines
 }
+
+// preAnswerLookupBudget bounds the lookup that runs before every reply.
+//
+// It is a head start, not a requirement: the model can still look memory up
+// itself when it needs to. Unbounded it cost three seconds a turn, measured,
+// against a memory layer that returned nothing for any query — the whole
+// cost, none of the benefit, on every single reply.
+const preAnswerLookupBudget = 800 * time.Millisecond
+
+// linesWithin is linesFor that gives up after budget. The search is left to
+// finish in the background; its result is simply not waited for.
+func (t *voiceMemoryLookup) linesWithin(text string, limit int, budget time.Duration) []string {
+	done := make(chan []string, 1)
+	go func() { done <- t.linesFor(text, limit) }()
+	select {
+	case lines := <-done:
+		return lines
+	case <-time.After(budget):
+		return nil
+	}
+}
+
+// toolLookupBudget bounds a lookup the model asks for mid-call. Longer than
+// the pre-answer one, since the model chose to wait for it, but still short:
+// the caller is on the line, and "nothing in memory" said promptly is better
+// than the same answer after a silence.
+const toolLookupBudget = 1500 * time.Millisecond
+
+// lookupWordBudget bounds the word-by-word fallback.
+const lookupWordBudget = 1200 * time.Millisecond
 
 var voiceStopWords = map[string]bool{
 	"what": true, "whats": true, "with": true, "that": true, "this": true,
@@ -861,7 +928,7 @@ func (t *voiceMemoryLookup) search(query string, limit int) []string {
 		results, err := t.mem.Search(query, limit)
 		if err == nil {
 			for _, r := range results {
-				if line := memoryLine(r.Excerpt); line != "" {
+				if line := memoryLine(hitText(r)); line != "" {
 					lines = append(lines, line)
 				}
 			}
@@ -881,6 +948,19 @@ func (t *voiceMemoryLookup) search(query string, limit int) []string {
 		}
 	}
 	return lines
+}
+
+// hitText is what a search hit actually says.
+//
+// GitLoom returns ranked hits with empty snippets; the memory package fetches
+// each body by path into Content and leaves Excerpt empty. Reading Excerpt
+// alone threw every hit away — every call-time lookup came back empty while
+// the same memory answered the question perfectly through the full retriever.
+func hitText(r memory.SearchResult) string {
+	if strings.TrimSpace(r.Excerpt) != "" {
+		return r.Excerpt
+	}
+	return r.Entry.Content
 }
 
 // memoryLine collapses one memory to a single readable line.

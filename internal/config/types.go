@@ -236,21 +236,26 @@ type FallbackModelConfig struct {
 }
 
 type AgentDefConfig struct {
-	ID                   string                `yaml:"id"`
-	Name                 string                `yaml:"name"`
-	Description          string                `yaml:"description"`
-	Tags                 []string              `yaml:"tags"`
-	SystemPrompt         string                `yaml:"system_prompt"`
-	Model                string                `yaml:"model"`
-	Provider             string                `yaml:"provider"`
-	Temperature          float32               `yaml:"temperature"`
-	MaxTokens            int                   `yaml:"max_tokens"`
-	Tools                []string              `yaml:"tools"`
-	CoreTools            []string              `yaml:"core_tools"`
-	MCPs                 []string              `yaml:"mcps"`
-	Memory               AgentMemoryConfig     `yaml:"memory"`
-	MemoryModel          AgentModelConfig      `yaml:"memory_model"`
-	SummaryModel         AgentModelConfig      `yaml:"summary_model"`
+	ID           string            `yaml:"id"`
+	Name         string            `yaml:"name"`
+	Description  string            `yaml:"description"`
+	Tags         []string          `yaml:"tags"`
+	SystemPrompt string            `yaml:"system_prompt"`
+	Model        string            `yaml:"model"`
+	Provider     string            `yaml:"provider"`
+	Temperature  float32           `yaml:"temperature"`
+	MaxTokens    int               `yaml:"max_tokens"`
+	Tools        []string          `yaml:"tools"`
+	CoreTools    []string          `yaml:"core_tools"`
+	MCPs         []string          `yaml:"mcps"`
+	Memory       AgentMemoryConfig `yaml:"memory"`
+	MemoryModel  AgentModelConfig  `yaml:"memory_model"`
+	SummaryModel AgentModelConfig  `yaml:"summary_model"`
+	// VoiceModel answers calls. Unset, calls use memory_model.
+	VoiceModel AgentModelConfig `yaml:"voice_model"`
+	// VoiceFallbacks are tried in order when the call model fails, before
+	// memory_model.
+	VoiceFallbacks       []FallbackModelConfig `yaml:"voice_fallback_models"`
 	FallbackModels       []FallbackModelConfig `yaml:"fallback_models"`
 	CompactionThreshold  int                   `yaml:"compaction_threshold"`
 	CompactionKeepRecent int                   `yaml:"compaction_keep_recent"`

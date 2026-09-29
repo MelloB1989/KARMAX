@@ -1872,6 +1872,11 @@ func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {
 			Model:    cfg.SummaryModel.Model,
 			Provider: cfg.SummaryModel.Provider,
 		},
+		VoiceModelCfg: agent.ModelConfig{
+			Model:    cfg.VoiceModel.Model,
+			Provider: cfg.VoiceModel.Provider,
+		},
+		VoiceFallbackModels: voiceFallbackDefs(cfg.VoiceFallbacks),
 		Memory: agent.AgentMemoryConfig{
 			Enabled:    cfg.Memory.Enabled,
 			Namespace:  cfg.Memory.Namespace,
@@ -2027,4 +2032,13 @@ func consoleDistDir() string {
 		return filepath.Join(home, ".karmax", "console")
 	}
 	return "console"
+}
+
+// voiceFallbackDefs converts the configured call fallbacks.
+func voiceFallbackDefs(in []config.FallbackModelConfig) []agent.FallbackModelDef {
+	out := make([]agent.FallbackModelDef, 0, len(in))
+	for _, f := range in {
+		out = append(out, agent.FallbackModelDef{Provider: f.Provider, Model: f.Model})
+	}
+	return out
 }
