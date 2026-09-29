@@ -38,3 +38,22 @@ func TestIsLoopbackRefusesTheNetwork(t *testing.T) {
 		}
 	}
 }
+
+func TestVoiceSwitch(t *testing.T) {
+	for _, tc := range []struct {
+		voice, sarvam string
+		want          bool
+	}{
+		{"on", "", true},
+		{"ON", "", true},
+		{"off", "key", false},
+		{"", "key", true},
+		{"", "", false},
+	} {
+		t.Setenv("KARMAX_VOICE", tc.voice)
+		t.Setenv("SARVAM_API_KEY", tc.sarvam)
+		if got := voiceEnabled(); got != tc.want {
+			t.Errorf("KARMAX_VOICE=%q SARVAM=%q: enabled = %v, want %v", tc.voice, tc.sarvam, got, tc.want)
+		}
+	}
+}

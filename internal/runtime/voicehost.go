@@ -569,13 +569,28 @@ func brainURL(cfg *config.KarmaxConfig) string {
 	// no brain endpoint — while the Sarvam key stays in place for when it comes
 	// back. A switch, because "stop all calls" should not mean digging a
 	// credential out of a file later.
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("KARMAX_VOICE")), "off") {
-		return ""
-	}
-	if strings.TrimSpace(os.Getenv("SARVAM_API_KEY")) == "" || !cfg.Webhooks.Enabled {
+	if !voiceEnabled() || !cfg.Webhooks.Enabled {
 		return ""
 	}
 	return fmt.Sprintf("ws://127.0.0.1:%d/voice", cfg.Webhooks.Port)
+}
+
+// voiceEnabled reads the operator's switch.
+//
+// It used to be inferred from SARVAM_API_KEY being set here — but speech is the
+// integration's affair, the keys live in wacli's environment and not this one,
+// and once calls could run on Modulate and ElevenLabs a Sarvam key said nothing
+// about whether a call could be held. So it is an explicit switch: on, or off.
+// The Sarvam key still counts as "on" so an install that relied on it keeps
+// working.
+func voiceEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("KARMAX_VOICE"))) {
+	case "off":
+		return false
+	case "on":
+		return true
+	}
+	return strings.TrimSpace(os.Getenv("SARVAM_API_KEY")) != ""
 }
 
 // mountVoice serves the conversation endpoint and registers the integrations.
@@ -584,7 +599,7 @@ func (rt *KarmaxRuntime) mountVoice(wh interface {
 }, a *agent.Agent) {
 	url := brainURL(rt.cfg)
 	if url == "" {
-		rt.log.Info("voice is off (KARMAX_VOICE=off, no SARVAM_API_KEY, or webhooks disabled) — calls will not be answered or placed")
+		rt.log.Info("voice is off (KARMAX_VOICE is not on, or webhooks are disabled) — calls will not be answered or placed")
 		return
 	}
 	if a == nil {
