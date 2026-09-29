@@ -58,6 +58,8 @@ type AgentDef struct {
 	Memory               AgentMemoryConfig  `yaml:"memory"                json:"memory"`
 	MemoryModelCfg       ModelConfig        `yaml:"memory_model"          json:"memory_model"`
 	SummaryModelCfg      ModelConfig        `yaml:"summary_model"         json:"summary_model"`
+	VoiceModelCfg        ModelConfig        `yaml:"voice_model"           json:"voice_model"`
+	VoiceFallbackModels  []FallbackModelDef `yaml:"voice_fallback_models" json:"voice_fallback_models"`
 	FallbackModels       []FallbackModelDef `yaml:"fallback_models"       json:"fallback_models"`
 	CompactionThreshold  int                `yaml:"compaction_threshold"  json:"compaction_threshold"`
 	CompactionKeepRecent int                `yaml:"compaction_keep_recent" json:"compaction_keep_recent"`
