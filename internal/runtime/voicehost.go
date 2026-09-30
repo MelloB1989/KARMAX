@@ -754,10 +754,11 @@ func (t *voiceMemoryLookup) linesFor(text string, limit int) []string {
 // preAnswerLookupBudget bounds the lookup that runs before every reply.
 //
 // It is a head start, not a requirement: the model can still look memory up
-// itself when it needs to. Unbounded it cost three seconds a turn, measured,
-// against a memory layer that returned nothing for any query — the whole
-// cost, none of the benefit, on every single reply.
-const preAnswerLookupBudget = 800 * time.Millisecond
+// itself when it needs to. GitLoom answers a specific question in about a
+// second, measured, and a broad name like "Kartik" in closer to three — so
+// this catches the questions memory can actually answer and lets the rest go
+// ahead without it rather than holding the caller.
+const preAnswerLookupBudget = 1300 * time.Millisecond
 
 // linesWithin is linesFor that gives up after budget. The search is left to
 // finish in the background; its result is simply not waited for.
@@ -776,7 +777,7 @@ func (t *voiceMemoryLookup) linesWithin(text string, limit int, budget time.Dura
 // the pre-answer one, since the model chose to wait for it, but still short:
 // the caller is on the line, and "nothing in memory" said promptly is better
 // than the same answer after a silence.
-const toolLookupBudget = 1500 * time.Millisecond
+const toolLookupBudget = 3 * time.Second
 
 // lookupWordBudget bounds the word-by-word fallback.
 const lookupWordBudget = 1200 * time.Millisecond
