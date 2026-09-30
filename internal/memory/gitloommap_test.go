@@ -130,7 +130,7 @@ func TestMergeMakesAddressableSections(t *testing.T) {
 
 func TestAppendSectionNeverDropsWhatIsStored(t *testing.T) {
 	existing := "## 2026-06-01 — TrustStrike is the VAPT product\n\nTrustStrike is the VAPT product."
-	incoming := gitloom.Memory{
+	incoming := gitloom.NewMemory{
 		Path: "facts/projects/truststrike.md", Date: "2026-08-01",
 		Content: "TrustStrike now runs extraction on Fargate.",
 	}

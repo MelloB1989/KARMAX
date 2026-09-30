@@ -513,7 +513,7 @@ func runAudit(ctx context.Context, o auditOptions) error {
 			if o.DryRun {
 				return
 			}
-			if err := client.Write(ctx, []gitloom.Memory{{
+			if err := client.Write(ctx, []gitloom.NewMemory{{
 				Path:    j.path,
 				Content: v.Replacement,
 				Date:    time.Now().Format("2006-01-02"),

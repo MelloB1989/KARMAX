@@ -364,11 +364,11 @@ func (g *gitloomBackend) append(ctx context.Context, path, content string) error
 	if existing == nil || strings.TrimSpace(existing.Content) == "" {
 		return fmt.Errorf("gitloom: %s read back empty; refusing to overwrite what is there", path)
 	}
-	merged := AppendSection(existing.Content, gitloom.Memory{Path: path, Content: content})
+	merged := AppendSection(existing.Content, gitloom.NewMemory{Path: path, Content: content})
 	merged.Tags = unionStrings(existing.Tags, merged.Tags, 24)
 	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
 	merged.Related = unionStrings(existing.Related, merged.Related, 32)
-	if err := g.client.Write(cctx, []gitloom.Memory{merged}, nil); err != nil {
+	if err := g.client.Write(cctx, []gitloom.NewMemory{merged}, nil); err != nil {
 		g.setHealth(false, err)
 		return err
 	}
@@ -386,12 +386,12 @@ func (g *gitloomBackend) update(ctx context.Context, path, content string) error
 		g.setHealth(false, err)
 		return err
 	}
-	m := gitloom.Memory{Path: path, Content: content}
+	m := gitloom.NewMemory{Path: path, Content: content}
 	if existing != nil {
 		m.Tags, m.Cues, m.Related = existing.Tags, existing.Cues, existing.Related
 		m.Confidence = existing.Confidence
 	}
-	if err := g.client.Write(cctx, []gitloom.Memory{m}, nil); err != nil {
+	if err := g.client.Write(cctx, []gitloom.NewMemory{m}, nil); err != nil {
 		g.setHealth(false, err)
 		return err
 	}

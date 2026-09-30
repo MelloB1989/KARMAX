@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+
+	"github.com/GitLoomHQ/gitloom-go/gitloom"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,8 +15,9 @@ import (
 
 func backendAt(url string) *gitloomBackend {
 	return &gitloomBackend{
-		cfg: GitLoomConfig{BaseURL: url, APIKey: "k", Namespace: "karmax", Timeout: 5 * time.Second},
-		log: zap.NewNop(),
+		client: gitloom.New("k", gitloom.WithBaseURL(url)),
+		cfg:    GitLoomConfig{BaseURL: url, APIKey: "k", Namespace: "karmax", Timeout: 5 * time.Second},
+		log:    zap.NewNop(),
 	}
 }
 
@@ -78,15 +81,31 @@ func TestRecallReadsTheLiveShape(t *testing.T) {
 	}
 }
 
-// Silence is what hid the last shape change for two weeks. A response in the
-// old shape must fail, not decode as an empty memory.
-func TestTheOldShapeFailsLoudly(t *testing.T) {
+// Silence is what hid the last shape change for two weeks. A response whose
+// results this client cannot read must fail, not decode as an empty memory.
+func TestUnreadableResultsFailLoudly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"namespace":"karmax","hits":[{"path":"a.md","score":0.9,"snippet":"x"}]}`))
+		// The server found three and dropped none — then sent them under a
+		// field this client does not know.
+		w.Write([]byte(`{"namespace":"karmax","candidates":3,"filtered_out":0,"results":[{"path":"a.md"}]}`))
 	}))
 	defer srv.Close()
-	if _, err := backendAt(srv.URL).search(context.Background(), "x", 5); err == nil {
-		t.Fatal("a response in the old shape decoded silently")
+	_, err := backendAt(srv.URL).search(context.Background(), "x", 5)
+	if err == nil || !strings.Contains(err.Error(), "delivered none") {
+		t.Fatalf("err = %v, want results-found-but-unread reported", err)
+	}
+}
+
+// A question memory cannot answer is not that failure: everything retrieval
+// produced fell below the relevance floor, and nothing was lost.
+func TestFloorDroppingEverythingIsNotAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"namespace":"karmax","candidates":12,"filtered_out":12,"memories":[]}`))
+	}))
+	defer srv.Close()
+	res, err := backendAt(srv.URL).search(context.Background(), "unanswerable", 5)
+	if err != nil || len(res) != 0 {
+		t.Fatalf("res=%v err=%v, want nothing and no error", res, err)
 	}
 }
 
