@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/MelloB1989/karma/models"
 	"regexp"
 	"strings"
 	"sync"
@@ -236,5 +237,34 @@ func TestClaudeCodeFallbackRunsOnClaudeCode(t *testing.T) {
 	}
 	if users != 1 {
 		t.Fatalf("the message is in history %d times, want 1", users)
+	}
+}
+
+// A turn that ran a tool and then said nothing has answered. Treating it as an
+// empty response retried it five times across three models — and re-ran the
+// tool each time.
+func TestActingThenSilenceIsAnAnswer(t *testing.T) {
+	s := NewSession(SessionConfig{Provider: "anthropic", Model: "x"}, nil)
+	s.rec.add(ToolCallRecord{Name: "call.hangup"})
+	out, recs, _, err := s.processResponse(&models.AIChatResponse{AIResponse: "   "})
+	if err != nil {
+		t.Fatalf("act-then-silence was treated as a failure: %v", err)
+	}
+	if out != "" || len(recs) != 1 {
+		t.Fatalf("out=%q recs=%d, want empty text and the hang-up", out, len(recs))
+	}
+	if !(&callRecorder{calls: []ToolCallRecord{{Name: "x"}}}).acted() {
+		t.Fatal("acted() missed a recorded call")
+	}
+	if (*callRecorder)(nil).acted() {
+		t.Fatal("a nil recorder reported acting")
+	}
+}
+
+// Silence with nothing done is still the failure it always was.
+func TestSilenceWithNothingDoneIsStillAFailure(t *testing.T) {
+	s := NewSession(SessionConfig{Provider: "anthropic", Model: "x"}, nil)
+	if _, _, _, err := s.processResponse(&models.AIChatResponse{AIResponse: ""}); err == nil {
+		t.Fatal("an empty response with no tool calls was accepted")
 	}
 }
