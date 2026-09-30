@@ -230,7 +230,7 @@ func sectionTitle(e MemoryEntry) string {
 //
 // Entries must arrive oldest-first; sections are written in that order so a
 // file reads as the history of its subject.
-func Merge(path string, entries []MemoryEntry, related []string) gitloom.Memory {
+func Merge(path string, entries []MemoryEntry, related []string) gitloom.NewMemory {
 	if len(entries) == 1 {
 		return ToGitLoom(entries[0], path, related)
 	}
@@ -276,7 +276,7 @@ func Merge(path string, entries []MemoryEntry, related []string) gitloom.Memory 
 		}
 	}
 
-	m := gitloom.Memory{
+	m := gitloom.NewMemory{
 		Path: path, Content: strings.TrimSpace(body.String()),
 		Tags: tags, Confidence: conf, Cues: cues, Related: related,
 	}
@@ -299,7 +299,7 @@ func Merge(path string, entries []MemoryEntry, related []string) gitloom.Memory 
 // per subject growing instead of fragmenting into dated near-duplicates.
 //
 // existing may be empty, which is the first-write case.
-func AppendSection(existing string, incoming gitloom.Memory) gitloom.Memory {
+func AppendSection(existing string, incoming gitloom.NewMemory) gitloom.NewMemory {
 	existing = strings.TrimSpace(existing)
 	if existing == "" {
 		return incoming
@@ -338,13 +338,13 @@ func AppendSection(existing string, incoming gitloom.Memory) gitloom.Memory {
 // UnionMemories combines several writes to one path into a single document,
 // so a batch carrying three new facts about one subject makes one file rather
 // than three overwrites of each other.
-func UnionMemories(ms []gitloom.Memory) gitloom.Memory {
+func UnionMemories(ms []gitloom.NewMemory) gitloom.NewMemory {
 	if len(ms) == 1 {
 		return ms[0]
 	}
 	out := ms[0]
 	for _, m := range ms[1:] {
-		out = AppendSection(out.Content, gitloom.Memory{
+		out = AppendSection(out.Content, gitloom.NewMemory{
 			Path: m.Path, Content: m.Content, Date: m.Date,
 			Tags: m.Tags, Confidence: m.Confidence, Cues: m.Cues, Related: m.Related,
 		})
@@ -377,7 +377,7 @@ func unionStrings(a, b []string, max int) []string {
 
 // ToGitLoom converts one KARMAX entry into the memory GitLoom will store.
 // related carries already-resolved GitLoom paths for this entry's links.
-func ToGitLoom(e MemoryEntry, path string, related []string) gitloom.Memory {
+func ToGitLoom(e MemoryEntry, path string, related []string) gitloom.NewMemory {
 	body := strings.TrimSpace(prefixRe.ReplaceAllString(e.Content, ""))
 
 	tags := make([]string, 0, len(e.Tags)+1)
@@ -390,7 +390,7 @@ func ToGitLoom(e MemoryEntry, path string, related []string) gitloom.Memory {
 		}
 	}
 
-	m := gitloom.Memory{
+	m := gitloom.NewMemory{
 		Path:       path,
 		Content:    body,
 		Tags:       tags,

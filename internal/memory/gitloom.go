@@ -108,7 +108,7 @@ func (g *gitloomBackend) write(ctx context.Context, e MemoryEntry, path string, 
 		g.setHealth(false, err)
 		return err
 	}
-	if err := g.client.Write(cctx, []gitloom.Memory{merged}, nil); err != nil {
+	if err := g.client.Write(cctx, []gitloom.NewMemory{merged}, nil); err != nil {
 		g.setHealth(false, err)
 		return err
 	}
@@ -147,11 +147,11 @@ func (g *gitloomBackend) forgetSection(ctx context.Context, file, slug string) e
 		// leaving an empty file that still answers searches.
 		return g.forget(ctx, file)
 	}
-	out := gitloom.Memory{
+	out := gitloom.NewMemory{
 		Path: existing.Path, Content: remaining, Tags: existing.Tags,
 		Confidence: existing.Confidence, Cues: existing.Cues, Related: existing.Related,
 	}
-	if err := g.client.Write(cctx, []gitloom.Memory{out}, nil); err != nil {
+	if err := g.client.Write(cctx, []gitloom.NewMemory{out}, nil); err != nil {
 		g.setHealth(false, err)
 		return err
 	}
@@ -179,7 +179,7 @@ func (g *gitloomBackend) forget(ctx context.Context, path string) error {
 // as "nothing to preserve" — which is exactly what happened when an older API
 // returned only the text before the first ## header for a file written
 // entirely as sections.
-func (g *gitloomBackend) foldOntoStored(ctx context.Context, m gitloom.Memory) (gitloom.Memory, error) {
+func (g *gitloomBackend) foldOntoStored(ctx context.Context, m gitloom.NewMemory) (gitloom.NewMemory, error) {
 	existing, err := g.client.Get(ctx, m.Path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
 	switch {
 	case isNotFound(err):
@@ -303,7 +303,17 @@ func (g *gitloomBackend) body(ctx context.Context, path string) string {
 func (g *gitloomBackend) search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
-	res, err := g.retrieve(cctx, query, topK)
+	res, err := g.client.Recall(cctx, query, &gitloom.RecallOptions{
+		Namespace: g.cfg.Namespace, Limit: topK,
+		// Provenance is a git-log walk per memory and was the whole cost of
+		// the call — 3.29s with it, 0.40s without, measured on this namespace.
+		// Relations stay: they are free, and they surface a person's whole
+		// cluster in one call.
+		NoProvenance: true,
+	})
+	if err == nil {
+		err = unreadRecall(res)
+	}
 	if err != nil {
 		g.setHealth(false, err)
 		return nil, err

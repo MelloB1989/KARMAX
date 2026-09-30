@@ -116,6 +116,15 @@ func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
 	if b.brief != "" {
 		b.session.SetContext(b.brief)
 	}
+	// Open the memory connection while the greeting plays. Calls are rare, so
+	// the connection to GitLoom has almost always gone idle, and the first
+	// lookup of a call paid a fresh TLS handshake on top of a one-second
+	// search — past the pre-answer budget, so the caller's first question was
+	// answered without memory. The result is thrown away; the warm connection
+	// is the point.
+	if b.lookup != nil {
+		go b.lookup.search(peer, 1)
+	}
 	if prime := b.session.PrimeTurn("A phone call has just connected, and you have already said to the caller: \"" +
 		greeting + "\". Nothing has been said back yet. Reply to this message with only: ok"); prime != nil {
 		go func() {

@@ -200,7 +200,7 @@ func runMigration(ctx context.Context, o migrateOptions) error {
 	fmt.Printf("%d relationship links → %d explicit graph edges\n", len(links), edges)
 
 	// Pass 2: build and send.
-	batch := make([]gitloom.Memory, 0, o.BatchSize)
+	batch := make([]gitloom.NewMemory, 0, o.BatchSize)
 	ids := make([]string, 0, o.BatchSize)
 	sent, failed := 0, 0
 
@@ -363,7 +363,7 @@ func migrateChatSummaries(ctx context.Context, db *store.Store, client *gitloom.
 	if err != nil {
 		return 0, err
 	}
-	batch := make([]gitloom.Memory, 0, o.BatchSize)
+	batch := make([]gitloom.NewMemory, 0, o.BatchSize)
 	sent := 0
 	taken := map[string]bool{}
 
@@ -451,7 +451,7 @@ func migrateProfile(ctx context.Context, client *gitloom.Client, ns, localNS str
 	defer cancel()
 	// rules/ is the tier GitLoom loads whole on every retrieval rather than
 	// searching, which is the right home for "who is this person".
-	err = client.Write(callCtx, []gitloom.Memory{{
+	err = client.Write(callCtx, []gitloom.NewMemory{{
 		Path: "rules/operator.md", Content: string(body),
 		Tags: []string{"operator", "profile"}, Confidence: 1.0,
 		Cues: []string{"who is the operator", "about me", "my preferences"},
