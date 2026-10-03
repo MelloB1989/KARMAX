@@ -165,3 +165,19 @@ func TestBrainForWithoutAHarnessIsUnchanged(t *testing.T) {
 		t.Error("should fall through to the only brain there is")
 	}
 }
+
+// When the API session is Claude Code too, a trivial verdict has nowhere
+// cheaper to go — redirecting only sends the message to a context-less second
+// session. It stays with the agent.
+func TestBrainForKeepsTrivialOnTheAgentWhenEverythingIsClaudeCode(t *testing.T) {
+	a := &Agent{log: zap.NewNop()}
+	hb := &MainModelSession{}
+	a.harnessBrain = hb
+	a.mainSession = &MainModelSession{provider: "claude-code"}
+	evt := screenedEvent(map[string]string{
+		bus.MetaReflexAction: "handle", bus.MetaReflexEffort: "trivial",
+	})
+	if got := a.brainFor(evt); got != Brain(hb) {
+		t.Fatal("a trivial turn left the agent for a Claude Code side session")
+	}
+}

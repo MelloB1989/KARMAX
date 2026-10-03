@@ -87,7 +87,7 @@ func TestOpenReusesALiveSessionWithMatchingFlags(t *testing.T) {
 // spawned with gets a NEW process, on the SAME CLI session id — the
 // conversation continues (--resume), only the flags change.
 func TestOpenRespawnsWhenFlagsChange(t *testing.T) {
-	sup, _ := newRaceSupervisor(t, 5*time.Millisecond)
+	sup, st := newRaceSupervisor(t, 5*time.Millisecond)
 	ctx := context.Background()
 
 	first, err := sup.open(ctx, "k", "chat", sup.policy("chat"), Options{Model: "sonnet"})
@@ -97,6 +97,9 @@ func TestOpenRespawnsWhenFlagsChange(t *testing.T) {
 	if _, err := first.Send(ctx, "warm up", 5*time.Second, nil); err != nil {
 		t.Fatalf("warm-up turn: %v", err)
 	}
+	// Counted as SendWith counts it: only a session with a completed turn has
+	// a transcript to resume.
+	_ = st.RecordHarnessTurn("k", 0, 0, 0, 0, time.Now())
 	firstID := first.ID
 
 	second, err := sup.open(ctx, "k", "chat", sup.policy("chat"), Options{Model: "sonnet", Effort: "high"})

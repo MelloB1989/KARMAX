@@ -100,6 +100,15 @@ func (a *Agent) brainFor(evt bus.Event) Brain {
 	if sess == nil || hb == nil {
 		return a.thinkingBrain()
 	}
+	// The redirect exists to reach something cheaper and faster than the
+	// harness. When the API session is itself Claude Code there is no such
+	// thing: it is a second session with none of the agent's conversation,
+	// and a separate process that can fail on its own. One did — a dead
+	// session that answered nothing for four days — and an operator's message
+	// routed there as "trivial" got no reply at all.
+	if sess.RunsOnClaudeCode() {
+		return a.thinkingBrain()
+	}
 	a.log.Debug("reflex routed a trivial turn to the API session",
 		zap.String("kind", string(evt.Kind)), zap.String("reason", s.Reason))
 	return sess
