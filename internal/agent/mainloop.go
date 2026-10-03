@@ -283,6 +283,10 @@ func truncateToolInput(in map[string]any) map[string]any {
 	return out
 }
 
+// RunsOnClaudeCode reports whether this session's turns go to Claude Code
+// rather than to a model API.
+func (m *MainModelSession) RunsOnClaudeCode() bool { return karmahelper.IsClaudeCode(m.provider) }
+
 // NeedsCompaction returns true when the accumulated token count has reached
 // or exceeded the compaction threshold.
 func (m *MainModelSession) NeedsCompaction() bool {

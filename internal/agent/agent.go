@@ -959,10 +959,12 @@ func (a *Agent) handleOne(evt bus.Event) {
 	}
 	evt = screened
 
+	started := time.Now()
 	if err := a.handleEvent(evt); err != nil {
 		a.finishTurn(evt, store.TurnFailed, err.Error())
 		streak := a.recordEventError(err)
 		a.log.Error("event handling failed", zap.Error(err))
+		a.tellOperatorTurnFailed(evt, started)
 		_ = a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
 			"error":              err.Error(),
 			"consecutive_errors": streak,
@@ -980,6 +982,33 @@ func (a *Agent) handleOne(evt bus.Event) {
 	}
 	a.finishTurn(evt, store.TurnOK, "")
 	a.resetEventErrors()
+}
+
+// turnFailedNotice is what the operator gets instead of silence.
+const turnFailedNotice = "I couldn't handle that message — something failed on my side. Please send it again."
+
+// tellOperatorTurnFailed answers an operator message whose turn failed. A
+// failed turn used to end in a log line and nothing else, so from the chat it
+// looked exactly like being ignored. Monitored chats get nothing: a stranger
+// should never see KARMAX's internals, and their loops decide replies anyway.
+func (a *Agent) tellOperatorTurnFailed(evt bus.Event, started time.Time) {
+	if evt.Kind != bus.EventCommsMessage || a.commsSend == nil {
+		return
+	}
+	if a.ctx != nil && a.ctx.Err() != nil {
+		return // shutting down; the journal replays the turn on restart
+	}
+	channelID, _ := evt.Payload["karmax_channel_id"].(string)
+	target, _ := evt.Payload["channel_id"].(string)
+	if channelID == "" || !a.isFromOperator(target) {
+		return
+	}
+	if a.repliedDuringTurn(target, started) {
+		return
+	}
+	if err := a.commsSend(channelID, target, turnFailedNotice); err != nil {
+		a.log.Warn("could not tell the operator a turn failed", zap.Error(err))
+	}
 }
 
 // finishTurn closes this event's journal row. Best-effort: a turn that ran but

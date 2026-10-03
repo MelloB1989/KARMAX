@@ -302,7 +302,17 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 		return nil, err
 	}
 
-	resume := rec != nil && rec.HarnessSessionID != ""
+	// Only a session that has completed a turn has a transcript to resume.
+	//
+	// The row is written before the spawn, for crash safety, so a process that
+	// died during its very first turn leaves a record naming a conversation
+	// Claude Code never wrote. Resuming that fails at once, and it failed on
+	// every attempt after: api/main/nexus spent four days answering nothing,
+	// zero turns completed, each message failing in two seconds with
+	// error_during_execution — and an operator's message went unanswered.
+	// Such a record is started over under a fresh id; there is nothing in it
+	// to lose.
+	resume := rec != nil && rec.HarnessSessionID != "" && rec.Turns > 0
 	id := ""
 	switch {
 	case resume:
