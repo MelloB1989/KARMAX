@@ -44,7 +44,7 @@ func dial(t *testing.T, brain Brain) (*websocket.Conn, func()) {
 		if err != nil {
 			return
 		}
-		ServeConversation(r.Context(), c, func() Brain { return brain }, zap.NewNop())
+		ServeConversation(r.Context(), c, func(Call) Brain { return brain }, zap.NewNop())
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)

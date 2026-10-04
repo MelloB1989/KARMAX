@@ -255,7 +255,14 @@ type AgentDefConfig struct {
 	VoiceModel AgentModelConfig `yaml:"voice_model"`
 	// VoiceFallbacks are tried in order when the call model fails, before
 	// memory_model.
-	VoiceFallbacks       []FallbackModelConfig `yaml:"voice_fallback_models"`
+	VoiceFallbacks []FallbackModelConfig `yaml:"voice_fallback_models"`
+	// VoiceBedrockKeyEnv names the env var holding the calls-only Bedrock API
+	// key (default KARMAX_VOICE_BEDROCK_API_KEY); VoiceBedrockRegion defaults
+	// to us-east-1; VoiceBudgetUSD is the hard lifetime spend cap for that
+	// key, zero meaning no cap.
+	VoiceBedrockKeyEnv   string                `yaml:"voice_bedrock_api_key_env"`
+	VoiceBedrockRegion   string                `yaml:"voice_bedrock_region"`
+	VoiceBudgetUSD       float64               `yaml:"voice_budget_usd"`
 	FallbackModels       []FallbackModelConfig `yaml:"fallback_models"`
 	CompactionThreshold  int                   `yaml:"compaction_threshold"`
 	CompactionKeepRecent int                   `yaml:"compaction_keep_recent"`

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
 
@@ -152,39 +154,53 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 	// Blocked, done and failed all stop the clock. Blocked comes back when the
 	// operator answers, which arrives as an ordinary message.
 
-	if report != "" {
-		update.Reported = report
-	}
 	if err := rt.store.UpdateTask(task.ID, update); err != nil {
 		rt.log.Warn("could not record a task round", zap.String("task", task.ID), zap.Error(err))
 	}
 
-	// Told when there is something to tell, or when the work is over either
-	// way. A round that merely made progress says nothing: twenty rounds of
-	// "still going" is how an assistant becomes noise to be muted.
-	switch {
-	case report != "" && report != task.Reported:
-		rt.reportTask(task, status, report)
-	case status == store.TaskDone:
-		rt.reportTask(task, status, "Done: "+task.Title)
-	case status == store.TaskFailed:
-		rt.reportTask(task, status, "I could not finish this: "+task.Title+
-			"\n\n"+firstLines(progress, 6))
+	// Every round offers its outcome; whether the operator hears it is Jev's call.
+	text := report
+	if text == "" {
+		switch status {
+		case store.TaskDone:
+			text = "Done: " + task.Title
+		case store.TaskFailed:
+			text = "I could not finish this: " + task.Title + "\n\n" + firstLines(progress, 6)
+		default:
+			text = clip(strings.TrimSpace(progress), 500)
+		}
 	}
+	rt.reportTask(task, status, text)
 }
 
-// reportTask tells the operator, on the channel the task came from.
+// reportTask tells the operator, on the channel the task came from, if Jev
+// judges the update worth sending now.
 func (rt *KarmaxRuntime) reportTask(task store.Task, status, text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
-	if task.ChannelID != "" && task.Target != "" && rt.comms != nil {
-		if err := rt.comms.Send(task.ChannelID, task.Target, text); err != nil {
+	if !rt.worthTelling(task, status, text) {
+		rt.log.Info("task update held back", zap.String("task", task.ID), zap.String("status", status))
+		return
+	}
+	if rt.deliverTaskUpdate(task, status, text) {
+		rt.taskHooks.markReported(task.ID)
+		if rt.store != nil {
+			_ = rt.store.UpdateTask(task.ID, store.TaskUpdate{
+				Reported: text, KeepLastError: true, KeepNextActionAt: true,
+			})
+		}
+	}
+}
+
+func (rt *KarmaxRuntime) deliverTaskUpdate(task store.Task, status, text string) bool {
+	if task.ChannelID != "" && task.Target != "" {
+		if err := rt.sendTaskText(task.ChannelID, task.Target, text); err == nil {
+			return true
+		} else {
 			rt.log.Warn("could not report a task to its channel",
 				zap.String("task", task.ID), zap.Error(err))
-		} else {
-			return
 		}
 	}
 	// No channel, or the send failed. The app feed is the floor: an update the
@@ -194,6 +210,79 @@ func (rt *KarmaxRuntime) reportTask(task store.Task, status, text string) {
 		kind = "alert"
 	}
 	builtin.PushAppNotification(rt.store, task.AgentID, kind, task.Title, text)
+	return true
+}
+
+// worthTelling asks Jev; an unavailable Jev means yes.
+func (rt *KarmaxRuntime) worthTelling(task store.Task, status, text string) bool {
+	since := rt.taskHooks.sinceReport(task)
+	state := map[string]any{
+		"goal":                      clip(strings.TrimSpace(task.Goal), 600),
+		"status":                    status,
+		"latest_update":             clip(strings.TrimSpace(text), 800),
+		"last_told_operator":        clip(strings.TrimSpace(task.Reported), 400),
+		"minutes_since_last_report": int(since.Minutes()),
+		"finished":                  status == store.TaskDone || status == store.TaskFailed,
+		"failed":                    status == store.TaskFailed,
+		"blocked":                   status == store.TaskBlocked,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	d, err := rt.taskDecide(ctx, state, loopkit.Questions{
+		"send_update": loopkit.Noul("An assistant is working a long task for its operator. Should the operator be sent " +
+			"this update right now? Yes for an outcome (finished or failed), a blocker or question, or progress they " +
+			"would want to know about. No for routine progress, anything repeating what they were last told, or an " +
+			"update that comes too soon after the last one to add anything."),
+	})
+	if err != nil {
+		rt.log.Info("task update gate unavailable; sending", zap.Error(err))
+		return true
+	}
+	return d.Yes("send_update", 0.5)
+}
+
+func (rt *KarmaxRuntime) taskDecide(ctx context.Context, state any, qs loopkit.Questions) (*loopkit.Decision, error) {
+	if rt.taskHooks.decide != nil {
+		return rt.taskHooks.decide(ctx, state, qs)
+	}
+	return rt.decide(ctx, state, qs)
+}
+
+func (rt *KarmaxRuntime) sendTaskText(channelID, target, text string) error {
+	if rt.taskHooks.send != nil {
+		return rt.taskHooks.send(channelID, target, text)
+	}
+	if rt.comms == nil {
+		return fmt.Errorf("no comms")
+	}
+	return rt.comms.Send(channelID, target, text)
+}
+
+// taskHooks are the runner's seams: the Jev call and the channel send.
+type taskHooks struct {
+	decide func(ctx context.Context, state any, qs loopkit.Questions) (*loopkit.Decision, error)
+	send   func(channelID, target, text string) error
+
+	mu       sync.Mutex
+	lastSent map[string]time.Time
+}
+
+func (h *taskHooks) markReported(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.lastSent == nil {
+		h.lastSent = map[string]time.Time{}
+	}
+	h.lastSent[id] = time.Now()
+}
+
+func (h *taskHooks) sinceReport(t store.Task) time.Duration {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if at, ok := h.lastSent[t.ID]; ok {
+		return time.Since(at)
+	}
+	return time.Since(t.CreatedAt)
 }
 
 // taskPrompt is what one round asks.

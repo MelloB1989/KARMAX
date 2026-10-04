@@ -142,6 +142,8 @@ type KarmaxRuntime struct {
 	// waChannel is kept so voice can teach it to answer incoming calls once the
 	// brain is up — the channel is built long before the brain is.
 	waChannel *whatsapp.WhatsAppChannel
+
+	taskHooks taskHooks
 	// messageOperator delivers text to the operator's own chat, for things
 	// that finish after whoever asked for them has gone — a call that ended
 	// before the task it handed off came back. Nil when there is no channel.
@@ -601,6 +603,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		SendFunc:         commsMgr.Send,
 		DefaultChannelID: commsMgr.DefaultChannelID,
 		KnownChannelID:   commsMgr.HasChannel,
+		HeardFromSince:   s.HeardFromSince,
 	})
 	// WhatsApp comes from wacli itself.
 	//
@@ -1194,6 +1197,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	for _, a := range agentReg.List() {
 		a.SetLentTools(rt.lentToolsForEvent)
 		a.SetScreener(rt.screenEvent)
+		a.SetDecider(rt.decide)
 	}
 
 	// The tools were registered before the agents; this is the runtime they
@@ -1212,6 +1216,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			zap.String("model", cfg.Reflex.Model),
 			zap.Float64("drop_threshold", rt.reflex.Thresholds().Drop))
 	}
+
+	rt.installOperatorMirror(s, waAgentID, rt.messageOperator)
 
 	return rt, nil
 }
@@ -1877,6 +1883,9 @@ func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {
 			Provider: cfg.VoiceModel.Provider,
 		},
 		VoiceFallbackModels: voiceFallbackDefs(cfg.VoiceFallbacks),
+		VoiceBedrockKeyEnv:  cfg.VoiceBedrockKeyEnv,
+		VoiceBedrockRegion:  cfg.VoiceBedrockRegion,
+		VoiceBudgetUSD:      cfg.VoiceBudgetUSD,
 		Memory: agent.AgentMemoryConfig{
 			Enabled:    cfg.Memory.Enabled,
 			Namespace:  cfg.Memory.Namespace,

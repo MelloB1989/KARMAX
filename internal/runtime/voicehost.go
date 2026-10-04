@@ -37,27 +37,37 @@ import (
 
 // voicePrompt is the whole brief. Short on purpose: every token here is paid on
 // every turn of the conversation, and the medium does most of the instructing.
-const voicePrompt = `You are KARMAX, the operator's personal AI assistant, speaking with them ON THE PHONE.
+const voicePrompt = `You are KARMAX on a live phone call. You are the voice: the communication layer between the caller and KARMAX, the assistant that holds the context and does the work.
 
 Reply the way a person on a call does: one or two short sentences, the answer first.
 No lists, no markdown, no URLs read aloud, no preamble.
 If you did not catch something, say so briefly and ask them to repeat.
 
-A summary of what you remember about them is in your context — answer from it directly.
-For anything it does not cover, call memory.lookup ONCE with a couple of keywords; it is fast.
+Context comes from two places: a short summary of what is remembered is in your context, and
+memory.lookup searches the rest — call it ONCE with a couple of keywords when the summary does not
+cover the question; it is fast. For a quick question that needs KARMAX's live knowledge or tools,
+ask orchestrator.send and relay the answer.
+Anything that needs doing — work, research, code, messages, anything that takes more than a moment —
+becomes a task: call task.create RIGHT AWAY with a full goal (every detail the caller gave), tell
+them it is underway, and never claim it is done. The caller is messaged as it progresses. If they
+ask how things are going, call task.list and answer from it.
+Never ask the caller for a number or an id and never read one aloud.
 When they tell you something worth keeping — a decision, a plan, a preference — save it with
-memory.ingest. After a save, your reply is ONLY the short confirmation ("noted") — do not
-revisit earlier topics.
-If they ask for real work — send a message, check email or calendar, look something up online,
-write code, research — hand it to KARMAX with orchestrator.send RIGHT AWAY and tell them it is
-being done; you will be told when it finishes and can then say the outcome. KARMAX reaches people
-by name and has every contact, so never ask the caller for a number or an id, and never read a
-number, id or link aloud. Never claim work is done unless you were told so.
+memory.ingest; after a save your reply is ONLY the short confirmation.
 When the conversation is over — they say bye, that's all, hang up, or go quiet after thanking
 you — say a brief goodbye and call call.hangup in the same turn.
 If a turn is marked as interrupting your last reply, they did not hear all of it: do not repeat
 it wholesale, just continue naturally from what they said.
-Never invent facts about their life. If memory has nothing, say so plainly.`
+Never invent facts. If memory has nothing, say so plainly.`
+
+// voiceSession is the part of a karma session a call uses.
+type voiceSession interface {
+	Chat(ctx context.Context, msg string) (string, []karmahelper.ToolCallRecord, karmahelper.TokenInfo, error)
+	SetHistory(models.AIChatHistory)
+	GetHistory() models.AIChatHistory
+	SetContext(string)
+	PrimeTurn(string) func(context.Context) error
+}
 
 // voiceBrain answers a call with a dedicated fast session.
 //
@@ -66,13 +76,19 @@ Never invent facts about their life. If memory has nothing, say so plainly.`
 // "hello" — measured. A call gets the fast model, this five-line prompt, no
 // tools, and history that lasts exactly as long as the call.
 type voiceBrain struct {
-	session *karmahelper.Session
+	session voiceSession
 	// lookup and brief power pre-answer retrieval: memory relevant to the
 	// utterance is fetched BEFORE the model runs — a millisecond store search —
 	// so most questions answer in one pass instead of model → tool → model.
 	// The tool stays for what keyword overlap misses.
 	lookup *voiceMemoryLookup
 	brief  string
+
+	// callBrief is why an outbound call was placed; it replaces the greeting.
+	callBrief string
+	ledger    *voiceLedger
+	spendMu   sync.Mutex
+	spent     float64
 
 	// notices is what the brain says unprompted — a handed-off task coming
 	// back mid-call. done closes when the call ends, after which results go
@@ -97,10 +113,50 @@ const maxDelegations = 5
 func (b *voiceBrain) Notices() <-chan voice.Reply { return b.notices }
 
 func (b *voiceBrain) End() {
-	b.endOnce.Do(func() { close(b.done) })
+	b.endOnce.Do(func() {
+		close(b.done)
+		b.spendMu.Lock()
+		spent := b.spent
+		b.spendMu.Unlock()
+		if b.ledger != nil {
+			b.log.Info("voice: call spend", zap.Float64("usd", spent))
+		}
+	})
+}
+
+// addSpend is the session's usage hook.
+func (b *voiceBrain) addSpend(u karmahelper.Usage) {
+	usd := b.ledger.record(u)
+	b.spendMu.Lock()
+	b.spent += usd
+	b.spendMu.Unlock()
+}
+
+// openFromBrief has the model open an outbound call from its brief.
+func (b *voiceBrain) openFromBrief(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	text, _, _, err := b.session.Chat(ctx, "You placed this phone call and the person has just picked up. "+
+		"Nothing has been said yet. Reason for the call: "+b.callBrief+"\n\nSay your opening line now: "+
+		"one or two short spoken sentences that get to the point of the call.")
+	b.hangup.Store(false)
+	if err != nil {
+		b.log.Warn("voice: could not open the call from its brief", zap.Error(err))
+		return ""
+	}
+	return speakable(text)
 }
 
 func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
+	if b.ledger.blocked() {
+		b.notices <- voice.Reply{Text: voiceBudgetLine, Hangup: true}
+		return ""
+	}
+	if b.callBrief != "" {
+		if opening := b.openFromBrief(ctx); opening != "" {
+			return opening
+		}
+	}
 	const greeting = "Hey, it's KARMAX. What do you need?"
 	// Seeded into the session as the opening assistant turn. Without it the
 	// model's first exposure is a bare instruction on empty history — and on
@@ -139,6 +195,9 @@ func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
 }
 
 func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply, error) {
+	if b.ledger.blocked() {
+		return voice.Reply{Text: voiceBudgetLine, Hangup: true}, nil
+	}
 	// Retrieval before generation: whatever memory the utterance's own words
 	// reach is in context before the model speaks, so it rarely needs the tool
 	// round-trip — the difference between one model pass and two, which on a
@@ -309,6 +368,29 @@ type voiceModel struct {
 	provider, model string
 	namespace       string
 	fallbacks       []karmahelper.FallbackModel
+	// bedrockKeyEnv names the env var holding the calls-only bearer key.
+	bedrockKeyEnv string
+	bedrockRegion string
+	budgetUSD     float64
+}
+
+const (
+	defaultVoiceKeyEnv = "KARMAX_VOICE_BEDROCK_API_KEY"
+	defaultVoiceRegion = "us-east-1"
+)
+
+// withVoiceBedrock fills the key env name, region and cap from the agent definition.
+func withVoiceBedrock(m voiceModel, def agent.AgentDef) voiceModel {
+	m.bedrockKeyEnv = def.VoiceBedrockKeyEnv
+	if m.bedrockKeyEnv == "" {
+		m.bedrockKeyEnv = defaultVoiceKeyEnv
+	}
+	m.bedrockRegion = def.VoiceBedrockRegion
+	if m.bedrockRegion == "" {
+		m.bedrockRegion = defaultVoiceRegion
+	}
+	m.budgetUSD = def.VoiceBudgetUSD
+	return m
 }
 
 func pickVoiceModel(a *agent.Agent) voiceModel {
@@ -333,7 +415,7 @@ func pickVoiceModel(a *agent.Agent) voiceModel {
 		if m := def.MemoryModelCfg; m.Model != "" && (m.Provider != v.Provider || m.Model != v.Model) {
 			fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: m.Provider, Model: m.Model})
 		}
-		return voiceModel{v.Provider, v.Model, ns, fallbacks}
+		return withVoiceBedrock(voiceModel{provider: v.Provider, model: v.Model, namespace: ns, fallbacks: fallbacks}, def)
 	}
 	// A fallback, because a transient provider error on a phone call otherwise
 	// becomes an apology. NOT the agent's own list verbatim: probing showed it
@@ -345,13 +427,24 @@ func pickVoiceModel(a *agent.Agent) voiceModel {
 		fallbacks = append(fallbacks, karmahelper.FallbackModel{Provider: def.Provider, Model: def.Model})
 	}
 	if def.MemoryModelCfg.Model != "" {
-		return voiceModel{def.MemoryModelCfg.Provider, def.MemoryModelCfg.Model, ns, fallbacks}
+		return withVoiceBedrock(voiceModel{provider: def.MemoryModelCfg.Provider, model: def.MemoryModelCfg.Model, namespace: ns, fallbacks: fallbacks}, def)
 	}
-	return voiceModel{def.Provider, def.Model, ns, fallbacks}
+	return withVoiceBedrock(voiceModel{provider: def.Provider, model: def.Model, namespace: ns, fallbacks: fallbacks}, def)
 }
 
 func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Factory {
-	return func() voice.Brain {
+	return func(call voice.Call) voice.Brain {
+		operator := voiceCallerIsOperator(call.Peer, a.IsOperatorChat)
+		key := os.Getenv(m.bedrockKeyEnv)
+		if key == "" && m.provider == "bedrock" {
+			rt.log.Warn("voice: the call Bedrock key env var is empty; using default AWS credentials", zap.String("env", m.bedrockKeyEnv))
+		}
+		chain := []string{m.model}
+		for _, f := range m.fallbacks {
+			if f.Provider == "bedrock" {
+				chain = append(chain, f.Model)
+			}
+		}
 		// The brain gets the two memory verbs and nothing else. Lookup is a
 		// purpose-built fast read — the agent's own memory.retrieve is a
 		// sub-agent that traverses the index for seconds, which is a fine cost
@@ -363,6 +456,9 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 			done:    make(chan struct{}),
 			log:     rt.log,
 			deliver: rt.messageOperator,
+			// Only the operator's own calls act on their behalf.
+			callBrief: strings.TrimSpace(call.Brief),
+			ledger:    newVoiceLedger(rt.store, key, m.budgetUSD, chain, rt.messageOperator, rt.log),
 			// The orchestrator's own turn, with its own tools — the difference
 			// between the brain that talks and the agent that does.
 			delegate: func(ctx context.Context, request string) (string, error) {
@@ -371,14 +467,18 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 			},
 		}
 		mem := rt.memory.For(a.Snapshot().Def.ID, m.namespace)
-		voiceTools := append(
-			[]tools.Tool{
-				&voiceMemoryLookup{store: rt.store, mem: mem, namespace: m.namespace},
-				&voiceHangupTool{brain: brain},
-				&voiceDelegateTool{brain: brain},
-			},
-			a.NamedTools("memory.ingest")...,
-		)
+		lookup := &voiceMemoryLookup{store: rt.store, mem: mem, namespace: m.namespace}
+		chID, target := rt.operatorDM()
+		ref := &harnessRef{rt: rt}
+		privileged := append([]tools.Tool{
+			lookup,
+			&voiceDelegateTool{brain: brain},
+			&voiceTaskCreateTool{inner: &taskCreateTool{ref: ref, agentID: agentIDOf(rt.cfg)},
+				channelID: chID, target: target, notify: rt.messageOperator},
+			&taskListTool{ref: ref},
+		}, a.NamedTools("memory.ingest")...)
+		voiceTools := voiceToolSet(operator,
+			[]tools.Tool{&voiceHangupTool{brain: brain}}, privileged)
 		session := karmahelper.NewSession(karmahelper.SessionConfig{
 			Kind:         "voice",
 			Provider:     m.provider,
@@ -397,21 +497,43 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 			MaxToolPasses:  3,
 			MaxRetries:     1,
 			FallbackModels: m.fallbacks,
+			BedrockAPIKey:  key,
+			BedrockRegion:  m.bedrockRegion,
+			OnUsage:        brain.addSpend,
 		}, voiceTools)
 		// Synchronous on purpose: a few milliseconds of SQLite before the
 		// greeting buys most questions a zero-lookup answer, and a context set
 		// concurrently with the first turn would race the session.
-		brief := memoryBrief(rt.store, mem, m.namespace)
+		brief := ""
+		if operator {
+			brief = memoryBrief(rt.store, mem, m.namespace)
+		}
 		// A phone assistant that has to ask what day it is has already lost
 		// the caller. Cheap, and it goes in the per-call brief rather than the
 		// cached prefix, since it changes.
 		brief = "Now: " + time.Now().Format("Monday, 2 January 2006, 3:04 PM MST") + "\n" + brief
 		session.SetContext(brief)
 		brain.session = session
-		brain.lookup = &voiceMemoryLookup{store: rt.store, mem: mem, namespace: m.namespace}
+		if operator {
+			brain.lookup = lookup
+		}
 		brain.brief = brief
 		return brain
 	}
+}
+
+// operatorDM is the WhatsApp channel and the operator's own chat, where task updates go.
+func (rt *KarmaxRuntime) operatorDM() (channelID, target string) {
+	if rt.comms == nil || rt.cfg == nil {
+		return "", ""
+	}
+	channelID, _ = rt.comms.FindChannelIDByType("whatsapp")
+	for _, ch := range rt.cfg.Comms.Channels {
+		if strings.EqualFold(ch.Type, "whatsapp") && ch.Settings["target_chat"] != "" {
+			return channelID, ch.Settings["target_chat"]
+		}
+	}
+	return "", ""
 }
 
 // memoryBrief is what the brain knows before the caller says anything: the
@@ -981,3 +1103,6 @@ func memoryLine(s string) string {
 	}
 	return line
 }
+
+// BrainURL is the voice brain's WebSocket URL for CLI callers, empty when voice is off.
+func BrainURL(cfg *config.KarmaxConfig) string { return brainURL(cfg) }

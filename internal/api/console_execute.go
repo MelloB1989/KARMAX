@@ -131,3 +131,9 @@ func (s *ConsoleServer) generateWithModel(ctx context.Context, systemPrompt, use
 	reply, _, _, err := sess.Chat(ctx, userPrompt)
 	return reply, err
 }
+
+// DecideProposal is decideProposal for callers that are not an HTTP request,
+// such as the operator approving from WhatsApp.
+func (s *ConsoleServer) DecideProposal(id, decision, note, by string) error {
+	return s.decideProposal(id, decision, note, by)
+}

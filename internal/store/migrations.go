@@ -1000,6 +1000,14 @@ var migrations = []string{
 		created_at  DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_reflex_action ON reflex_verdicts(action, created_at DESC)`,
+
+	// 034_voice_spend — running spend per voice API key, by fingerprint.
+	`CREATE TABLE IF NOT EXISTS voice_spend (
+		key_fp      TEXT PRIMARY KEY,
+		spent_usd   REAL NOT NULL DEFAULT 0,
+		alerted     INTEGER NOT NULL DEFAULT 0,
+		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built
