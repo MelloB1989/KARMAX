@@ -23,7 +23,8 @@ import (
 
 const (
 	readLimit        = 1 << 20
-	handshakeTimeout = 10 * time.Second
+	// An outbound call sends start only once answered, so this must outlast the ring.
+	handshakeTimeout = 2 * time.Minute
 	// maxCall bounds one conversation. A call nobody hangs up costs money for
 	// as long as it runs.
 	maxCall = 10 * time.Minute
