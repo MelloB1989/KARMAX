@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,8 +39,10 @@ import (
 // every turn of the conversation, and the medium does most of the instructing.
 const voicePrompt = `You are KARMAX on a live phone call. You are the voice: the communication layer between the caller and KARMAX, the assistant that holds the context and does the work.
 
-Reply the way a person on a call does: one or two short sentences, the answer first.
-No lists, no markdown, no URLs read aloud, no preamble.
+Speak the way a person talks on the phone. Everything you write is read aloud by a speech synthesiser, so write only words meant to be heard.
+Keep it short: one or two plain sentences, the answer first, no preamble. Go longer only when the caller asks for detail, and even then in short spoken sentences.
+Use everyday conversational language, contractions, and the rhythm of speech. No markdown, no lists, no headings, no emoji, no symbols, no abbreviations, no URLs read aloud.
+Say things the way people say them aloud: "twenty dollars" and not a dollar sign, "eighty billion parameters" and not 80B, "about two and a half percent", "three thirty in the afternoon". Say model and product names as words a person would pronounce, and drop version codes that add nothing. Use commas and full stops, not dashes or brackets.
 If you did not catch something, say so briefly and ask them to repeat.
 
 Context comes from two places: a short summary of what is remembered is in your context, and
@@ -60,6 +62,19 @@ If a turn is marked as interrupting your last reply, they did not hear all of it
 it wholesale, just continue naturally from what they said.
 Never invent facts. If memory has nothing, say so plainly.`
 
+// voiceTagPrompt is added only when the call's voice performs audio tags; the
+// others would read the brackets aloud.
+const voiceTagPrompt = `
+
+The voice can perform audio tags written in square brackets right before the words they colour, such as [laughs], [excited], [sighs], [whispers] or [curious]. Use one only where it genuinely fits the moment, at most one or two in a reply, never as the whole reply, and never in a goodbye or a confirmation that needs to be clear.`
+
+func callPrompt(tags bool) string {
+	if tags {
+		return voicePrompt + voiceTagPrompt
+	}
+	return voicePrompt
+}
+
 // voiceSession is the part of a karma session a call uses.
 type voiceSession interface {
 	Chat(ctx context.Context, msg string) (string, []karmahelper.ToolCallRecord, karmahelper.TokenInfo, error)
@@ -67,6 +82,8 @@ type voiceSession interface {
 	GetHistory() models.AIChatHistory
 	SetContext(string)
 	PrimeTurn(string) func(context.Context) error
+	// SetTurnStream receives the model's text as it streams; nil stops it.
+	SetTurnStream(func(string))
 }
 
 // voiceBrain answers a call with a dedicated fast session.
@@ -83,6 +100,10 @@ type voiceBrain struct {
 	// The tool stays for what keyword overlap misses.
 	lookup *voiceMemoryLookup
 	brief  string
+	// late holds hits from a search that outran its turn's budget.
+	late chan []string
+	// tags: the call's voice performs inline audio tags.
+	tags bool
 
 	// callBrief is why an outbound call was placed; it replaces the greeting.
 	callBrief string
@@ -133,16 +154,20 @@ func (b *voiceBrain) addSpend(u karmahelper.Usage) {
 }
 
 // openFromBrief has the model open an outbound call from its brief.
-func (b *voiceBrain) openFromBrief(ctx context.Context) string {
+// The bool says the opening was already spoken as it streamed.
+func (b *voiceBrain) openFromBrief(ctx context.Context) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	ts := b.startStream(ctx)
+	defer b.session.SetTurnStream(nil)
 	text, _, _, err := b.session.Chat(ctx, "You placed this phone call and the person has just picked up. "+
 		"Nothing has been said yet. Reason for the call: "+b.callBrief+"\n\nSay your opening line now: "+
 		"one or two short spoken sentences that get to the point of the call.")
-	if err != nil {
+	ts.Flush()
+	if err != nil && ts.Spoken() == 0 {
 		b.hangup.Store(false)
 		b.log.Warn("voice: could not open the call from its brief", zap.Error(err))
-		return ""
+		return "", false
 	}
 	// A one-way call ends once the opening is spoken.
 	if b.hangup.Swap(false) {
@@ -151,7 +176,19 @@ func (b *voiceBrain) openFromBrief(ctx context.Context) string {
 		default:
 		}
 	}
-	return speakable(text)
+	if ts.Spoken() > 0 {
+		return "", true
+	}
+	return speakableFor(text, b.tags), false
+}
+
+// startStream routes the model's text to the call as it is generated, or returns nil when the integration cannot stream.
+func (b *voiceBrain) startStream(ctx context.Context) *turnSpeech {
+	ts := newTurnSpeech(voice.SayFrom(ctx), b.tags)
+	if ts != nil {
+		b.session.SetTurnStream(ts.Write)
+	}
+	return ts
 }
 
 func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
@@ -160,7 +197,7 @@ func (b *voiceBrain) Greeting(ctx context.Context, peer string) string {
 		return ""
 	}
 	if b.callBrief != "" {
-		if opening := b.openFromBrief(ctx); opening != "" {
+		if opening, streamed := b.openFromBrief(ctx); streamed || opening != "" {
 			return opening
 		}
 	}
@@ -205,15 +242,15 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	if b.ledger.blocked() {
 		return voice.Reply{Text: voiceBudgetLine, Hangup: true}, nil
 	}
-	// Retrieval before generation: whatever memory the utterance's own words
-	// reach is in context before the model speaks, so it rarely needs the tool
-	// round-trip — the difference between one model pass and two, which on a
-	// phone is the difference between an answer and a pause.
+	// Retrieval before generation, but only what arrives within a short budget:
+	// the model is never held for memory. A search that misses the budget keeps
+	// running and its hits join the next turn's context. The memory.lookup tool
+	// covers anything deeper.
 	lookupStart := time.Now()
-	hits := b.lookup.linesWithin(u.Text, 5, preAnswerLookupBudget)
+	hits := b.collectHits(u.Text)
 	lookupTook := time.Since(lookupStart)
 	if len(hits) > 0 {
-		b.session.SetContext(b.brief + "\n## Memory matching what they just said\n- " +
+		b.session.SetContext(b.brief + "\n## Memory that may be relevant\n- " +
 			strings.Join(hits, "\n- ") + "\n")
 	} else {
 		b.session.SetContext(b.brief)
@@ -221,15 +258,23 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	if u.Interrupted {
 		b.markLastReplyUnheard()
 	}
+	ts := b.startStream(ctx)
+	defer b.session.SetTurnStream(nil)
 	modelStart := time.Now()
 	text, calls, _, err := b.session.Chat(ctx, u.Text)
+	ts.Flush()
 	// Where a reply's time went, per turn: on a phone the total is the
 	// product, and a slow reply is only fixable once it says which half was slow.
 	b.log.Info("voice: turn timing",
 		zap.Duration("lookup", lookupTook.Round(time.Millisecond)),
 		zap.Duration("model", time.Since(modelStart).Round(time.Millisecond)),
-		zap.Int("memory_hits", len(hits)), zap.Int("tool_calls", len(calls)))
+		zap.Int("memory_hits", len(hits)), zap.Int("tool_calls", len(calls)),
+		zap.Int("sentences_streamed", ts.Spoken()))
 	if err != nil {
+		if ts.Spoken() > 0 {
+			b.log.Warn("voice: the turn failed after part of the reply was spoken", zap.Error(err))
+			return voice.Reply{Hangup: b.hangup.Swap(false)}, nil
+		}
 		return voice.Reply{}, err
 	}
 	if len(calls) > 0 {
@@ -239,7 +284,42 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 		}
 		b.log.Info("voice: the brain used tools", zap.Strings("tools", names))
 	}
-	return voice.Reply{Text: speakable(text), Hangup: b.hangup.Swap(false)}, nil
+	// Already spoken sentence by sentence; only an unstreamed reply goes out here.
+	spoken := ""
+	if ts.Spoken() == 0 {
+		spoken = speakableFor(text, b.tags)
+	}
+	return voice.Reply{Text: spoken, Hangup: b.hangup.Swap(false)}, nil
+}
+
+// collectHits waits up to the pre-answer budget for memory matching the
+// utterance, and adds any hits a previous turn's search found too late.
+func (b *voiceBrain) collectHits(text string) []string {
+	var late []string
+	select {
+	case late = <-b.late:
+	default:
+	}
+	if b.lookup == nil {
+		return late
+	}
+	res := make(chan []string, 1)
+	go func() { res <- b.lookup.linesFor(text, 5) }()
+	select {
+	case hits := <-res:
+		return append(late, hits...)
+	case <-time.After(preAnswerBudget()):
+		// Left to finish; the next turn picks it up.
+		go func() {
+			if hits := <-res; len(hits) > 0 {
+				select {
+				case b.late <- hits:
+				default:
+				}
+			}
+		}()
+		return late
+	}
 }
 
 // markLastReplyUnheard annotates the previous assistant turn so the model
@@ -338,9 +418,9 @@ func (b *voiceBrain) runDelegation(request string) {
 	switch {
 	case err != nil:
 		b.log.Warn("voice: a handed-off task failed", zap.String("request", request), zap.Error(err))
-		text = "The task I handed off did not go through: " + speakable(err.Error())
+		text = "The task I handed off did not go through: " + speakableFor(err.Error(), b.tags)
 	default:
-		text = speakable(out)
+		text = speakableFor(out, b.tags)
 	}
 	if strings.TrimSpace(text) == "" {
 		text = "That task is done."
@@ -460,6 +540,8 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		// else reads.
 		brain := &voiceBrain{
 			notices: make(chan voice.Reply, 4),
+			tags:    call.Tags,
+			late:    make(chan []string, 1),
 			done:    make(chan struct{}),
 			log:     rt.log,
 			deliver: rt.messageOperator,
@@ -490,7 +572,7 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 			Kind:         "voice",
 			Provider:     m.provider,
 			Model:        m.model,
-			SystemPrompt: voicePrompt,
+			SystemPrompt: callPrompt(call.Tags),
 			// Room for a tool call carrying a whole request. Sixty-four was a
 			// latency control, and it truncated orchestrator.send's arguments
 			// mid-JSON — the model saw a broken call, said "let me try that
@@ -645,36 +727,6 @@ func (t *voiceMemoryLookup) Execute(ctx context.Context, input map[string]any) (
 	}
 	return tools.SuccessResult(map[string]any{"found": len(lines), "memories": lines}), nil
 }
-
-// speakable strips what a synthesiser should not read out. The agent writes for
-// a screen everywhere else and its habits come with it: asterisks read as
-// "asterisk", a bullet list becomes a monotone.
-func speakable(s string) string {
-	s = strings.NewReplacer("**", "", "*", "", "`", "", "#", "", "_", " ").Replace(s)
-	// Identifiers are not speech. A JID, a LID, a phone number, a URL: read
-	// aloud they are fifteen seconds of digits nobody wanted, and they arrive
-	// because memory stores them next to the names.
-	s = unspeakable.ReplaceAllString(s, "")
-	// What is left of "his number is 9198…" once the digits go is "his
-	// number is ." — drop the stump too, keeping the punctuation.
-	s = danglingIdentifier.ReplaceAllString(s, "$1")
-	var out []string
-	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "-•→ "))
-		line = strings.Join(strings.Fields(line), " ")
-		if line != "" {
-			out = append(out, line)
-		}
-	}
-	return strings.Join(out, " ")
-}
-
-// unspeakable matches things that must never be read aloud: WhatsApp ids,
-// long digit runs (phone numbers, LIDs), and URLs.
-var unspeakable = regexp.MustCompile(`(?i)\b\d[\d:]{7,}@[a-z.]+|\bhttps?://\S+|\b\d{9,}\b`)
-
-var danglingIdentifier = regexp.MustCompile(
-	`(?i)\s*[—–-]?\s*\b(?:his|her|their|the|whose)?\s*(?:number|id|jid|lid|phone|link|url)\s+(?:is|:)\s*([.,;!?]|$)`)
 
 // wacliVoice is the WhatsApp calling integration, spoken for by wacli.
 type wacliVoice struct {
@@ -896,7 +948,15 @@ func (t *voiceMemoryLookup) linesFor(text string, limit int) []string {
 // second, measured, and a broad name like "Kartik" in closer to three — so
 // this catches the questions memory can actually answer and lets the rest go
 // ahead without it rather than holding the caller.
-const preAnswerLookupBudget = 1300 * time.Millisecond
+const defaultPreAnswerBudget = 500 * time.Millisecond
+
+// preAnswerBudget is KARMAX_VOICE_LOOKUP_MS, in milliseconds, or the default.
+func preAnswerBudget() time.Duration {
+	if ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv("KARMAX_VOICE_LOOKUP_MS"))); err == nil && ms >= 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return defaultPreAnswerBudget
+}
 
 // linesWithin is linesFor that gives up after budget. The search is left to
 // finish in the background; its result is simply not waited for.

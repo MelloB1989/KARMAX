@@ -123,6 +123,8 @@ func reportUsage(cfg SessionConfig, provider, model string, t TokenInfo) {
 }
 
 type Session struct {
+	streamMu   sync.Mutex
+	onText     func(string)
 	cfg        SessionConfig
 	tools      []tools.Tool
 	history    models.AIChatHistory
@@ -311,6 +313,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	// Taken from the caller's context, before the model sees anything — never
 	// from a tool argument, or the model could choose whose mailbox it reads.
 	s.setActor(connectorkit.ActorFrom(ctx))
+	gate := newStreamGate(s.turnStream())
 	userMessage = CleanContent(userMessage)
 	s.history.Messages = append(s.history.Messages, models.AIMessage{
 		Role:    models.User,
@@ -331,7 +334,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	if retries <= 0 {
 		retries = 3
 	}
-	resp, err := chatWithRetry(ctx, kai, &s.history, retries, s.rec.acted)
+	resp, err := chatWithRetry(ctx, kai, &s.history, retries, s.rec.acted, gate)
 	if err == nil {
 		// A gateway that pre-prompts the model with its OWN identity sometimes
 		// answers as that identity instead of as this agent. It arrives as a
@@ -339,7 +342,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 		// it — caught here or it reaches the operator verbatim.
 		if isPersonaBreak(resp.AIResponse) && len(resp.ToolCalls) == 0 {
 			log.Printf("[karmahelper] the model answered as something other than this agent; retrying")
-			retry, rerr := chatWithRetry(ctx, kai, &s.history, 1, s.rec.acted)
+			retry, rerr := chatWithRetry(ctx, kai, &s.history, 1, s.rec.acted, gate)
 			switch {
 			case rerr == nil && !isPersonaBreak(retry.AIResponse):
 				return s.processResponse(retry)
@@ -370,7 +373,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	if isToolPassExhaustion(primaryErr) {
 		log.Printf("[karmahelper] tool passes exhausted; asking for an answer with tools off")
 		sanitizeHistory(&s.history)
-		if resp, ferr := chatWithRetry(ctx, buildKarmaAI(s.cfg, nil, s.rec, s.currentActor), &s.history, 1, s.rec.acted); ferr == nil {
+		if resp, ferr := chatWithRetry(ctx, buildKarmaAI(s.cfg, nil, s.rec, s.currentActor), &s.history, 1, s.rec.acted, gate); ferr == nil {
 			if strings.TrimSpace(CleanContent(resp.AIResponse)) != "" {
 				return s.processResponse(resp)
 			}
@@ -411,7 +414,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 		// Re-sanitize before each fallback attempt
 		sanitizeHistory(&s.history)
 
-		resp, err = chatWithRetry(ctx, fbKai, &s.history, 2, s.rec.acted)
+		resp, err = chatWithRetry(ctx, fbKai, &s.history, 2, s.rec.acted, gate)
 		if err == nil {
 			log.Printf("[karmahelper] fallback model %s/%s succeeded", fb.Provider, fb.Model)
 			return s.processResponseAs(resp, fb.Provider, fb.Model)
@@ -722,11 +725,12 @@ func isStaleIDError(err error) bool {
 // have access to a lookup tool" — every tool silently gone. So Bedrock streams,
 // with the chunks discarded, which returns the same final response and runs
 // the tool loop on the way.
-func completeManaged(kai *ai.KarmaAI, history *models.AIChatHistory) (*models.AIChatResponse, error) {
+func completeManaged(kai *ai.KarmaAI, history *models.AIChatHistory, gate *streamGate) (*models.AIChatResponse, error) {
 	if kai.Model.GetModelProvider() == ai.Bedrock {
 		var said strings.Builder
 		resp, err := kai.ChatCompletionStreamManaged(history, func(c models.StreamedResponse) error {
 			said.WriteString(c.AIResponse)
+			gate.write(c.AIResponse)
 			return nil
 		})
 		if err == nil && resp != nil {
@@ -735,6 +739,50 @@ func completeManaged(kai *ai.KarmaAI, history *models.AIChatHistory) (*models.AI
 		return resp, err
 	}
 	return kai.ChatCompletionManaged(history)
+}
+
+// streamGate forwards a turn's text deltas to its sink. Once an attempt has
+// streamed text and then failed, later attempts stay silent: a retry restarts
+// the reply and would be spoken over the part already said.
+type streamGate struct {
+	fn      func(string)
+	emitted bool
+	muted   bool
+}
+
+func newStreamGate(fn func(string)) *streamGate {
+	if fn == nil {
+		return nil
+	}
+	return &streamGate{fn: fn}
+}
+
+func (g *streamGate) write(text string) {
+	if g == nil || g.muted || text == "" {
+		return
+	}
+	g.emitted = true
+	g.fn(text)
+}
+
+func (g *streamGate) attemptFailed() {
+	if g != nil && g.emitted {
+		g.muted = true
+	}
+}
+
+// SetTurnStream sends this session's assistant text to fn as it streams, for
+// the turns that follow; nil turns it off. Only Bedrock streams.
+func (s *Session) SetTurnStream(fn func(string)) {
+	s.streamMu.Lock()
+	s.onText = fn
+	s.streamMu.Unlock()
+}
+
+func (s *Session) turnStream() func(string) {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	return s.onText
 }
 
 // withEarlierPasses keeps what the model said before its tool calls; karma returns only the last pass.
@@ -754,7 +802,7 @@ func withEarlierPasses(streamed, final string) string {
 
 // chatWithRetry retries a completion that failed or came back empty. acted,
 // when set, says whether the attempt ran any tools: see the empty-response case.
-func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatHistory, maxRetries int, acted func() bool) (*models.AIChatResponse, error) {
+func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatHistory, maxRetries int, acted func() bool, gate *streamGate) (*models.AIChatResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -768,7 +816,7 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 			}
 		}
 
-		resp, err := completeManaged(kai, history)
+		resp, err := completeManaged(kai, history, gate)
 		if err == nil {
 			cleaned := strings.TrimSpace(CleanContent(resp.AIResponse))
 			// Check for empty response
@@ -785,6 +833,7 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 				log.Printf("[karmahelper] WARNING: model returned empty response (input_tokens=%d, output_tokens=%d, history_len=%d)",
 					resp.InputTokens, resp.OutputTokens, len(history.Messages))
 				lastErr = fmt.Errorf("empty response from model (possible quota/rate issue)")
+				gate.attemptFailed()
 				continue
 			}
 			// Check for proxy error messages returned as content
@@ -792,11 +841,13 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 			if isProxyErrorResponse(lower) {
 				log.Printf("[karmahelper] WARNING: proxy returned error as content: %s", truncateLog(cleaned, 100))
 				lastErr = fmt.Errorf("proxy error in response: %s", truncateLog(cleaned, 100))
+				gate.attemptFailed()
 				continue
 			}
 			return resp, nil
 		}
 		lastErr = err
+		gate.attemptFailed()
 		log.Printf("[karmahelper] attempt %d failed: %v", attempt, err)
 
 		// On stale ID error, aggressively strip all tool-related messages
