@@ -139,10 +139,17 @@ func (b *voiceBrain) openFromBrief(ctx context.Context) string {
 	text, _, _, err := b.session.Chat(ctx, "You placed this phone call and the person has just picked up. "+
 		"Nothing has been said yet. Reason for the call: "+b.callBrief+"\n\nSay your opening line now: "+
 		"one or two short spoken sentences that get to the point of the call.")
-	b.hangup.Store(false)
 	if err != nil {
+		b.hangup.Store(false)
 		b.log.Warn("voice: could not open the call from its brief", zap.Error(err))
 		return ""
+	}
+	// A one-way call ends once the opening is spoken.
+	if b.hangup.Swap(false) {
+		select {
+		case b.notices <- voice.Reply{Hangup: true}:
+		default:
+		}
 	}
 	return speakable(text)
 }
