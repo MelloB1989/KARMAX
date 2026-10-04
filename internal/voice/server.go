@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 // beyond this earns its way in as a field, not a second socket.
 
 const (
-	readLimit        = 1 << 20
+	readLimit = 1 << 20
 	// An outbound call sends start only once answered, so this must outlast the ring.
 	handshakeTimeout = 2 * time.Minute
 	// maxCall bounds one conversation. A call nobody hangs up costs money for
@@ -43,6 +44,10 @@ type wire struct {
 	ID          int64  `json:"id,omitempty"`
 	For         int64  `json:"for,omitempty"`
 	Interrupted bool   `json:"interrupted,omitempty"`
+	// TTSTags on start says the voice performs inline audio tags.
+	TTSTags bool `json:"tts_tags,omitempty"`
+	// More marks a say that joins the reply's speech stream rather than starting it.
+	More bool `json:"more,omitempty"`
 	// Brief is what an outbound call is for, sent on start.
 	Brief string `json:"brief,omitempty"`
 }
@@ -70,7 +75,7 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 	}
 	brain := factory(Call{
 		CallID: start.CallID, Peer: start.Peer, PeerName: start.PeerName,
-		Direction: start.Direction, Language: start.Language, Brief: start.Brief,
+		Direction: start.Direction, Language: start.Language, Brief: start.Brief, Tags: start.TTSTags,
 	})
 	if e, ok := brain.(Ender); ok {
 		defer e.End()
@@ -93,11 +98,18 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 			write(wire{Type: "say", Text: text, For: answering})
 		}
 	}
-	say(brain.Greeting(ctx, start.Peer), 0)
+	// stream is one turn's speech, sentence by sentence. The first goes out
+	// to be generated at once; later ones join its stream, and finish closes it.
+	var latest atomic.Int64
+	stream := func(answering int64) *turnStream {
+		return &turnStream{ctx: ctx, answering: answering, latest: &latest, write: write}
+	}
+	greet := stream(0)
+	greet.say(brain.Greeting(WithSay(ctx, greet.say), start.Peer))
+	greet.finish()
 
 	// The reader runs on its own so the newest utterance is known even while
 	// an answer is being composed: latest is what makes a reply stale.
-	var latest atomic.Int64
 	msgs := make(chan wire, 16)
 	go func() {
 		defer close(msgs)
@@ -154,7 +166,8 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 				}
 				log.Info("voice: heard the caller", zap.String("said", text), zap.Bool("interrupted", m.Interrupted))
 				started := time.Now()
-				reply, err := brain.Answer(ctx, Utterance{
+				turn := stream(m.ID)
+				reply, err := brain.Answer(WithSay(ctx, turn.say), Utterance{
 					CallID: start.CallID, Peer: start.Peer, PeerName: start.PeerName,
 					Language: start.Language, Text: text, Interrupted: m.Interrupted,
 				})
@@ -163,7 +176,7 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 					// Said out loud rather than swallowed: silence on a phone
 					// reads as a dropped line, and the caller talks over the
 					// recovery.
-					reply = Reply{Text: "Sorry — something went wrong on my side."}
+					reply = Reply{Text: "Sorry, something went wrong on my side."}
 				}
 				// The caller spoke again while this was being composed. What
 				// they said next is already queued, and it supersedes this: a
@@ -177,7 +190,8 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 				log.Info("voice: replying",
 					zap.Duration("took", time.Since(started).Round(time.Millisecond)),
 					zap.String("reply", reply.Text))
-				say(reply.Text, m.ID)
+				turn.say(reply.Text)
+				turn.finish()
 				if reply.Hangup {
 					write(wire{Type: "hangup"})
 					return
@@ -209,5 +223,44 @@ func readStart(ctx context.Context, conn *websocket.Conn) (wire, error) {
 		if m.Type == "start" {
 			return m, nil
 		}
+	}
+}
+
+// turnStream writes one reply's says, and stops once the reply is stale.
+type turnStream struct {
+	ctx       context.Context
+	answering int64
+	latest    *atomic.Int64
+	write     func(wire)
+	mu        sync.Mutex
+	sent      int
+}
+
+func (t *turnStream) stale() bool {
+	return t.ctx.Err() != nil || (t.answering != 0 && t.latest.Load() > t.answering)
+}
+
+// say sends one sentence; false means the reply is no longer wanted.
+func (t *turnStream) say(text string) bool {
+	text = strings.TrimSpace(text)
+	if t.stale() {
+		return false
+	}
+	if text == "" {
+		return true
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.write(wire{Type: "say", Text: text, For: t.answering, More: t.sent > 0})
+	t.sent++
+	return true
+}
+
+// finish tells the integration the reply is complete, so it generates what it still holds.
+func (t *turnStream) finish() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.sent > 1 && !t.stale() {
+		t.write(wire{Type: "flush", For: t.answering})
 	}
 }

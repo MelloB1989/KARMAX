@@ -40,11 +40,12 @@ func (f *fakeSession) Chat(_ context.Context, m string) (string, []karmahelper.T
 func (f *fakeSession) SetHistory(h models.AIChatHistory)            { f.hist = h }
 func (f *fakeSession) GetHistory() models.AIChatHistory             { return f.hist }
 func (f *fakeSession) SetContext(string)                            {}
+func (f *fakeSession) SetTurnStream(func(string))                   {}
 func (f *fakeSession) PrimeTurn(string) func(context.Context) error { return nil }
 
 func newTestBrain(sess voiceSession, l *voiceLedger) *voiceBrain {
 	return &voiceBrain{session: sess, ledger: l, notices: make(chan voice.Reply, 4),
-		done: make(chan struct{}), log: zap.NewNop()}
+		done: make(chan struct{}), late: make(chan []string, 1), log: zap.NewNop()}
 }
 
 func TestLedgerAccountsAndKeysByFingerprint(t *testing.T) {
@@ -171,11 +172,11 @@ func TestVoiceTaskCreateForcesOperatorChannel(t *testing.T) {
 }
 
 func TestBriefDrivesFirstTurn(t *testing.T) {
-	sess := &fakeSession{reply: "Hi, quick check on the deploy - can it go out today?"}
+	sess := &fakeSession{reply: "Hi, quick check on the deploy, can it go out today?"}
 	b := newTestBrain(sess, nil)
 	b.callBrief = "ask whether the deploy can go out"
 	got := b.Greeting(context.Background(), "p")
-	if got != "Hi, quick check on the deploy - can it go out today?" {
+	if got != "Hi, quick check on the deploy, can it go out today?" {
 		t.Fatalf("greeting = %q", got)
 	}
 	if len(sess.asked) != 1 || !strings.Contains(sess.asked[0], "ask whether the deploy can go out") {

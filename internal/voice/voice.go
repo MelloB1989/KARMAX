@@ -29,10 +29,26 @@ type Utterance struct {
 	Interrupted bool
 }
 
+type sayKey struct{}
+
+// WithSay carries the function a brain streams speech through while it is still
+// composing: it speaks text now, as part of the reply being built, and reports
+// false once that reply is no longer wanted (the caller moved on, or the call ended).
+func WithSay(ctx context.Context, say func(text string) bool) context.Context {
+	return context.WithValue(ctx, sayKey{}, say)
+}
+
+// SayFrom is the streaming function for this turn, or nil when the integration cannot stream.
+func SayFrom(ctx context.Context) func(text string) bool {
+	say, _ := ctx.Value(sayKey{}).(func(string) bool)
+	return say
+}
+
 // Reply is what to do about it.
 type Reply struct {
 	// Text is spoken to the caller. Empty says nothing, which is the right
-	// response to a cough.
+	// response to a cough. A brain that streamed its reply through SayFrom
+	// leaves out what it already said.
 	Text string
 	// Hangup ends the call after Text (if any) is spoken.
 	Hangup bool
@@ -69,6 +85,8 @@ type Call struct {
 	CallID, Peer, PeerName, Direction, Language string
 	// Brief is why an outbound call was placed; empty on ordinary calls.
 	Brief string
+	// Tags says the voice performs inline audio tags like [laughs].
+	Tags bool
 }
 
 // CallOptions shape an outgoing call.
