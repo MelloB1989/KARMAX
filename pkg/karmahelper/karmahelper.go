@@ -724,9 +724,32 @@ func isStaleIDError(err error) bool {
 // the tool loop on the way.
 func completeManaged(kai *ai.KarmaAI, history *models.AIChatHistory) (*models.AIChatResponse, error) {
 	if kai.Model.GetModelProvider() == ai.Bedrock {
-		return kai.ChatCompletionStreamManaged(history, func(models.StreamedResponse) error { return nil })
+		var said strings.Builder
+		resp, err := kai.ChatCompletionStreamManaged(history, func(c models.StreamedResponse) error {
+			said.WriteString(c.AIResponse)
+			return nil
+		})
+		if err == nil && resp != nil {
+			resp.AIResponse = withEarlierPasses(said.String(), resp.AIResponse)
+		}
+		return resp, err
 	}
 	return kai.ChatCompletionManaged(history)
+}
+
+// withEarlierPasses keeps what the model said before its tool calls; karma returns only the last pass.
+func withEarlierPasses(streamed, final string) string {
+	if !strings.HasSuffix(streamed, final) || len(streamed) == len(final) {
+		return final
+	}
+	earlier := strings.TrimSpace(streamed[:len(streamed)-len(final)])
+	if earlier == "" {
+		return final
+	}
+	if strings.TrimSpace(final) == "" {
+		return earlier
+	}
+	return earlier + " " + strings.TrimSpace(final)
 }
 
 // chatWithRetry retries a completion that failed or came back empty. acted,
