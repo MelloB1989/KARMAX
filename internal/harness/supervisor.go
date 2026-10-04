@@ -313,6 +313,12 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	// Such a record is started over under a fresh id; there is nothing in it
 	// to lose.
 	resume := rec != nil && rec.HarnessSessionID != "" && rec.Turns > 0
+	// A session at its turn limit starts over; resuming it reloads the whole transcript on every message.
+	if resume && pol.MaxTurns > 0 && rec.Turns >= pol.MaxTurns {
+		s.log.Info("harness: starting a fresh session past the turn limit", "key", key, "turns", rec.Turns)
+		resume = false
+		opt.SessionID = ""
+	}
 	id := ""
 	switch {
 	case resume:

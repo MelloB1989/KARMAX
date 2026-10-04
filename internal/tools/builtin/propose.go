@@ -112,6 +112,11 @@ func CreateProposal(s *store.Store, agentID, kind, title, summary, action, urgen
 		"type":        "proposal",
 		"proposal_id": id,
 	})
+	body := action
+	if strings.TrimSpace(summary) != "" {
+		body = summary + "\n\n" + action
+	}
+	notifyMirror(MirrorEvent{Kind: MirrorApproval, Title: title, Body: body, Source: "proposal:" + kind, ProposalID: id})
 	return id, nil
 }
 

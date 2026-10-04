@@ -76,6 +76,7 @@ func (t *AppPushTool) Execute(ctx context.Context, input map[string]any) (tools.
 	data["notification_id"] = notifID
 
 	devices, _, err := SendExpoPush(t.Store, title, body, priority, data)
+	notifyMirror(MirrorEvent{Kind: MirrorNotification, Title: title, Body: body, Source: "app.push"})
 	return tools.SuccessResult(map[string]any{
 		"saved":      true,
 		"id":         notifID,
@@ -96,6 +97,16 @@ func errString(err error) string {
 // push. Reusable by non-tool code paths (e.g. the proactive "message sent"
 // notice fired by the comms manager). Best-effort; never blocks the caller.
 func PushAppNotification(s *store.Store, agentID, kind, title, body string) {
+	pushAppNotification(s, agentID, kind, title, body, true)
+}
+
+// PushAppNotificationQuiet is PushAppNotification without the WhatsApp mirror,
+// for notices that are themselves the echo of a WhatsApp send.
+func PushAppNotificationQuiet(s *store.Store, agentID, kind, title, body string) {
+	pushAppNotification(s, agentID, kind, title, body, false)
+}
+
+func pushAppNotification(s *store.Store, agentID, kind, title, body string, mirror bool) {
 	if s == nil || strings.TrimSpace(body) == "" {
 		return
 	}
@@ -125,6 +136,9 @@ func PushAppNotification(s *store.Store, agentID, kind, title, body string) {
 	}
 	data := map[string]any{"type": "notification", "notification_id": id}
 	_, _, _ = SendExpoPush(s, title, body, "default", data)
+	if mirror {
+		notifyMirror(MirrorEvent{Kind: MirrorNotification, Title: title, Body: body, Source: "app.notification:" + kind})
+	}
 }
 
 // alertRepeatWindow is how long the same alert stays suppressed. Long enough

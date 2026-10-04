@@ -61,6 +61,13 @@ type SessionConfig struct {
 	// conversation its turns continue. Sessions that share a key share a warm
 	// conversation across instances; without one each Session gets its own.
 	SessionKey string
+	// BedrockAPIKey and BedrockRegion scope a bearer key to this session (and
+	// its fallbacks) instead of a process-wide env var.
+	BedrockAPIKey string
+	BedrockRegion string
+	// OnUsage sees this session's own model calls with the model that actually
+	// answered, in addition to the package meter.
+	OnUsage func(Usage)
 }
 
 // Usage is one model call's cost, as reported to the meter.
@@ -95,18 +102,24 @@ func OnUsage(fn func(Usage)) {
 
 func reportUsage(cfg SessionConfig, provider, model string, t TokenInfo) {
 	fn := usageMeter.Load()
-	if fn == nil || (t.InputTokens == 0 && t.OutputTokens == 0) {
+	if (fn == nil && cfg.OnUsage == nil) || (t.InputTokens == 0 && t.OutputTokens == 0) {
 		return
 	}
 	kind := cfg.Kind
 	if kind == "" {
 		kind = "unlabelled"
 	}
-	(*fn)(Usage{
+	u := Usage{
 		Kind: kind, AgentID: cfg.AgentID, Provider: provider, Model: model,
 		InputTokens: t.InputTokens, OutputTokens: t.OutputTokens,
 		CacheRead: t.CacheReadTokens, CacheWrite: t.CacheWriteTokens,
-	})
+	}
+	if fn != nil {
+		(*fn)(u)
+	}
+	if cfg.OnUsage != nil {
+		cfg.OnUsage(u)
+	}
 }
 
 type Session struct {
@@ -401,7 +414,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 		resp, err = chatWithRetry(ctx, fbKai, &s.history, 2, s.rec.acted)
 		if err == nil {
 			log.Printf("[karmahelper] fallback model %s/%s succeeded", fb.Provider, fb.Model)
-			return s.processResponse(resp)
+			return s.processResponseAs(resp, fb.Provider, fb.Model)
 		}
 
 		log.Printf("[karmahelper] fallback model %s/%s failed: %v", fb.Provider, fb.Model, err)
@@ -511,6 +524,12 @@ func isPersonaBreak(response string) bool {
 // processResponse extracts the AI response text, tool call records, and token
 // info from a successful AIChatResponse.
 func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCallRecord, TokenInfo, error) {
+	return s.processResponseAs(resp, s.cfg.Provider, s.cfg.Model)
+}
+
+// processResponseAs bills the model that actually answered, which on a
+// fallback is not the session's primary.
+func (s *Session) processResponseAs(resp *models.AIChatResponse, provider, model string) (string, []ToolCallRecord, TokenInfo, error) {
 	tokens := TokenInfo{
 		InputTokens:      resp.InputTokens,
 		OutputTokens:     resp.OutputTokens,
@@ -521,7 +540,7 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 	s.LastTokens = tokens
 	// Every model call, whichever session made it and whether or not the
 	// response is usable — those tokens were bought either way.
-	reportUsage(s.cfg, s.cfg.Provider, s.cfg.Model, tokens)
+	reportUsage(s.cfg, provider, model, tokens)
 	response := CleanContent(resp.AIResponse)
 
 	// Collected before the empty-response check: a turn that ran tools and then
@@ -808,6 +827,20 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder,
 		options = append(options, ai.WithTopP(0))
 		if cfg.Temperature > 0 {
 			options = append(options, ai.WithTemperature(cfg.Temperature))
+		}
+	}
+
+	// karma sends a default top_k, which only Anthropic models accept on Bedrock.
+	if !strings.Contains(strings.ToLower(cfg.Model), "anthropic") {
+		options = append(options, ai.WithTopK(0))
+	}
+
+	if provider == ai.Bedrock {
+		if cfg.BedrockAPIKey != "" {
+			options = append(options, ai.WithBedrockAPIKey(cfg.BedrockAPIKey))
+		}
+		if cfg.BedrockRegion != "" {
+			options = append(options, ai.WithBedrockRegion(cfg.BedrockRegion))
 		}
 	}
 

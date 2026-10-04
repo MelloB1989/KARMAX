@@ -42,6 +42,8 @@ type wire struct {
 	ID          int64  `json:"id,omitempty"`
 	For         int64  `json:"for,omitempty"`
 	Interrupted bool   `json:"interrupted,omitempty"`
+	// Brief is what an outbound call is for, sent on start.
+	Brief string `json:"brief,omitempty"`
 }
 
 // ServeConversation runs one call's conversation to completion. It always
@@ -65,7 +67,10 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 		log.Warn("voice: handshake failed", zap.Error(err))
 		return
 	}
-	brain := factory()
+	brain := factory(Call{
+		CallID: start.CallID, Peer: start.Peer, PeerName: start.PeerName,
+		Direction: start.Direction, Language: start.Language, Brief: start.Brief,
+	})
 	if e, ok := brain.(Ender); ok {
 		defer e.End()
 	}

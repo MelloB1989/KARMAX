@@ -62,7 +62,14 @@ type Ender interface {
 
 // Factory builds the brain for one call. A conversation has its own history,
 // and one shared across calls would let yesterday's call answer today's.
-type Factory func() Brain
+type Factory func(Call) Brain
+
+// Call is what the integration said about a call when it connected.
+type Call struct {
+	CallID, Peer, PeerName, Direction, Language string
+	// Brief is why an outbound call was placed; empty on ordinary calls.
+	Brief string
+}
 
 // CallOptions shape an outgoing call.
 type CallOptions struct {

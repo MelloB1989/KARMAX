@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 )
 
 func failedTurnEvent(chat string) bus.Event {
@@ -29,7 +32,7 @@ func TestAFailedOperatorTurnIsAnswered(t *testing.T) {
 	a.SetOperatorChats([]string{"5794649083972@lid"})
 	sent := recordSends(a)
 
-	a.tellOperatorTurnFailed(failedTurnEvent("5794649083972@lid"), time.Now().Add(-time.Second))
+	a.tellOperatorTurnFailed(failedTurnEvent("5794649083972@lid"), time.Now().Add(-time.Second), errors.New("harness error"))
 
 	if len(*sent) != 1 || (*sent)[0] != "5794649083972@lid: "+turnFailedNotice {
 		t.Fatalf("operator was not told the turn failed: %v", *sent)
@@ -42,7 +45,7 @@ func TestAFailedMonitoredTurnStaysQuiet(t *testing.T) {
 	a.SetOperatorChats([]string{"5794649083972@lid"})
 	sent := recordSends(a)
 
-	a.tellOperatorTurnFailed(failedTurnEvent("17671837092@s.whatsapp.net"), time.Now().Add(-time.Second))
+	a.tellOperatorTurnFailed(failedTurnEvent("17671837092@s.whatsapp.net"), time.Now().Add(-time.Second), errors.New("harness error"))
 
 	if len(*sent) != 0 {
 		t.Fatalf("a monitored chat was told about a failure: %v", *sent)
@@ -57,9 +60,25 @@ func TestAFailedTurnThatAlreadyRepliedSendsNothingMore(t *testing.T) {
 	started := time.Now().Add(-time.Minute).Truncate(time.Second)
 	saveOutbound(t, a, "5794649083972@lid", "Yes, it happened at 10.")
 
-	a.tellOperatorTurnFailed(failedTurnEvent("5794649083972@lid"), started)
+	a.tellOperatorTurnFailed(failedTurnEvent("5794649083972@lid"), started, errors.New("harness error"))
 
 	if len(*sent) != 0 {
 		t.Fatalf("a turn that replied was followed by a failure notice: %v", *sent)
+	}
+}
+
+// Jev decides whether a failure is worth telling; a no keeps the chat quiet.
+func TestJevCanDecideAFailedTurnNeedsNoNotice(t *testing.T) {
+	a := replyTestAgent(t)
+	a.SetOperatorChats([]string{"5794649083972@lid"})
+	sent := recordSends(a)
+	a.SetDecider(func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error) {
+		return &loopkit.Decision{Answers: map[string]loopkit.Answer{"tell": {Noul: 0.1}}}, nil
+	})
+
+	a.tellOperatorTurnFailed(failedTurnEvent("5794649083972@lid"), time.Now().Add(-time.Second), errors.New("harness error"))
+
+	if len(*sent) != 0 {
+		t.Fatalf("sent despite Jev saying no: %v", *sent)
 	}
 }

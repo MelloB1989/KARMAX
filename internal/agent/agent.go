@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,7 @@ type Agent struct {
 	// screener is System One: the cheap pass that decides whether an event is
 	// worth a turn at all. Nil means every event gets one.
 	screener Screener
+	decider  Decider
 
 	// conversations archives the OPERATOR's conversations in GitLoom. Nil when
 	// GitLoom is not configured. See conversation.go.
@@ -964,7 +966,7 @@ func (a *Agent) handleOne(evt bus.Event) {
 		a.finishTurn(evt, store.TurnFailed, err.Error())
 		streak := a.recordEventError(err)
 		a.log.Error("event handling failed", zap.Error(err))
-		a.tellOperatorTurnFailed(evt, started)
+		a.tellOperatorTurnFailed(evt, started, err)
 		_ = a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
 			"error":              err.Error(),
 			"consecutive_errors": streak,
@@ -991,7 +993,7 @@ const turnFailedNotice = "I couldn't handle that message — something failed on
 // failed turn used to end in a log line and nothing else, so from the chat it
 // looked exactly like being ignored. Monitored chats get nothing: a stranger
 // should never see KARMAX's internals, and their loops decide replies anyway.
-func (a *Agent) tellOperatorTurnFailed(evt bus.Event, started time.Time) {
+func (a *Agent) tellOperatorTurnFailed(evt bus.Event, started time.Time, cause error) {
 	if evt.Kind != bus.EventCommsMessage || a.commsSend == nil {
 		return
 	}
@@ -1006,9 +1008,34 @@ func (a *Agent) tellOperatorTurnFailed(evt bus.Event, started time.Time) {
 	if a.repliedDuringTurn(target, started) {
 		return
 	}
+	if !a.shouldTellOperatorTurnFailed(evt, cause) {
+		return
+	}
 	if err := a.commsSend(channelID, target, turnFailedNotice); err != nil {
 		a.log.Warn("could not tell the operator a turn failed", zap.Error(err))
 	}
+}
+
+// shouldTellOperatorTurnFailed asks Jev; with no answer the operator is told.
+func (a *Agent) shouldTellOperatorTurnFailed(evt bus.Event, cause error) bool {
+	a.mu.RLock()
+	d := a.decider
+	a.mu.RUnlock()
+	if d == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	msg, _ := evt.Payload["content"].(string)
+	state := map[string]any{"operator_message": msg, "failure": cause.Error()}
+	res, err := d(ctx, state, loopkit.Questions{
+		"tell": loopkit.Noul("The operator sent this message and the turn handling it failed before any reply. Should the operator be told it failed so they can resend it?").
+			When("the message expected a reply or an action", "the message needed no response, such as an acknowledgement or a reaction"),
+	})
+	if err != nil || res == nil {
+		return true
+	}
+	return res.Yes("tell", 0.5)
 }
 
 // finishTurn closes this event's journal row. Best-effort: a turn that ran but

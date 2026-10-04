@@ -60,6 +60,9 @@ type AgentDef struct {
 	SummaryModelCfg      ModelConfig        `yaml:"summary_model"         json:"summary_model"`
 	VoiceModelCfg        ModelConfig        `yaml:"voice_model"           json:"voice_model"`
 	VoiceFallbackModels  []FallbackModelDef `yaml:"voice_fallback_models" json:"voice_fallback_models"`
+	VoiceBedrockKeyEnv   string             `yaml:"voice_bedrock_api_key_env" json:"voice_bedrock_api_key_env"`
+	VoiceBedrockRegion   string             `yaml:"voice_bedrock_region"  json:"voice_bedrock_region"`
+	VoiceBudgetUSD       float64            `yaml:"voice_budget_usd"      json:"voice_budget_usd"`
 	FallbackModels       []FallbackModelDef `yaml:"fallback_models"       json:"fallback_models"`
 	CompactionThreshold  int                `yaml:"compaction_threshold"  json:"compaction_threshold"`
 	CompactionKeepRecent int                `yaml:"compaction_keep_recent" json:"compaction_keep_recent"`

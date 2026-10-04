@@ -190,6 +190,10 @@ func (rt *KarmaxRuntime) attributeJobs(loop string, calls []karmahelper.ToolCall
 // Two ways an event belongs to a workflow: it IS that workflow's trigger, or it
 // is the completion of work the workflow started.
 func (rt *KarmaxRuntime) lentToolsForEvent(evt bus.Event) []tools.Tool {
+	return append(rt.providedToolsForEvent(evt), rt.operatorTurnTools(evt)...)
+}
+
+func (rt *KarmaxRuntime) providedToolsForEvent(evt bus.Event) []tools.Tool {
 	if evt.Payload != nil {
 		if id, _ := evt.Payload["job_id"].(string); id != "" {
 			if loop, ok := rt.attributions.Loop(id); ok {

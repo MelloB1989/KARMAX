@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"strconv"
 	"strings"
 
@@ -25,6 +26,16 @@ type Screener func(ctx context.Context, evt bus.Event) (bus.Event, bool)
 func (a *Agent) SetScreener(s Screener) {
 	a.mu.Lock()
 	a.screener = s
+	a.mu.Unlock()
+}
+
+// Decider asks System One a set of typed questions outside the event screen.
+type Decider func(ctx context.Context, state any, qs loopkit.Questions) (*loopkit.Decision, error)
+
+// SetDecider installs the Jev decider used for the agent's own judgement calls.
+func (a *Agent) SetDecider(d Decider) {
+	a.mu.Lock()
+	a.decider = d
 	a.mu.Unlock()
 }
 

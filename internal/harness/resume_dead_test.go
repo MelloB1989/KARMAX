@@ -99,3 +99,29 @@ func readArgs(t *testing.T, path string) string {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Past its turn limit a session starts over instead of resuming a transcript it keeps getting closed for.
+func TestASessionPastItsTurnLimitStartsFresh(t *testing.T) {
+	bin, argsFile := writeArgRecordingClaude(t)
+	st := newMemStore()
+	const full = "7d038337-e2a5-4008-a8f5-1eca783d6d5d"
+	now := time.Now()
+	_ = st.SaveHarnessSession(SessionRecord{Key: "agent:nexus", HarnessSessionID: full, Kind: "chat",
+		State: "closed", StartedAt: now, LastActivityAt: now, Turns: 512})
+	sup := New(Config{
+		Binary: bin, WorkdirRoot: t.TempDir(), MaxLive: 8,
+		Policies: map[string]Policy{"chat": {Idle: time.Minute, TurnTimeout: 5 * time.Second, MaxTurns: 500}},
+		Env:      os.Environ(),
+	}, st, NewBreaker(0.95, nil), testLog{t}, nil)
+	t.Cleanup(sup.Shutdown)
+
+	if _, err := sup.Send(context.Background(), "agent:nexus", "chat", "hello"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if args := readArgs(t, argsFile); strings.Contains(args, full) {
+		t.Fatalf("a session past its turn limit was resumed: %s", args)
+	}
+	if rec, _ := st.GetHarnessSession("agent:nexus"); rec == nil || rec.Turns != 1 {
+		t.Fatalf("the fresh session should count from zero, got %+v", rec)
+	}
+}

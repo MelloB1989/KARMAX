@@ -27,6 +27,9 @@ var modelRates = map[string]Rate{
 	"claude-haiku-4-5":  {1.00, 5.00},
 	"claude-opus-4.6":   {5.00, 25.00},
 	"claude-opus-4-6":   {5.00, 25.00},
+
+	"qwen3-next-80b-a3b": {0.15, 1.20},
+	"ministral-3-14b":    {0.20, 0.20},
 }
 
 // Cache multipliers against the input rate: a read is far cheaper than fresh
