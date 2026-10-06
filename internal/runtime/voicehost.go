@@ -23,6 +23,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/voice"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"github.com/coder/websocket"
 	"go.uber.org/zap"
 )
@@ -57,7 +58,8 @@ Never ask the caller for a number or an id and never read one aloud.
 When they tell you something worth keeping — a decision, a plan, a preference — save it with
 memory.ingest; after a save your reply is ONLY the short confirmation.
 When the conversation is over — they say bye, that's all, hang up, or go quiet after thanking
-you — say a brief goodbye and call call.hangup in the same turn.
+you — say a brief goodbye and call the call.hangup tool in the same turn.
+Tools are invoked, never spoken: never write a tool name, tool syntax or JSON in your reply, because every word you write is said aloud. To end the call, invoke the call.hangup tool.
 If a turn is marked as interrupting your last reply, they did not hear all of it: do not repeat
 it wholesale, just continue naturally from what they said.
 Never invent facts. If memory has nothing, say so plainly.`
@@ -119,6 +121,12 @@ type voiceBrain struct {
 	endOnce sync.Once
 	// hangup is set by the call.hangup tool and consumed by the next reply.
 	hangup atomic.Bool
+	// endVerdict asks Jev how likely the call is over after this turn; nil when unavailable.
+	endVerdict func(ctx context.Context, state any) (float64, error)
+	endAbove   float64
+	direction  string
+	group      bool
+	toolNames  []string
 	// delegate runs a request through the orchestrator — the agent with all
 	// the tools — and deliver reaches the operator once the call is over.
 	delegate func(ctx context.Context, request string) (string, error)
@@ -179,13 +187,14 @@ func (b *voiceBrain) openFromBrief(ctx context.Context) (string, bool) {
 	if ts.Spoken() > 0 {
 		return "", true
 	}
-	return speakableFor(text, b.tags), false
+	return speakableFor(dropToolText(text, b.toolNames), b.tags), false
 }
 
 // startStream routes the model's text to the call as it is generated, or returns nil when the integration cannot stream.
 func (b *voiceBrain) startStream(ctx context.Context) *turnSpeech {
 	ts := newTurnSpeech(voice.SayFrom(ctx), b.tags)
 	if ts != nil {
+		ts.names = b.toolNames
 		b.session.SetTurnStream(ts.Write)
 	}
 	return ts
@@ -246,6 +255,7 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	// the model is never held for memory. A search that misses the budget keeps
 	// running and its hits join the next turn's context. The memory.lookup tool
 	// covers anything deeper.
+	endCh := b.askEnd(ctx, u)
 	lookupStart := time.Now()
 	hits := b.collectHits(u.Text)
 	lookupTook := time.Since(lookupStart)
@@ -273,7 +283,7 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	if err != nil {
 		if ts.Spoken() > 0 {
 			b.log.Warn("voice: the turn failed after part of the reply was spoken", zap.Error(err))
-			return voice.Reply{Hangup: b.hangup.Swap(false)}, nil
+			return voice.Reply{Hangup: b.endAfter(endCh)}, nil
 		}
 		return voice.Reply{}, err
 	}
@@ -287,9 +297,89 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	// Already spoken sentence by sentence; only an unstreamed reply goes out here.
 	spoken := ""
 	if ts.Spoken() == 0 {
-		spoken = speakableFor(text, b.tags)
+		spoken = speakableFor(dropToolText(text, b.toolNames), b.tags)
 	}
-	return voice.Reply{Text: spoken, Hangup: b.hangup.Swap(false)}, nil
+	return voice.Reply{Text: spoken, Hangup: b.endAfter(endCh)}, nil
+}
+
+// askEnd starts Jev's end-of-call verdict beside the memory lookup; nil when Jev is not wired.
+func (b *voiceBrain) askEnd(ctx context.Context, u voice.Utterance) <-chan float64 {
+	if b.endVerdict == nil {
+		return nil
+	}
+	state := map[string]any{
+		"caller_said":       u.Text,
+		"recent_transcript": b.recentTranscript(6),
+		"group_call":        b.group,
+		"direction":         b.direction,
+	}
+	ch := make(chan float64, 1)
+	go func() {
+		defer close(ch)
+		p, err := b.endVerdict(ctx, state)
+		if err != nil {
+			b.log.Warn("voice: end-call verdict unavailable", zap.Error(err))
+			return
+		}
+		b.log.Info("voice: end-call verdict", zap.Float64("probability", p), zap.Float64("threshold", b.endAbove))
+		ch <- p
+	}()
+	return ch
+}
+
+// endAfter is whether this reply ends the call: the model's tool, or Jev above the threshold.
+func (b *voiceBrain) endAfter(ch <-chan float64) bool {
+	hang := b.hangup.Swap(false)
+	if ch == nil {
+		return hang
+	}
+	select {
+	case p, ok := <-ch:
+		return hang || (ok && p >= b.endAbove)
+	case <-time.After(endVerdictWait):
+		return hang
+	}
+}
+
+// endVerdictWait bounds the wait for a verdict that outlived the model's reply.
+const endVerdictWait = 2 * time.Second
+
+// recentTranscript is the last n turns, both sides, oldest first.
+func (b *voiceBrain) recentTranscript(n int) []string {
+	msgs := b.session.GetHistory().Messages
+	if len(msgs) > n {
+		msgs = msgs[len(msgs)-n:]
+	}
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		who := "caller"
+		if m.Role == models.Assistant {
+			who = "assistant"
+		}
+		if t := strings.TrimSpace(m.Message); t != "" {
+			out = append(out, who+": "+t)
+		}
+	}
+	return out
+}
+
+// endCallQuestion is the Jev question asked on every caller turn.
+const endCallQuestion = "This is a live phone call. Should the call end right after the assistant's reply to what the caller just said? " +
+	"Answer yes only if the caller said goodbye, asked to hang up or end the call, or is clearly finished and has nothing more to ask. " +
+	"Answer no if the conversation is ongoing, the caller asked a question or made a request, or they only paused or acknowledged something."
+
+func endCallQuestions() loopkit.Questions {
+	return loopkit.Questions{"end": loopkit.Noul(endCallQuestion).When(
+		"the caller said bye, asked to hang up, or is clearly done",
+		"the conversation is mid-flow, or the caller is asking or requesting something")}
+}
+
+// endAboveThreshold is KARMAX_VOICE_END_THRESHOLD, default 0.7.
+func endAboveThreshold() float64 {
+	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("KARMAX_VOICE_END_THRESHOLD")), 64); err == nil && v > 0 && v <= 1 {
+		return v
+	}
+	return 0.7
 }
 
 // collectHits waits up to the pre-answer budget for memory matching the
@@ -603,6 +693,19 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		brief = "Now: " + time.Now().Format("Monday, 2 January 2006, 3:04 PM MST") + "\n" + brief
 		session.SetContext(brief)
 		brain.session = session
+		brain.direction = call.Direction
+		brain.group = strings.HasSuffix(call.Peer, "@g.us")
+		brain.endAbove = endAboveThreshold()
+		brain.endVerdict = func(ctx context.Context, state any) (float64, error) {
+			d, err := rt.decide(ctx, state, endCallQuestions())
+			if err != nil {
+				return 0, err
+			}
+			return d.Noul("end"), nil
+		}
+		for _, t := range voiceTools {
+			brain.toolNames = append(brain.toolNames, t.Manifest().Name)
+		}
 		if operator {
 			brain.lookup = lookup
 		}
