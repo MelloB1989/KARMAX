@@ -138,6 +138,7 @@ func abbreviationBefore(text string) bool {
 // turnSpeech streams one turn's text to the integration a sentence at a time.
 type turnSpeech struct {
 	tags    bool
+	names   []string
 	mu      sync.Mutex
 	split   sentenceSplitter
 	say     func(string) bool
@@ -186,6 +187,9 @@ func (t *turnSpeech) emit(sentences []string) {
 	for _, s := range sentences {
 		if t.stopped {
 			return
+		}
+		if isToolText(s, t.names) {
+			continue
 		}
 		s = speakableFor(s, t.tags)
 		if !hasSpeech(s) {
@@ -361,3 +365,59 @@ var unspeakable = regexp.MustCompile(`(?i)\b\d[\d:]{7,}@[a-z.]+|\bhttps?://\S+|\
 
 var danglingIdentifier = regexp.MustCompile(
 	`(?i)\s*[—–-]?\s*\b(?:his|her|their|the|whose)?\s*(?:number|id|jid|lid|phone|link|url)\s+(?:is|:)\s*([.,;!?]|$)`)
+
+// normalizeToolName folds case, dots, underscores and spaces so "call hangup" matches call.hangup.
+func normalizeToolName(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return unicode.ToLower(r)
+		}
+		return -1
+	}, s)
+}
+
+var (
+	callShape = regexp.MustCompile(`^\s*[A-Za-z_][\w.]*\s*\((?s:.*)\)\s*;?\s*$`)
+	jsonShape = regexp.MustCompile(`^(?s)\s*[\[{].*[\]}]\s*[.,;]?\s*$`)
+)
+
+// isToolText reports whether a sentence is a tool name or tool-call syntax rather than speech.
+func isToolText(s string, names []string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return false
+	}
+	if jsonShape.MatchString(t) && strings.ContainsAny(t, ":\"") {
+		return true
+	}
+	if callShape.MatchString(t) {
+		return true
+	}
+	head := t
+	if i := strings.IndexAny(head, "({["); i >= 0 {
+		head = head[:i]
+	}
+	nh, nt := normalizeToolName(head), normalizeToolName(t)
+	for _, n := range names {
+		nn := normalizeToolName(n)
+		if nn == "" {
+			continue
+		}
+		if nt == nn || (nh == nn && head != t) {
+			return true
+		}
+	}
+	return false
+}
+
+// dropToolText removes tool-call sentences from a whole reply.
+func dropToolText(text string, names []string) string {
+	var sp sentenceSplitter
+	var kept []string
+	for _, s := range append(sp.Push(text), sp.Flush()...) {
+		if !isToolText(s, names) {
+			kept = append(kept, s)
+		}
+	}
+	return strings.Join(kept, " ")
+}
