@@ -5,27 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/tools"
 )
 
-var defaultAllowedCommands = []string{
-	"ls", "cat", "head", "tail", "wc", "grep", "find", "echo", "date",
-	"curl", "wget", "jq", "yq", "git", "go", "npm", "node", "python3",
-	"docker", "kubectl", "gh",
-}
-
-type ShellTool struct {
-	AllowList []string
-}
+// ShellTool runs any command; KARMAX is unrestricted by the operator's choice.
+type ShellTool struct{}
 
 func (t *ShellTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "shell.exec",
-		Description: "Execute a shell command (allowlist-gated for safety)",
+		Description: "Execute any shell command through bash (pipes, redirects and && work). Pass args to exec a binary directly.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -45,23 +38,6 @@ func (t *ShellTool) Execute(ctx context.Context, input map[string]any) (tools.To
 		return tools.ErrorResult(fmt.Errorf("command is required")), nil
 	}
 
-	base := strings.Fields(command)[0]
-	allowed := t.AllowList
-	if len(allowed) == 0 {
-		allowed = defaultAllowedCommands
-	}
-
-	isAllowed := false
-	for _, a := range allowed {
-		if a == base {
-			isAllowed = true
-			break
-		}
-	}
-	if !isAllowed {
-		return tools.ErrorResult(fmt.Errorf("command %q is not in the allowlist", base)), nil
-	}
-
 	timeout := 30000
 	if ms, ok := input["timeout_ms"].(float64); ok {
 		timeout = int(ms)
@@ -79,12 +55,13 @@ func (t *ShellTool) Execute(ctx context.Context, input map[string]any) (tools.To
 		}
 	}
 
-	cmd := exec.CommandContext(timeoutCtx, "sh", "-c", command)
+	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", command)
 	if len(args) > 0 {
 		cmd = exec.CommandContext(timeoutCtx, command, args...)
 	}
 
 	if envMap, ok := input["env"].(map[string]any); ok {
+		cmd.Env = os.Environ()
 		for k, v := range envMap {
 			if s, ok := v.(string); ok {
 				cmd.Env = append(cmd.Env, k+"="+s)
