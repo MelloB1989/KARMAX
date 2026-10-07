@@ -581,14 +581,10 @@ func (k *loopKit) Observe(ctx context.Context, prompt string) (string, error) {
 	return out, err
 }
 
-// observeWithheld is what an observe pass may not touch: everything outbound,
-// plus every tool that can run or spawn something which sends on its own —
-// a shell can call wacli, a harness and a sub-agent take instructions, and a
-// scheduled job or reminder is a message with a delay on it.
+// observeWithheld is the direct and delayed send tools; execution tools stay available by the operator's choice.
 var observeWithheld = func() map[string]bool {
 	m := map[string]bool{
-		"shell_exec": true, "claude_code_call": true, "codex_call": true,
-		"subagent_spawn": true, "scheduler_add": true, "self_remind": true,
+		"scheduler_add": true, "self_remind": true,
 		"reminder_add": true, "whatsapp_send_media": true,
 	}
 	for name := range outboundTools {
