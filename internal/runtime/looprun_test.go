@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 )
 
@@ -138,5 +140,18 @@ func TestALoopHarnessGetsTheRunsBudget(t *testing.T) {
 	}
 	if got > loopRunTimeout-harnessReserve {
 		t.Fatalf("a fresh run's harness got %v, leaving no time to report what it did", got)
+	}
+}
+
+func TestHarnessWaitDefersOnlyQuotaFailures(t *testing.T) {
+	rt := &KarmaxRuntime{}
+	if _, ok := rt.harnessWait(fmt.Errorf("merge model: claude-code: harness unavailable: the account refused")); !ok {
+		t.Error("a wrapped quota refusal should defer")
+	}
+	if wait, ok := rt.harnessWait(fmt.Errorf("x: %w", harness.ErrBreakerOpen{Reason: "window"})); !ok || wait <= 0 {
+		t.Errorf("typed breaker error: wait=%v ok=%v", wait, ok)
+	}
+	if _, ok := rt.harnessWait(fmt.Errorf("index out of range")); ok {
+		t.Error("an ordinary failure must spend an attempt")
 	}
 }

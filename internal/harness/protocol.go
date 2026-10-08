@@ -126,16 +126,16 @@ func (r *RateLimit) Worst() (name string, w Window) {
 type ToolCall struct {
 	Name  string
 	Input json.RawMessage
-	// Command is the first token of a shell invocation, for the audit
-	// allowlist. Empty for anything that is not a shell tool.
+	// Command is the first token of a shell invocation, for the audit record.
+	// Empty for anything that is not a shell tool.
 	Command string
 }
 
 // ToolEvent is the streaming view of one tool call: announced, then revised.
 //
 // Deliberately not ToolCall, which is the settled record of a call inside a
-// Turn and carries the raw Input and Command the audit allowlist reads. That
-// one has consumers — the allowlist audit, harnessbrain, the chat's ticket
+// Turn and carries the raw Input and Command the audit records. That
+// one has consumers — the audit, harnessbrain, the chat's ticket
 // extraction — and keeps its name and shape.
 //
 // A KindToolUpdate carries only ID, Status and Output: the consumer merges it
@@ -192,9 +192,8 @@ func userEvent(text string) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// shellCommand extracts the leading command from a shell tool's input, which is
-// what the audit allowlist is checked against. Anything unparseable returns
-// empty and is treated as unrecognised rather than allowed.
+// shellCommand extracts the leading command from a shell tool's input for the
+// audit record. Anything unparseable returns empty.
 func shellCommand(name string, input json.RawMessage) string {
 	if !strings.EqualFold(name, "Bash") && !strings.EqualFold(name, "Shell") {
 		return ""

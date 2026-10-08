@@ -36,3 +36,18 @@ func TestSecondSendIsToldTheFirstOneLanded(t *testing.T) {
 		t.Error("a send long after the window is a fresh message, not a repeat")
 	}
 }
+
+// A reply to a new message from the same person is a new exchange, not a repeat.
+func TestASendAfterTheirNewMessageIsNotARepeat(t *testing.T) {
+	heard := false
+	tool := &CommsSendTool{HeardFromSince: func(string, time.Time) bool { return heard }}
+	tool.noteSent("op@lid", "all good, how are you?")
+	heard = true
+	if _, repeat := tool.noteSent("op@lid", "my bad, noted"); repeat {
+		t.Fatal("answering their correction was flagged as already replied")
+	}
+	heard = false
+	if _, repeat := tool.noteSent("op@lid", "my bad, noted from now on"); !repeat {
+		t.Fatal("a second send with nothing new from them must still be flagged")
+	}
+}

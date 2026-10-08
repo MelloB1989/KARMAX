@@ -65,7 +65,7 @@ func TestGraphReportsWhenTheStoreHasNone(t *testing.T) {
 	}
 }
 
-// Survey is ONE call. It is used to pick a handful of candidates out of
+// Survey is ONE call (here, the whole-tree walk). It is used to pick a handful of candidates out of
 // hundreds of memories, so a request per memory would make the reviewer and the
 // cleanup flow cost hundreds of round trips to discard nearly all of them.
 func TestSurveyCostsOneRequest(t *testing.T) {
@@ -88,7 +88,7 @@ func TestSurveyCostsOneRequest(t *testing.T) {
 	})
 
 	m, _ := managerWithGitLoom(t, srv.URL)
-	got, err := m.Survey(context.Background(), 50)
+	got, err := m.Survey(context.Background(), 0)
 	if err != nil {
 		t.Fatalf("survey: %v", err)
 	}

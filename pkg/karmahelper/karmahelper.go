@@ -57,6 +57,17 @@ type SessionConfig struct {
 	// losing.
 	Kind    string
 	AgentID string
+	// SessionKey, for a claude-code session, names the Claude Code
+	// conversation its turns continue. Sessions that share a key share a warm
+	// conversation across instances; without one each Session gets its own.
+	SessionKey string
+	// BedrockAPIKey and BedrockRegion scope a bearer key to this session (and
+	// its fallbacks) instead of a process-wide env var.
+	BedrockAPIKey string
+	BedrockRegion string
+	// OnUsage sees this session's own model calls with the model that actually
+	// answered, in addition to the package meter.
+	OnUsage func(Usage)
 }
 
 // Usage is one model call's cost, as reported to the meter.
@@ -91,21 +102,29 @@ func OnUsage(fn func(Usage)) {
 
 func reportUsage(cfg SessionConfig, provider, model string, t TokenInfo) {
 	fn := usageMeter.Load()
-	if fn == nil || (t.InputTokens == 0 && t.OutputTokens == 0) {
+	if (fn == nil && cfg.OnUsage == nil) || (t.InputTokens == 0 && t.OutputTokens == 0) {
 		return
 	}
 	kind := cfg.Kind
 	if kind == "" {
 		kind = "unlabelled"
 	}
-	(*fn)(Usage{
+	u := Usage{
 		Kind: kind, AgentID: cfg.AgentID, Provider: provider, Model: model,
 		InputTokens: t.InputTokens, OutputTokens: t.OutputTokens,
 		CacheRead: t.CacheReadTokens, CacheWrite: t.CacheWriteTokens,
-	})
+	}
+	if fn != nil {
+		(*fn)(u)
+	}
+	if cfg.OnUsage != nil {
+		cfg.OnUsage(u)
+	}
 }
 
 type Session struct {
+	streamMu   sync.Mutex
+	onText     func(string)
 	cfg        SessionConfig
 	tools      []tools.Tool
 	history    models.AIChatHistory
@@ -125,6 +144,11 @@ type Session struct {
 	// caller's lock for its whole length, so this is only ever one turn's.
 	actorMu sync.RWMutex
 	actor   string
+
+	// ccKey is this session's own Claude Code conversation, when it has no
+	// configured SessionKey.
+	ccKey     string
+	ccKeyOnce sync.Once
 }
 
 // setActor records whose behalf the current turn acts on.
@@ -167,6 +191,17 @@ func (c *callRecorder) add(r ToolCallRecord) {
 }
 
 // take returns this turn's calls and clears them.
+// acted reports whether any tool has run since the last reset, without
+// consuming the records.
+func (c *callRecorder) acted() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.calls) > 0
+}
+
 func (c *callRecorder) take() []ToolCallRecord {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -197,7 +232,12 @@ func NewSession(cfg SessionConfig, agentTools []tools.Tool) *Session {
 	// of whichever turn is running. This is the default path — the one every
 	// turn without lent or withheld tools takes — so a nil source here means
 	// the actor is lost on almost every call.
-	s.kai = buildKarmaAI(cfg, agentTools, rec, s.currentActor)
+	// A claude-code session has no API client at all. Building one would
+	// resolve an unknown provider name, and an unknown provider falls through
+	// to real OpenAI.
+	if !IsClaudeCode(cfg.Provider) {
+		s.kai = buildKarmaAI(cfg, agentTools, rec, s.currentActor)
+	}
 	return s
 }
 
@@ -256,6 +296,9 @@ func (s *Session) ChatWithExtraTools(ctx context.Context, userMessage string, ex
 // eventually use, whatever the instructions around it say. A pass that must not
 // speak is handed no way to speak.
 func (s *Session) ChatWithTurnTools(ctx context.Context, userMessage string, extra []tools.Tool, withhold map[string]bool) (string, []ToolCallRecord, TokenInfo, error) {
+	if IsClaudeCode(s.cfg.Provider) {
+		return s.chatViaClaudeCode(ctx, userMessage, turnToolSet(s.tools, extra, withhold))
+	}
 	if len(extra) == 0 && len(withhold) == 0 {
 		return s.chat(ctx, userMessage, s.kai, s.tools)
 	}
@@ -264,9 +307,13 @@ func (s *Session) ChatWithTurnTools(ctx context.Context, userMessage string, ext
 }
 
 func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI, turnTools []tools.Tool) (string, []ToolCallRecord, TokenInfo, error) {
+	if IsClaudeCode(s.cfg.Provider) {
+		return s.chatViaClaudeCode(ctx, userMessage, turnTools)
+	}
 	// Taken from the caller's context, before the model sees anything — never
 	// from a tool argument, or the model could choose whose mailbox it reads.
 	s.setActor(connectorkit.ActorFrom(ctx))
+	gate := newStreamGate(s.turnStream())
 	userMessage = CleanContent(userMessage)
 	s.history.Messages = append(s.history.Messages, models.AIMessage{
 		Role:    models.User,
@@ -287,7 +334,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	if retries <= 0 {
 		retries = 3
 	}
-	resp, err := chatWithRetry(ctx, kai, &s.history, retries)
+	resp, err := chatWithRetry(ctx, kai, &s.history, retries, s.rec.acted, gate)
 	if err == nil {
 		// A gateway that pre-prompts the model with its OWN identity sometimes
 		// answers as that identity instead of as this agent. It arrives as a
@@ -295,7 +342,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 		// it — caught here or it reaches the operator verbatim.
 		if isPersonaBreak(resp.AIResponse) && len(resp.ToolCalls) == 0 {
 			log.Printf("[karmahelper] the model answered as something other than this agent; retrying")
-			retry, rerr := chatWithRetry(ctx, kai, &s.history, 1)
+			retry, rerr := chatWithRetry(ctx, kai, &s.history, 1, s.rec.acted, gate)
 			switch {
 			case rerr == nil && !isPersonaBreak(retry.AIResponse):
 				return s.processResponse(retry)
@@ -326,7 +373,7 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	if isToolPassExhaustion(primaryErr) {
 		log.Printf("[karmahelper] tool passes exhausted; asking for an answer with tools off")
 		sanitizeHistory(&s.history)
-		if resp, ferr := chatWithRetry(ctx, buildKarmaAI(s.cfg, nil, s.rec, s.currentActor), &s.history, 1); ferr == nil {
+		if resp, ferr := chatWithRetry(ctx, buildKarmaAI(s.cfg, nil, s.rec, s.currentActor), &s.history, 1, s.rec.acted, gate); ferr == nil {
 			if strings.TrimSpace(CleanContent(resp.AIResponse)) != "" {
 				return s.processResponse(resp)
 			}
@@ -339,6 +386,22 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 	for i, fb := range s.cfg.FallbackModels {
 		log.Printf("[karmahelper] trying fallback model %d: %s/%s", i+1, fb.Provider, fb.Model)
 
+		// A Claude Code fallback cannot be built as an API client: an unknown
+		// provider resolves to real OpenAI. It runs on its own path instead.
+		// The user's message is already in history, and that path adds it,
+		// so it comes off first.
+		if IsClaudeCode(fb.Provider) {
+			if n := len(s.history.Messages); n > 0 && s.history.Messages[n-1].Role == models.User {
+				s.history.Messages = s.history.Messages[:n-1]
+			}
+			out, recs, info, ccErr := s.chatViaClaudeCode(ctx, userMessage, turnTools)
+			if ccErr == nil {
+				log.Printf("[karmahelper] fallback to claude-code succeeded")
+				return out, recs, info, nil
+			}
+			log.Printf("[karmahelper] fallback to claude-code failed: %v", ccErr)
+			continue
+		}
 		fbCfg := s.cfg
 		fbCfg.Provider = fb.Provider
 		fbCfg.Model = fb.Model
@@ -351,10 +414,10 @@ func (s *Session) chat(ctx context.Context, userMessage string, kai *ai.KarmaAI,
 		// Re-sanitize before each fallback attempt
 		sanitizeHistory(&s.history)
 
-		resp, err = chatWithRetry(ctx, fbKai, &s.history, 2)
+		resp, err = chatWithRetry(ctx, fbKai, &s.history, 2, s.rec.acted, gate)
 		if err == nil {
 			log.Printf("[karmahelper] fallback model %s/%s succeeded", fb.Provider, fb.Model)
-			return s.processResponse(resp)
+			return s.processResponseAs(resp, fb.Provider, fb.Model)
 		}
 
 		log.Printf("[karmahelper] fallback model %s/%s failed: %v", fb.Provider, fb.Model, err)
@@ -464,6 +527,12 @@ func isPersonaBreak(response string) bool {
 // processResponse extracts the AI response text, tool call records, and token
 // info from a successful AIChatResponse.
 func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCallRecord, TokenInfo, error) {
+	return s.processResponseAs(resp, s.cfg.Provider, s.cfg.Model)
+}
+
+// processResponseAs bills the model that actually answered, which on a
+// fallback is not the session's primary.
+func (s *Session) processResponseAs(resp *models.AIChatResponse, provider, model string) (string, []ToolCallRecord, TokenInfo, error) {
 	tokens := TokenInfo{
 		InputTokens:      resp.InputTokens,
 		OutputTokens:     resp.OutputTokens,
@@ -474,7 +543,7 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 	s.LastTokens = tokens
 	// Every model call, whichever session made it and whether or not the
 	// response is usable — those tokens were bought either way.
-	reportUsage(s.cfg, s.cfg.Provider, s.cfg.Model, tokens)
+	reportUsage(s.cfg, provider, model, tokens)
 	response := CleanContent(resp.AIResponse)
 
 	// Collected before the empty-response check: a turn that ran tools and then
@@ -484,6 +553,12 @@ func (s *Session) processResponse(resp *models.AIChatResponse) (string, []ToolCa
 		executed = s.rec.take()
 	}
 
+	// A turn that acted and then had nothing to say has succeeded: a call
+	// ended by hanging up needs no parting line. Empty with nothing done is
+	// still the failure it always was.
+	if strings.TrimSpace(response) == "" && len(executed) > 0 {
+		return "", executed, tokens, nil
+	}
 	if strings.TrimSpace(response) == "" {
 		return "", executed, tokens, fmt.Errorf("empty response from model after sanitization")
 	}
@@ -642,7 +717,92 @@ func isStaleIDError(err error) bool {
 }
 
 // chatWithRetry wraps ChatCompletionManaged with exponential backoff retry logic.
-func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatHistory, maxRetries int) (*models.AIChatResponse, error) {
+// completeManaged runs one completion, on the path that honours tools.
+//
+// karma's Bedrock tool loop lives only on its streaming path; the plain
+// completion sends Bedrock no tools at all. Measured: a call brain on Bedrock
+// with a memory lookup, a hang-up and a hand-off available answered "I don't
+// have access to a lookup tool" — every tool silently gone. So Bedrock streams,
+// with the chunks discarded, which returns the same final response and runs
+// the tool loop on the way.
+func completeManaged(kai *ai.KarmaAI, history *models.AIChatHistory, gate *streamGate) (*models.AIChatResponse, error) {
+	if kai.Model.GetModelProvider() == ai.Bedrock {
+		var said strings.Builder
+		resp, err := kai.ChatCompletionStreamManaged(history, func(c models.StreamedResponse) error {
+			said.WriteString(c.AIResponse)
+			gate.write(c.AIResponse)
+			return nil
+		})
+		if err == nil && resp != nil {
+			resp.AIResponse = withEarlierPasses(said.String(), resp.AIResponse)
+		}
+		return resp, err
+	}
+	return kai.ChatCompletionManaged(history)
+}
+
+// streamGate forwards a turn's text deltas to its sink. Once an attempt has
+// streamed text and then failed, later attempts stay silent: a retry restarts
+// the reply and would be spoken over the part already said.
+type streamGate struct {
+	fn      func(string)
+	emitted bool
+	muted   bool
+}
+
+func newStreamGate(fn func(string)) *streamGate {
+	if fn == nil {
+		return nil
+	}
+	return &streamGate{fn: fn}
+}
+
+func (g *streamGate) write(text string) {
+	if g == nil || g.muted || text == "" {
+		return
+	}
+	g.emitted = true
+	g.fn(text)
+}
+
+func (g *streamGate) attemptFailed() {
+	if g != nil && g.emitted {
+		g.muted = true
+	}
+}
+
+// SetTurnStream sends this session's assistant text to fn as it streams, for
+// the turns that follow; nil turns it off. Only Bedrock streams.
+func (s *Session) SetTurnStream(fn func(string)) {
+	s.streamMu.Lock()
+	s.onText = fn
+	s.streamMu.Unlock()
+}
+
+func (s *Session) turnStream() func(string) {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	return s.onText
+}
+
+// withEarlierPasses keeps what the model said before its tool calls; karma returns only the last pass.
+func withEarlierPasses(streamed, final string) string {
+	if !strings.HasSuffix(streamed, final) || len(streamed) == len(final) {
+		return final
+	}
+	earlier := strings.TrimSpace(streamed[:len(streamed)-len(final)])
+	if earlier == "" {
+		return final
+	}
+	if strings.TrimSpace(final) == "" {
+		return earlier
+	}
+	return earlier + " " + strings.TrimSpace(final)
+}
+
+// chatWithRetry retries a completion that failed or came back empty. acted,
+// when set, says whether the attempt ran any tools: see the empty-response case.
+func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatHistory, maxRetries int, acted func() bool, gate *streamGate) (*models.AIChatResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -656,14 +816,27 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 			}
 		}
 
-		resp, err := kai.ChatCompletionManaged(history)
+		resp, err := completeManaged(kai, history, gate)
+		if err == nil && resp == nil {
+			err = fmt.Errorf("model returned no response")
+		}
 		if err == nil {
 			cleaned := strings.TrimSpace(CleanContent(resp.AIResponse))
 			// Check for empty response
+			// A model that acted and then had nothing to add has answered.
+			// Empty text is suspicious only when nothing happened — a call
+			// ended with a hang-up and no parting words was retried five
+			// times across three models, 52 seconds, and every retry ran the
+			// turn's tools again, so a hand-off would have been handed off
+			// five times.
+			if resp != nil && cleaned == "" && acted != nil && acted() {
+				return resp, nil
+			}
 			if resp != nil && cleaned == "" {
 				log.Printf("[karmahelper] WARNING: model returned empty response (input_tokens=%d, output_tokens=%d, history_len=%d)",
 					resp.InputTokens, resp.OutputTokens, len(history.Messages))
 				lastErr = fmt.Errorf("empty response from model (possible quota/rate issue)")
+				gate.attemptFailed()
 				continue
 			}
 			// Check for proxy error messages returned as content
@@ -671,11 +844,13 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 			if isProxyErrorResponse(lower) {
 				log.Printf("[karmahelper] WARNING: proxy returned error as content: %s", truncateLog(cleaned, 100))
 				lastErr = fmt.Errorf("proxy error in response: %s", truncateLog(cleaned, 100))
+				gate.attemptFailed()
 				continue
 			}
 			return resp, nil
 		}
 		lastErr = err
+		gate.attemptFailed()
 		log.Printf("[karmahelper] attempt %d failed: %v", attempt, err)
 
 		// On stale ID error, aggressively strip all tool-related messages
@@ -729,6 +904,20 @@ func buildKarmaAI(cfg SessionConfig, agentTools []tools.Tool, rec *callRecorder,
 		options = append(options, ai.WithTopP(0))
 		if cfg.Temperature > 0 {
 			options = append(options, ai.WithTemperature(cfg.Temperature))
+		}
+	}
+
+	// karma sends a default top_k, which only Anthropic models accept on Bedrock.
+	if !strings.Contains(strings.ToLower(cfg.Model), "anthropic") {
+		options = append(options, ai.WithTopK(0))
+	}
+
+	if provider == ai.Bedrock {
+		if cfg.BedrockAPIKey != "" {
+			options = append(options, ai.WithBedrockAPIKey(cfg.BedrockAPIKey))
+		}
+		if cfg.BedrockRegion != "" {
+			options = append(options, ai.WithBedrockRegion(cfg.BedrockRegion))
 		}
 	}
 

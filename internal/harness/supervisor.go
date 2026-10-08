@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,21 @@ type Policy struct {
 	// number nobody is charged.
 	MaxCostUSD float64
 	Ephemeral  bool
+	// Launch is an argv prefix the binary is run under — docker exec, ssh,
+	// podman, kubectl — with "{workdir}" replaced by the session's working
+	// directory. Empty runs the binary directly, as every kind always has.
+	//
+	// The process's environment is the prefix's, not the session's: a prefix
+	// that crosses into a container or another host carries its own.
+	Launch []string
+	// Name is passed as --name, so other sessions can address this one by a
+	// name that outlives any one session id. Empty passes no flag.
+	Name string
+	// Resident sessions are never idle-reaped, never evicted and not counted
+	// in MaxLive, and one that dies is brought back by ReviveResident. A
+	// session other sessions message must stay up: a closed one has no inbox,
+	// and every message to it bounces.
+	Resident bool
 }
 
 // Store is what the supervisor needs to remember sessions across restarts.
@@ -74,7 +90,6 @@ type Config struct {
 	MaxLive     int
 	Policies    map[string]Policy
 	Env         []string
-	Allowlist   map[string]bool
 	// CheapModel is the tier every session drops to once KARMAX is past its
 	// share of the account's window. It is not a lesser engine to fall out to
 	// — it is the same one, thinking less hard, which is what keeps the agent
@@ -83,6 +98,11 @@ type Config struct {
 	// FallbackModel is handed to the CLI so it degrades on its own when a
 	// model is overloaded, without a round trip through here.
 	FallbackModel string
+	// OnBackgroundTurn hears every turn a session ran without being asked —
+	// a message from another session arriving while it was idle starts one.
+	// The turn is already accounted (usage, breaker, audit) before this is
+	// called. Nil drops it after accounting.
+	OnBackgroundTurn func(key, kind string, t Turn)
 }
 
 // Supervisor owns every live harness session.
@@ -91,10 +111,20 @@ type Supervisor struct {
 	store   Store
 	breaker *Breaker
 	log     Logger
-	audit   func(sessionKey string, tc ToolCall, allowed bool)
+	audit   func(sessionKey string, tc ToolCall)
 
 	mu   sync.Mutex
 	live map[string]*Session
+
+	// opening serialises open per key: two callers resuming the same dead
+	// session at once (ReviveResident and a message, at daemon start) would
+	// otherwise spawn two processes on one transcript and lose track of one.
+	opening sync.Map // key → *sync.Mutex
+}
+
+func (s *Supervisor) keyLock(key string) *sync.Mutex {
+	m, _ := s.opening.LoadOrStore(key, &sync.Mutex{})
+	return m.(*sync.Mutex)
 }
 
 // Logger is the small slice of logging this package needs.
@@ -103,7 +133,7 @@ type Logger interface {
 	Warn(msg string, kv ...any)
 }
 
-func New(cfg Config, st Store, br *Breaker, log Logger, audit func(string, ToolCall, bool)) *Supervisor {
+func New(cfg Config, st Store, br *Breaker, log Logger, audit func(string, ToolCall)) *Supervisor {
 	if cfg.MaxLive <= 0 {
 		cfg.MaxLive = 6
 	}
@@ -209,14 +239,18 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	// including the ones that fail.
 	s.breaker.Observe(turn.Limits)
 
-	for _, tc := range turn.ToolCalls {
-		allowed := tc.Command == "" || s.cfg.Allowlist[tc.Command]
-		if s.audit != nil {
-			s.audit(key, tc, allowed)
+	if s.audit != nil {
+		for _, tc := range turn.ToolCalls {
+			s.audit(key, tc)
 		}
 	}
 
 	now := time.Now()
+	if errors.Is(err, ErrSessionBusy) {
+		// Nothing was written and nothing failed: the session is busy with a
+		// turn another session asked for, and killing it would lose that.
+		return turn, err
+	}
 	if err != nil {
 		// A failed turn leaves a process that may still be mid-thought. Drop it
 		// and let the next call resume the transcript instead.
@@ -236,6 +270,24 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 		}
 	}
 	return turn, nil
+}
+
+// background accounts a turn a session ran without being asked, exactly as
+// SendWith accounts one it was asked for, then hands it to OnBackgroundTurn.
+func (s *Supervisor) background(key, kind string, t Turn) {
+	s.breaker.Observe(t.Limits)
+	if s.audit != nil {
+		for _, tc := range t.ToolCalls {
+			s.audit(key, tc)
+		}
+	}
+	_ = s.store.RecordHarnessTurn(key, t.CostUSD, t.Usage.InputTokens,
+		t.Usage.OutputTokens, t.Usage.CacheReadTokens, time.Now())
+	s.log.Info("harness: a session ran a turn by itself", "key", key, "kind", kind,
+		"tools", len(t.ToolCalls))
+	if s.cfg.OnBackgroundTurn != nil {
+		s.cfg.OnBackgroundTurn(key, kind, t)
+	}
 }
 
 // needsRespawn reports whether a live session must restart before this turn
@@ -261,6 +313,14 @@ func needsRespawn(sess *Session, model, effort string) bool {
 // whose transcript we know is resumed, which brings its context back; only a
 // genuinely new key starts cold.
 func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt Options) (*Session, error) {
+	l := s.keyLock(key)
+	l.Lock()
+	defer l.Unlock()
+	return s.openLocked(ctx, key, kind, pol, opt)
+}
+
+// openLocked is open, with the key's lock held by the caller.
+func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Policy, opt Options) (*Session, error) {
 	requested := strings.TrimSpace(opt.Model)
 	wantModel := pol.Model
 	if requested != "" {
@@ -302,7 +362,23 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 		return nil, err
 	}
 
-	resume := rec != nil && rec.HarnessSessionID != ""
+	// Only a session that has completed a turn has a transcript to resume.
+	//
+	// The row is written before the spawn, for crash safety, so a process that
+	// died during its very first turn leaves a record naming a conversation
+	// Claude Code never wrote. Resuming that fails at once, and it failed on
+	// every attempt after: api/main/nexus spent four days answering nothing,
+	// zero turns completed, each message failing in two seconds with
+	// error_during_execution — and an operator's message went unanswered.
+	// Such a record is started over under a fresh id; there is nothing in it
+	// to lose.
+	resume := rec != nil && rec.HarnessSessionID != "" && rec.Turns > 0
+	// A session at its turn limit starts over; resuming it reloads the whole transcript on every message.
+	if resume && pol.MaxTurns > 0 && rec.Turns >= pol.MaxTurns {
+		s.log.Info("harness: starting a fresh session past the turn limit", "key", key, "turns", rec.Turns)
+		resume = false
+		opt.SessionID = ""
+	}
 	id := ""
 	switch {
 	case resume:
@@ -318,7 +394,9 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
 	}
 	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
-		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig}
+		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig,
+		Name: pol.Name, Launch: pol.Launch}
+	sess.onBackground = func(t Turn) { s.background(key, kind, t) }
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
 	// sweep can find; the reverse leaves a process nothing knows about.
@@ -381,9 +459,14 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 // candidate is tried instead.
 func (s *Supervisor) evictIfFull() {
 	s.mu.Lock()
-	over := len(s.live) >= s.cfg.MaxLive
+	n := 0
+	for _, sess := range s.live {
+		if !s.policy(sess.Kind).Resident {
+			n++
+		}
+	}
 	s.mu.Unlock()
-	if !over {
+	if n < s.cfg.MaxLive {
 		return
 	}
 	recs, err := s.store.ListHarnessSessions(HarnessLive, HarnessIdle)
@@ -392,6 +475,9 @@ func (s *Supervisor) evictIfFull() {
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].LastActivityAt.Before(recs[j].LastActivityAt) })
 	for _, r := range recs {
+		if s.policy(r.Kind).Resident {
+			continue
+		}
 		if s.CloseIfIdle(r.Key) {
 			s.log.Info("harness: at the session cap, evicted the least recently used", "key", r.Key)
 			return
@@ -409,12 +495,21 @@ func (s *Supervisor) evictIfFull() {
 }
 
 // Close ends a session unconditionally. Ephemeral kinds forget it entirely.
-func (s *Supervisor) Close(key string) {
+// A resident session is left revivable: every caller of Close is on its way
+// to a next turn (a model change, the turn limit), not ending the
+// conversation.
+func (s *Supervisor) Close(key string) { s.closeKey(key, false) }
+
+// Retire is the operator closing a session on purpose: exactly Close, except
+// that a resident session stays closed until someone writes to it.
+func (s *Supervisor) Retire(key string) { s.closeKey(key, true) }
+
+func (s *Supervisor) closeKey(key string, retire bool) {
 	s.mu.Lock()
 	sess := s.live[key]
 	delete(s.live, key)
 	s.mu.Unlock()
-	s.teardown(key, sess)
+	s.teardown(key, sess, retire)
 }
 
 // CloseIfIdle closes key only if it is not busy, checking Busy and removing
@@ -451,13 +546,13 @@ func (s *Supervisor) CloseIfIdle(key string) bool {
 	}
 	delete(s.live, key)
 	s.mu.Unlock()
-	s.teardown(key, sess) // sess is nil when !ok; teardown already handles that
+	s.teardown(key, sess, false) // sess is nil when !ok; teardown already handles that
 	return true
 }
 
 // teardown is the slow, unlocked part Close and CloseIfIdle share: stop the
 // process, then record or forget the session.
-func (s *Supervisor) teardown(key string, sess *Session) {
+func (s *Supervisor) teardown(key string, sess *Session, retire bool) {
 	if sess != nil {
 		sess.Close()
 	}
@@ -467,6 +562,11 @@ func (s *Supervisor) teardown(key string, sess *Session) {
 		if rec.Workdir != "" {
 			_ = os.RemoveAll(rec.Workdir)
 		}
+		return
+	}
+	if rec != nil && !retire && s.policy(rec.Kind).Resident {
+		// Dead, not closed, so ReviveResident binds its inbox again.
+		_ = s.store.SetHarnessState(key, HarnessDead, "closed; a resident session comes back", time.Now())
 		return
 	}
 	_ = s.store.SetHarnessState(key, HarnessClosed, "", time.Now())
@@ -509,7 +609,7 @@ func (s *Supervisor) Reap(now time.Time) {
 	}
 	for _, r := range recs {
 		pol := s.policy(r.Kind)
-		if pol.Idle <= 0 || now.Sub(r.LastActivityAt) <= pol.Idle {
+		if pol.Resident || pol.Idle <= 0 || now.Sub(r.LastActivityAt) <= pol.Idle {
 			continue
 		}
 		if s.CloseIfIdle(r.Key) {
@@ -520,6 +620,48 @@ func (s *Supervisor) Reap(now time.Time) {
 		// turn does not update LastActivityAt until it finishes, so without
 		// this the reaper would go after the session doing the most work.
 	}
+}
+
+// ReviveResident restarts every resident session that is not running, so its
+// inbox is bound again without waiting for someone to message it.
+//
+// "Not running" is a dead row (a failed turn, a crash, a daemon restart) or a
+// live one whose process has gone. A closed row is left alone: closing is what
+// an operator does on purpose. The session comes back on its stored workdir
+// and resumes its transcript, and is left idle — no turn is run.
+func (s *Supervisor) ReviveResident(ctx context.Context) {
+	recs, err := s.store.ListHarnessSessions(HarnessDead, HarnessLive, HarnessIdle)
+	if err != nil {
+		return
+	}
+	for _, r := range recs {
+		pol := s.policy(r.Kind)
+		if !pol.Resident {
+			continue
+		}
+		s.reviveOne(ctx, r, pol)
+	}
+}
+
+func (s *Supervisor) reviveOne(ctx context.Context, r SessionRecord, pol Policy) {
+	// Checked under the key's lock: a message that opened it a moment ago
+	// has a live session, and that one is its caller's, not ours to touch.
+	l := s.keyLock(r.Key)
+	l.Lock()
+	defer l.Unlock()
+	s.mu.Lock()
+	running := s.live[r.Key].Alive()
+	s.mu.Unlock()
+	if running {
+		return
+	}
+	sess, err := s.openLocked(ctx, r.Key, r.Kind, pol, Options{Workdir: r.Workdir})
+	if err != nil {
+		s.log.Warn("harness: could not revive a resident session", "key", r.Key, "err", err.Error())
+		return
+	}
+	sess.release()
+	s.log.Info("harness: revived a resident session", "key", r.Key)
 }
 
 // ReapOrphans runs at startup, when every pid in the table belongs to a process
@@ -560,8 +702,18 @@ func (s *Supervisor) Live() []string {
 }
 
 // Shutdown closes every live session, so a daemon stop does not leak processes.
+//
+// A resident session's row is marked dead rather than closed: the daemon
+// stopping is not an operator closing it, and the next start revives it.
 func (s *Supervisor) Shutdown() {
 	for _, k := range s.Live() {
+		s.mu.Lock()
+		sess := s.live[k]
+		s.mu.Unlock()
+		if sess != nil && s.policy(sess.Kind).Resident {
+			s.kill(k, HarnessDead, "daemon stopped")
+			continue
+		}
 		s.Close(k)
 	}
 }

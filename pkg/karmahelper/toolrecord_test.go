@@ -142,13 +142,21 @@ func TestProcessResponseReportsRecordedCalls(t *testing.T) {
 
 // A turn that ran tools but produced no text still ran them; the caller needs
 // that fact to distinguish it from a turn that did nothing at all.
+//
+// It is also an answer, not a failure. It used to be reported as an empty
+// response, and the retry loop took that at its word: a call ended by hanging
+// up was retried five times across three models, re-running the hang-up each
+// time. Callers that need text still check for it — the agent's main loop does.
 func TestToolCallsSurviveAnEmptyResponse(t *testing.T) {
 	s := &Session{rec: &callRecorder{}}
 	s.rec.add(ToolCallRecord{Name: "memory.ingest"})
 
-	_, records, _, err := s.processResponse(&models.AIChatResponse{AIResponse: "   "})
-	if err == nil {
-		t.Fatal("an empty response should still be an error")
+	out, records, _, err := s.processResponse(&models.AIChatResponse{AIResponse: "   "})
+	if err != nil {
+		t.Fatalf("a turn that acted and said nothing was reported as a failure: %v", err)
+	}
+	if out != "" {
+		t.Errorf("text = %q, want none", out)
 	}
 	if len(records) != 1 {
 		t.Errorf("tool calls were dropped on the empty-response path: %#v", records)

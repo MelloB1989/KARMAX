@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +61,11 @@ type Agent struct {
 	// workflow caused. Injected rather than imported: the runtime knows which
 	// workflows exist, and the agent must not.
 	lentToolsFor func(bus.Event) []tools.Tool
+
+	// screener is System One: the cheap pass that decides whether an event is
+	// worth a turn at all. Nil means every event gets one.
+	screener Screener
+	decider  Decider
 
 	// conversations archives the OPERATOR's conversations in GitLoom. Nil when
 	// GitLoom is not configured. See conversation.go.
@@ -158,6 +164,14 @@ func (a *Agent) isFromOperator(chatID string) bool {
 	}
 	return a.operatorChats[n]
 }
+
+// IsOperatorChat reports whether a chat belongs to the operator.
+//
+// Exported because the screener needs exactly this answer and must not compute
+// its own: the operator floor is a safety property, and two derivations of
+// "is this the operator" is one too many. The agent's set carries the
+// WHATSAPP_TARGET fallback that a bare environment lookup does not.
+func (a *Agent) IsOperatorChat(chatID string) bool { return a.isFromOperator(chatID) }
 
 // SetCommsChannels injects available channel info so the agent can build
 // context about which channels are available for sending messages.
@@ -457,7 +471,9 @@ func (t *memoryRetrieveTool) Manifest() tools.ToolManifest {
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"query": {"type": "string", "description": "The search query to find relevant memories and context"}
+				"query": {"type": "string", "description": "The search query to find relevant memories and context"},
+				"since": {"type": "string", "description": "Optional: only things that happened on or after this date (2026-03-02) or RFC 3339 time."},
+				"until": {"type": "string", "description": "Optional: only things that happened on or before this date or RFC 3339 time."}
 			},
 			"required": ["query"]
 		}`),
@@ -472,6 +488,27 @@ func (t *memoryRetrieveTool) Execute(ctx context.Context, input map[string]any) 
 
 	if t.agent.memoryModel == nil {
 		return tools.ErrorResult(fmt.Errorf("memory model not initialized")), nil
+	}
+
+	// The range rides the context to the search tool and is said in the question.
+	loc := memory.OperatorLocation()
+	var w memory.Window
+	if raw, _ := input["since"].(string); raw != "" {
+		w.Since, _ = memory.ParseWhen(raw, loc, false)
+	}
+	if raw, _ := input["until"].(string); raw != "" {
+		w.Until, _ = memory.ParseWhen(raw, loc, true)
+	}
+	if !w.Since.IsZero() || !w.Until.IsZero() {
+		ctx = memory.WithWindow(ctx, w)
+		query += "\n\n(Only memories about events"
+		if !w.Since.IsZero() {
+			query += " since " + w.Since.In(loc).Format(time.RFC3339)
+		}
+		if !w.Until.IsZero() {
+			query += " until " + w.Until.In(loc).Format(time.RFC3339)
+		}
+		query += ".)"
 	}
 
 	result, err := t.agent.memoryModel.Retrieve(ctx, query)
@@ -938,10 +975,21 @@ func (a *Agent) handleOne(evt bus.Event) {
 	a.lastEvent = time.Now()
 	a.mu.Unlock()
 
+	// System One. An event it settles never reaches a model: the turn is closed
+	// as done, because deciding it needed nothing IS handling it.
+	screened, proceed := a.screen(evt)
+	if !proceed {
+		a.finishTurn(evt, store.TurnOK, "")
+		return
+	}
+	evt = screened
+
+	started := time.Now()
 	if err := a.handleEvent(evt); err != nil {
 		a.finishTurn(evt, store.TurnFailed, err.Error())
 		streak := a.recordEventError(err)
 		a.log.Error("event handling failed", zap.Error(err))
+		a.tellOperatorTurnFailed(evt, started, err)
 		_ = a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
 			"error":              err.Error(),
 			"consecutive_errors": streak,
@@ -959,6 +1007,58 @@ func (a *Agent) handleOne(evt bus.Event) {
 	}
 	a.finishTurn(evt, store.TurnOK, "")
 	a.resetEventErrors()
+}
+
+// turnFailedNotice is what the operator gets instead of silence.
+const turnFailedNotice = "I couldn't handle that message — something failed on my side. Please send it again."
+
+// tellOperatorTurnFailed answers an operator message whose turn failed. A
+// failed turn used to end in a log line and nothing else, so from the chat it
+// looked exactly like being ignored. Monitored chats get nothing: a stranger
+// should never see KARMAX's internals, and their loops decide replies anyway.
+func (a *Agent) tellOperatorTurnFailed(evt bus.Event, started time.Time, cause error) {
+	if evt.Kind != bus.EventCommsMessage || a.commsSend == nil {
+		return
+	}
+	if a.ctx != nil && a.ctx.Err() != nil {
+		return // shutting down; the journal replays the turn on restart
+	}
+	channelID, _ := evt.Payload["karmax_channel_id"].(string)
+	target, _ := evt.Payload["channel_id"].(string)
+	if channelID == "" || !a.isFromOperator(target) {
+		return
+	}
+	if a.repliedDuringTurn(target, started) {
+		return
+	}
+	if !a.shouldTellOperatorTurnFailed(evt, cause) {
+		return
+	}
+	if err := a.commsSend(channelID, target, turnFailedNotice); err != nil {
+		a.log.Warn("could not tell the operator a turn failed", zap.Error(err))
+	}
+}
+
+// shouldTellOperatorTurnFailed asks Jev; with no answer the operator is told.
+func (a *Agent) shouldTellOperatorTurnFailed(evt bus.Event, cause error) bool {
+	a.mu.RLock()
+	d := a.decider
+	a.mu.RUnlock()
+	if d == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	msg, _ := evt.Payload["content"].(string)
+	state := map[string]any{"operator_message": msg, "failure": cause.Error()}
+	res, err := d(ctx, state, loopkit.Questions{
+		"tell": loopkit.Noul("The operator sent this message and the turn handling it failed before any reply. Should the operator be told it failed so they can resend it?").
+			When("the message expected a reply or an action", "the message needed no response, such as an acknowledgement or a reaction"),
+	})
+	if err != nil || res == nil {
+		return true
+	}
+	return res.Yes("tell", 0.5)
 }
 
 // finishTurn closes this event's journal row. Best-effort: a turn that ran but
@@ -1053,13 +1153,18 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx
+	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).context()
 	if dynamicCtx != "" && a.mainSession == nil {
 		userPrompt = dynamicCtx + userPrompt
 	}
 
 	// Use multi-model session if available; otherwise fall back to legacy
 	if a.mainSession != nil {
+		// Marked before anything can send, so the fallback delivery below can
+		// ask what actually reached the chat during this turn. Truncated to the
+		// second because that is the resolution the store records at, and a
+		// finer mark would place an in-turn send before the turn began.
+		turnStart := time.Now().Truncate(time.Second)
 		// Acknowledge slow turns: if we're still thinking after a few seconds,
 		// send a lightweight "on it" to the originating chat so the operator
 		// knows the message landed and isn't dropped (high-effort turns take a
@@ -1074,8 +1179,9 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// the message, before the model sees anything — never from a tool
 		// argument, or the model could choose whose mailbox it reads.
 		turnCtx = connectorkit.WithActor(turnCtx, a.actingMember(evt))
+		turnCtx = memory.WithSource(turnCtx, a.memorySource(evt))
 		lent := a.lentTools(evt)
-		brain := a.thinkingBrain()
+		brain := a.brainFor(evt)
 		brain.SetTurnContext(dynamicCtx)
 		response, toolCalls, err := brain.ProcessMessageWithheld(turnCtx, userPrompt, lent, nil)
 		turnCancel()
@@ -1104,7 +1210,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 				"2. If you literally CANNOT (you're missing information — e.g. you don't have the credentials/file/detail it needs), say so plainly in ONE sentence and ask the one specific thing you need. Never a vague \"standing by\".\n" +
 				"Do not just acknowledge again. Act or state the blocker."
 			rctx, rcancel := context.WithTimeout(a.ctx, 3*time.Minute)
-			resp2, tc2, err2 := a.thinkingBrain().ProcessMessageWithheld(rctx, nudge, nil, nil)
+			resp2, tc2, err2 := brain.ProcessMessageWithheld(rctx, nudge, nil, nil)
 			rcancel()
 			if err2 == nil && strings.TrimSpace(resp2) != "" {
 				response = cleanOutboundResponse(resp2)
@@ -1129,6 +1235,12 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 			if canonical == "comms_send" {
 				sentViaComms = true
 			}
+			// A harness session reaches comms.send through its shell, so the
+			// call arrives here named "Bash" and the name check above can never
+			// see it.
+			if commsSendShellCall(tc) {
+				sentViaComms = true
+			}
 			a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
 				"tool":  canonical,
 				"input": tc.Input,
@@ -1143,8 +1255,18 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		if evt.Kind == bus.EventCommsMessage && a.commsSend != nil && !sentViaComms {
 			karmaxChannelID, _ := evt.Payload["karmax_channel_id"].(string)
 			target, _ := evt.Payload["channel_id"].(string)
+			// Last word on whether the chat was already answered: the store sees
+			// every outbound whatever produced it — a tool call, a harness shell
+			// command, a delegated session. Reading the turn's tool names alone
+			// missed the shell ones and sent the model's narration of a reply as
+			// a second message right behind the reply itself.
+			alreadyAnswered := a.repliedDuringTurn(target, turnStart)
+			if alreadyAnswered {
+				a.log.Info("chat already answered this turn; withholding the final text",
+					zap.String("target", target), zap.Int("len", len(response)))
+			}
 			reply := strings.TrimSpace(response)
-			if karmaxChannelID != "" && reply != "" {
+			if karmaxChannelID != "" && reply != "" && !alreadyAnswered {
 				if err := a.commsSend(karmaxChannelID, target, reply); err != nil {
 					a.log.Warn("fallback auto-reply failed",
 						zap.String("channel", karmaxChannelID), zap.Error(err))
@@ -1201,6 +1323,63 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	return a.handleEventLegacy(evt, userPrompt)
 }
 
+// ackMessage is the slow-turn acknowledgement. Named because the delivery check
+// has to tell it apart from a real answer: it goes to the same chat mid-turn,
+// and counting it as the reply would swallow the reply.
+const ackMessage = "👀 on it…"
+
+// repliedDuringTurn reports whether a real message has gone to this chat since
+// the turn began.
+//
+// The harness is the reason this exists. It reaches comms.send through its
+// shell, so the turn's tool records name "Bash" and nothing identifies the
+// send — while the harness's own final text is a report addressed to KARMAX
+// ("Sent. Confirmed the sender matches…"), not to the operator. Delivering that
+// on top of the answer is what the operator saw as KARMAX replying twice.
+//
+// The store is asked rather than the tool records because it is the one place
+// every outbound passes through, whichever engine, loop or delegated session
+// produced it.
+func (a *Agent) repliedDuringTurn(target string, since time.Time) bool {
+	if a.store == nil || target == "" {
+		return false
+	}
+	rows, err := a.store.ListChannelMessages(target, 10)
+	if err != nil {
+		// An unreadable history is not evidence of an answer: ghosting the
+		// operator is worse than repeating KARMAX.
+		a.log.Warn("could not check what already went to this chat", zap.Error(err))
+		return false
+	}
+	for _, r := range rows {
+		if !strings.EqualFold(r.Direction, "outbound") {
+			continue
+		}
+		if r.CreatedAt.Before(since) {
+			continue
+		}
+		if strings.TrimSpace(r.Content) == ackMessage {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// commsSendShellCall reports whether a tool record is a harness shell call that
+// invoked comms.send — `karmax tool call comms.send …`, in any of the spellings
+// the CLI accepts.
+func commsSendShellCall(tc karmahelper.ToolCallRecord) bool {
+	if !strings.EqualFold(tc.Name, "Bash") && !strings.EqualFold(tc.Name, "Shell") {
+		return false
+	}
+	cmd, _ := tc.Input["command"].(string)
+	if !strings.Contains(cmd, "karmax") {
+		return false
+	}
+	return strings.Contains(cmd, "comms.send") || strings.Contains(cmd, "comms_send")
+}
+
 // startAckWatchdog sends a lightweight acknowledgement to the originating chat
 // if the current turn is still running after a short delay, so the operator
 // sees the message was received even when reasoning takes a while. Returns a
@@ -1219,7 +1398,7 @@ func (a *Agent) startAckWatchdog(evt bus.Event) func() {
 		select {
 		case <-done:
 		case <-time.After(6 * time.Second):
-			if err := a.commsSend(channelID, target, "👀 on it…"); err != nil {
+			if err := a.commsSend(channelID, target, ackMessage); err != nil {
 				a.log.Warn("ack watchdog send failed", zap.Error(err))
 			} else {
 				a.log.Info("sent slow-turn ack", zap.String("channel", channelID))
@@ -1878,6 +2057,16 @@ func truncateStr(s string, maxLen int) string {
 
 func cleanOutboundResponse(s string) string {
 	return karmahelper.CleanContent(s)
+}
+
+// memorySource is where a turn came from, for tagging what it teaches.
+func (a *Agent) memorySource(evt bus.Event) memory.Source {
+	src := memory.Source{At: evt.Timestamp}
+	if evt.Kind == bus.EventCommsMessage && evt.Payload != nil {
+		src.Chat, _ = evt.Payload["channel_id"].(string)
+		src.Person, _ = evt.Payload["sender_id"].(string)
+	}
+	return src
 }
 
 // actingMember resolves the org member an event is on behalf of.

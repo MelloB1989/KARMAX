@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"github.com/MelloB1989/karmax/internal/memory"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSpeakableStripsWhatASynthesiserWouldReadAloud(t *testing.T) {
@@ -36,5 +38,54 @@ func TestIsLoopbackRefusesTheNetwork(t *testing.T) {
 		if isLoopback(bad) {
 			t.Errorf("%s must be refused", bad)
 		}
+	}
+}
+
+func TestVoiceSwitch(t *testing.T) {
+	for _, tc := range []struct {
+		voice, sarvam string
+		want          bool
+	}{
+		{"on", "", true},
+		{"ON", "", true},
+		{"off", "key", false},
+		{"", "key", true},
+		{"", "", false},
+	} {
+		t.Setenv("KARMAX_VOICE", tc.voice)
+		t.Setenv("SARVAM_API_KEY", tc.sarvam)
+		if got := voiceEnabled(); got != tc.want {
+			t.Errorf("KARMAX_VOICE=%q SARVAM=%q: enabled = %v, want %v", tc.voice, tc.sarvam, got, tc.want)
+		}
+	}
+}
+
+// GitLoom hits arrive with empty snippets and the body in Content. Reading
+// only the excerpt threw every hit away, so every call-time lookup was empty.
+func TestHitTextFallsBackToTheBody(t *testing.T) {
+	withBody := memory.SearchResult{Entry: memory.MemoryEntry{Content: "CampX: final report delivered 12 Sep"}}
+	if got := hitText(withBody); got != "CampX: final report delivered 12 Sep" {
+		t.Fatalf("hitText = %q, want the body when there is no excerpt", got)
+	}
+	withExcerpt := memory.SearchResult{Excerpt: "short", Entry: memory.MemoryEntry{Content: "long body"}}
+	if got := hitText(withExcerpt); got != "short" {
+		t.Fatalf("hitText = %q, want the excerpt when there is one", got)
+	}
+}
+
+// A slow memory layer must not hold up a reply: past the budget the turn goes
+// ahead without the head start.
+func TestPreAnswerLookupIsBounded(t *testing.T) {
+	slow := &voiceMemoryLookup{}
+	start := time.Now()
+	done := make(chan []string, 1)
+	go func() { done <- slow.linesWithin("anything", 5, 50*time.Millisecond) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("linesWithin did not return")
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("took %v", time.Since(start))
 	}
 }

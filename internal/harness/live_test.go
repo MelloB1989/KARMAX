@@ -20,7 +20,7 @@ func newMemStore() *memStore { return &memStore{rows: map[string]*SessionRecord{
 func (m *memStore) SaveHarnessSession(h SessionRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if old, ok := m.rows[h.Key]; ok {
+	if old, ok := m.rows[h.Key]; ok && old.HarnessSessionID == h.HarnessSessionID {
 		h.Turns, h.CostUSD = old.Turns, old.CostUSD
 		h.InputTokens, h.OutputTokens, h.CacheRead = old.InputTokens, old.OutputTokens, old.CacheRead
 	}
@@ -109,8 +109,7 @@ func TestLiveWarmSessionIsFastAndRemembers(t *testing.T) {
 		Policies: map[string]Policy{
 			"chat": {Model: "sonnet", Idle: time.Minute, TurnTimeout: 90 * time.Second, MaxTurns: 10},
 		},
-		Env:       os.Environ(),
-		Allowlist: map[string]bool{"karmax": true},
+		Env: os.Environ(),
 	}, st, NewBreaker(0.95, nil), testLog{t}, nil)
 	defer sup.Shutdown()
 

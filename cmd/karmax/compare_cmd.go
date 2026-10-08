@@ -148,8 +148,8 @@ func runCompare(ctx context.Context, namespace string, limit int, verbose bool) 
 			}
 		}
 		if rerr == nil {
-			remoteHits += len(rr.Hits)
-			for i, h := range rr.Hits {
+			remoteHits += len(rr.Memories)
+			for i, h := range rr.Memories {
 				if i >= topN {
 					break
 				}
@@ -210,7 +210,7 @@ func hitsOf(r *gitloom.RecallResult, err error) int {
 	if err != nil || r == nil {
 		return 0
 	}
-	return len(r.Hits)
+	return len(r.Memories)
 }
 
 func topLocal(r []memory.SearchResult, err error) string {
@@ -227,11 +227,11 @@ func topRemote(r *gitloom.RecallResult, err error) string {
 	if err != nil {
 		return "error: " + err.Error()
 	}
-	if r == nil || len(r.Hits) == 0 {
+	if r == nil || len(r.Memories) == 0 {
 		return "(nothing)"
 	}
-	return fmt.Sprintf("%s — %s", r.Hits[0].Path,
-		truncQ(strings.ReplaceAll(r.Hits[0].Snippet, "\n", " "), 80))
+	return fmt.Sprintf("%s — %s", r.Memories[0].Path,
+		truncQ(strings.ReplaceAll(r.Memories[0].Content, "\n", " "), 80))
 }
 
 func truncQ(s string, n int) string {

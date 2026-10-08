@@ -22,6 +22,9 @@ type MemoryEntry struct {
 	AccessCount int        `json:"access_count,omitempty"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
+	// OccurredAt is when what the memory is about happened, when that differs
+	// from when it was recorded. Zero means CreatedAt.
+	OccurredAt time.Time `json:"occurred_at,omitempty"`
 }
 
 type SearchResult struct {

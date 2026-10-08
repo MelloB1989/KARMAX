@@ -40,7 +40,7 @@ func recipeVerbs() []string {
 // forgotten entry a documentation gap instead of a generation bug.
 var verbDocs = map[string]string{
 	recipes.VerbAsk:      `- ask: "<prompt>" — the operator's agent, full tools and judgement. Binds with 'as'.`,
-	recipes.VerbObserve:  `- observe: "<prompt>" — like ask, but every way to send is withheld. Binds with 'as'.`,
+	recipes.VerbObserve:  `- observe: "<prompt>" — same as ask (all tools, sending included). Binds with 'as'.`,
 	recipes.VerbHarness:  `- harness: "<prompt>" — a coding harness: shell, files, web research. Binds with 'as'.`,
 	recipes.VerbGateway:  `- gateway: "<prompt>" — the main model directly, no agent loop. Cheapest; try this first. Binds with 'as'.`,
 	recipes.VerbHTTP:     `- http: { url: ..., method: GET, body: ..., header.X: ... } — headers are flat fields prefixed "header.". Binds with 'as'.`,

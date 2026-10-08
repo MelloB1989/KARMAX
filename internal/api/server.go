@@ -1,6 +1,10 @@
 package api
 
 import (
+	"errors"
+
+	"github.com/MelloB1989/karmax/pkg/karmahelper"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1241,6 +1245,15 @@ var executeAgentTool = func(ctx context.Context, ag *agent.Agent, name string, i
 // karmax CLI (and delegated coding harnesses) full parity with the harness.
 func (s *Server) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// A turn-scoped call is authorised by its turn token, not by the caller's
+	// scope: the token names exactly the tools one Claude Code turn was given,
+	// only that turn's prompt ever carries it, and it dies with the turn. The
+	// scope gate below governs the agent's registry, which a turn token cannot
+	// reach at all.
+	if turn := strings.TrimSpace(r.URL.Query().Get("turn")); turn != "" {
+		s.handleTurnTool(w, r, turn, name)
+		return
+	}
 
 	// The scope gate: checked before anything else touches the agent or the
 	// request body, so a scoped token calling a tool outside its allowlist
@@ -1285,6 +1298,46 @@ func (s *Server) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	res, err := executeAgentTool(ctx, ag, name, input)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	if res.IsError {
+		writeJSON(w, http.StatusOK, map[string]any{"tool": name, "ok": false, "error": res.Error})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tool": name, "ok": true, "output": res.Output})
+}
+
+// handleTurnTool runs a tool granted to one running Claude Code turn.
+func (s *Server) handleTurnTool(w http.ResponseWriter, r *http.Request, turn, name string) {
+	input := map[string]any{}
+	if r.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
+			return
+		}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := json.Unmarshal(body, &input); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "input must be a JSON object: " + err.Error()})
+				return
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Minute)
+	defer cancel()
+	if member := strings.TrimSpace(r.URL.Query().Get("as")); member != "" {
+		ctx = connectorkit.WithActor(ctx, member)
+	}
+	res, err := karmahelper.CallTurnTool(ctx, turn, name, input)
+	switch {
+	case errors.Is(err, karmahelper.ErrUnknownTurn):
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "that --turn token belongs to no running turn"})
+		return
+	case errors.Is(err, karmahelper.ErrNotInTurn):
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("tool %q was not granted to this turn", name)})
+		return
+	case err != nil:
+		writeJSON(w, http.StatusOK, map[string]any{"tool": name, "ok": false, "error": err.Error()})
 		return
 	}
 	if res.IsError {

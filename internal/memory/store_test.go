@@ -137,6 +137,10 @@ func managerWithGitLoom(t *testing.T, baseURL string) (*Manager, *store.Store) {
 func fakeGitLoom(t *testing.T, handle func(http.ResponseWriter, *http.Request) bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces" {
+			writeJSON(w, map[string]any{"status": "ok"})
+			return
+		}
 		if handle(w, r) {
 			return
 		}

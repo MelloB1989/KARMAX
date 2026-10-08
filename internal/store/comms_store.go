@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -112,4 +113,18 @@ func (s *Store) ListChannelMessages(channelID string, limit int) ([]StoredChanne
 		messages = append(messages, m)
 	}
 	return messages, nil
+}
+
+// HeardFromSince reports whether a chat has sent anything after a moment.
+func (s *Store) HeardFromSince(chatID string, since time.Time) bool {
+	rows, err := s.ListChannelMessages(chatID, 10)
+	if err != nil {
+		return false
+	}
+	for _, m := range rows {
+		if strings.EqualFold(m.Direction, "inbound") && m.CreatedAt.After(since) {
+			return true
+		}
+	}
+	return false
 }

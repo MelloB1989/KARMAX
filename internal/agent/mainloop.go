@@ -48,6 +48,7 @@ type MainModelConfig struct {
 func NewMainModelSession(cfg MainModelConfig, agentTools []tools.Tool, s *store.Store, agentID string, log *zap.Logger) (*MainModelSession, error) {
 	sess := karmahelper.NewSession(karmahelper.SessionConfig{
 		Kind:           "main",
+		SessionKey:     "main/" + agentID,
 		Provider:       cfg.Provider,
 		Model:          cfg.Model,
 		SystemPrompt:   cfg.SystemPrompt,
@@ -281,6 +282,10 @@ func truncateToolInput(in map[string]any) map[string]any {
 	}
 	return out
 }
+
+// RunsOnClaudeCode reports whether this session's turns go to Claude Code
+// rather than to a model API.
+func (m *MainModelSession) RunsOnClaudeCode() bool { return karmahelper.IsClaudeCode(m.provider) }
 
 // NeedsCompaction returns true when the accumulated token count has reached
 // or exceeded the compaction threshold.

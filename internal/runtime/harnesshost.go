@@ -83,22 +83,7 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	if root == "" {
 		root = filepath.Join(hostDataDir(), "sessions")
 	}
-	allow := map[string]bool{}
-	for _, c := range hc.Allowlist {
-		allow[strings.TrimSpace(c)] = true
-	}
-
-	policies := map[string]harness.Policy{}
-	for name, k := range hc.Kinds {
-		policies[name] = harness.Policy{
-			Model:       k.Model,
-			Idle:        parseDur(k.Idle, 10*time.Minute),
-			MaxTurns:    k.MaxTurns,
-			TurnTimeout: parseDur(k.TurnTimeout, 2*time.Minute),
-			MaxCostUSD:  k.MaxCostUSD,
-			Ephemeral:   k.Ephemeral,
-		}
-	}
+	policies := harnessPolicies(hc)
 
 	// The breaker announces both directions. A limiter that trips quietly is
 	// indistinguishable from a feature nobody uses.
@@ -128,9 +113,11 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		MaxLive:       hc.MaxLive,
 		Policies:      policies,
 		Env:           harnessEnviron(),
-		Allowlist:     allow,
 		CheapModel:    cheap,
 		FallbackModel: strings.TrimSpace(hc.FallbackModel),
+		OnBackgroundTurn: func(key, kind string, t harness.Turn) {
+			_ = rt.bus.Publish(backgroundTurnEvent(key, kind, t))
+		},
 	}, harnessStore{rt.store}, breaker, harnessLog{rt.log}, rt.auditHarnessTool)
 
 	// The brief every session inherits, at the DATA ROOT rather than the
@@ -159,25 +146,54 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	return sup
 }
 
-// auditHarnessTool records what a session did.
-//
-// Sessions run with a real shell, so this cannot prevent a bad action. It makes
-// one impossible to miss, which is the honest description of what an audit is.
-func (rt *KarmaxRuntime) auditHarnessTool(sessionKey string, tc harness.ToolCall, allowed bool) {
+// backgroundTurnEvent is the bus's record of a turn a session ran by itself.
+// Already accounted by the supervisor; this is what anything watching the
+// bus — a loop, the app — sees of it.
+func backgroundTurnEvent(key, kind string, t harness.Turn) bus.Event {
+	tools := make([]string, 0, len(t.ToolCalls))
+	for _, tc := range t.ToolCalls {
+		tools = append(tools, tc.Name)
+	}
+	payload := map[string]any{
+		"session":  key,
+		"kind":     kind,
+		"text":     t.Text,
+		"tools":    tools,
+		"cost_usd": t.CostUSD,
+		"model":    t.Model,
+	}
+	if t.Err != nil {
+		payload["error"] = t.Err.Error()
+	}
+	return bus.NewEvent(bus.EventHarnessBackgroundTurn, strings.TrimPrefix(key, "agent:"), payload)
+}
+
+// harnessPolicies turns the configured kinds into the supervisor's policies.
+func harnessPolicies(hc config.HarnessConfig) map[string]harness.Policy {
+	policies := map[string]harness.Policy{}
+	for name, k := range hc.Kinds {
+		policies[name] = harness.Policy{
+			Model:       k.Model,
+			Idle:        parseDur(k.Idle, 10*time.Minute),
+			MaxTurns:    k.MaxTurns,
+			TurnTimeout: parseDur(k.TurnTimeout, 2*time.Minute),
+			MaxCostUSD:  k.MaxCostUSD,
+			Ephemeral:   k.Ephemeral,
+			Launch:      k.Launch,
+			Name:        k.Name,
+			Resident:    k.Resident,
+		}
+	}
+	return policies
+}
+
+// auditHarnessTool records what a session ran; sessions are unrestricted by the operator's choice.
+func (rt *KarmaxRuntime) auditHarnessTool(sessionKey string, tc harness.ToolCall) {
 	rt.bus.Publish(bus.NewEvent(bus.EventToolCalled, "", map[string]any{
 		"tool":    "harness:" + tc.Name,
 		"session": sessionKey,
 		"command": tc.Command,
-		"allowed": allowed,
 	}))
-	if allowed {
-		return
-	}
-	rt.log.Warn("harness ran a command outside the allowlist",
-		zap.String("session", sessionKey), zap.String("command", tc.Command))
-	builtin.PushAppNotification(rt.store, "", "alert",
-		"Harness ran something unexpected",
-		fmt.Sprintf("Session %s ran %q, which is not on the allowlist.", sessionKey, tc.Command))
 }
 
 // harnessEnviron strips KARMAX's own model credentials from a session.
@@ -229,6 +245,9 @@ func (rt *KarmaxRuntime) startHarnessReaper(ctx context.Context) {
 	go func() {
 		t := time.NewTicker(time.Minute)
 		defer t.Stop()
+		// Resident kinds only (none unless configured): their inbox is bound
+		// from the start rather than from the first message after a restart.
+		rt.harness.ReviveResident(ctx)
 		for {
 			select {
 			case <-ctx.Done():
@@ -236,6 +255,7 @@ func (rt *KarmaxRuntime) startHarnessReaper(ctx context.Context) {
 				return
 			case now := <-t.C:
 				rt.harness.Reap(now)
+				rt.harness.ReviveResident(ctx)
 			}
 		}
 	}()
@@ -585,10 +605,18 @@ func (rt *KarmaxRuntime) wireHarnessBrains() {
 				zap.String("agent", a.Def().ID))
 			continue
 		}
-		a.SetHarnessBrain(agent.NewHarnessBrain(sender, "agent:"+a.Def().ID, "agent", fallback))
+		a.SetHarnessBrain(agent.NewHarnessBrain(sender, "agent:"+a.Def().ID, harnessKindOf(a.Def()), fallback))
 		rt.log.Info("harness: agent thinking routed to a session",
 			zap.String("agent", a.Def().ID))
 	}
+}
+
+// harnessKindOf is the harness kind an agent thinks in: its own, or "agent".
+func harnessKindOf(def agent.AgentDef) string {
+	if k := strings.TrimSpace(def.HarnessKind); k != "" {
+		return k
+	}
+	return "agent"
 }
 
 // harnessAnswer runs one prompt in a named long-lived session.

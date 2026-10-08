@@ -183,6 +183,20 @@ func (m *Manager) Write(entry MemoryEntry) error {
 }
 
 func (m *Manager) Search(query string, topK int) ([]SearchResult, error) {
+	return m.SearchWith(query, topK, SearchOpts{})
+}
+
+// SearchWith is Search narrowed by time and tags. A store that cannot filter
+// has its results trimmed to the time range afterwards.
+func (m *Manager) SearchWith(query string, topK int, opts SearchOpts) ([]SearchResult, error) {
+	res, err := m.search(query, topK, opts)
+	if err != nil || m.HasRemote() {
+		return res, err
+	}
+	return opts.within(res), nil
+}
+
+func (m *Manager) search(query string, topK int, opts SearchOpts) ([]SearchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -195,7 +209,7 @@ func (m *Manager) Search(query string, topK int) ([]SearchResult, error) {
 	// arm to combine it with any more, and no fallback to a store that no
 	// longer holds anything.
 	if m.remote != nil {
-		return m.remote.search(context.Background(), query, topK)
+		return m.remote.search(context.Background(), query, topK, opts)
 	}
 
 	entries, err := m.db.SearchMemoryEntries(m.namespace, query, topK)
@@ -655,6 +669,19 @@ var stopwords = map[string]bool{
 // each keyword individually, then scores results by how many keywords matched.
 // It also searches pageindex nodes and merges results.
 func (m *Manager) SearchSemantic(query string, topK int) ([]SearchResult, error) {
+	return m.SearchSemanticWith(query, topK, SearchOpts{})
+}
+
+// SearchSemanticWith is SearchSemantic narrowed by time and tags.
+func (m *Manager) SearchSemanticWith(query string, topK int, opts SearchOpts) ([]SearchResult, error) {
+	res, err := m.searchSemantic(query, topK, opts)
+	if err != nil || m.HasRemote() {
+		return res, err
+	}
+	return opts.within(res), nil
+}
+
+func (m *Manager) searchSemantic(query string, topK int, opts SearchOpts) ([]SearchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -670,7 +697,7 @@ func (m *Manager) SearchSemantic(query string, topK int) ([]SearchResult, error)
 	// daemon that has forgotten who it works for.
 	if m.remote != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), m.remote.cfg.Timeout)
-		results, err := m.remote.search(ctx, query, topK)
+		results, err := m.remote.search(ctx, query, topK, opts)
 		cancel()
 		if err == nil {
 			return results, nil

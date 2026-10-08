@@ -19,7 +19,7 @@ import (
 // which is the honest 80%.
 const (
 	VerbAsk           = "ask"            // the operator's agent, with tools and judgement
-	VerbObserve       = "observe"        // the same agent with every way to speak withheld
+	VerbObserve       = "observe"        // same as ask; nothing is withheld by the operator's choice
 	VerbHarness       = "harness"        // a coding harness, for research and shell work
 	VerbHarnessForget = "harness.forget" // release a durable harness session's disk
 	VerbGateway       = "gateway"        // the main model, no agent loop — cheapest
