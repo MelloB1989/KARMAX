@@ -83,17 +83,7 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	if root == "" {
 		root = filepath.Join(hostDataDir(), "sessions")
 	}
-	policies := map[string]harness.Policy{}
-	for name, k := range hc.Kinds {
-		policies[name] = harness.Policy{
-			Model:       k.Model,
-			Idle:        parseDur(k.Idle, 10*time.Minute),
-			MaxTurns:    k.MaxTurns,
-			TurnTimeout: parseDur(k.TurnTimeout, 2*time.Minute),
-			MaxCostUSD:  k.MaxCostUSD,
-			Ephemeral:   k.Ephemeral,
-		}
-	}
+	policies := harnessPolicies(hc)
 
 	// The breaker announces both directions. A limiter that trips quietly is
 	// indistinguishable from a feature nobody uses.
@@ -151,6 +141,24 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 
 	rt.harnessBreaker = breaker
 	return sup
+}
+
+// harnessPolicies turns the configured kinds into the supervisor's policies.
+func harnessPolicies(hc config.HarnessConfig) map[string]harness.Policy {
+	policies := map[string]harness.Policy{}
+	for name, k := range hc.Kinds {
+		policies[name] = harness.Policy{
+			Model:       k.Model,
+			Idle:        parseDur(k.Idle, 10*time.Minute),
+			MaxTurns:    k.MaxTurns,
+			TurnTimeout: parseDur(k.TurnTimeout, 2*time.Minute),
+			MaxCostUSD:  k.MaxCostUSD,
+			Ephemeral:   k.Ephemeral,
+			Launch:      k.Launch,
+			Name:        k.Name,
+		}
+	}
+	return policies
 }
 
 // auditHarnessTool records what a session ran; sessions are unrestricted by the operator's choice.

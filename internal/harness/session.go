@@ -38,6 +38,9 @@ type Session struct {
 	// MCPConfig is threaded from Options the same way Model and Thinking are,
 	// taking effect on the next spawn.
 	MCPConfig string
+	// Name and Launch come from the kind's policy, fixed at spawn.
+	Name   string
+	Launch []string
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
@@ -107,6 +110,9 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	if s.Effort != "" {
 		args = append(args, "--effort", s.Effort)
 	}
+	if s.Name != "" {
+		args = append(args, "--name", s.Name)
+	}
 	// The CLI's own degradation, one layer below the breaker's. The breaker
 	// acts on the account's published quota between turns; this catches a
 	// single model being overloaded DURING one, where there is nothing for
@@ -131,7 +137,8 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 		return fmt.Errorf("harness workdir: %w", err)
 	}
 
-	cmd := exec.Command(bin, args...)
+	name, argv := launchArgv(s.Launch, workdir, bin, args)
+	cmd := exec.Command(name, argv...)
 	cmd.Dir = workdir
 	cmd.Env = env
 	if s.Thinking {
@@ -184,6 +191,20 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 		}
 	}()
 	return nil
+}
+
+// launchArgv puts a kind's launch prefix before the binary, filling in
+// {workdir}. Without a prefix it is the binary and its arguments unchanged.
+func launchArgv(prefix []string, workdir, bin string, args []string) (string, []string) {
+	if len(prefix) == 0 {
+		return bin, args
+	}
+	argv := make([]string, 0, len(prefix)+len(args))
+	for _, p := range prefix[1:] {
+		argv = append(argv, strings.ReplaceAll(p, "{workdir}", workdir))
+	}
+	argv = append(argv, bin)
+	return strings.ReplaceAll(prefix[0], "{workdir}", workdir), append(argv, args...)
 }
 
 // EventKind is one thing a harness can say while a turn is running.
