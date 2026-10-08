@@ -65,13 +65,34 @@ func (t *memSearchTool) Manifest() tools.ToolManifest {
 		Name: "mem_search",
 		Description: "Semantic search over the operator's long-term memory (facts, decisions, projects, people, tasks, preferences). " +
 			"Run several focused queries with different keywords to be thorough.",
-		Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","description":"default 12"}},"required":["query"]}`),
+		Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","description":"default 12"},"since":{"type":"string","description":"Only memories whose subject happened on or after this date or RFC 3339 time."},"until":{"type":"string","description":"Only memories whose subject happened on or before this date or RFC 3339 time."},"chat":{"type":"string","description":"Only memories learned in this chat id."},"person":{"type":"string","description":"Only memories learned from this person id."}},"required":["query"]}`),
 	}
+}
+
+// opts reads the narrowing arguments, defaulting to the turn's window.
+func (t *memSearchTool) opts(ctx context.Context, in map[string]any) memory.SearchOpts {
+	loc := memory.OperatorLocation()
+	w := memory.WindowFrom(ctx)
+	if v, ok := memory.ParseWhen(strOr(in["since"], ""), loc, false); ok {
+		w.Since = v
+	}
+	if v, ok := memory.ParseWhen(strOr(in["until"], ""), loc, true); ok {
+		w.Until = v
+	}
+	o := memory.SearchOpts{Since: w.Since, Until: w.Until}
+	if tag := memory.ChatTag(strOr(in["chat"], "")); tag != "" {
+		o.TagsAll = append(o.TagsAll, tag)
+	}
+	if tag := memory.PersonTag(strOr(in["person"], "")); tag != "" {
+		o.TagsAll = append(o.TagsAll, tag)
+	}
+	return o
 }
 
 func (t *memSearchTool) Execute(ctx context.Context, in map[string]any) (tools.ToolResult, error) {
 	q, _ := in["query"].(string)
 	limit := intOr(in["limit"], 12)
+	opts := t.opts(ctx, in)
 
 	managers := t.searchIn(ctx)
 	var sb strings.Builder
@@ -79,7 +100,7 @@ func (t *memSearchTool) Execute(ctx context.Context, in map[string]any) (tools.T
 	var firstErr error
 
 	for _, m := range managers {
-		res, err := m.SearchSemantic(q, limit)
+		res, err := m.SearchSemanticWith(q, limit, opts)
 		if err != nil {
 			// One tier failing must not hide the other. A member namespace that
 			// has never been written to is the ordinary case, not an error
