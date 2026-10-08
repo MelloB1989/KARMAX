@@ -36,6 +36,11 @@ type Policy struct {
 	// Name is passed as --name, so other sessions can address this one by a
 	// name that outlives any one session id. Empty passes no flag.
 	Name string
+	// Resident sessions are never idle-reaped, never evicted and not counted
+	// in MaxLive, and one that dies is brought back by ReviveResident. A
+	// session other sessions message must stay up: a closed one has no inbox,
+	// and every message to it bounces.
+	Resident bool
 }
 
 // Store is what the supervisor needs to remember sessions across restarts.
@@ -406,9 +411,14 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 // candidate is tried instead.
 func (s *Supervisor) evictIfFull() {
 	s.mu.Lock()
-	over := len(s.live) >= s.cfg.MaxLive
+	n := 0
+	for _, sess := range s.live {
+		if !s.policy(sess.Kind).Resident {
+			n++
+		}
+	}
 	s.mu.Unlock()
-	if !over {
+	if n < s.cfg.MaxLive {
 		return
 	}
 	recs, err := s.store.ListHarnessSessions(HarnessLive, HarnessIdle)
@@ -417,6 +427,9 @@ func (s *Supervisor) evictIfFull() {
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].LastActivityAt.Before(recs[j].LastActivityAt) })
 	for _, r := range recs {
+		if s.policy(r.Kind).Resident {
+			continue
+		}
 		if s.CloseIfIdle(r.Key) {
 			s.log.Info("harness: at the session cap, evicted the least recently used", "key", r.Key)
 			return
@@ -534,7 +547,7 @@ func (s *Supervisor) Reap(now time.Time) {
 	}
 	for _, r := range recs {
 		pol := s.policy(r.Kind)
-		if pol.Idle <= 0 || now.Sub(r.LastActivityAt) <= pol.Idle {
+		if pol.Resident || pol.Idle <= 0 || now.Sub(r.LastActivityAt) <= pol.Idle {
 			continue
 		}
 		if s.CloseIfIdle(r.Key) {
@@ -544,6 +557,39 @@ func (s *Supervisor) Reap(now time.Time) {
 		// Busy sessions are left for the next tick, a minute later — a long
 		// turn does not update LastActivityAt until it finishes, so without
 		// this the reaper would go after the session doing the most work.
+	}
+}
+
+// ReviveResident restarts every resident session that is not running, so its
+// inbox is bound again without waiting for someone to message it.
+//
+// "Not running" is a dead row (a failed turn, a crash, a daemon restart) or a
+// live one whose process has gone. A closed row is left alone: closing is what
+// an operator does on purpose. The session comes back on its stored workdir
+// and resumes its transcript, and is left idle — no turn is run.
+func (s *Supervisor) ReviveResident(ctx context.Context) {
+	recs, err := s.store.ListHarnessSessions(HarnessDead, HarnessLive, HarnessIdle)
+	if err != nil {
+		return
+	}
+	for _, r := range recs {
+		pol := s.policy(r.Kind)
+		if !pol.Resident {
+			continue
+		}
+		s.mu.Lock()
+		running := s.live[r.Key].Alive()
+		s.mu.Unlock()
+		if running {
+			continue
+		}
+		sess, err := s.open(ctx, r.Key, r.Kind, pol, Options{Workdir: r.Workdir})
+		if err != nil {
+			s.log.Warn("harness: could not revive a resident session", "key", r.Key, "err", err.Error())
+			continue
+		}
+		sess.release()
+		s.log.Info("harness: revived a resident session", "key", r.Key)
 	}
 }
 
@@ -585,8 +631,18 @@ func (s *Supervisor) Live() []string {
 }
 
 // Shutdown closes every live session, so a daemon stop does not leak processes.
+//
+// A resident session's row is marked dead rather than closed: the daemon
+// stopping is not an operator closing it, and the next start revives it.
 func (s *Supervisor) Shutdown() {
 	for _, k := range s.Live() {
+		s.mu.Lock()
+		sess := s.live[k]
+		s.mu.Unlock()
+		if sess != nil && s.policy(sess.Kind).Resident {
+			s.kill(k, HarnessDead, "daemon stopped")
+			continue
+		}
 		s.Close(k)
 	}
 }

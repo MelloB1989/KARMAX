@@ -480,6 +480,10 @@ func (s *Session) Busy() bool { return s != nil && s.busy.Load() }
 // the claim when the turn ends.
 func (s *Session) claim() { s.busy.Store(true) }
 
+// release undoes a claim for a session opened with no turn to run, such as a
+// revived resident one.
+func (s *Session) release() { s.busy.Store(false) }
+
 // Alive reports whether the process is still running.
 func (s *Session) Alive() bool {
 	if s == nil || s.cmd == nil || s.cmd.Process == nil {
