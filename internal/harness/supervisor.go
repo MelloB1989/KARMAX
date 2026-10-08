@@ -74,7 +74,6 @@ type Config struct {
 	MaxLive     int
 	Policies    map[string]Policy
 	Env         []string
-	Allowlist   map[string]bool
 	// CheapModel is the tier every session drops to once KARMAX is past its
 	// share of the account's window. It is not a lesser engine to fall out to
 	// — it is the same one, thinking less hard, which is what keeps the agent
@@ -91,7 +90,7 @@ type Supervisor struct {
 	store   Store
 	breaker *Breaker
 	log     Logger
-	audit   func(sessionKey string, tc ToolCall, allowed bool)
+	audit   func(sessionKey string, tc ToolCall)
 
 	mu   sync.Mutex
 	live map[string]*Session
@@ -103,7 +102,7 @@ type Logger interface {
 	Warn(msg string, kv ...any)
 }
 
-func New(cfg Config, st Store, br *Breaker, log Logger, audit func(string, ToolCall, bool)) *Supervisor {
+func New(cfg Config, st Store, br *Breaker, log Logger, audit func(string, ToolCall)) *Supervisor {
 	if cfg.MaxLive <= 0 {
 		cfg.MaxLive = 6
 	}
@@ -209,10 +208,9 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	// including the ones that fail.
 	s.breaker.Observe(turn.Limits)
 
-	for _, tc := range turn.ToolCalls {
-		allowed := tc.Command == "" || s.cfg.Allowlist[tc.Command]
-		if s.audit != nil {
-			s.audit(key, tc, allowed)
+	if s.audit != nil {
+		for _, tc := range turn.ToolCalls {
+			s.audit(key, tc)
 		}
 	}
 

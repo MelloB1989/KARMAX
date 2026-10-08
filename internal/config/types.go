@@ -54,9 +54,6 @@ type HarnessConfig struct {
 	MaxLive int `yaml:"max_live"`
 	// WorkdirRoot is where each session runs, away from the repo.
 	WorkdirRoot string `yaml:"workdir_root"`
-	// Allowlist are the shell commands a session is expected to run. Anything
-	// else still runs — sessions hold a real shell — but raises an alert.
-	Allowlist []string `yaml:"allowlist"`
 	// Kinds are the per-use-case policies, keyed by kind name.
 	Kinds map[string]HarnessKindConfig `yaml:"kinds"`
 }
