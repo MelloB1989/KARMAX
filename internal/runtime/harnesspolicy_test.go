@@ -19,6 +19,7 @@ kinds:
     model: sonnet
     idle: 30m
     name: karmax
+    resident: true
     launch: [docker, exec, -i, -w, "{workdir}", karmax-brain]
   chat:
     model: sonnet
@@ -28,14 +29,14 @@ kinds:
 	}
 	pols := harnessPolicies(hc)
 	agent := pols["agent"]
-	if agent.Name != "karmax" || agent.Idle != 30*time.Minute {
+	if agent.Name != "karmax" || agent.Idle != 30*time.Minute || !agent.Resident {
 		t.Errorf("agent policy = %+v", agent)
 	}
 	if !slices.Equal(agent.Launch, []string{"docker", "exec", "-i", "-w", "{workdir}", "karmax-brain"}) {
 		t.Errorf("agent launch = %q", agent.Launch)
 	}
 	// A kind that says nothing about the fleet runs exactly as before.
-	if chat := pols["chat"]; chat.Name != "" || chat.Launch != nil {
+	if chat := pols["chat"]; chat.Name != "" || chat.Launch != nil || chat.Resident {
 		t.Errorf("chat picked up fleet settings it never asked for: %+v", chat)
 	}
 }

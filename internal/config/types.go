@@ -74,6 +74,10 @@ type HarnessKindConfig struct {
 	// Name is passed to the CLI as --name: what other Claude Code sessions
 	// call this one when they message it. Empty passes no flag.
 	Name string `yaml:"name"`
+	// Resident keeps this kind's sessions up: never idle-reaped, never
+	// evicted, not counted in max_live, and revived if one dies. For a
+	// session other sessions message, which has no inbox while it is down.
+	Resident bool `yaml:"resident"`
 }
 
 // DatabaseConfig points the store at a backend. See store.ParseDSN for the

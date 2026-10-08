@@ -156,6 +156,7 @@ func harnessPolicies(hc config.HarnessConfig) map[string]harness.Policy {
 			Ephemeral:   k.Ephemeral,
 			Launch:      k.Launch,
 			Name:        k.Name,
+			Resident:    k.Resident,
 		}
 	}
 	return policies
@@ -219,6 +220,9 @@ func (rt *KarmaxRuntime) startHarnessReaper(ctx context.Context) {
 	go func() {
 		t := time.NewTicker(time.Minute)
 		defer t.Stop()
+		// Resident kinds only (none unless configured): their inbox is bound
+		// from the start rather than from the first message after a restart.
+		rt.harness.ReviveResident(ctx)
 		for {
 			select {
 			case <-ctx.Done():
@@ -226,6 +230,7 @@ func (rt *KarmaxRuntime) startHarnessReaper(ctx context.Context) {
 				return
 			case now := <-t.C:
 				rt.harness.Reap(now)
+				rt.harness.ReviveResident(ctx)
 			}
 		}
 	}()
