@@ -97,6 +97,11 @@ type Config struct {
 	// FallbackModel is handed to the CLI so it degrades on its own when a
 	// model is overloaded, without a round trip through here.
 	FallbackModel string
+	// OnBackgroundTurn hears every turn a session ran without being asked —
+	// a message from another session arriving while it was idle starts one.
+	// The turn is already accounted (usage, breaker, audit) before this is
+	// called. Nil drops it after accounting.
+	OnBackgroundTurn func(key, kind string, t Turn)
 }
 
 // Supervisor owns every live harness session.
@@ -251,6 +256,24 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	return turn, nil
 }
 
+// background accounts a turn a session ran without being asked, exactly as
+// SendWith accounts one it was asked for, then hands it to OnBackgroundTurn.
+func (s *Supervisor) background(key, kind string, t Turn) {
+	s.breaker.Observe(t.Limits)
+	if s.audit != nil {
+		for _, tc := range t.ToolCalls {
+			s.audit(key, tc)
+		}
+	}
+	_ = s.store.RecordHarnessTurn(key, t.CostUSD, t.Usage.InputTokens,
+		t.Usage.OutputTokens, t.Usage.CacheReadTokens, time.Now())
+	s.log.Info("harness: a session ran a turn by itself", "key", key, "kind", kind,
+		"tools", len(t.ToolCalls))
+	if s.cfg.OnBackgroundTurn != nil {
+		s.cfg.OnBackgroundTurn(key, kind, t)
+	}
+}
+
 // needsRespawn reports whether a live session must restart before this turn
 // to honour the model and effort the turn itself asked for.
 //
@@ -349,6 +372,7 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
 		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig,
 		Name: pol.Name, Launch: pol.Launch}
+	sess.onBackground = func(t Turn) { s.background(key, kind, t) }
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
 	// sweep can find; the reverse leaves a process nothing knows about.

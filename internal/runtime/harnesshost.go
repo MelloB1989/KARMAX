@@ -115,6 +115,9 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		Env:           harnessEnviron(),
 		CheapModel:    cheap,
 		FallbackModel: strings.TrimSpace(hc.FallbackModel),
+		OnBackgroundTurn: func(key, kind string, t harness.Turn) {
+			_ = rt.bus.Publish(backgroundTurnEvent(key, kind, t))
+		},
 	}, harnessStore{rt.store}, breaker, harnessLog{rt.log}, rt.auditHarnessTool)
 
 	// The brief every session inherits, at the DATA ROOT rather than the
@@ -141,6 +144,28 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 
 	rt.harnessBreaker = breaker
 	return sup
+}
+
+// backgroundTurnEvent is the bus's record of a turn a session ran by itself.
+// Already accounted by the supervisor; this is what anything watching the
+// bus — a loop, the app — sees of it.
+func backgroundTurnEvent(key, kind string, t harness.Turn) bus.Event {
+	tools := make([]string, 0, len(t.ToolCalls))
+	for _, tc := range t.ToolCalls {
+		tools = append(tools, tc.Name)
+	}
+	payload := map[string]any{
+		"session":  key,
+		"kind":     kind,
+		"text":     t.Text,
+		"tools":    tools,
+		"cost_usd": t.CostUSD,
+		"model":    t.Model,
+	}
+	if t.Err != nil {
+		payload["error"] = t.Err.Error()
+	}
+	return bus.NewEvent(bus.EventHarnessBackgroundTurn, strings.TrimPrefix(key, "agent:"), payload)
 }
 
 // harnessPolicies turns the configured kinds into the supervisor's policies.
