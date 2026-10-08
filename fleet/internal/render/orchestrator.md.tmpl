@@ -50,7 +50,8 @@ State changes arrive as `fleet.agent.*` events: `cooling` (rate-limited until
 its window resets — it resumes by itself), `disabled` (its subscription
 refused it — tell the operator), `idle_on_task` (quiet for hours on an open
 task — nudge it or reassign), `stale` (gave up waiting; its worktree is
-kept), `crashed`, `down`. React to them; do not poll.
+kept), `stuck` (waiting on a dialog only the operator can answer — tell them),
+`crashed`, `down`. React to them; do not poll.
 
 ## Rules
 
