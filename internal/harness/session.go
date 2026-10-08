@@ -74,9 +74,9 @@ type Session struct {
 	// event buffer with nobody reading it, stalled the process, and its result
 	// was handed to the next caller as their reply.
 	route        sync.Mutex
-	waiting      bool      // a Send is reading events
-	bg           *bgTurn   // an unsolicited turn in progress
-	prelude      []event   // housekeeping lines seen between turns
+	waiting      bool       // a Send is reading events
+	bg           *bgTurn    // an unsolicited turn in progress
+	prelude      []event    // housekeeping lines seen between turns
 	onBackground func(Turn) // set before spawn; nil drops background turns
 
 	// busy is true while a turn is in flight.
