@@ -357,7 +357,7 @@ func (g *gitloomBackend) load(ctx context.Context, path string) (*MemoryEntry, e
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
-	m, err := g.client.Get(cctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	m, err := g.current(cctx, path)
 	if err != nil {
 		if isAbsent(err) {
 			return nil, nil
@@ -385,7 +385,8 @@ func (g *gitloomBackend) append(ctx context.Context, path, content string) error
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
-	existing, err := g.client.Get(cctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	defer g.lockPath(path)()
+	existing, err := g.current(cctx, path)
 	if err != nil {
 		g.setHealth(false, err)
 		return err
@@ -399,8 +400,9 @@ func (g *gitloomBackend) append(ctx context.Context, path, content string) error
 	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
 	merged.Related = unionStrings(existing.Related, merged.Related, 32)
 	merged.Confidence = existing.Confidence
-	merged.OccurredAt = gitloom.At(laterOf(existing.OccurredAt, now))
-	return g.put(cctx, merged)
+	occurred := laterOf(existing.OccurredAt, now)
+	merged.OccurredAt = gitloom.At(occurred)
+	return g.put(cctx, merged, occurred)
 }
 
 // update rewrites one memory's text, keeping its metadata.
@@ -408,7 +410,8 @@ func (g *gitloomBackend) update(ctx context.Context, path, content string) error
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
-	existing, err := g.client.Get(cctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	defer g.lockPath(path)()
+	existing, err := g.current(cctx, path)
 	if err != nil {
 		g.setHealth(false, err)
 		return err
@@ -421,7 +424,11 @@ func (g *gitloomBackend) update(ctx context.Context, path, content string) error
 			m.OccurredAt = gitloom.At(existing.OccurredAt)
 		}
 	}
-	return g.put(cctx, m)
+	var occurred time.Time
+	if existing != nil {
+		occurred = existing.OccurredAt
+	}
+	return g.put(cctx, m, occurred)
 }
 
 // fromStored converts local rows to the shared entry shape.
