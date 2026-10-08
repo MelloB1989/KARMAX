@@ -63,6 +63,10 @@ type gitloomBackend struct {
 	// nsReady is set once the namespace is known to exist.
 	nsReady atomic.Bool
 	nsMu    sync.Mutex
+
+	pmu       sync.Mutex
+	pathLocks map[string]*sync.Mutex
+	pending   map[string]pendingWrite
 }
 
 // GitLoomConfigFromEnv reads the remote memory settings. Returns ok=false when
@@ -105,6 +109,9 @@ func newGitLoomBackend(cfg GitLoomConfig, log *zap.Logger) *gitloomBackend {
 		log:     log,
 		healthy: true,
 		loc:     loc,
+
+		pathLocks: map[string]*sync.Mutex{},
+		pending:   map[string]pendingWrite{},
 	}
 }
 
@@ -127,12 +134,13 @@ func (g *gitloomBackend) ensureNamespace(ctx context.Context) error {
 }
 
 // put writes formed memories, creating the namespace first.
-func (g *gitloomBackend) put(ctx context.Context, ms ...gitloom.NewMemory) error {
+func (g *gitloomBackend) put(ctx context.Context, m gitloom.NewMemory, occurred time.Time) error {
 	if err := g.ensureNamespace(ctx); err != nil {
 		g.setHealth(false, err)
 		return err
 	}
-	err := g.client.Write(ctx, ms, &gitloom.WriteOptions{Namespace: g.cfg.Namespace, Timezone: g.cfg.Timezone})
+	sentAt := time.Now()
+	err := g.client.Write(ctx, []gitloom.NewMemory{m}, &gitloom.WriteOptions{Namespace: g.cfg.Namespace, Timezone: g.cfg.Timezone})
 	if err != nil {
 		if isNamespaceMissing(err) {
 			g.nsReady.Store(false)
@@ -140,6 +148,7 @@ func (g *gitloomBackend) put(ctx context.Context, ms ...gitloom.NewMemory) error
 		g.setHealth(false, err)
 		return err
 	}
+	g.remember(m, occurred, sentAt)
 	g.setHealth(true, nil)
 	return nil
 }
@@ -173,12 +182,13 @@ func (g *gitloomBackend) write(ctx context.Context, e MemoryEntry, path string, 
 		g.setHealth(false, err)
 		return err
 	}
-	merged, err := g.foldOntoStored(cctx, ToGitLoom(e, path, related), EventTime(e))
+	defer g.lockPath(path)()
+	merged, occurred, err := g.foldOntoStored(cctx, ToGitLoom(e, path, related), EventTime(e))
 	if err != nil {
 		g.setHealth(false, err)
 		return err
 	}
-	return g.put(cctx, merged)
+	return g.put(cctx, merged, occurred)
 }
 
 // forgetSection removes ONE dated fact from the document that holds its
@@ -192,7 +202,8 @@ func (g *gitloomBackend) forgetSection(ctx context.Context, file, slug string) e
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
-	existing, err := g.client.Get(cctx, file, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	defer g.lockPath(file)()
+	existing, err := g.current(cctx, file)
 	if err != nil {
 		if isAbsent(err) {
 			return nil // already gone
@@ -219,12 +230,13 @@ func (g *gitloomBackend) forgetSection(ctx context.Context, file, slug string) e
 	if !existing.OccurredAt.IsZero() {
 		out.OccurredAt = gitloom.At(existing.OccurredAt)
 	}
-	return g.put(cctx, out)
+	return g.put(cctx, out, existing.OccurredAt)
 }
 
 func (g *gitloomBackend) forget(ctx context.Context, path string) error {
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
+	g.dropPending(path)
 	if err := g.client.Forget(cctx, []string{path}, nil); err != nil {
 		g.setHealth(false, err)
 		return err
@@ -242,25 +254,26 @@ func (g *gitloomBackend) forget(ctx context.Context, path string) error {
 // as "nothing to preserve" — which is exactly what happened when an older API
 // returned only the text before the first ## header for a file written
 // entirely as sections.
-func (g *gitloomBackend) foldOntoStored(ctx context.Context, m gitloom.NewMemory, at time.Time) (gitloom.NewMemory, error) {
-	existing, err := g.client.Get(ctx, m.Path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+func (g *gitloomBackend) foldOntoStored(ctx context.Context, m gitloom.NewMemory, at time.Time) (gitloom.NewMemory, time.Time, error) {
+	existing, err := g.current(ctx, m.Path)
 	switch {
 	case isAbsent(err):
-		return m, nil // first memory about this subject
+		return m, at, nil // first memory about this subject
 	case err != nil:
-		return m, fmt.Errorf("gitloom: could not read %s to preserve it: %w", m.Path, err)
+		return m, at, fmt.Errorf("gitloom: could not read %s to preserve it: %w", m.Path, err)
 	case existing == nil || strings.TrimSpace(existing.Content) == "":
-		return m, fmt.Errorf("gitloom: %s read back empty; refusing to overwrite what is there", m.Path)
+		return m, at, fmt.Errorf("gitloom: %s read back empty; refusing to overwrite what is there", m.Path)
 	}
 	merged := AppendSection(existing.Content, m, at, g.loc)
 	merged.Tags = unionTags(userTags(existing), merged.Tags)
 	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
 	merged.Related = unionStrings(existing.Related, merged.Related, 32)
 	// The file is dated by its newest fact.
-	if latest := laterOf(existing.OccurredAt, at); !latest.IsZero() {
+	latest := laterOf(existing.OccurredAt, at)
+	if !latest.IsZero() {
 		merged.OccurredAt = gitloom.At(latest)
 	}
-	return merged, nil
+	return merged, latest, nil
 }
 
 // isNotFound reports the API's "no memory at that path", which is the normal

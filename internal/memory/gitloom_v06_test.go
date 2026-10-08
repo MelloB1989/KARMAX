@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -276,5 +277,144 @@ func TestParseWhen(t *testing.T) {
 	}
 	if _, ok := ParseWhen("last tuesday", loc, false); ok {
 		t.Error("prose parsed as a time")
+	}
+}
+
+// slowStore is a backend whose writes land after a delay, as the real one's do.
+type slowStore struct {
+	mu    sync.Mutex
+	files map[string]string
+	delay time.Duration
+	wg    sync.WaitGroup
+	// prev chains applications so they land in arrival order, as a per-namespace
+	// write queue does.
+	prev chan struct{}
+}
+
+func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces":
+		writeJSON(w, map[string]any{"status": "ok"})
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/memories":
+		var body struct {
+			Memories []struct{ Path, Content string } `json:"memories"`
+		}
+		_ = decodeJSON(r, &body)
+		s.wg.Add(1)
+		s.mu.Lock()
+		before, mine := s.prev, make(chan struct{})
+		s.prev = mine
+		s.mu.Unlock()
+		go func() {
+			defer s.wg.Done()
+			defer close(mine)
+			if before != nil {
+				<-before
+			}
+			time.Sleep(s.delay)
+			s.mu.Lock()
+			for _, m := range body.Memories {
+				s.files[m.Path] = m.Content
+			}
+			s.mu.Unlock()
+		}()
+		writeJSON(w, map[string]any{"written": 1})
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories"):
+		s.mu.Lock()
+		c, ok := s.files[r.URL.Query().Get("path")]
+		s.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, map[string]any{"error": map[string]any{"code": "not_found", "message": "no memory"}})
+			return
+		}
+		writeJSON(w, map[string]any{"path": r.URL.Query().Get("path"), "content": c, "updated_at": time.Now().Unix() - 3600})
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *slowStore) final(path string) string {
+	s.wg.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.files[path]
+}
+
+// A write whose read-before-write cannot yet see the previous one must still
+// carry it, or the first fact about a subject is silently replaced.
+func TestQuickWritesToOneSubjectLoseNothingOnASlowStore(t *testing.T) {
+	st := &slowStore{files: map[string]string{}, delay: 150 * time.Millisecond}
+	srv := httptest.NewServer(http.HandlerFunc(st.handler))
+	t.Cleanup(srv.Close)
+	m, _ := managerWithGitLoom(t, srv.URL)
+
+	facts := []string{"alpha is first", "bravo is second", "charlie is third", "delta is fourth"}
+	for _, f := range facts {
+		if err := m.Write(MemoryEntry{Role: "user", Content: f, Category: "project", Tags: []string{"subject"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := st.final("facts/projects/subject.md")
+	for _, f := range facts {
+		if !strings.Contains(got, f) {
+			t.Errorf("%q was lost:\n%s", f, got)
+		}
+	}
+}
+
+// The same from many goroutines at once, through the backend directly (the
+// manager's own lock would hide it). Run with -race.
+func TestConcurrentWritesToOnePathLoseNothingOnASlowStore(t *testing.T) {
+	st := &slowStore{files: map[string]string{}, delay: 80 * time.Millisecond}
+	srv := httptest.NewServer(http.HandlerFunc(st.handler))
+	t.Cleanup(srv.Close)
+	m, _ := managerWithGitLoom(t, srv.URL)
+	m.mu.Lock()
+	g := m.remote
+	m.mu.Unlock()
+
+	const n = 12
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			e := MemoryEntry{Content: fmt.Sprintf("fact-%02d about the subject", i), Category: "project", Tags: []string{"subject"}}
+			if err := g.write(context.Background(), e, "facts/projects/subject.md", nil); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	got := st.final("facts/projects/subject.md")
+	for i := 0; i < n; i++ {
+		if f := fmt.Sprintf("fact-%02d", i); !strings.Contains(got, f) {
+			t.Errorf("%s was lost", f)
+		}
+	}
+}
+
+// Once the server holds what was written, its copy is trusted again.
+func TestServerCopyWinsOnceItHasCaughtUp(t *testing.T) {
+	st := &slowStore{files: map[string]string{}, delay: time.Millisecond}
+	srv := httptest.NewServer(http.HandlerFunc(st.handler))
+	t.Cleanup(srv.Close)
+	m, _ := managerWithGitLoom(t, srv.URL)
+	m.mu.Lock()
+	g := m.remote
+	m.mu.Unlock()
+
+	if err := m.Write(MemoryEntry{Content: "first fact here", Category: "project", Tags: []string{"s"}}); err != nil {
+		t.Fatal(err)
+	}
+	st.final("facts/projects/s.md")
+	// Another writer changes the file after KARMAX's write landed.
+	st.mu.Lock()
+	st.files["facts/projects/s.md"] += "\n\n## other writer\n\nsomething else"
+	st.mu.Unlock()
+	cur, err := g.current(context.Background(), "facts/projects/s.md")
+	if err != nil || !strings.Contains(cur.Content, "other writer") {
+		t.Fatalf("current = %v, %v; want the server's newer copy", cur, err)
 	}
 }
