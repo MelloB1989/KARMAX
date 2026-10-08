@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -188,6 +189,42 @@ done
 	send(t, sup, "later")
 	time.Sleep(500 * time.Millisecond)
 	if got := send(t, sup, "next"); strings.TrimSpace(got) != "ok" {
+		t.Fatalf("next reply = %q", got)
+	}
+}
+
+// A caller that gives up waiting behind a background turn has not seen the
+// session fail: the turn another session asked for is still running and must
+// not be killed for it.
+func TestGivingUpOnABackgroundTurnLeavesTheSessionAlone(t *testing.T) {
+	st := newMemStore()
+	rec := newBGRecorder()
+	sup := New(Config{
+		Binary: writeScript(t, `while IFS= read -r line; do
+  case "$line" in
+    *later*) `+resultNow+`; ( sleep 0.1; `+assistantBG+`; sleep 2; `+resultBG+` ) & ;;
+    *) `+resultOK+` ;;
+  esac
+done
+`), WorkdirRoot: t.TempDir(), MaxLive: 4, Env: os.Environ(),
+		Policies:         map[string]Policy{"agent": {TurnTimeout: 500 * time.Millisecond, Idle: time.Minute}},
+		OnBackgroundTurn: rec.record,
+	}, st, NewBreaker(0.95, nil), testLog{t}, nil)
+	t.Cleanup(sup.Shutdown)
+	send(t, sup, "later")
+	time.Sleep(300 * time.Millisecond)
+
+	_, err := sup.Send(context.Background(), "agent:k", "agent", "mine")
+	if !errors.Is(err, ErrSessionBusy) {
+		t.Fatalf("err = %v, want ErrSessionBusy", err)
+	}
+	if r, _ := st.GetHarnessSession("agent:k"); r.State == HarnessDead {
+		t.Fatal("the session was killed for being busy")
+	}
+	if bg := rec.wait(t); bg.Text != "bg" {
+		t.Fatalf("the background turn did not finish: %+v", bg)
+	}
+	if got := send(t, sup, "again"); got != "ok" {
 		t.Fatalf("next reply = %q", got)
 	}
 }

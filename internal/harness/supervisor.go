@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,6 +115,16 @@ type Supervisor struct {
 
 	mu   sync.Mutex
 	live map[string]*Session
+
+	// opening serialises open per key: two callers resuming the same dead
+	// session at once (ReviveResident and a message, at daemon start) would
+	// otherwise spawn two processes on one transcript and lose track of one.
+	opening sync.Map // key → *sync.Mutex
+}
+
+func (s *Supervisor) keyLock(key string) *sync.Mutex {
+	m, _ := s.opening.LoadOrStore(key, &sync.Mutex{})
+	return m.(*sync.Mutex)
 }
 
 // Logger is the small slice of logging this package needs.
@@ -235,6 +246,11 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	}
 
 	now := time.Now()
+	if errors.Is(err, ErrSessionBusy) {
+		// Nothing was written and nothing failed: the session is busy with a
+		// turn another session asked for, and killing it would lose that.
+		return turn, err
+	}
 	if err != nil {
 		// A failed turn leaves a process that may still be mid-thought. Drop it
 		// and let the next call resume the transcript instead.
@@ -297,6 +313,14 @@ func needsRespawn(sess *Session, model, effort string) bool {
 // whose transcript we know is resumed, which brings its context back; only a
 // genuinely new key starts cold.
 func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt Options) (*Session, error) {
+	l := s.keyLock(key)
+	l.Lock()
+	defer l.Unlock()
+	return s.openLocked(ctx, key, kind, pol, opt)
+}
+
+// openLocked is open, with the key's lock held by the caller.
+func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Policy, opt Options) (*Session, error) {
 	requested := strings.TrimSpace(opt.Model)
 	wantModel := pol.Model
 	if requested != "" {
@@ -471,12 +495,21 @@ func (s *Supervisor) evictIfFull() {
 }
 
 // Close ends a session unconditionally. Ephemeral kinds forget it entirely.
-func (s *Supervisor) Close(key string) {
+// A resident session is left revivable: every caller of Close is on its way
+// to a next turn (a model change, the turn limit), not ending the
+// conversation.
+func (s *Supervisor) Close(key string) { s.closeKey(key, false) }
+
+// Retire is the operator closing a session on purpose: exactly Close, except
+// that a resident session stays closed until someone writes to it.
+func (s *Supervisor) Retire(key string) { s.closeKey(key, true) }
+
+func (s *Supervisor) closeKey(key string, retire bool) {
 	s.mu.Lock()
 	sess := s.live[key]
 	delete(s.live, key)
 	s.mu.Unlock()
-	s.teardown(key, sess)
+	s.teardown(key, sess, retire)
 }
 
 // CloseIfIdle closes key only if it is not busy, checking Busy and removing
@@ -513,13 +546,13 @@ func (s *Supervisor) CloseIfIdle(key string) bool {
 	}
 	delete(s.live, key)
 	s.mu.Unlock()
-	s.teardown(key, sess) // sess is nil when !ok; teardown already handles that
+	s.teardown(key, sess, false) // sess is nil when !ok; teardown already handles that
 	return true
 }
 
 // teardown is the slow, unlocked part Close and CloseIfIdle share: stop the
 // process, then record or forget the session.
-func (s *Supervisor) teardown(key string, sess *Session) {
+func (s *Supervisor) teardown(key string, sess *Session, retire bool) {
 	if sess != nil {
 		sess.Close()
 	}
@@ -529,6 +562,11 @@ func (s *Supervisor) teardown(key string, sess *Session) {
 		if rec.Workdir != "" {
 			_ = os.RemoveAll(rec.Workdir)
 		}
+		return
+	}
+	if rec != nil && !retire && s.policy(rec.Kind).Resident {
+		// Dead, not closed, so ReviveResident binds its inbox again.
+		_ = s.store.SetHarnessState(key, HarnessDead, "closed; a resident session comes back", time.Now())
 		return
 	}
 	_ = s.store.SetHarnessState(key, HarnessClosed, "", time.Now())
@@ -601,20 +639,29 @@ func (s *Supervisor) ReviveResident(ctx context.Context) {
 		if !pol.Resident {
 			continue
 		}
-		s.mu.Lock()
-		running := s.live[r.Key].Alive()
-		s.mu.Unlock()
-		if running {
-			continue
-		}
-		sess, err := s.open(ctx, r.Key, r.Kind, pol, Options{Workdir: r.Workdir})
-		if err != nil {
-			s.log.Warn("harness: could not revive a resident session", "key", r.Key, "err", err.Error())
-			continue
-		}
-		sess.release()
-		s.log.Info("harness: revived a resident session", "key", r.Key)
+		s.reviveOne(ctx, r, pol)
 	}
+}
+
+func (s *Supervisor) reviveOne(ctx context.Context, r SessionRecord, pol Policy) {
+	// Checked under the key's lock: a message that opened it a moment ago
+	// has a live session, and that one is its caller's, not ours to touch.
+	l := s.keyLock(r.Key)
+	l.Lock()
+	defer l.Unlock()
+	s.mu.Lock()
+	running := s.live[r.Key].Alive()
+	s.mu.Unlock()
+	if running {
+		return
+	}
+	sess, err := s.openLocked(ctx, r.Key, r.Kind, pol, Options{Workdir: r.Workdir})
+	if err != nil {
+		s.log.Warn("harness: could not revive a resident session", "key", r.Key, "err", err.Error())
+		return
+	}
+	sess.release()
+	s.log.Info("harness: revived a resident session", "key", r.Key)
 }
 
 // ReapOrphans runs at startup, when every pid in the table belongs to a process

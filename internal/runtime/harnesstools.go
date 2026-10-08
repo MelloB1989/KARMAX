@@ -205,7 +205,9 @@ func (t *harnessCloseTool) Execute(ctx context.Context, in map[string]any) (tool
 	// writer synchronization (see session.go) means this can no longer
 	// corrupt the session it interrupts; it can only interrupt it, which is
 	// what was asked for.
-	rt.harness.Close(key)
+	// Retire, not Close: for a resident session (the fleet's orchestrator)
+	// this is the one close that should stick.
+	rt.harness.Retire(key)
 	return tools.SuccessResult(map[string]any{"closed": key}), nil
 }
 
