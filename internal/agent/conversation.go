@@ -42,6 +42,10 @@ type Conversations struct {
 	mu     sync.Mutex
 	byID   map[string]*gitloom.Conversation
 	broken map[string]time.Time
+	// locks serialise work on one conversation: a gitloom.Conversation keeps its
+	// window in memory and is not safe for concurrent Append, which panicked in
+	// compaction when two replies to one thread landed together.
+	locks map[string]*sync.Mutex
 }
 
 // ConversationsConfig configures the recorder.
@@ -71,7 +75,20 @@ func NewConversations(cfg ConversationsConfig, log *zap.Logger) *Conversations {
 		log:    log,
 		byID:   map[string]*gitloom.Conversation{},
 		broken: map[string]time.Time{},
+		locks:  map[string]*sync.Mutex{},
 	}
+}
+
+// lockFor returns the mutex that serialises one conversation.
+func (c *Conversations) lockFor(id string) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	l, ok := c.locks[id]
+	if !ok {
+		l = &sync.Mutex{}
+		c.locks[id] = l
+	}
+	return l
 }
 
 // retryBroken is how long a thread that failed to open is left alone. Without
@@ -91,6 +108,10 @@ func (c *Conversations) Record(ctx context.Context, threadID, title, userMsg, re
 	if strings.TrimSpace(userMsg) == "" && strings.TrimSpace(reply) == "" {
 		return
 	}
+
+	l := c.lockFor(threadID)
+	l.Lock()
+	defer l.Unlock()
 
 	conv, err := c.conversation(ctx, threadID, title)
 	if err != nil {
