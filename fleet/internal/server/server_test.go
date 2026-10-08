@@ -78,6 +78,9 @@ func TestScopes(t *testing.T) {
 		{"GET", "/v1/status", "wrong", "", 401},
 		{"GET", "/v1/status", "relay", "", 200},
 		{"POST", "/v1/tell", "relay", `{"from":"agent-05","to":"agent-03","text":"hi"}`, 200},
+		// The operator's authority is not an agent's to claim.
+		{"POST", "/v1/tell", "relay", `{"from":"operator","to":"agent-03","text":"hi"}`, 403},
+		{"POST", "/v1/tell", "full", `{"from":"operator","to":"agent-03","text":"hi"}`, 200},
 		{"POST", "/v1/assign", "relay", `{"agent":"agent-03","task":"T1"}`, 403},
 		{"POST", "/v1/restore", "relay", `{"archive":"a/b"}`, 403},
 		{"POST", "/v1/assign", "full", `{"agent":"agent-03","task":"T1"}`, 200},

@@ -167,7 +167,7 @@ func TestComposePerHost(t *testing.T) {
 		}
 	}
 	e := a.Environment
-	if e["FLEET_AGENT"] != "agent-01" || e["FLEET_HOST"] != "kali" || e["XDG_RUNTIME_DIR"] != "/run/fleet" || e["FLEET_CODE"] != "/home/op/code" ||
+	if e["FLEET_AGENT"] != "agent-01" || e["FLEET_NAME"] != "agent-01" || e["FLEET_HOST"] != "kali" || e["XDG_RUNTIME_DIR"] != "/run/fleet" || e["FLEET_CODE"] != "/home/op/code" ||
 		e["FLEETD_URL"] != "http://host.docker.internal:7879" ||
 		e["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://host.docker.internal:4318" ||
 		!strings.Contains(e["OTEL_RESOURCE_ATTRIBUTES"], "fleet.agent=agent-01") {
@@ -181,7 +181,8 @@ func TestComposePerHost(t *testing.T) {
 	b := kali.Services["karmax-brain"]
 	if !slices.Contains(b.Volumes, "/home/op/.karmax/sessions:/home/op/.karmax/sessions") ||
 		!slices.Contains(b.Volumes, "/home/op/.karmax/CLAUDE.md:/home/op/.karmax/CLAUDE.md:ro") ||
-		b.Environment["FLEET_AGENT"] != "" || b.Environment["KARMAX_API_URL"] != "http://host.docker.internal:9091" {
+		b.Environment["FLEET_AGENT"] != "" || b.Environment["FLEET_NAME"] != "karmax" ||
+		b.Environment["KARMAX_API_URL"] != "http://host.docker.internal:9091" {
 		t.Errorf("karmax-brain = %+v", b)
 	}
 

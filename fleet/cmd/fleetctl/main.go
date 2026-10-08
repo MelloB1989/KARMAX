@@ -338,7 +338,10 @@ func run(cmd string, args []string) error {
 		return post("/v1/done", map[string]string{"agent": pos[0], "task": task, "outcome": outcome, "branch": branch, "pr": pr})
 
 	case "tell":
-		from := os.Getenv("FLEET_AGENT")
+		from := os.Getenv("FLEET_NAME") // set in every fleet container
+		if from == "" {
+			from = os.Getenv("FLEET_AGENT")
+		}
 		if from == "" {
 			from = "operator"
 		}
