@@ -74,6 +74,10 @@ type Orchestrator struct {
 	Host      string `yaml:"host"`
 	Container string `yaml:"container"`
 	TokenEnv  string `yaml:"token_env"`
+	// KarmaxAgent is the KARMAX agent id whose harness session is the
+	// orchestrator (karmax.yaml agents[].id). When set, fleetctl render
+	// writes the fleet's paragraph into that session's .claude/CLAUDE.md.
+	KarmaxAgent string `yaml:"karmax_agent"`
 }
 
 // Agent is one standby coding agent, bound to one subscription.
