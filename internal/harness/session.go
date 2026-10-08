@@ -67,6 +67,18 @@ type Session struct {
 	// while the writer itself is never touched by two goroutines at once.
 	writeMu sync.Mutex
 
+	// route is how the reader hands events out. A Send that is waiting gets
+	// them; otherwise they are a turn the session started by itself — another
+	// session's message arriving while this one was idle — and are assembled
+	// here and given to onBackground. Without this, such a turn filled the
+	// event buffer with nobody reading it, stalled the process, and its result
+	// was handed to the next caller as their reply.
+	route        sync.Mutex
+	waiting      bool      // a Send is reading events
+	bg           *bgTurn   // an unsolicited turn in progress
+	prelude      []event   // housekeeping lines seen between turns
+	onBackground func(Turn) // set before spawn; nil drops background turns
+
 	// busy is true while a turn is in flight.
 	//
 	// Needed because the only other signal of activity is the stored
@@ -177,6 +189,7 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 			_ = cmd.Wait()
 			close(s.exited)
 		}()
+		defer s.endBackground()
 		sc := bufio.NewScanner(stdout)
 		// A single event can carry a whole tool result, which is far larger
 		// than the default 64KB line budget.
@@ -186,14 +199,109 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 			if json.Unmarshal(sc.Bytes(), &ev) != nil {
 				continue // an unknown line is not a reason to kill a session
 			}
-			select {
-			case s.events <- ev:
-			case <-s.closed:
+			if !s.dispatch(ev) {
 				return
 			}
 		}
 	}()
 	return nil
+}
+
+// bgTurn is an unsolicited turn being assembled by the reader.
+type bgTurn struct {
+	turn Turn
+	text strings.Builder
+	done chan struct{} // closed when the turn ends, or the process does
+}
+
+// maxPrelude caps the housekeeping lines kept between turns.
+const maxPrelude = 32
+
+// opensTurn reports whether an event can only be part of a turn. Anything
+// else seen between turns (system notices, rate-limit updates) is
+// housekeeping, and must never make the next caller wait.
+func opensTurn(ev event) bool {
+	switch ev.Type {
+	case "assistant", "user", "stream_event":
+		return true
+	}
+	return false
+}
+
+// dispatch hands one event to a waiting Send, or folds it into a background
+// turn. It reports false once the session is closed.
+func (s *Session) dispatch(ev event) bool {
+	s.route.Lock()
+	if s.waiting {
+		s.route.Unlock()
+		select {
+		case s.events <- ev:
+			return true
+		case <-s.closed:
+			return false
+		}
+	}
+	if s.bg == nil {
+		if !opensTurn(ev) {
+			// A result with no turn open closes nothing; drop it.
+			if ev.Type != "result" {
+				if len(s.prelude) == maxPrelude {
+					s.prelude = s.prelude[1:]
+				}
+				s.prelude = append(s.prelude, ev)
+			}
+			s.route.Unlock()
+			return true
+		}
+		s.bg = &bgTurn{done: make(chan struct{})}
+		for _, p := range s.prelude {
+			s.bg.turn.absorb(p)
+		}
+		s.prelude = nil
+	}
+	b := s.bg
+	b.turn.absorb(ev)
+	if ev.Type == "assistant" {
+		for _, c := range ev.Message.Content {
+			if c.Type == "text" {
+				b.text.WriteString(c.Text)
+			}
+		}
+	}
+	if ev.Type != "result" {
+		s.route.Unlock()
+		return true
+	}
+	s.bg = nil
+	s.route.Unlock()
+	if ev.Result == "" {
+		b.turn.Text = strings.TrimSpace(b.text.String())
+	}
+	close(b.done)
+	// Off the reader: a handler that sends to this same session would
+	// otherwise wait on events nobody is left to read.
+	if s.onBackground != nil {
+		go s.onBackground(b.turn)
+	}
+	return true
+}
+
+// endBackground releases anyone waiting on a background turn when the
+// process goes; that turn is never finished.
+func (s *Session) endBackground() {
+	s.route.Lock()
+	defer s.route.Unlock()
+	if s.bg != nil {
+		close(s.bg.done)
+		s.bg = nil
+	}
+}
+
+// inBackground reports whether an unsolicited turn is in progress.
+func (s *Session) inBackground() bool {
+	s.route.Lock()
+	defer s.route.Unlock()
+	return s.bg != nil
 }
 
 // launchArgv puts a kind's launch prefix before the binary, filling in
@@ -375,6 +483,60 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 	if err != nil {
 		return Turn{}, err
 	}
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	var turn Turn
+	// A turn the session started by itself is finished before this one is
+	// written, so neither one's events land on the other.
+	for {
+		s.route.Lock()
+		if s.bg == nil {
+			s.waiting = true
+			for _, p := range s.prelude {
+				turn.absorb(p)
+			}
+			s.prelude = nil
+			s.route.Unlock()
+			break
+		}
+		done := s.bg.done
+		s.route.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return turn, ctx.Err()
+		case <-deadline.C:
+			return turn, fmt.Errorf("harness: a background turn was still running after %s", timeout)
+		}
+	}
+	defer func() {
+		s.route.Lock()
+		s.waiting = false
+		s.route.Unlock()
+	}()
+	// Lines that reached the buffer after the last turn ended belong to no
+	// turn. Housekeeping is kept; anything else would be read as this turn's.
+	for drained := false; !drained; {
+		select {
+		case ev, ok := <-s.events:
+			if !ok {
+				return turn, fmt.Errorf("harness exited between turns")
+			}
+			if !opensTurn(ev) && ev.Type != "result" {
+				turn.absorb(ev)
+			}
+		default:
+			drained = true
+		}
+	}
+	// The wait above is not this turn's own time.
+	if !deadline.Stop() {
+		<-deadline.C
+	}
+	deadline.Reset(timeout)
+
 	// Held only around the write itself, not the turn that follows: a Close
 	// racing in here waits a few instructions, never minutes.
 	s.writeMu.Lock()
@@ -391,10 +553,6 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 		return Turn{}, fmt.Errorf("harness stdin flush: %w", flushErr)
 	}
 
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-
-	var turn Turn
 	var sb strings.Builder
 	for {
 		select {
@@ -491,7 +649,10 @@ const launchedExitGrace = 5 * time.Second
 
 // Busy reports whether a turn is in flight, so nothing closes a session that is
 // still working.
-func (s *Session) Busy() bool { return s != nil && s.busy.Load() }
+//
+// A turn the session started by itself counts: closing it mid-turn would lose
+// whatever another session asked of it.
+func (s *Session) Busy() bool { return s != nil && (s.busy.Load() || s.inBackground()) }
 
 // claim marks the session busy before Send has actually been called on it.
 // Supervisor.open uses this the moment it decides to hand a session back

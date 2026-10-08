@@ -24,6 +24,9 @@ const (
 	EventSystemCritical EventKind = "system.critical"
 	EventTimerFired     EventKind = "timer.fired"
 	EventDelegationDone EventKind = "delegation.completed"
+	// EventHarnessBackgroundTurn is a turn a harness session ran without being
+	// asked: another Claude Code session messaged it while it was idle.
+	EventHarnessBackgroundTurn EventKind = "harness.turn.background"
 )
 
 type Event struct {
