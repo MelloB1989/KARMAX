@@ -10,6 +10,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
+	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
 
 // MemoryIngestTool lets the agent save important information to long-term
@@ -53,6 +54,7 @@ func (t *MemoryIngestTool) Manifest() tools.ToolManifest {
 				"tags": {"type": "string", "description": "Comma-separated tags for organization (e.g., 'preferences,coding')"},
 				"importance": {"type": "string", "description": "Priority: 'critical', 'high', 'medium', 'low' (default 'medium'). Drives recall ranking and what survives forgetting."},
 				"pinned": {"type": "boolean", "description": "If true, this memory is never auto-forgotten and is always front-of-mind (use for core, enduring facts)."},
+				"occurred_at": {"type": "string", "description": "Optional: when what this memory is about happened, if not just now — a date (2026-03-02) or RFC 3339 time. Lets it be found later by when it happened."},
 				"ttl_days": {"type": "integer", "description": "Optional: auto-expire this memory after N days (use for time-bound facts like a temporary plan or deadline)."},
 				"scope": {"type": "string", "enum": ["person", "org"], "description": "Who this fact belongs to. 'person' (the default) keeps it with whoever you are helping and nobody else can read it. Use 'org' ONLY for facts about the company itself — conventions, decisions, how things are done — which every agent and workflow should know. If in doubt, leave it: a company fact filed under a person is easy to move, a private remark filed for everyone is not."}
 			},
@@ -104,6 +106,27 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 		}
 	}
 	tags = append(tags, category)
+
+	// Taken from the turn, never from a tool argument, so recall can be scoped.
+	src := memory.SourceFrom(ctx)
+	if member := connectorkit.ActorFrom(ctx); member != "" {
+		src.Person = member
+	}
+	for _, tag := range []string{memory.PersonTag(src.Person), memory.ChatTag(src.Chat)} {
+		if tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+
+	// When it happened: the caller's word, else the triggering message's time.
+	occurredAt := src.At
+	if raw, _ := input["occurred_at"].(string); strings.TrimSpace(raw) != "" {
+		t, ok := memory.ParseWhen(raw, memory.OperatorLocation(), false)
+		if !ok {
+			return tools.ErrorResult(fmt.Errorf("occurred_at %q is not a date or RFC 3339 time", raw)), nil
+		}
+		occurredAt = t
+	}
 
 	// Which namespace this fact belongs in, decided before anything else: the
 	// dedup check below has to run against the SAME memory it will be written
@@ -183,6 +206,7 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 		Importance: importanceToInt(importance),
 		Pinned:     pinned,
 		ExpiresAt:  expiresAt,
+		OccurredAt: occurredAt,
 	}
 
 	if err := mgr.Write(entry); err != nil {

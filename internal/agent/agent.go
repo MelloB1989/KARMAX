@@ -471,7 +471,9 @@ func (t *memoryRetrieveTool) Manifest() tools.ToolManifest {
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
-				"query": {"type": "string", "description": "The search query to find relevant memories and context"}
+				"query": {"type": "string", "description": "The search query to find relevant memories and context"},
+				"since": {"type": "string", "description": "Optional: only things that happened on or after this date (2026-03-02) or RFC 3339 time."},
+				"until": {"type": "string", "description": "Optional: only things that happened on or before this date or RFC 3339 time."}
 			},
 			"required": ["query"]
 		}`),
@@ -486,6 +488,27 @@ func (t *memoryRetrieveTool) Execute(ctx context.Context, input map[string]any) 
 
 	if t.agent.memoryModel == nil {
 		return tools.ErrorResult(fmt.Errorf("memory model not initialized")), nil
+	}
+
+	// The range rides the context to the search tool and is said in the question.
+	loc := memory.OperatorLocation()
+	var w memory.Window
+	if raw, _ := input["since"].(string); raw != "" {
+		w.Since, _ = memory.ParseWhen(raw, loc, false)
+	}
+	if raw, _ := input["until"].(string); raw != "" {
+		w.Until, _ = memory.ParseWhen(raw, loc, true)
+	}
+	if !w.Since.IsZero() || !w.Until.IsZero() {
+		ctx = memory.WithWindow(ctx, w)
+		query += "\n\n(Only memories about events"
+		if !w.Since.IsZero() {
+			query += " since " + w.Since.In(loc).Format(time.RFC3339)
+		}
+		if !w.Until.IsZero() {
+			query += " until " + w.Until.In(loc).Format(time.RFC3339)
+		}
+		query += ".)"
 	}
 
 	result, err := t.agent.memoryModel.Retrieve(ctx, query)
@@ -1156,6 +1179,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// the message, before the model sees anything — never from a tool
 		// argument, or the model could choose whose mailbox it reads.
 		turnCtx = connectorkit.WithActor(turnCtx, a.actingMember(evt))
+		turnCtx = memory.WithSource(turnCtx, a.memorySource(evt))
 		lent := a.lentTools(evt)
 		brain := a.brainFor(evt)
 		brain.SetTurnContext(dynamicCtx)
@@ -2033,6 +2057,16 @@ func truncateStr(s string, maxLen int) string {
 
 func cleanOutboundResponse(s string) string {
 	return karmahelper.CleanContent(s)
+}
+
+// memorySource is where a turn came from, for tagging what it teaches.
+func (a *Agent) memorySource(evt bus.Event) memory.Source {
+	src := memory.Source{At: evt.Timestamp}
+	if evt.Kind == bus.EventCommsMessage && evt.Payload != nil {
+		src.Chat, _ = evt.Payload["channel_id"].(string)
+		src.Person, _ = evt.Payload["sender_id"].(string)
+	}
+	return src
 }
 
 // actingMember resolves the org member an event is on behalf of.
