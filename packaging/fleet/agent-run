@@ -1,0 +1,76 @@
+#!/bin/sh
+# agent-run — keeps one interactive `claude --name $FLEET_AGENT` alive in the
+# tmux session "main", under tini. See docs/AGENT-FLEET.md, "The agent container".
+#
+# /work/.fleet/next says what the next pane starts on, and is consumed:
+#   a session id  -> --resume it        (fleetd restarting, restoring)
+#   empty         -> a fresh session    (fleetd rotating)
+#   absent        -> resume the current one (/work/.fleet/current), else fresh
+# fleetd never types into the pane to do any of this: it writes next and
+# kills the pane, and this loop starts the next one.
+set -u
+: "${FLEET_AGENT:?FLEET_AGENT is not set}"
+W=/work/.fleet
+C="$HOME/.claude"
+mkdir -p "$W" /work/wt "$C/fleet" "$C/sessions"
+
+# Fleet-managed settings, refreshed on every start so an image update reaches
+# an existing volume. The agent's brief arrives in its env (rendered by
+# fleetctl), which is how it reaches another host's docker daemon too.
+cp /opt/fleet/settings.json "$C/settings.json"
+if [ -n "${FLEET_CLAUDE_MD:-}" ]; then
+  printf '%s' "$FLEET_CLAUDE_MD" | base64 -d > "$C/CLAUDE.md"
+fi
+# Onboarding done, /work and the shared code trusted, bypass mode accepted —
+# so a pane never stops on a first-run dialog with nobody to answer it.
+if [ ! -s "$HOME/.claude.json" ]; then
+  jq -n --arg code "${FLEET_CODE:-$HOME/code}" '{
+    hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true,
+    projects: {"/work": {hasTrustDialogAccepted: true}, ($code): {hasTrustDialogAccepted: true}}
+  }' > "$HOME/.claude.json"
+fi
+
+event() { # a line in the hook log, so fleetd records what this loop did
+  jq -nc --arg e "$1" --arg s "$2" '{t: (now|floor), event: $e, session: $s}' >> "$C/fleet/events.jsonl"
+}
+
+quick=0
+start() {
+  if [ -f "$W/next" ]; then
+    sid=$(cat "$W/next"); rm -f "$W/next"; quick=0
+  else
+    sid=$(cat "$W/current" 2>/dev/null)
+    # Three panes in a row that died within 30s: the session will not come
+    # back, so start fresh rather than loop on it. fleetd sees the event.
+    if [ "$quick" -ge 3 ]; then
+      event "agent-run.fresh_after_crashes" "$sid"; sid=""; quick=0
+    elif [ -n "$sid" ] && ! ls "$C"/projects/*/"$sid".jsonl >/dev/null 2>&1; then
+      sid="" # never had a turn: nothing to resume
+    fi
+  fi
+  if [ -n "$sid" ]; then
+    flag="--resume $sid"
+  else
+    sid=$(cat /proc/sys/kernel/random/uuid); flag="--session-id $sid"
+  fi
+  printf '%s\n' "$sid" > "$W/current"
+  model=""
+  [ -n "${FLEET_MODEL:-}" ] && model="--model $FLEET_MODEL"
+  started=$(date +%s)
+  tmux new-session -d -s main -x 220 -y 50 -c /work \
+    "exec claude --name $FLEET_AGENT --dangerously-skip-permissions $flag $model"
+}
+
+trap 'tmux kill-server 2>/dev/null; exit 0' TERM INT
+started=0
+while :; do
+  if ! tmux has-session -t main 2>/dev/null; then
+    if [ "$started" -gt 0 ] && [ $(( $(date +%s) - started )) -lt 30 ]; then
+      quick=$((quick + 1))
+    elif [ "$started" -gt 0 ]; then
+      quick=0
+    fi
+    start
+  fi
+  sleep 2
+done

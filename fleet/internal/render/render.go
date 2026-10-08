@@ -247,6 +247,7 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 	common := func(name string) map[string]string {
 		e := map[string]string{
 			"FLEET_HOST":      host,
+			"FLEET_CODE":      c.Code,
 			"XDG_RUNTIME_DIR": c.SockDir,
 			"HOME":            c.Home,
 		}

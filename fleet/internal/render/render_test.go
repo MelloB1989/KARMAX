@@ -167,7 +167,7 @@ func TestComposePerHost(t *testing.T) {
 		}
 	}
 	e := a.Environment
-	if e["FLEET_AGENT"] != "agent-01" || e["FLEET_HOST"] != "kali" || e["XDG_RUNTIME_DIR"] != "/run/fleet" ||
+	if e["FLEET_AGENT"] != "agent-01" || e["FLEET_HOST"] != "kali" || e["XDG_RUNTIME_DIR"] != "/run/fleet" || e["FLEET_CODE"] != "/home/op/code" ||
 		e["FLEETD_URL"] != "http://host.docker.internal:7879" ||
 		e["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://host.docker.internal:4318" ||
 		!strings.Contains(e["OTEL_RESOURCE_ATTRIBUTES"], "fleet.agent=agent-01") {

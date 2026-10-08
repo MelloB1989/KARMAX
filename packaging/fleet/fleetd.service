@@ -1,0 +1,23 @@
+# fleetd as a systemd user service on Kali.
+#
+#   install -D -m 644 packaging/fleet/fleetd.service ~/.config/systemd/user/fleetd.service
+#   systemctl --user daemon-reload && systemctl --user enable --now fleetd
+#   loginctl enable-linger "$USER"     # keep it running while you are logged out
+#
+# It reaches PC2 through `docker --context pc2`, i.e. ssh: the key must be
+# usable without a prompt (an unencrypted deploy key, or ssh-agent via
+# SSH_AUTH_SOCK below).
+[Unit]
+Description=Agent fleet session manager (fleetd)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/fleetd
+Environment=FLEET_CONFIG=%h/.karmax/fleet/fleet.yaml
+# Environment=SSH_AUTH_SOCK=%t/ssh-agent.socket
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

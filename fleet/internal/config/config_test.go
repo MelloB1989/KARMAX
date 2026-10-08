@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -90,5 +91,20 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		} else if strings.Contains(err.Error(), "sk-ant") {
 			t.Errorf("%s: error echoes a secret: %v", name, err)
 		}
+	}
+}
+
+// The shipped example must always load.
+func TestTheShippedExampleParses(t *testing.T) {
+	b, err := os.ReadFile("../../../packaging/fleet/fleet.yaml.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.AgentsOn("kali")) != 3 || len(c.AgentsOn("pc2")) != 5 {
+		t.Errorf("the example is the plan's 3/5 split: %v / %v", c.AgentsOn("kali"), c.AgentsOn("pc2"))
 	}
 }

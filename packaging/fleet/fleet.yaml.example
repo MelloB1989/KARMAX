@@ -1,0 +1,74 @@
+# ~/.karmax/fleet/fleet.yaml — the agent fleet (docs/AGENT-FLEET.md).
+#
+# No secrets here. Every token is named by its env var; the values live in
+# env_file (default ~/.karmax/.env) and nowhere else:
+#
+#   CLAUDE_TOKEN_KARMAX=…        claude setup-token, logged into the orchestrator's subscription
+#   CLAUDE_TOKEN_AGENT_01=…      … one per agent, each its own subscription
+#   FLEET_TOKEN=…                fleetd's full-scope API token (you, the orchestrator)   openssl rand -hex 32
+#   FLEET_RELAY_TOKEN=…          agents' token: tell + status only                      openssl rand -hex 32
+#   FLEET_WEBHOOK_SECRET=…       HMAC secret shared with the karmax.yaml webhook route
+#   KARMAX_API_TOKEN=…           already there if KARMAX's API is on
+
+home: /home/you              # HOME inside every container — your own, so paths match
+# code: /home/you/code       # shared with every agent, same path on every host
+image: karmax-fleet:2.1.294  # the tag you built (packaging/fleet/Dockerfile)
+# uid: 1000                  # default: yours
+# gid: 1000
+# sock_dir: /run/fleet       # where Claude Code's messaging sockets go in a container (spike S1)
+
+listen: 127.0.0.1:7878       # fleetd API on Kali
+relay_listen: 0.0.0.0:7879   # for containers (and PC2): tell + status with the relay token
+otlp_listen: 0.0.0.0:4318    # the agents' OpenTelemetry
+
+hosts:
+  kali:
+    exec: [docker]
+    fleetd_url: http://host.docker.internal:7879
+    otlp_url: http://host.docker.internal:4318
+    karmax_url: http://host.docker.internal:9091
+  pc2:
+    exec: [docker, --context, pc2]
+    fleetd_url: http://192.168.1.10:7879     # Kali's LAN address
+    otlp_url: http://192.168.1.10:4318
+
+orchestrator:
+  host: kali
+  token_env: CLAUDE_TOKEN_KARMAX
+  karmax_agent: karmax-agent   # karmax.yaml agents[].id — render writes its fleet brief
+  # name: karmax               # what agents call it; match harness.kinds.agent.name
+  # container: karmax-brain
+
+agents:
+  agent-01: {host: kali, token_env: CLAUDE_TOKEN_AGENT_01, models: [sonnet, opus], cpus: "2", memory: 4g}
+  agent-02: {host: kali, token_env: CLAUDE_TOKEN_AGENT_02, models: [sonnet, opus], cpus: "2", memory: 4g}
+  agent-03: {host: kali, token_env: CLAUDE_TOKEN_AGENT_03, models: [sonnet], cpus: "2", memory: 4g}
+  agent-04: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_04, models: [sonnet, opus], cpus: "2", memory: 4g}
+  agent-05: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_05, models: [sonnet]}
+  agent-06: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_06, models: [sonnet]}
+  agent-07: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_07, models: [sonnet]}
+  agent-08: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_08, models: [sonnet]}
+
+karmax:
+  webhook_url: http://127.0.0.1:9090/fleet   # KARMAX webhooks port (default 9090) + the route in the README
+  webhook_secret_env: FLEET_WEBHOOK_SECRET
+  dashboard: fleet          # make it once with KARMAX's dashboard tool; fleetd fills its data/
+  # notify: true            # phone alerts through `karmax notify`
+  # api_url: http://127.0.0.1:9091
+
+thresholds:                 # every default shown
+  tick: 30s
+  restart_failures: 3       # within restart_window → archive, start fresh, alert
+  restart_window: 10m
+  standby_idle: 12h         # a standby session idle this long is archived and rotated…
+  standby_min_transcript: 32768   # …if its transcript is at least this many bytes
+  waiting_nudge: 2h         # idle on an open task: tell the orchestrator once
+  waiting_archive: 24h      # idle on an open task: archive (worktree kept), rotate
+  compact_bytes: 8388608    # a transcript this big, idle: /compact
+  low_5h: 80                # 5-hour window % → low
+  reserved_7d: 90           # 7-day window % → reserved, one alert
+  cooling_default: 1h       # rate-limited with no known reset
+  events_raw: 2160h         # 90 days, then daily counts
+  quota_raw: 168h           # every sample for 7 days, hourly after
+  relay_text: 720h
+  host_samples: 168h

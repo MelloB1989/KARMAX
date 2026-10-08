@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "crossSessionInbound": "accept",
+  "dialogExpiry": "never",
+  "env": {
+    "DISABLE_AUTOUPDATER": "1"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "/opt/fleet/status.sh",
+    "refreshInterval": 30
+  },
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
+    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
+    "StopFailure": [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
+    "Notification": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}]
+  }
+}
