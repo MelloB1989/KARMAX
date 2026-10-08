@@ -67,3 +67,15 @@ func TestBackgroundTurnBecomesABusEvent(t *testing.T) {
 		t.Error("a turn that succeeded carries no error")
 	}
 }
+
+// Each agent thinks in a session of its own harness kind — "agent" unless it
+// names another — so one agent can be the fleet's orchestrator (launched,
+// named, resident) without making every agent on the host one.
+func TestAnAgentChoosesItsHarnessKind(t *testing.T) {
+	if got := harnessKindOf(configToAgentDef(config.AgentDefConfig{ID: "a"})); got != "agent" {
+		t.Errorf("default kind = %q, want agent", got)
+	}
+	if got := harnessKindOf(configToAgentDef(config.AgentDefConfig{ID: "b", HarnessKind: "orchestrator"})); got != "orchestrator" {
+		t.Errorf("kind = %q, want orchestrator", got)
+	}
+}
