@@ -817,6 +817,9 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 		}
 
 		resp, err := completeManaged(kai, history, gate)
+		if err == nil && resp == nil {
+			err = fmt.Errorf("model returned no response")
+		}
 		if err == nil {
 			cleaned := strings.TrimSpace(CleanContent(resp.AIResponse))
 			// Check for empty response
