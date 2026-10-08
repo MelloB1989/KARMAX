@@ -226,7 +226,11 @@ func TestRelayArgv(t *testing.T) {
 		t.Fatalf("argv = %q", argv)
 	}
 	rest := strings.Join(argv[6:], " ")
-	for _, want := range []string{"claude -p", "--model haiku", "--name relay-from-agent-05", "--allowedTools SendMessage,ListAgents", "--max-turns"} {
+	// The container's settings put every session in bypass mode, so the relay
+	// must override the mode and narrow the tool set itself: --allowedTools
+	// alone only adds allow rules on top of bypass.
+	for _, want := range []string{"claude -p", "--model haiku", "--name relay-from-agent-05",
+		"--permission-mode dontAsk", "--tools SendMessage,ListAgents", "--allowedTools SendMessage,ListAgents", "--max-turns"} {
 		if !strings.Contains(rest, want) {
 			t.Errorf("relay argv lacks %q: %s", want, rest)
 		}
@@ -237,5 +241,24 @@ func TestRelayArgv(t *testing.T) {
 	in := r.stdins[0]
 	if !strings.Contains(in, "agent-03") || !strings.Contains(in, "please rebase onto main") || !strings.Contains(in, "agent-05") {
 		t.Errorf("prompt = %q", in)
+	}
+}
+
+// A failed `claude agents` must read as "could not observe", never as "no
+// sessions" — which would restart every healthy agent on the host.
+func TestAFailedSessionListIsAnObservationFailure(t *testing.T) {
+	bad := strings.Replace(snapshot, "==agents==\n[", "==agents==\n!!FAILED\n[", 1)
+	if _, err := parseSnapshot("agent-03", []byte(bad), time.Now()); err == nil {
+		t.Fatal("a failed session list parsed as an observation")
+	}
+	if !strings.Contains(snapshotScript, "!!FAILED") {
+		t.Fatal("the snapshot script does not mark a failed claude agents")
+	}
+}
+
+func TestSnapshotCarriesTheCurrentSession(t *testing.T) {
+	o, err := parseSnapshot("agent-03", []byte(snapshot), time.Now())
+	if err != nil || o.CurrentSession != "s1" {
+		t.Fatalf("current = %q, %v", o.CurrentSession, err)
 	}
 }

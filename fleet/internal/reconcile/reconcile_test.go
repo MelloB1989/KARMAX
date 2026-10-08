@@ -389,3 +389,32 @@ func TestASessionStuckOnADialogIsReported(t *testing.T) {
 		t.Fatalf("episode not cleared: %+v", st)
 	}
 }
+
+// A pane that is alive but whose session has not registered yet is starting,
+// not dead: it gets a grace period before it is restarted.
+func TestALivePaneWithoutASessionGetsAGracePeriod(t *testing.T) {
+	o := obs("")
+	o.Sessions = nil
+	st, acts := Decide(th(), State{Name: "agent-03", SessionID: "s1"}, o)
+	if len(acts) != 0 {
+		t.Fatalf("restarted a starting pane: %v", kinds(acts))
+	}
+	o.Now = t0.Add(3 * time.Minute)
+	_, acts = Decide(th(), st, o)
+	if has(acts, Restart) == nil {
+		t.Fatalf("a pane with no session for 3m was left alone: %v", kinds(acts))
+	}
+}
+
+// The session the agent's own records name is never a stray, even when the
+// pane's pid cannot be matched to it.
+func TestTheAgentsOwnSessionIsNeverAStray(t *testing.T) {
+	o := obs("idle")
+	o.PanePID = 999 // matches nothing
+	o.CurrentSession = "s1"
+	o.Sessions[0].Name = "renamed"
+	st, acts := Decide(th(), State{Name: "agent-03", SessionID: "s1"}, o)
+	if has(acts, ArchiveStray) != nil || has(acts, Restart) != nil || st.SessionID != "s1" {
+		t.Fatalf("acts = %v, session = %s", acts, st.SessionID)
+	}
+}
