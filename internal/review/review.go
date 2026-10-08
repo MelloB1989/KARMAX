@@ -226,11 +226,7 @@ func (r *Reviewer) gatherCandidates(ctx context.Context, ns string) []candidate 
 
 	// Old, non-pinned memories (the model then filters to time-sensitive ones).
 	//
-	// Two steps, and the order is the point. The survey is ONE call and carries
-	// summaries but no dates; the text pre-filter runs on those, and only the
-	// handful that survive are fetched for their age. Asking the store for four
-	// hundred memories in full to discard all but a dozen would be a request per
-	// memory to answer a question a substring match already answered.
+	// One call lists what was last updated before the cutoff, dates included.
 	out = append(out, r.staleMemories(ctx, cutoff)...)
 
 	// Reminders that failed or are old and unresolved.
@@ -254,37 +250,24 @@ func (r *Reviewer) gatherCandidates(ctx context.Context, ns string) []candidate 
 
 // staleMemories returns old memories whose text hints at something temporal.
 //
-// The pre-filter runs on summaries, before any per-memory request, so a store
-// full of durable identity facts costs one call rather than hundreds.
+// One listing call, then a text pre-filter.
 func (r *Reviewer) staleMemories(ctx context.Context, cutoff time.Time) []candidate {
 	if r.mem == nil {
 		return nil
 	}
-	surveyed, err := r.mem.Survey(ctx, 400)
+	// Dated by the store, so the age comes with the list: no request per memory.
+	old, err := r.mem.Older(ctx, cutoff, 200)
 	if err != nil {
-		r.log.Warn("review: could not survey memory", zap.Error(err))
+		r.log.Warn("review: could not list old memory", zap.Error(err))
 		return nil
 	}
 
 	var out []candidate
-	for _, e := range surveyed {
-		if e.Pinned || !looksTimeSensitive(e.Content) {
+	for _, e := range old {
+		if e.Pinned || e.CreatedAt.IsZero() || e.CreatedAt.After(cutoff) || !looksTimeSensitive(e.Content) {
 			continue
 		}
-		// The date is why this one is fetched: staleness is the whole judgement
-		// and the survey does not carry it.
-		full, err := r.mem.Load(ctx, e.ID)
-		if err != nil || full == nil {
-			continue
-		}
-		if full.CreatedAt.IsZero() || full.CreatedAt.After(cutoff) {
-			continue
-		}
-		text := full.Content
-		if strings.TrimSpace(text) == "" {
-			text = e.Content
-		}
-		out = append(out, candidate{kind: "memory", id: full.ID, text: oneLine(text, 400), at: full.CreatedAt})
+		out = append(out, candidate{kind: "memory", id: e.ID, text: oneLine(e.Content, 400), at: e.CreatedAt})
 		if len(out) >= 40 {
 			break
 		}
