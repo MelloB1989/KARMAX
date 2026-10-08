@@ -3,6 +3,7 @@ package reconcile
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -358,5 +359,33 @@ func TestARotationForgetsTheOldSession(t *testing.T) {
 	_, acts := Decide(th(), st, o)
 	if r := has(acts, Restart); r == nil || r.Session != "" {
 		t.Fatalf("restart = %+v, want one that names no session (agent-run decides)", r)
+	}
+}
+
+// A session stuck on a dialog hears no messages. Nobody is at its terminal,
+// so after a few minutes you are told — once — with the way in.
+func TestASessionStuckOnADialogIsReported(t *testing.T) {
+	o := obs("waiting")
+	o.Sessions[0].WaitingFor = "dialog open"
+	st, acts := Decide(th(), State{Name: "agent-03"}, o)
+	if len(acts) != 0 {
+		t.Fatalf("reported at once: %v", kinds(acts))
+	}
+	o.Now = t0.Add(6 * time.Minute)
+	st, acts = Decide(th(), st, o)
+	if p := has(acts, Push); p == nil || p.Event != "fleet.agent.stuck" || has(acts, Alert) == nil ||
+		!strings.Contains(has(acts, Alert).Text, "fleetctl attach agent-03") {
+		t.Fatalf("acts = %v", acts)
+	}
+	o.Now = t0.Add(7 * time.Minute)
+	if st, acts = Decide(th(), st, o); len(acts) != 0 {
+		t.Fatalf("reported twice: %v", kinds(acts))
+	}
+	// Answered: the episode ends, and a later dialog is reported again.
+	o = obs("idle")
+	o.Now = t0.Add(8 * time.Minute)
+	st, _ = Decide(th(), st, o)
+	if !st.WaitingSince.IsZero() || st.Alerted["stuck"] {
+		t.Fatalf("episode not cleared: %+v", st)
 	}
 }

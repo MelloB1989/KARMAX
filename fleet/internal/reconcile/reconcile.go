@@ -35,12 +35,15 @@ type State struct {
 	// Done is set by `fleetctl done`; the next idle tick rotates.
 	Done bool `json:"done,omitempty"`
 
-	LastBusy       time.Time   `json:"last_busy"`
-	Restarts       []time.Time `json:"restarts,omitempty"`
-	NudgedAt       time.Time   `json:"nudged_at,omitempty"`
-	CompactedAt    int64       `json:"compacted_at,omitempty"` // transcript size when /compact was typed
-	CoolingUntil   time.Time   `json:"cooling_until,omitempty"`
-	DisabledReason string      `json:"disabled_reason,omitempty"`
+	LastBusy     time.Time   `json:"last_busy"`
+	Restarts     []time.Time `json:"restarts,omitempty"`
+	NudgedAt     time.Time   `json:"nudged_at,omitempty"`
+	CompactedAt  int64       `json:"compacted_at,omitempty"` // transcript size when /compact was typed
+	CoolingUntil time.Time   `json:"cooling_until,omitempty"`
+	// WaitingSince is when the session started waiting on something only a
+	// person at its terminal can answer (a dialog).
+	WaitingSince   time.Time `json:"waiting_since,omitzero"`
+	DisabledReason string    `json:"disabled_reason,omitempty"`
 
 	// Low and Reserved are quota flags, independent of the phase: a low agent
 	// still works, but new tasks should prefer others.
@@ -91,6 +94,9 @@ const (
 	Push         Kind = "push"          // tell the orchestrator (webhook)
 	Alert        Kind = "alert"         // tell you (phone)
 )
+
+// stuckAfter is how long a session may wait on a dialog before you are told.
+const stuckAfter = 5 * time.Minute
 
 // Reasons a session ends.
 const (
@@ -198,6 +204,20 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		st.Phase = Standby
 	}
 	delete(st.Alerted, "crashloop")
+	// A dialog nobody answers leaves the session deaf to messages. Say so,
+	// once per episode, after a few minutes: it may be a passing prompt.
+	if mine.Activity() == "waiting" && mine.WaitingFor != "" {
+		if st.WaitingSince.IsZero() {
+			st.WaitingSince = o.Now
+		}
+		if o.Now.Sub(st.WaitingSince) >= stuckAfter && !st.Alerted["stuck"] {
+			push("stuck", fmt.Sprintf("%s is waiting on %q and hears no messages", st.Name, mine.WaitingFor))
+			alertOnce("stuck", fmt.Sprintf("%s is stuck on %q — fleetctl attach %s", st.Name, mine.WaitingFor, st.Name))
+		}
+	} else {
+		st.WaitingSince = time.Time{}
+		delete(st.Alerted, "stuck")
+	}
 	busy := mine.Activity() == "busy"
 	if busy || (st.LastBusy.IsZero() && o.TranscriptMTime.IsZero()) {
 		st.LastBusy = o.Now // busy now, or never seen: the idle clock starts here

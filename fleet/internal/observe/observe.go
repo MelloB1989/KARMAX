@@ -24,7 +24,9 @@ type Agent struct {
 	SessionID string `json:"sessionId"`
 	Name      string `json:"name"`
 	Status    string `json:"status"` // interactive: busy | waiting | idle
-	State     string `json:"state"`  // background: blocked | …
+	// WaitingFor says what a waiting session waits on, e.g. "dialog open".
+	WaitingFor string `json:"waitingFor"`
+	State      string `json:"state"` // background: blocked | …
 }
 
 // Interactive reports whether the row is a terminal session.
