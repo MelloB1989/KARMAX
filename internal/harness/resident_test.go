@@ -3,7 +3,10 @@ package harness
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -84,11 +87,11 @@ func TestReviveBringsBackADeadResidentSession(t *testing.T) {
 	mustSend(t, sup, "orch", "orch")
 }
 
-// An operator who closed a resident session meant it.
-func TestReviveLeavesAClosedResidentSessionClosed(t *testing.T) {
+// An operator who closed a resident session meant it (the harness.close tool).
+func TestReviveLeavesARetiredResidentSessionClosed(t *testing.T) {
 	sup, _ := newResidentSupervisor(t, 8)
 	mustSend(t, sup, "orch", "orch")
-	sup.Close("orch")
+	sup.Retire("orch")
 
 	sup.ReviveResident(context.Background())
 
@@ -125,5 +128,73 @@ func TestShutdownLeavesResidentSessionsRevivable(t *testing.T) {
 	}
 	if rec, _ := st.GetHarnessSession("c"); rec.State != HarnessClosed {
 		t.Errorf("chat state after shutdown = %q, want closed as before", rec.State)
+	}
+}
+
+// Everything else that closes a session does it on the way to the next one —
+// a model change, the turn limit, a browser recycle — and a resident session
+// must come back from it rather than lose its inbox until someone writes.
+func TestAutomaticClosesLeaveAResidentSessionRevivable(t *testing.T) {
+	for name, closeIt := range map[string]func(*Supervisor){
+		"Close":       func(s *Supervisor) { s.Close("orch") },
+		"CloseIfIdle": func(s *Supervisor) { s.CloseIfIdle("orch") },
+	} {
+		sup, st := newResidentSupervisor(t, 8)
+		mustSend(t, sup, "orch", "orch")
+		closeIt(sup)
+		if rec, _ := st.GetHarnessSession("orch"); rec.State != HarnessDead {
+			t.Errorf("%s: state %q, want dead (revivable)", name, rec.State)
+		}
+		sup.ReviveResident(context.Background())
+		if live := sup.Live(); !slices.Equal(live, []string{"orch"}) {
+			t.Errorf("%s: not revived: %q", name, live)
+		}
+	}
+}
+
+func TestAResidentSessionAtItsTurnLimitComesBackFresh(t *testing.T) {
+	st := newMemStore()
+	sup := New(Config{
+		Binary: writeFakeClaude(t, time.Millisecond), WorkdirRoot: t.TempDir(), MaxLive: 4, Env: os.Environ(),
+		Policies: map[string]Policy{"orch": {TurnTimeout: 5 * time.Second, Resident: true, MaxTurns: 1}},
+	}, st, NewBreaker(0.95, nil), testLog{t}, nil)
+	t.Cleanup(sup.Shutdown)
+	mustSend(t, sup, "orch", "orch")
+	first, _ := st.GetHarnessSession("orch")
+	sup.ReviveResident(context.Background())
+	if live := sup.Live(); !slices.Equal(live, []string{"orch"}) {
+		t.Fatalf("not revived after its turn limit: %q", live)
+	}
+	if now, _ := st.GetHarnessSession("orch"); now.HarnessSessionID == first.HarnessSessionID {
+		t.Error("revived on the same transcript past its turn limit; it should start fresh")
+	}
+}
+
+// ReviveResident and a message arriving at the same moment — the usual case
+// at daemon start — must open one process, not two on one transcript with one
+// of them never closed.
+func TestReviveAndASendAtOnceOpenOneProcess(t *testing.T) {
+	spawns := filepath.Join(t.TempDir(), "spawns")
+	bin := writeScript(t, "echo $$ >> "+spawns+"\nwhile IFS= read -r line; do "+resultLine+"done\n")
+	st := newMemStore()
+	sup := New(Config{
+		Binary: bin, WorkdirRoot: t.TempDir(), MaxLive: 8, Env: os.Environ(),
+		Policies: map[string]Policy{"orch": {TurnTimeout: 5 * time.Second, Resident: true}},
+	}, st, NewBreaker(0.95, nil), testLog{t}, nil)
+	t.Cleanup(sup.Shutdown)
+	mustSend(t, sup, "orch", "orch")
+	for i := 0; i < 15; i++ {
+		sup.kill("orch", HarnessDead, "crashed")
+		_ = os.Remove(spawns)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); sup.ReviveResident(context.Background()) }()
+		go func() { defer wg.Done(); mustSend(t, sup, "orch", "orch") }()
+		wg.Wait()
+		time.Sleep(50 * time.Millisecond)
+		b, _ := os.ReadFile(spawns)
+		if n := strings.Count(string(b), "\n"); n != 1 {
+			t.Fatalf("round %d: %d processes opened for one session", i, n)
+		}
 	}
 }

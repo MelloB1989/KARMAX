@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -206,6 +207,10 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	}()
 	return nil
 }
+
+// ErrSessionBusy is a caller that gave up waiting behind a turn the session
+// started by itself. The session is healthy; it was simply busy.
+var ErrSessionBusy = errors.New("harness: the session is busy with a turn another session asked for")
 
 // bgTurn is an unsolicited turn being assembled by the reader.
 type bgTurn struct {
@@ -506,9 +511,9 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 		select {
 		case <-done:
 		case <-ctx.Done():
-			return turn, ctx.Err()
+			return turn, fmt.Errorf("%w: %w", ErrSessionBusy, ctx.Err())
 		case <-deadline.C:
-			return turn, fmt.Errorf("harness: a background turn was still running after %s", timeout)
+			return turn, fmt.Errorf("%w (still running after %s)", ErrSessionBusy, timeout)
 		}
 	}
 	defer func() {
