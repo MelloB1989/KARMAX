@@ -333,3 +333,15 @@ func TestAStoppedContainerIsReportedNotRestarted(t *testing.T) {
 		t.Fatalf("phase=%s acts=%v", st.Phase, kinds(acts))
 	}
 }
+
+// An agent fleetd has never seen busy has no idle clock yet; it starts now,
+// rather than at the zero time — which would make every new task 2000 years
+// stale on its first tick.
+func TestTheIdleClockStartsAtFirstSight(t *testing.T) {
+	o := obs("idle")
+	o.TranscriptMTime = time.Time{}
+	st, acts := Decide(th(), State{Name: "agent-03", Task: "T1"}, o)
+	if len(acts) != 0 || st.Phase != Waiting || !st.LastBusy.Equal(t0) {
+		t.Fatalf("phase=%s lastBusy=%v acts=%v", st.Phase, st.LastBusy, kinds(acts))
+	}
+}

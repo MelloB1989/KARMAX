@@ -199,8 +199,8 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	}
 	delete(st.Alerted, "crashloop")
 	busy := mine.Activity() == "busy"
-	if busy {
-		st.LastBusy = o.Now
+	if busy || (st.LastBusy.IsZero() && o.TranscriptMTime.IsZero()) {
+		st.LastBusy = o.Now // busy now, or never seen: the idle clock starts here
 	}
 	idleSince := st.LastBusy
 	if o.TranscriptMTime.After(idleSince) {
