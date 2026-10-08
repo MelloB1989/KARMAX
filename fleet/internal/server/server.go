@@ -78,6 +78,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				if be, ok := err.(badRequest); ok {
 					code, err = http.StatusBadRequest, be.error
 				}
+				if fe, ok := err.(forbidden); ok {
+					code, err = http.StatusForbidden, fe.error
+				}
 				writeErr(w, code, err)
 				return
 			}
@@ -103,6 +106,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		}
 		if in.From == "" || in.To == "" || strings.TrimSpace(in.Text) == "" {
 			return nil, badRequest{fmt.Errorf("tell needs from, to and text")}
+		}
+		if in.From == "operator" && tok.scope(r) != full {
+			return nil, forbidden{fmt.Errorf("only a full-scope token speaks as the operator")}
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
@@ -197,6 +203,8 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 }
 
 type badRequest struct{ error }
+
+type forbidden struct{ error }
 
 func body(r *http.Request, v any) error {
 	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20)).Decode(v); err != nil {

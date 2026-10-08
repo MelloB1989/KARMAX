@@ -224,7 +224,7 @@ func (f *Fleet) execute(ctx context.Context, name string, b Box, old, next recon
 				f.event(name, "fleet.archive_failed", a.Session, map[string]string{"error": aerr.Error(), "reason": a.Reason})
 				continue // a stray is retried next tick; the agent's own decision stands
 			}
-			if err = b.StopPID(ctx, a.PID); err == nil && m != nil {
+			if err = b.StopPID(ctx, a.PID); err == nil && m != nil && f.settle(ctx, name, b, old, a.Session, "", reconcile.ReasonStray, m, now) {
 				err = b.DeleteTranscript(ctx, a.Session)
 			}
 			f.event(name, "fleet.stray_archived", a.Session, map[string]any{"pid": a.PID})
@@ -274,6 +274,9 @@ func (f *Fleet) rotate(ctx context.Context, name string, b Box, st reconcile.Sta
 	if m == nil {
 		return nil
 	}
+	if !f.settle(ctx, name, b, st, a.Session, a.Task, a.Reason, m, now) {
+		return nil // the transcript stays in the container; nothing is lost
+	}
 	if err := b.DeleteTranscript(ctx, a.Session); err != nil {
 		f.Log("delete transcript %s/%s: %v", name, a.Session, err)
 	}
@@ -286,6 +289,25 @@ func (f *Fleet) rotate(ctx context.Context, name string, b Box, st reconcile.Sta
 		}
 	}
 	return nil
+}
+
+// settle runs once a session is stopped, before its transcript is deleted: a
+// message can land between the archive and the kill. If the transcript moved,
+// it is archived again; if that cannot be proven, it reports false and the
+// transcript is kept.
+func (f *Fleet) settle(ctx context.Context, name string, b Box, st reconcile.State, sid, task, reason string, m *archive.Manifest, now time.Time) bool {
+	h, err := b.HashTranscript(ctx, sid)
+	if err != nil {
+		return false
+	}
+	if h == m.SHA256 {
+		return true
+	}
+	if m2, err := f.archiveSession(ctx, name, b, st, sid, task, reason, now); err != nil || m2 == nil {
+		f.event(name, "fleet.late_archive_failed", sid, map[string]string{"error": fmt.Sprint(err)})
+		return false
+	}
+	return true
 }
 
 // archiveSession archives one session and records it in the ledger. A
@@ -395,6 +417,13 @@ func (f *Fleet) Enable(name string) error {
 // Tell relays a message across hosts: a throwaway session in the receiver's
 // container delivers it with SendMessage, so it arrives as a peer message.
 func (f *Fleet) Tell(ctx context.Context, from, to, text string, now time.Time) error {
+	// The receiver is told who sent it and replies there, so the sender must
+	// be someone a reply can reach (or the operator, who reads the ledger).
+	if from != f.cfg.Orchestrator.Name && from != "operator" {
+		if err := f.known(from); err != nil {
+			return fmt.Errorf("unknown sender: %w", err)
+		}
+	}
 	if to != f.cfg.Orchestrator.Name {
 		if err := f.known(to); err != nil {
 			return err
@@ -429,8 +458,16 @@ func (f *Fleet) Restore(ctx context.Context, id, onto string, now time.Time) err
 	b := f.box(name)
 	st := f.State(name)
 	cur := st.SessionID
+	if cur == m.SessionID {
+		// Its transcript in the container is this archive plus whatever came
+		// after; restoring would overwrite that with the older copy.
+		return fmt.Errorf("%s is already running session %s; nothing to restore", name, cur)
+	}
+	if st.Phase == reconcile.Working {
+		return fmt.Errorf("%s is mid-turn; restore when it is idle", name)
+	}
 	var curM *archive.Manifest
-	if cur != "" && cur != m.SessionID {
+	if cur != "" {
 		if curM, err = f.archiveSession(ctx, name, b, st, cur, st.Task, reconcile.ReasonRestored, now); err != nil {
 			return fmt.Errorf("archiving the current session first: %w", err)
 		}

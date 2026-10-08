@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/agent"
+	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/observe"
@@ -31,6 +32,9 @@ type box struct {
 	wts        []agent.Worktree
 	calls      []string
 	acked      int
+	// onStop runs when the session is stopped (Fresh): a message that
+	// landed between the archive and the kill.
+	onStop func(b *box)
 }
 
 func (b *box) log(s string) { b.mu.Lock(); b.calls = append(b.calls, s); b.mu.Unlock() }
@@ -42,9 +46,15 @@ func (b *box) Observe(_ context.Context, now time.Time) (reconcile.Obs, error) {
 }
 func (b *box) AckEvents(context.Context) error             { b.acked++; return nil }
 func (b *box) Restart(_ context.Context, sid string) error { b.log("restart " + sid); return nil }
-func (b *box) Fresh(context.Context) error                 { b.log("fresh"); return nil }
-func (b *box) Prompt(_ context.Context, t string) error    { b.log("prompt " + t); return nil }
-func (b *box) StopPID(_ context.Context, pid int) error    { b.log("stop " + itoa(pid)); return nil }
+func (b *box) Fresh(context.Context) error {
+	b.log("fresh")
+	if b.onStop != nil {
+		b.onStop(b)
+	}
+	return nil
+}
+func (b *box) Prompt(_ context.Context, t string) error { b.log("prompt " + t); return nil }
+func (b *box) StopPID(_ context.Context, pid int) error { b.log("stop " + itoa(pid)); return nil }
 func (b *box) DeleteTranscript(_ context.Context, sid string) error {
 	b.log("delete " + sid)
 	return nil
@@ -341,3 +351,92 @@ func TestRestoreArchivesTheCurrentSessionFirst(t *testing.T) {
 }
 
 var _ = errors.New
+
+// A message can land in the old session after it was archived and before it
+// was stopped. It is archived too — never deleted unarchived.
+func TestAMessageAfterTheArchiveIsArchivedBeforeDeletion(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	b.transcript["s-agent-03"] = transcript
+	late := `{"type":"user","sessionId":"s-agent-03","timestamp":"2026-10-08T10:31:00Z","turnOrigin":"peer","message":{"role":"user","content":"next task: T2"}}` + "\n"
+	b.onStop = func(b *box) { b.transcript["s-agent-03"] += late; b.onStop = nil }
+	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Done("agent-03", "T1", "done", "", "", t0)
+	f.Tick(context.Background(), t0)
+
+	all, _ := archive.List(f.ArchiveRoot(), time.Time{})
+	if len(all) != 2 {
+		t.Fatalf("archives = %d, want the first and the one with the late message", len(all))
+	}
+	found := false
+	for _, m := range all {
+		if tr, err := archive.ReadTranscript(f.ArchiveRoot(), m.ID); err == nil && strings.Contains(string(tr.Main), "next task: T2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the late message is in no archive")
+	}
+	if !slices.Contains(b.calls, "delete s-agent-03") {
+		t.Fatalf("calls = %q", b.calls)
+	}
+}
+
+func TestALateMessageThatCannotBeArchivedKeepsTheTranscript(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	b.transcript["s-agent-03"] = transcript
+	b.onStop = func(b *box) { b.transcript["s-agent-03"] += "{}\n"; b.badHash = true }
+	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Done("agent-03", "T1", "done", "", "", t0)
+	f.Tick(context.Background(), t0)
+	if slices.Contains(b.calls, "delete s-agent-03") {
+		t.Fatalf("deleted a transcript holding unarchived messages: %q", b.calls)
+	}
+}
+
+// A relayed message says who sent it, and the receiver replies there: the
+// sender has to be someone the fleet can deliver a reply to.
+func TestTellNeedsAKnownSender(t *testing.T) {
+	f, _, _ := newFleet(t)
+	if err := f.Tell(context.Background(), "mallory", "agent-03", "x", t0); err == nil {
+		t.Error("relayed from an unknown sender")
+	}
+	for _, from := range []string{"agent-05", "karmax", "operator"} {
+		if err := f.Tell(context.Background(), from, "agent-03", "x", t0); err != nil {
+			t.Errorf("from %s: %v", from, err)
+		}
+	}
+}
+
+// Restoring the session that is already live would overwrite its transcript
+// with an older copy and silently drop every turn since; restoring onto an
+// agent mid-turn would kill that turn. Both are refused.
+func TestRestoreRefusesTheLiveSessionAndABusyAgent(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	b.transcript["s-agent-03"] = transcript
+	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Done("agent-03", "T1", "done", "", "", t0)
+	f.Tick(context.Background(), t0)
+	hist, _ := f.db.History("agent-03", 1)
+	id := hist[0].ArchiveID
+
+	// The old session is still what the pane runs (agent-run not simulated).
+	f.Tick(context.Background(), t0.Add(time.Minute))
+	b.calls = nil
+	if err := f.Restore(context.Background(), id, "", t0.Add(time.Hour)); err == nil {
+		t.Fatal("restored over the live session it came from")
+	}
+	if len(b.calls) != 0 {
+		t.Fatalf("acted anyway: %q", b.calls)
+	}
+
+	b.obs.Sessions[0].SessionID, b.obs.Sessions[0].Status = "s-new", "busy"
+	b.transcript["s-new"] = strings.ReplaceAll(transcript, "s-agent-03", "s-new")
+	f.Tick(context.Background(), t0.Add(2*time.Minute))
+	b.calls = nil
+	if err := f.Restore(context.Background(), id, "", t0.Add(time.Hour)); err == nil || len(b.calls) != 0 {
+		t.Fatalf("restored onto an agent mid-turn: %v %q", err, b.calls)
+	}
+}
