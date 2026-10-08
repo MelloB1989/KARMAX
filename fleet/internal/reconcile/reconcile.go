@@ -42,8 +42,11 @@ type State struct {
 	CoolingUntil time.Time   `json:"cooling_until,omitempty"`
 	// WaitingSince is when the session started waiting on something only a
 	// person at its terminal can answer (a dialog).
-	WaitingSince   time.Time `json:"waiting_since,omitzero"`
-	DisabledReason string    `json:"disabled_reason,omitempty"`
+	WaitingSince time.Time `json:"waiting_since,omitzero"`
+	// PaneOrphanSince is when the pane was first seen alive with no session
+	// registered for it: starting, or wedged.
+	PaneOrphanSince time.Time `json:"pane_orphan_since,omitzero"`
+	DisabledReason  string    `json:"disabled_reason,omitempty"`
 
 	// Low and Reserved are quota flags, independent of the phase: a low agent
 	// still works, but new tasks should prefer others.
@@ -74,7 +77,9 @@ type Obs struct {
 	PaneAlive   bool
 	// PanePID is the pid of the claude the pane runs, when known; it tells the
 	// agent's own session from a stray using the same name.
-	PanePID         int
+	PanePID int
+	// CurrentSession is the session agent-run last started (/work/.fleet/current).
+	CurrentSession  string
 	Sessions        []observe.Agent // interactive sessions in the container
 	Status          *observe.Status // latest status-line snapshot
 	Events          []observe.Event // hook events since the last tick
@@ -94,6 +99,10 @@ const (
 	Push         Kind = "push"          // tell the orchestrator (webhook)
 	Alert        Kind = "alert"         // tell you (phone)
 )
+
+// paneGrace is how long a live pane may run without a registered session
+// before it is treated as wedged and restarted.
+const paneGrace = 2 * time.Minute
 
 // stuckAfter is how long a session may wait on a dialog before you are told.
 const stuckAfter = 5 * time.Minute
@@ -188,17 +197,39 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 			break
 		}
 	}
+	// Failing that, the session the agent's own records name — never archive
+	// the agent's own session as a stray because a pid did not line up.
+	own := func(sid string) bool { return sid != "" && (sid == o.CurrentSession || sid == st.SessionID) }
+	if mine == nil {
+		for i, s := range o.Sessions {
+			if own(s.SessionID) {
+				mine = &o.Sessions[i]
+				break
+			}
+		}
+	}
 	for _, s := range o.Sessions {
-		if (mine != nil && s.SessionID == mine.SessionID) || s.Activity() != "idle" {
+		if (mine != nil && s.SessionID == mine.SessionID) || own(s.SessionID) || s.Activity() != "idle" {
 			continue
 		}
 		acts = append(acts, Action{Kind: ArchiveStray, Session: s.SessionID, PID: s.PID, Reason: ReasonStray})
 	}
 
+	if mine == nil && o.PaneAlive {
+		// A live pane with no session yet is usually claude starting up.
+		if st.PaneOrphanSince.IsZero() {
+			st.PaneOrphanSince = o.Now
+		}
+		if o.Now.Sub(st.PaneOrphanSince) < paneGrace {
+			return st, acts
+		}
+	}
 	if mine == nil || !o.PaneAlive {
+		st.PaneOrphanSince = time.Time{}
 		st = restart(th, st, o, &acts, push, alertOnce)
 		return st, acts
 	}
+	st.PaneOrphanSince = time.Time{}
 	st.SessionID = mine.SessionID
 	if st.Phase == Down {
 		st.Phase = Standby
