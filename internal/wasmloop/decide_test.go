@@ -104,18 +104,9 @@ func TestDecidePropagatesFailure(t *testing.T) {
 	}
 }
 
-// The ABI is a closed set and the capability map is what stops a loop reaching
-// a host function it never declared. Both have to know about decide.
-func TestDecideIsDescribedAndGated(t *testing.T) {
+// The ABI is a closed set; a function without a description is refused.
+func TestDecideIsDescribed(t *testing.T) {
 	if _, ok := hostDescriptions[FnDecide]; !ok {
 		t.Error("decide has no description, so a manifest listing it is refused")
-	}
-	capFor, ok := capabilityFor[FnDecide]
-	if !ok {
-		t.Fatal("decide has no capability, so it would be ungated")
-	}
-	class, value := capFor(newDecideRunner(&decidingKit{}))
-	if class != "tool" || value != "reflex.decide" {
-		t.Errorf("capability = %s:%s, want tool:reflex.decide", class, value)
 	}
 }

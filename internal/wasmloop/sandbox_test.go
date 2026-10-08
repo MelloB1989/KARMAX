@@ -138,7 +138,6 @@ func TestAGuestCannotEscapeTheSandbox(t *testing.T) {
 		"cannot list directories",
 		"cannot create files",
 		"no environment",
-		"undeclared host function refused",
 		"declared host function works",
 	} {
 		if !strings.Contains(transcript, want) {

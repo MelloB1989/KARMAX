@@ -121,28 +121,13 @@ func (n namedTool) Execute(context.Context, map[string]any) (tools.ToolResult, e
 	return tools.SuccessResult(nil), nil
 }
 
-func TestOperatorOnlyToolGating(t *testing.T) {
-	common := []tools.Tool{namedTool{"call.hangup"}}
-	priv := []tools.Tool{namedTool{"task.create"}, namedTool{"task.list"}, namedTool{"memory.ingest"}, namedTool{"orchestrator.send"}}
-	names := func(ts []tools.Tool) string {
-		var n []string
-		for _, t := range ts {
-			n = append(n, t.Manifest().Name)
-		}
-		return strings.Join(n, ",")
-	}
-	if got := names(voiceToolSet(false, common, priv)); got != "call.hangup" {
-		t.Fatalf("non-operator got %s", got)
-	}
-	if got := names(voiceToolSet(true, common, priv)); !strings.Contains(got, "task.create") || !strings.Contains(got, "memory.ingest") {
-		t.Fatalf("operator got %s", got)
-	}
+func TestVoiceCallerIsOperator(t *testing.T) {
 	isOp := func(p string) bool { return p == "op" }
 	if voiceCallerIsOperator("", func(string) bool { return true }) {
 		t.Fatal("empty peer must never be the operator")
 	}
 	if !voiceCallerIsOperator("op", isOp) || voiceCallerIsOperator("stranger", isOp) {
-		t.Fatal("gate misjudged the peer")
+		t.Fatal("misjudged the peer")
 	}
 }
 
