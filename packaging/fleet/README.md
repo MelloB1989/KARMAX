@@ -35,6 +35,7 @@ one per host, so they cannot drift from it.
 
 What its output decides:
 
+- **S1b relay lockdown.** Must say the relay could not run Bash and still delivered.
 - **S1 socket dir.** Set `sock_dir` in `fleet.yaml` to the directory of
   `messagingSocketPath` (default `/run/fleet`, which the containers export as
   `XDG_RUNTIME_DIR`). If S1 fails, fall back to one container per host.
@@ -77,14 +78,20 @@ brings it back on the same session.
 
 ## Phase 3 — KARMAX runs its orchestrator in `karmax-brain`
 
-In `karmax.yaml`. Setting `kinds` replaces the built-in defaults, so keep the
-other kinds you use:
+In `karmax.yaml`, give the one agent that orchestrates its own harness kind.
+Every other agent keeps the default `agent` kind and runs as before. Setting
+`kinds` replaces the built-in defaults, so keep the kinds you use:
 
 ```yaml
+agents:
+  - id: karmax-agent
+    harness_kind: orchestrator   # only this agent thinks in the fleet's kind
+    # …the rest of its definition, unchanged
+
 harness:
   enabled: true
   kinds:
-    agent:
+    orchestrator:
       model: sonnet
       idle: 30m
       max_turns: 500
@@ -92,6 +99,7 @@ harness:
       name: karmax          # how agents address it; = fleet.yaml orchestrator.name
       resident: true        # never reaped or evicted, revived if it dies
       launch: [docker, exec, -i, -w, "{workdir}", karmax-brain]
+    agent: {model: sonnet, idle: 30m, max_turns: 500, turn_timeout: 12m}
     chat: {model: sonnet, idle: 20m, max_turns: 200, turn_timeout: 4m}
     task: {model: opus, idle: 5m, max_turns: 20, turn_timeout: 20m}
 
@@ -114,8 +122,11 @@ Known limits of a launched kind:
 
 - The CLI's environment is the container's, not the daemon's, so
   `Thinking` (`MAX_THINKING_TOKENS`) does not cross the prefix.
-- The operator's browser tools reach `localhost` on Kali, which the container
-  cannot see.
+- The operator's browser tools are not offered to the `orchestrator` kind:
+  they reach `localhost` on Kali, which the container cannot see.
+- `harness.close` on a resident session closes it for good (until someone
+  writes to it). Every other close, such as the turn limit or a model change,
+  lets it come back.
 
 ## Phase 4 — fleetd
 
@@ -146,9 +157,19 @@ something in a repo, and watch `fleetctl ls` and `fleetctl events`.
   `FLEET_RELAY_TOKEN` (tell and status only) is for every agent, and is also
   what the OTLP receiver accepts.
 - **Relay.** A relayed message is untrusted text from another host. The relay
-  session gets only `SendMessage` and `ListAgents`, with no permission bypass,
-  and is capped at 4 turns.
+  session overrides the container's bypass mode (`--permission-mode dontAsk`),
+  gets only `SendMessage` and `ListAgents` (`--tools`), and is capped at
+  4 turns. Spike S1b checks that it really cannot run Bash.
+- **Senders.** A relayed message names its sender (`FLEET_NAME`), and fleetd
+  refuses senders that a reply can't reach. Only a full-scope token may send
+  as `operator`.
 - **Shared PID namespace.** Agents on one host can see and signal each other's
   processes, and read each other's environment. The plan accepts this for a
   home LAN; the anchor keeps the host's own processes out of reach.
+  **That includes `karmax-brain`.** Native messaging with the orchestrator
+  needs it in the same namespace, so a Kali agent can read its environment:
+  the orchestrator's subscription token, the full-scope `FLEET_TOKEN` and
+  `KARMAX_API_TOKEN`. The KARMAX daemon itself stays on the host, out of
+  reach. If that is too much, run no agents on the orchestrator's host; all
+  of them then reach it through the relay.
 - **The docker group is root** on PC2. The `fleet` user is key-only.
