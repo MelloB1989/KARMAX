@@ -66,6 +66,14 @@ type HarnessKindConfig struct {
 	TurnTimeout string  `yaml:"turn_timeout"` // e.g. "45s"
 	MaxCostUSD  float64 `yaml:"max_cost_usd"`
 	Ephemeral   bool    `yaml:"ephemeral"`
+	// Launch is an argv prefix the CLI runs under, e.g.
+	// [docker, exec, -i, -w, "{workdir}", karmax-brain] to run this kind's
+	// sessions inside a container (see docs/AGENT-FLEET.md). Empty runs the
+	// CLI directly.
+	Launch []string `yaml:"launch"`
+	// Name is passed to the CLI as --name: what other Claude Code sessions
+	// call this one when they message it. Empty passes no flag.
+	Name string `yaml:"name"`
 }
 
 // DatabaseConfig points the store at a backend. See store.ParseDSN for the

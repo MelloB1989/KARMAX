@@ -26,6 +26,16 @@ type Policy struct {
 	// number nobody is charged.
 	MaxCostUSD float64
 	Ephemeral  bool
+	// Launch is an argv prefix the binary is run under — docker exec, ssh,
+	// podman, kubectl — with "{workdir}" replaced by the session's working
+	// directory. Empty runs the binary directly, as every kind always has.
+	//
+	// The process's environment is the prefix's, not the session's: a prefix
+	// that crosses into a container or another host carries its own.
+	Launch []string
+	// Name is passed as --name, so other sessions can address this one by a
+	// name that outlives any one session id. Empty passes no flag.
+	Name string
 }
 
 // Store is what the supervisor needs to remember sessions across restarts.
@@ -332,7 +342,8 @@ func (s *Supervisor) open(ctx context.Context, key, kind string, pol Policy, opt
 		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
 	}
 	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
-		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig}
+		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig,
+		Name: pol.Name, Launch: pol.Launch}
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
 	// sweep can find; the reverse leaves a process nothing knows about.
