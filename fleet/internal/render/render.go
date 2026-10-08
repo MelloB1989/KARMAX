@@ -24,7 +24,46 @@ import (
 //go:embed brief.md.tmpl
 var briefTmpl string
 
-var brief = template.Must(template.New("brief").Parse(briefTmpl))
+//go:embed orchestrator.md.tmpl
+var orchTmpl string
+
+var (
+	brief     = template.Must(template.New("brief").Parse(briefTmpl))
+	orchBrief = template.Must(template.New("orchestrator").Parse(orchTmpl))
+)
+
+// OrchestratorBrief is the fleet's paragraph for the orchestrator.
+func OrchestratorBrief(c *config.Config) (string, error) {
+	type row struct {
+		Name, Host, Models string
+		Local              bool
+	}
+	var rows []row
+	for _, n := range c.AgentNames() {
+		a := c.Agents[n]
+		rows = append(rows, row{Name: n, Host: a.Host, Models: strings.Join(a.Models, ", "), Local: a.Host == c.Orchestrator.Host})
+	}
+	var b strings.Builder
+	err := orchBrief.Execute(&b, map[string]any{"Agents": rows})
+	return b.String(), err
+}
+
+// OrchestratorBriefPath is where the orchestrator's session reads the fleet's
+// paragraph: .claude/CLAUDE.md in its workdir, beside the CLAUDE.md the
+// session owns. KARMAX names that workdir agent_<id>, every character that
+// is not a letter or digit made an underscore.
+func OrchestratorBriefPath(c *config.Config) string {
+	if c.Orchestrator.KarmaxAgent == "" {
+		return ""
+	}
+	key := []byte("agent:" + c.Orchestrator.KarmaxAgent)
+	for i, ch := range key {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9') {
+			key[i] = '_'
+		}
+	}
+	return filepath.Join(c.Home, ".karmax", "sessions", string(key), ".claude", "CLAUDE.md")
+}
 
 // Brief renders an agent's CLAUDE.md.
 func Brief(c *config.Config, name string) (string, error) {
@@ -94,6 +133,19 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 		"KARMAX_API_TOKEN":        env["KARMAX_API_TOKEN"],
 	}); err != nil {
 		return err
+	}
+
+	if p := OrchestratorBriefPath(c); p != "" {
+		b, err := OrchestratorBrief(c)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, []byte(b), 0o644); err != nil {
+			return err
+		}
 	}
 
 	for _, h := range c.HostNames() {

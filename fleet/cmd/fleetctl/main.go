@@ -395,6 +395,11 @@ func run(cmd string, args []string) error {
 			fmt.Printf("  compose.%s.yaml  (%s)\n", h, strings.Join(cfg.AgentsOn(h), ", "))
 		}
 		fmt.Println("  agents/*.env      (0600, one token each)")
+		if p := render.OrchestratorBriefPath(cfg); p != "" {
+			fmt.Printf("orchestrator brief: %s\n", p)
+		} else {
+			fmt.Println("orchestrator brief: not written — set orchestrator.karmax_agent in fleet.yaml")
+		}
 		return nil
 
 	case "up", "down":

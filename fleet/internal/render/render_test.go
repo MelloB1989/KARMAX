@@ -220,3 +220,45 @@ func section(s, heading string) string {
 	}
 	return s
 }
+
+func TestOrchestratorBrief(t *testing.T) {
+	b, err := OrchestratorBrief(cfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"agent-01", "agent-02", "agent-04", "sonnet, opus", "fleetctl status --json",
+		"fleetctl assign", "fleetctl done", "fleetctl tell agent-04", "SendMessage", "low", "reserved", "fleet.agent."} {
+		if !strings.Contains(b, want) {
+			t.Errorf("orchestrator brief lacks %q", want)
+		}
+	}
+}
+
+// The persona lands only where the operator pointed it, beside — never over —
+// the CLAUDE.md the orchestrator's session owns.
+func TestRenderWritesTheOrchestratorBriefOnlyWhenAsked(t *testing.T) {
+	c := cfg(t)
+	dir := filepath.Join(t.TempDir(), "render")
+	if err := Render(c, env, dir); err != nil {
+		t.Fatal(err)
+	}
+	sessions := filepath.Join(c.Home, ".karmax", "sessions")
+	if _, err := os.Stat(sessions); err == nil {
+		t.Fatal("wrote into KARMAX's sessions without being asked")
+	}
+	c.Home = t.TempDir()
+	c.Orchestrator.KarmaxAgent = "karmax-agent"
+	own := filepath.Join(c.Home, ".karmax", "sessions", "agent_karmax_agent", "CLAUDE.md")
+	_ = os.MkdirAll(filepath.Dir(own), 0o755)
+	_ = os.WriteFile(own, []byte("the session's own notes"), 0o644)
+	if err := Render(c, env, filepath.Join(t.TempDir(), "r2")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(own), ".claude", "CLAUDE.md"))
+	if err != nil || !strings.Contains(string(b), "fleetctl assign") {
+		t.Fatalf("orchestrator brief: %v", err)
+	}
+	if mine, _ := os.ReadFile(own); string(mine) != "the session's own notes" {
+		t.Fatal("overwrote the session's own CLAUDE.md")
+	}
+}
