@@ -38,7 +38,14 @@ type Config struct {
 	Listen      string `yaml:"listen"`
 	RelayListen string `yaml:"relay_listen"`
 	OTLPListen  string `yaml:"otlp_listen"`
-	TokenEnv    string `yaml:"token_env"`
+	// TokenEnv names the full-scope API token (you, the orchestrator);
+	// RelayTokenEnv the one agents get, good for tell and status only.
+	TokenEnv      string `yaml:"token_env"`
+	RelayTokenEnv string `yaml:"relay_token_env"`
+	// SockDir is where Claude Code puts its messaging sockets inside the
+	// containers (XDG_RUNTIME_DIR); one volume shares it per host. Spike S1
+	// confirms the path.
+	SockDir string `yaml:"sock_dir"`
 
 	Hosts        map[string]Host  `yaml:"hosts"`
 	Orchestrator Orchestrator     `yaml:"orchestrator"`
@@ -175,6 +182,12 @@ func (c *Config) defaults() {
 	}
 	if c.TokenEnv == "" {
 		c.TokenEnv = "FLEET_TOKEN"
+	}
+	if c.RelayTokenEnv == "" {
+		c.RelayTokenEnv = "FLEET_RELAY_TOKEN"
+	}
+	if c.SockDir == "" {
+		c.SockDir = "/run/fleet"
 	}
 	if c.Karmax.Bin == "" {
 		c.Karmax.Bin = "karmax"

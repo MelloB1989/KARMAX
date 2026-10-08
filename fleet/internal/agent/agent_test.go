@@ -211,3 +211,31 @@ func TestParseWorktrees(t *testing.T) {
 		t.Fatalf("worktrees = %+v", wts)
 	}
 }
+
+// The relay runs in the receiver's container, on the receiver's subscription,
+// with nothing but the messaging tools: the text comes from another host and
+// is untrusted, so it must not be able to steer a session that can run code.
+func TestRelayArgv(t *testing.T) {
+	r := &fakeRunner{answer: func([]string) (string, error) { return "sent", nil }}
+	a := newAgent(r)
+	if err := a.Relay(context.Background(), "agent-03", "agent-05", "please rebase onto main"); err != nil {
+		t.Fatal(err)
+	}
+	argv := r.calls[0]
+	if !slices.Equal(argv[:6], []string{"docker", "exec", "-i", "-e", "FLEET_ROLE=relay", "agent-03"}) {
+		t.Fatalf("argv = %q", argv)
+	}
+	rest := strings.Join(argv[6:], " ")
+	for _, want := range []string{"claude -p", "--model haiku", "--name relay-from-agent-05", "--allowedTools SendMessage,ListAgents", "--max-turns"} {
+		if !strings.Contains(rest, want) {
+			t.Errorf("relay argv lacks %q: %s", want, rest)
+		}
+	}
+	if strings.Contains(rest, "dangerously") || strings.Contains(rest, "please rebase") {
+		t.Errorf("relay argv must not bypass permissions or carry the text: %s", rest)
+	}
+	in := r.stdins[0]
+	if !strings.Contains(in, "agent-03") || !strings.Contains(in, "please rebase onto main") || !strings.Contains(in, "agent-05") {
+		t.Errorf("prompt = %q", in)
+	}
+}

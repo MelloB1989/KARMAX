@@ -69,6 +69,15 @@ func (c Container) RunIn(ctx context.Context, stdin io.Reader, cmd ...string) ([
 	return c.runner().Run(ctx, c.argv([]string{"-i"}, cmd), stdin)
 }
 
+// RunInEnv runs a command inside the container with stdin and extra env.
+func (c Container) RunInEnv(ctx context.Context, env []string, stdin io.Reader, cmd ...string) ([]byte, error) {
+	flags := []string{"-i"}
+	for _, e := range env {
+		flags = append(flags, "-e", e)
+	}
+	return c.runner().Run(ctx, c.argv(flags, cmd), stdin)
+}
+
 // Sh runs a shell script inside the container, with args as $1….
 func (c Container) Sh(ctx context.Context, script string, args ...string) ([]byte, error) {
 	return c.Run(ctx, append([]string{"sh", "-c", script, "sh"}, args...)...)
