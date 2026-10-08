@@ -64,7 +64,8 @@ echo "== next file: [$(cat "$R/work/.fleet/next" 2>&1)] pane alive: $(tmux has-s
 echo "== transcript left in container: $(ls "$HOME/.claude/projects/-work/")"
 echo "== archive ls"; "$B/fleetctl" archive ls
 echo "== history"; "$B/fleetctl" history agent-01
-echo "== tell"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" tell agent-01 "please rebase" --from agent-05; head -3 "$R/relay.log"
+echo "== tell"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" tell agent-01 "please rebase" --from karmax; head -3 "$R/relay.log"
+echo "== an unknown sender is refused:"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" tell agent-01 "x" --from mallory
 echo "== relay token cannot assign:"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" assign agent-01 --task X
 echo "== otlp"; curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer relay' -H 'Content-Type: application/json' \
   -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"fleet.agent","value":{"stringValue":"agent-01"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"'$(date +%s)'000000000","attributes":[{"key":"event.name","value":{"stringValue":"api_request"}},{"key":"model","value":{"stringValue":"claude-sonnet"}},{"key":"output_tokens","value":{"intValue":"500"}},{"key":"cost_usd","value":{"doubleValue":0.02}}]}]}]}]}' \
