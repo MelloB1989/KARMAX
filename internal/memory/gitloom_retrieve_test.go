@@ -27,7 +27,7 @@ const liveShape = `{
   "memories": [
     {"path": "facts/campx-cloud-infrastructure/campx-azure.md", "tier": "facts",
      "title": "CampX cloud is hosted on Azure", "content": "[2026-08-24] CampX cloud is hosted on Azure (Shiva's setup), not AWS.",
-     "snippet": "", "score": 1, "matched": ["lexical"], "created": "2026-08-24T10:00:00Z",
+     "snippet": "", "score": 1, "matched": ["lexical"], "created_at": 1787565600,
      "related": [{"label": "owner", "path": "facts/people/shiva.md", "snippet": "Shiva runs CampX infra"}]}
   ],
   "defined": [{"path": "vocab/campx.md", "term": "CampX", "definition": "A client; TrustStrike runs its VAPT."}]
@@ -44,7 +44,7 @@ func TestRecallReadsTheLiveShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := backendAt(srv.URL).search(context.Background(), "CampX", 5)
+	res, err := backendAt(srv.URL).search(context.Background(), "CampX", 5, SearchOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestUnreadableResultsFailLoudly(t *testing.T) {
 		w.Write([]byte(`{"namespace":"karmax","candidates":3,"filtered_out":0,"results":[{"path":"a.md"}]}`))
 	}))
 	defer srv.Close()
-	_, err := backendAt(srv.URL).search(context.Background(), "x", 5)
+	_, err := backendAt(srv.URL).search(context.Background(), "x", 5, SearchOpts{})
 	if err == nil || !strings.Contains(err.Error(), "delivered none") {
 		t.Fatalf("err = %v, want results-found-but-unread reported", err)
 	}
@@ -103,7 +103,7 @@ func TestFloorDroppingEverythingIsNotAnError(t *testing.T) {
 		w.Write([]byte(`{"namespace":"karmax","candidates":12,"filtered_out":12,"memories":[]}`))
 	}))
 	defer srv.Close()
-	res, err := backendAt(srv.URL).search(context.Background(), "unanswerable", 5)
+	res, err := backendAt(srv.URL).search(context.Background(), "unanswerable", 5, SearchOpts{})
 	if err != nil || len(res) != 0 {
 		t.Fatalf("res=%v err=%v, want nothing and no error", res, err)
 	}
@@ -114,7 +114,7 @@ func TestNoMatchesIsNotAnError(t *testing.T) {
 		w.Write([]byte(`{"namespace":"karmax","memories":[],"candidates":0}`))
 	}))
 	defer srv.Close()
-	res, err := backendAt(srv.URL).search(context.Background(), "nothing", 5)
+	res, err := backendAt(srv.URL).search(context.Background(), "nothing", 5, SearchOpts{})
 	if err != nil || len(res) != 0 {
 		t.Fatalf("res=%v err=%v, want an empty result and no error", res, err)
 	}
@@ -125,7 +125,7 @@ func TestServerErrorsAreReported(t *testing.T) {
 		http.Error(w, `{"error":{"code":"quota_exceeded"}}`, http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	_, err := backendAt(srv.URL).search(context.Background(), "x", 5)
+	_, err := backendAt(srv.URL).search(context.Background(), "x", 5, SearchOpts{})
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("err = %v, want the status reported", err)
 	}

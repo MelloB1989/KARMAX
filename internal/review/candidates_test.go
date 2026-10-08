@@ -22,32 +22,25 @@ import (
 // took over — so it would have gone on asking the operator about facts from
 // before the cutover, forever, while never noticing anything written since.
 func TestCandidatesComeFromTheMemoryStore(t *testing.T) {
-	old := time.Now().Add(-30 * 24 * time.Hour).Format(time.RFC3339)
+	old := time.Now().Add(-30 * 24 * time.Hour).Unix()
 
 	var mu sync.Mutex
-	loaded := map[string]bool{}
+	var until string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/v1/tree"):
-			writeJSON(w, map[string]any{"tree": map[string]any{
-				"path": "", "children": []any{
-					// Time-sensitive: passes the pre-filter, gets fetched.
-					map[string]any{"path": "facts/a.md", "tier": "facts",
-						"summary": "Siva will get back by Friday about the deadline"},
-					// Durable identity fact: must NOT cost a fetch.
-					map[string]any{"path": "facts/b.md", "tier": "facts",
-						"summary": "Siva is the CTO and prefers email"},
-				},
-			}})
-		case strings.HasPrefix(r.URL.Path, "/v1/memories"):
-			path := r.URL.Query().Get("path")
+		case strings.HasPrefix(r.URL.Path, "/v1/retrieve"):
 			mu.Lock()
-			loaded[path] = true
+			until = r.URL.Query().Get("until")
 			mu.Unlock()
-			writeJSON(w, map[string]any{
-				"path": path, "content": "the full text of " + path, "updated": old,
-			})
+			writeJSON(w, map[string]any{"memories": []any{
+				// Time-sensitive: passes the pre-filter.
+				map[string]any{"path": "facts/a.md", "tier": "facts", "updated_at": old,
+					"content": "Siva will get back by Friday about the deadline"},
+				// Durable identity fact: not a candidate.
+				map[string]any{"path": "facts/b.md", "tier": "facts", "updated_at": old,
+					"content": "Siva is the CTO and prefers email"},
+			}})
 		default:
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		}
@@ -63,37 +56,28 @@ func TestCandidatesComeFromTheMemoryStore(t *testing.T) {
 	if got[0].id != "facts/a.md" {
 		t.Errorf("candidate id = %q, want the path so resolving it can act on it", got[0].id)
 	}
-	if !strings.Contains(got[0].text, "full text") {
-		t.Errorf("candidate carries the summary, not the memory: %q", got[0].text)
+	if got[0].at.Unix() != old {
+		t.Errorf("candidate age = %v, want the store's update time", got[0].at)
 	}
-
 	mu.Lock()
 	defer mu.Unlock()
-	// The pre-filter runs on summaries precisely so the durable fact never
-	// costs a request. A store of a few hundred memories would otherwise be a
-	// few hundred round trips per review tick.
-	if loaded["facts/b.md"] {
-		t.Error("a memory that failed the text pre-filter was fetched anyway")
+	if until == "" {
+		t.Error("the age bound was not sent to the store, so it listed everything")
 	}
 }
 
-// A memory that is recent is not stale, however time-sensitive it reads.
+// A memory that is recent is not stale, however time-sensitive it reads. The
+// store applies the bound, so a response that ignores it is still filtered.
 func TestRecentMemoriesAreNotCandidates(t *testing.T) {
-	fresh := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	fresh := time.Now().Add(-1 * time.Hour).Unix()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/v1/tree"):
-			writeJSON(w, map[string]any{"tree": map[string]any{
-				"path": "", "children": []any{
-					map[string]any{"path": "facts/a.md", "tier": "facts",
-						"summary": "the deadline is Friday and it is still open"},
-				},
+		case strings.HasPrefix(r.URL.Path, "/v1/retrieve"):
+			writeJSON(w, map[string]any{"memories": []any{
+				map[string]any{"path": "facts/a.md", "tier": "facts", "updated_at": fresh,
+					"content": "the deadline is Friday and it is still open"},
 			}})
-		case strings.HasPrefix(r.URL.Path, "/v1/memories"):
-			writeJSON(w, map[string]any{
-				"path": r.URL.Query().Get("path"), "content": "written an hour ago", "updated": fresh,
-			})
 		default:
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		}

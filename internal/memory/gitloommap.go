@@ -239,7 +239,6 @@ func Merge(path string, entries []MemoryEntry, related []string) gitloom.NewMemo
 		body    strings.Builder
 		tags    []string
 		cues    []string
-		seenTag = map[string]bool{}
 		seenCue = map[string]bool{}
 		conf    float64
 		latest  time.Time
@@ -254,13 +253,7 @@ func Merge(path string, entries []MemoryEntry, related []string) gitloom.NewMemo
 		body.WriteString(strings.TrimSpace(prefixRe.ReplaceAllString(e.Content, "")))
 		body.WriteString("\n\n")
 
-		for _, t := range append(append([]string{}, e.Tags...), e.Category) {
-			t = strings.TrimSpace(strings.ToLower(t))
-			if t != "" && !seenTag[t] {
-				seenTag[t] = true
-				tags = append(tags, t)
-			}
-		}
+		tags = unionTags(tags, append(append([]string{}, e.Tags...), e.Category))
 		for _, c := range cuesFor(e) {
 			k := strings.ToLower(c)
 			if !seenCue[k] && len(cues) < 5 {
@@ -284,7 +277,7 @@ func Merge(path string, entries []MemoryEntry, related []string) gitloom.NewMemo
 	// subject the operator discussed yesterday should not rank as if the
 	// conversation stopped in March because that is when the file was started.
 	if !latest.IsZero() {
-		m.Date = latest.Format("2006-01-02")
+		m.OccurredAt = gitloom.At(latest)
 	}
 	return m
 }
@@ -298,8 +291,8 @@ func Merge(path string, entries []MemoryEntry, related []string) gitloom.NewMemo
 // another section, and unions the frontmatter — which is what keeps one file
 // per subject growing instead of fragmenting into dated near-duplicates.
 //
-// existing may be empty, which is the first-write case.
-func AppendSection(existing string, incoming gitloom.NewMemory) gitloom.NewMemory {
+// existing may be empty. at dates the new header (none when zero) in loc (nil is UTC).
+func AppendSection(existing string, incoming gitloom.NewMemory, at time.Time, loc *time.Location) gitloom.NewMemory {
 	existing = strings.TrimSpace(existing)
 	if existing == "" {
 		return incoming
@@ -316,8 +309,11 @@ func AppendSection(existing string, incoming gitloom.NewMemory) gitloom.NewMemor
 	var b strings.Builder
 	b.WriteString(existing)
 	b.WriteString("\n\n## ")
-	if incoming.Date != "" {
-		b.WriteString(incoming.Date + " — ")
+	if !at.IsZero() {
+		if loc == nil {
+			loc = time.UTC
+		}
+		b.WriteString(at.In(loc).Format("2006-01-02") + " — ")
 	}
 	title := body
 	if i := strings.IndexAny(title, ".\n"); i > 0 {
@@ -332,32 +328,6 @@ func AppendSection(existing string, incoming gitloom.NewMemory) gitloom.NewMemor
 
 	out := incoming
 	out.Content = b.String()
-	return out
-}
-
-// UnionMemories combines several writes to one path into a single document,
-// so a batch carrying three new facts about one subject makes one file rather
-// than three overwrites of each other.
-func UnionMemories(ms []gitloom.NewMemory) gitloom.NewMemory {
-	if len(ms) == 1 {
-		return ms[0]
-	}
-	out := ms[0]
-	for _, m := range ms[1:] {
-		out = AppendSection(out.Content, gitloom.NewMemory{
-			Path: m.Path, Content: m.Content, Date: m.Date,
-			Tags: m.Tags, Confidence: m.Confidence, Cues: m.Cues, Related: m.Related,
-		})
-		out.Tags = unionStrings(ms[0].Tags, m.Tags, 24)
-		out.Cues = unionStrings(ms[0].Cues, m.Cues, 5)
-		out.Related = unionStrings(ms[0].Related, m.Related, 32)
-		if m.Confidence > out.Confidence {
-			out.Confidence = m.Confidence
-		}
-		if m.Date > out.Date {
-			out.Date = m.Date // lexicographic works on YYYY-MM-DD
-		}
-	}
 	return out
 }
 
@@ -380,15 +350,7 @@ func unionStrings(a, b []string, max int) []string {
 func ToGitLoom(e MemoryEntry, path string, related []string) gitloom.NewMemory {
 	body := strings.TrimSpace(prefixRe.ReplaceAllString(e.Content, ""))
 
-	tags := make([]string, 0, len(e.Tags)+1)
-	seen := map[string]bool{}
-	for _, t := range append(e.Tags, e.Category) {
-		t = strings.TrimSpace(strings.ToLower(t))
-		if t != "" && !seen[t] {
-			seen[t] = true
-			tags = append(tags, t)
-		}
-	}
+	tags := unionTags(nil, append(append([]string{}, e.Tags...), e.Category))
 
 	m := gitloom.NewMemory{
 		Path:       path,
@@ -398,10 +360,10 @@ func ToGitLoom(e MemoryEntry, path string, related []string) gitloom.NewMemory {
 		Cues:       cuesFor(e),
 		Related:    related,
 	}
-	if !e.CreatedAt.IsZero() {
-		// The date the memory is ABOUT. Without it a migration stamps six months
+	if at := EventTime(e); !at.IsZero() {
+		// When the memory is ABOUT. Without it a migration stamps six months
 		// of history with today and every recency judgement is wrong.
-		m.Date = e.CreatedAt.Format("2006-01-02")
+		m.OccurredAt = gitloom.At(at)
 	}
 	// Only incidents can expire, and only they should: a task from March is
 	// noise by August, while a fact about a person is not.
@@ -446,4 +408,12 @@ func RemoveSection(doc, slug string) (string, bool) {
 	}
 	kept := append(append([]string{}, lines[:start]...), lines[end:]...)
 	return strings.TrimSpace(strings.Join(kept, "\n")), true
+}
+
+// EventTime is when a memory's subject happened, else when it was recorded.
+func EventTime(e MemoryEntry) time.Time {
+	if !e.OccurredAt.IsZero() {
+		return e.OccurredAt
+	}
+	return e.CreatedAt
 }

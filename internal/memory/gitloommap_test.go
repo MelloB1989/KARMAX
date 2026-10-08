@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"encoding/json"
+	"fmt"
 	gitloom "github.com/GitLoomHQ/gitloom-go/gitloom"
 	"strings"
 	"testing"
@@ -116,8 +118,8 @@ func TestMergeMakesAddressableSections(t *testing.T) {
 	}
 	// The file is dated by its most recent fact: a subject discussed yesterday
 	// must not rank as if the conversation stopped when the file was started.
-	if m.Date != newer.CreatedAt.Format("2006-01-02") {
-		t.Errorf("date = %q, want the newest entry's", m.Date)
+	if got := occurredOf(t, m); !got.Equal(newer.CreatedAt) {
+		t.Errorf("occurred = %v, want the newest entry's", got)
 	}
 	// Confidence is the highest claim in the file, not the first.
 	if m.Confidence != confidenceFor(3, false) {
@@ -131,11 +133,11 @@ func TestMergeMakesAddressableSections(t *testing.T) {
 func TestAppendSectionNeverDropsWhatIsStored(t *testing.T) {
 	existing := "## 2026-06-01 — TrustStrike is the VAPT product\n\nTrustStrike is the VAPT product."
 	incoming := gitloom.NewMemory{
-		Path: "facts/projects/truststrike.md", Date: "2026-08-01",
+		Path:    "facts/projects/truststrike.md",
 		Content: "TrustStrike now runs extraction on Fargate.",
 	}
 
-	got := AppendSection(existing, incoming)
+	got := AppendSection(existing, incoming, time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC), nil)
 	// A hosted write replaces the whole file, so anything this drops is gone.
 	if !strings.Contains(got.Content, "VAPT product") {
 		t.Errorf("appending destroyed the existing content:\n%s", got.Content)
@@ -150,7 +152,7 @@ func TestAppendSectionNeverDropsWhatIsStored(t *testing.T) {
 	// Re-delivering the same memory must leave the file untouched. The outbox
 	// retries on every failure, so without this a flaky network appends the
 	// same fact once per attempt.
-	twice := AppendSection(got.Content, incoming)
+	twice := AppendSection(got.Content, incoming, time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC), nil)
 	if twice.Content != got.Content {
 		t.Errorf("a retried delivery changed the file:\n%s", twice.Content)
 	}
@@ -191,8 +193,8 @@ func TestToGitLoomStripsKarmaxFormatting(t *testing.T) {
 	}
 	// The date the memory is ABOUT. Losing it stamps six months of history
 	// with today and every recency judgement afterwards is wrong.
-	if m.Date != "2026-07-19" {
-		t.Errorf("date = %q, want 2026-07-19", m.Date)
+	if got := occurredOf(t, m); !got.Equal(e.CreatedAt) {
+		t.Errorf("occurred = %v, want %v", got, e.CreatedAt)
 	}
 	if len(m.Related) != 1 {
 		t.Errorf("related = %v, want the one link", m.Related)
@@ -214,5 +216,66 @@ func TestOnlyIncidentsCarryATTL(t *testing.T) {
 	// from happened to have an expiry set.
 	if m := ToGitLoom(e, "facts/people/someone.md", nil); m.TTL != "" {
 		t.Errorf("a facts/ memory must not carry a TTL, got %q", m.TTL)
+	}
+}
+
+// occurredOf reads back the time a memory will be sent with.
+func occurredOf(t *testing.T, m gitloom.NewMemory) time.Time {
+	t.Helper()
+	raw, err := json.Marshal(m.OccurredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sec int64
+	if err := json.Unmarshal(raw, &sec); err != nil {
+		t.Fatalf("occurred_at = %s, want epoch seconds", raw)
+	}
+	return time.Unix(sec, 0)
+}
+
+func TestAppendSectionDatesTheHeaderInTheOperatorsZone(t *testing.T) {
+	loc := time.FixedZone("x", 5*3600+1800)
+	at := time.Date(2026, 8, 1, 21, 0, 0, 0, time.UTC) // 02:30 next day there
+	got := AppendSection("## old\n\nbody", gitloom.NewMemory{Content: "A new fact."}, at, loc)
+	if !strings.Contains(got.Content, "## 2026-08-02 — A new fact") {
+		t.Errorf("header not dated in the zone:\n%s", got.Content)
+	}
+	undated := AppendSection("## old\n\nbody", gitloom.NewMemory{Content: "Another."}, time.Time{}, nil)
+	if !strings.Contains(undated.Content, "## Another") {
+		t.Errorf("a zero time must leave the header undated:\n%s", undated.Content)
+	}
+}
+
+func TestEventTimePrefersWhenItHappened(t *testing.T) {
+	wrote := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	said := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	if got := EventTime(MemoryEntry{CreatedAt: wrote, OccurredAt: said}); !got.Equal(said) {
+		t.Errorf("event time = %v, want when it happened", got)
+	}
+	if got := EventTime(MemoryEntry{CreatedAt: wrote}); !got.Equal(wrote) {
+		t.Errorf("event time = %v, want the write time as the fallback", got)
+	}
+}
+
+func TestTagsKeepToTheServersRules(t *testing.T) {
+	long := strings.Repeat("x", 90)
+	got := unionTags([]string{"Old One"}, []string{"person:abc", long, "bad!tag", "old one"})
+	for _, tag := range got {
+		if len(tag) > 64 || strings.ContainsAny(tag, "!") {
+			t.Errorf("tag %q breaks the server's rules and would refuse the write", tag)
+		}
+	}
+	if len(got) != 4 {
+		t.Errorf("got %v, want the old tag once plus three new", got)
+	}
+
+	// Past the cap the existing tags give way, not what this write is about.
+	var old []string
+	for i := 0; i < 40; i++ {
+		old = append(old, fmt.Sprintf("t%d", i))
+	}
+	got = unionTags(old, []string{"chat:1"})
+	if len(got) != 32 || got[len(got)-1] != "chat:1" {
+		t.Errorf("len=%d last=%q; want 32 tags with the new one kept", len(got), got[len(got)-1])
 	}
 }
