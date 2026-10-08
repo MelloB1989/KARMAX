@@ -3,7 +3,7 @@ module github.com/MelloB1989/karmax
 go 1.26
 
 require (
-	github.com/GitLoomHQ/gitloom-go v0.6.0
+	github.com/GitLoomHQ/gitloom-go v0.6.1
 	github.com/MelloB1989/karma v1.27.0
 	github.com/MelloB1989/wacli v0.3.0
 	github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36

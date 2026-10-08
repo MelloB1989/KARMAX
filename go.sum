@@ -10,6 +10,8 @@ github.com/GitLoomHQ/gitloom-go v0.5.0 h1:lpHhs17I64bCW8YnTGHXzqf/oIElvTdA+jkDMr
 github.com/GitLoomHQ/gitloom-go v0.5.0/go.mod h1:jrMQxkBzbSrODP96kW1TAfKnDwLHnkb8rNvm5Fm5s28=
 github.com/GitLoomHQ/gitloom-go v0.6.0 h1:8YjXlQXkMGF8NK1yNKVEemff4AnfabTOqZROCVKZ7po=
 github.com/GitLoomHQ/gitloom-go v0.6.0/go.mod h1:jrMQxkBzbSrODP96kW1TAfKnDwLHnkb8rNvm5Fm5s28=
+github.com/GitLoomHQ/gitloom-go v0.6.1 h1:HRHabxQwx5ua9rURVpCRoe9Surw2HMM9TIosL3Fp19g=
+github.com/GitLoomHQ/gitloom-go v0.6.1/go.mod h1:jrMQxkBzbSrODP96kW1TAfKnDwLHnkb8rNvm5Fm5s28=
 github.com/MelloB1989/karma v1.27.0 h1:RDJkmzBgl6VXQg3I/PKqJZS9MUAm0oGrhaUG492Ki1o=
 github.com/MelloB1989/karma v1.27.0/go.mod h1:lIHrX9EQ9vrwP7QZ/52ptZG4L8mhAiSxr2dj+vTytoI=
 github.com/MelloB1989/wacli v0.3.0 h1:5NPB5YD6H0tlqFf9nCqwzSWWG4sHViluvKvBBaMBVNw=
