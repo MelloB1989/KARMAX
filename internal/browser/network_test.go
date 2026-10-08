@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,13 +24,23 @@ func testBrowser(t *testing.T) *Session {
 	if hostpaths.Browser() == "" {
 		t.Skip("no Chrome, Chromium or Edge on this machine")
 	}
-	s := NewHeadless(t.TempDir())
+	// Not t.TempDir: Chrome's helpers can still be writing the profile after Stop, which fails its strict cleanup.
+	dir, err := os.MkdirTemp("", "karmax-browser-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewHeadless(dir)
+	t.Cleanup(func() {
+		_ = s.Stop(context.Background())
+		for i := 0; i < 50 && os.RemoveAll(dir) != nil; i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Stop(context.Background()) })
 	return s
 }
 
