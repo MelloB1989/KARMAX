@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
@@ -175,6 +176,16 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 		}
 		return
 	}
+	if wait, ok := rt.harnessWait(runErr); ok {
+		// Quota is not the loop's fault: wait for the window without spending an attempt; the floor of 1 keeps checkpoints.
+		t := time.Now().Add(wait)
+		rt.log.Warn("loop deferred until the harness is available",
+			zap.String("loop", l.Name), zap.Int("attempt", attempt), zap.Time("retry_at", t), zap.Error(runErr))
+		if err := rt.store.FinishLoopRun(runID, l.Name, "failed", msg, max(attempt-1, 1), &t); err != nil {
+			rt.log.Warn("could not record loop failure", zap.String("loop", l.Name), zap.Error(err))
+		}
+		return
+	}
 	if attempt >= maxAttempts {
 		status = "dead"
 		// Nothing will resume this, so the checkpoints are just clutter.
@@ -196,6 +207,25 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 	if err := rt.store.FinishLoopRun(runID, l.Name, status, msg, attempt, next); err != nil {
 		rt.log.Warn("could not record loop failure", zap.String("loop", l.Name), zap.Error(err))
 	}
+}
+
+// harnessWait reports whether a failure is the harness being unavailable, and how long to wait for it.
+func (rt *KarmaxRuntime) harnessWait(err error) (time.Duration, bool) {
+	var open harness.ErrBreakerOpen
+	if !errors.As(err, &open) && !strings.Contains(err.Error(), "harness unavailable") {
+		return 0, false
+	}
+	wait := 15 * time.Minute
+	if rt.harnessBreaker != nil {
+		if _, _, rl := rt.harnessBreaker.Status(); rl != nil {
+			if _, w := rl.Worst(); w.ResetsAt > 0 {
+				if until := time.Until(time.Unix(w.ResetsAt, 0)); until > 0 {
+					wait = until + time.Minute
+				}
+			}
+		}
+	}
+	return wait, true
 }
 
 // executionFor returns the execution id this attempt belongs to: a new one for
