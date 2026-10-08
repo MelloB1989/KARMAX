@@ -1,0 +1,7 @@
+[gc]
+	# git gc runs from a cron on the host, so eight agents never gc one .git at once.
+	auto = 0
+[init]
+	defaultBranch = main
+[push]
+	autoSetupRemote = true
