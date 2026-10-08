@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -44,6 +45,7 @@ type Session struct {
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
+	pipe   io.WriteCloser // stdin's own end, closed by Close to send EOF
 	events chan event
 	closed chan struct{}
 	// exited is closed once the process has been reaped. Signal-0 liveness is
@@ -161,6 +163,7 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	}
 
 	s.cmd = cmd
+	s.pipe = stdin
 	s.stdin = bufio.NewWriter(stdin)
 	s.events = make(chan event, 64)
 	s.closed = make(chan struct{})
@@ -444,16 +447,33 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 // -detected data race, independent of whether killing that turn was the
 // right call (see the harness.close and harness.model call sites for that
 // judgement).
+//
+// EOF goes first. It is the polite exit for a stream-json session, and the only
+// one that crosses a launch prefix: a signal reaches the docker (or ssh) client,
+// not the CLI behind it, and killing the client can strand the CLI wherever it
+// runs. So a launched session is given launchedExitGrace to exit on EOF before
+// it is signalled; a local one is signalled at once, as it always was, because
+// Close is also how a running turn is interrupted.
 func (s *Session) Close() {
 	s.once.Do(func() {
 		close(s.closed)
 		if s.stdin != nil {
 			s.writeMu.Lock()
 			_ = s.stdin.Flush()
+			if s.pipe != nil {
+				_ = s.pipe.Close()
+			}
 			s.writeMu.Unlock()
 		}
 		if s.cmd == nil || s.cmd.Process == nil {
 			return
+		}
+		if len(s.Launch) > 0 {
+			select {
+			case <-s.exited:
+				return
+			case <-time.After(launchedExitGrace):
+			}
 		}
 		_ = s.cmd.Process.Signal(os.Interrupt)
 		// The reader goroutine owns Wait; this only waits for it to finish.
@@ -464,6 +484,10 @@ func (s *Session) Close() {
 		}
 	})
 }
+
+// launchedExitGrace is how long Close waits for a launched session to exit on
+// EOF before signalling it.
+const launchedExitGrace = 5 * time.Second
 
 // Busy reports whether a turn is in flight, so nothing closes a session that is
 // still working.
