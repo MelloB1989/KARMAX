@@ -75,10 +75,16 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 	}
 
 	for _, n := range c.AgentNames() {
-		if err := writeEnv(filepath.Join(dir, "agents", n+".env"), map[string]string{
+		kv := map[string]string{
 			"CLAUDE_CODE_OAUTH_TOKEN": env[c.Agents[n].TokenEnv],
 			"FLEET_TOKEN":             env[c.RelayTokenEnv],
-		}); err != nil {
+		}
+		// The telemetry receiver takes the relay token; the header holds a
+		// secret, so it lives here and not in the compose file.
+		if c.Hosts[c.Agents[n].Host].OTLPURL != "" && env[c.RelayTokenEnv] != "" {
+			kv["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=Bearer%20" + env[c.RelayTokenEnv]
+		}
+		if err := writeEnv(filepath.Join(dir, "agents", n+".env"), kv); err != nil {
 			return err
 		}
 	}

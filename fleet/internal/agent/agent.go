@@ -197,7 +197,7 @@ mkdir -p "$W"
 case "$1" in
   resume) printf '%s' "$2" > "$W/next" ;;
   fresh) : > "$W/next" ;;
-  continue) rm -f "$W/next" ;;
+  continue) : ;; # whatever is pending in next still applies; else agent-run resumes current
 esac
 tmux kill-session -t main 2>/dev/null
 true

@@ -105,6 +105,9 @@ type Karmax struct {
 	Notify *bool `yaml:"notify"`
 	// Bin is the karmax CLI. Default "karmax".
 	Bin string `yaml:"bin"`
+	// APIURL is KARMAX's API, read for the orchestrator's own quota.
+	// Default http://127.0.0.1:9091.
+	APIURL string `yaml:"api_url"`
 }
 
 // Thresholds is everything the reconciler decides on.
@@ -191,6 +194,9 @@ func (c *Config) defaults() {
 	}
 	if c.Karmax.Bin == "" {
 		c.Karmax.Bin = "karmax"
+	}
+	if c.Karmax.APIURL == "" {
+		c.Karmax.APIURL = "http://127.0.0.1:9091"
 	}
 	if c.Orchestrator.Name == "" {
 		c.Orchestrator.Name = "karmax"

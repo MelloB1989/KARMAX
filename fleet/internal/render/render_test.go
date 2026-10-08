@@ -74,7 +74,8 @@ func TestRenderWritesPrivateEnvFiles(t *testing.T) {
 		}
 	}
 	a1 := readEnv(t, filepath.Join(dir, "agents/agent-01.env"))
-	if a1["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-A1" || a1["FLEET_TOKEN"] != "relay" {
+	if a1["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-A1" || a1["FLEET_TOKEN"] != "relay" ||
+		a1["OTEL_EXPORTER_OTLP_HEADERS"] != "Authorization=Bearer%20relay" {
 		t.Errorf("agent-01 env = %v: an agent gets its own token and only the relay-scoped fleet token", a1)
 	}
 	if strings.Contains(strings.Join(mapValues(a1), " "), "sk-ant-oat01-A2") {

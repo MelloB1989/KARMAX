@@ -234,7 +234,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	// Everything below acts on an idle session only.
 	rotate := func(reason string) {
 		acts = append(acts, Action{Kind: Rotate, Session: st.SessionID, Task: st.Task, Reason: reason})
-		st.Task, st.Done, st.Phase = "", false, Standby
+		st.Task, st.Done, st.Phase, st.SessionID = "", false, Standby, "" // the next one is learned when seen
 		st.NudgedAt, st.CompactedAt, st.LastBusy = time.Time{}, 0, o.Now
 	}
 	switch {
@@ -275,7 +275,7 @@ func restart(th config.Thresholds, st State, o Obs, acts *[]Action, push func(st
 		*acts = append(*acts, Action{Kind: Rotate, Session: st.SessionID, Task: st.Task, Reason: ReasonCrashed})
 		push("crashed", fmt.Sprintf("%s crash-looped; its session was archived and it starts fresh", st.Name))
 		alertOnce("crashloop", fmt.Sprintf("%s failed to start %d times in %s; started fresh", st.Name, len(recent)+1, th.RestartWindow))
-		st.Restarts, st.Task, st.Done, st.Phase = nil, "", false, Standby
+		st.Restarts, st.Task, st.Done, st.Phase, st.SessionID = nil, "", false, Standby, ""
 		return st
 	}
 	st.Restarts = append(recent, o.Now)
