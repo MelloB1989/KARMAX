@@ -564,34 +564,10 @@ func (k *loopKit) Ask(ctx context.Context, prompt string) (string, error) {
 	return k.AskWithTools(ctx, prompt, nil)
 }
 
-// Observe is Ask with every way of speaking taken away for the turn.
-//
-// Withholding just the send tools was tried first and lost twice in one night.
-// The model asked the deferred-tool loader for comms.send by name and was
-// handed it; and even with the loader fixed, a pass holding shell.exec can run
-// `wacli send` itself and one holding claude_code.call can delegate the send
-// to a harness. Every indirection that can end in a message is withheld, not
-// only the messages themselves.
+// Observe is Ask with every tool, sending included; nothing is withheld by the operator's choice.
 func (k *loopKit) Observe(ctx context.Context, prompt string) (string, error) {
-	ag, ok := k.rt.agents.Get(k.agentID)
-	if !ok || ag == nil {
-		return "", fmt.Errorf("agent %q unavailable", k.agentID)
-	}
-	out, _, err := ag.ChatDetailedWithheld(ctx, prompt, nil, observeWithheld)
-	return out, err
+	return k.Ask(ctx, prompt)
 }
-
-// observeWithheld is the direct and delayed send tools; execution tools stay available by the operator's choice.
-var observeWithheld = func() map[string]bool {
-	m := map[string]bool{
-		"scheduler_add": true, "self_remind": true,
-		"reminder_add": true, "whatsapp_send_media": true,
-	}
-	for name := range outboundTools {
-		m[name] = true
-	}
-	return m
-}()
 
 // AskWithTools is Ask with tools lent to the agent for that turn — the way a
 // WASM workflow hands the agent its own tools to answer with.

@@ -265,9 +265,7 @@ func (w *wasmKit) HarnessForget(sessionID, workingDir string) error {
 }
 
 // Gateway lends named host tools for one call, plus whatever this workflow
-// itself provides. Only host tools on the allowlist can be named, so a loop
-// cannot invent a capability by describing one — but its OWN tools travel
-// automatically, since they were approved in its manifest at install.
+// itself provides.
 func (w *wasmKit) Gateway(ctx context.Context, prompt string, lend ...string) (string, error) {
 	var lent []loopkit.Tool
 	for _, name := range lend {
@@ -433,7 +431,7 @@ func (w *wasmKit) ShortForget(group, key string) error {
 // used to do for itself.
 func (w *wasmKit) OperatorChats() []string { return builtin.OperatorChats() }
 
-// runHostTool runs one read-only host command with a bounded output.
+// runHostTool runs one host command with a bounded output.
 //
 // The output is returned even when the command fails, because for these tools
 // the output IS the diagnosis: gog exits 4 and says which account is not
@@ -455,18 +453,13 @@ func runHostTool(ctx context.Context, bin string, args ...string) (string, error
 	return string(out), nil
 }
 
-// lendableTool returns a host tool a loop may lend to the model for one call.
-//
-// The set is closed and read-only. wa-monitor used to build this itself with
-// its own allowlist; having one copy in the host means the rule cannot drift
-// between loops, and a loop cannot widen it.
+// lendableTool returns a host tool a loop may lend to the model for one call; any tool, by the operator's choice.
 func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 	switch name {
 	case "wacli":
 		return loopkit.Tool{
-			Name: "wacli",
-			Description: "Read-only WhatsApp access: messages, chats, resolve, contacts, receipts. " +
-				"Cannot send — sending is a separate, approved action.",
+			Name:        "wacli",
+			Description: "Full WhatsApp CLI access (wacli): messages, chats, resolve, contacts, receipts, send and more.",
 			Schema: []byte(`{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},` +
 				`"description":"e.g. [\"messages\",\"--chat\",\"<name>\",\"--limit\",\"15\"]"}},"required":["args"]}`),
 			Run: func(ctx context.Context, in map[string]any) (string, error) {
@@ -480,23 +473,13 @@ func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 				if len(args) == 0 {
 					return "", fmt.Errorf("args is required")
 				}
-				switch args[0] {
-				case "messages", "chats", "resolve", "contacts", "receipts":
-				default:
-					return "", fmt.Errorf("%q is not permitted here — this tool is read-only", args[0])
-				}
 				return runHostTool(ctx, hostpaths.Wacli(), args...)
 			},
 		}, true
 	}
 
-	// Anything else a loop names is resolved from the registry, read-only ones
-	// only. Without this the WhatsApp proxy could read text and nothing else:
-	// sent three images in a row, it answered "I can't open the image from
-	// here" three times, to a person who could plainly see it had just been
-	// sent one. The tool to read them was registered and working the whole
-	// time — the loop was simply never handed it.
-	if t, ok := rt.tools.Get(name); ok && lendableByName[tools.CanonicalName(name)] {
+	// Anything else a loop names is resolved from the registry.
+	if t, ok := rt.tools.Get(name); ok {
 		return asLoopkitTool(t), true
 	}
 	// memory.retrieve is not in the registry: it is built inside the agent,
@@ -504,24 +487,12 @@ func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 	// never find it. Every loop that asked was told "unknown tool" and ran
 	// without memory, silently. The agent's bound instance is the real one —
 	// and the only one that reads the right namespace.
-	if lendableByName[tools.CanonicalName(name)] {
-		for _, a := range rt.agents.List() {
-			if bound := a.NamedTools(name); len(bound) > 0 {
-				return asLoopkitTool(bound[0]), true
-			}
+	for _, a := range rt.agents.List() {
+		if bound := a.NamedTools(name); len(bound) > 0 {
+			return asLoopkitTool(bound[0]), true
 		}
 	}
 	return loopkit.Tool{}, false
-}
-
-// lendableByName is what a loop may borrow beyond wacli: reading tools, never
-// ones that act. An outbound tool reaching a loop's gateway would undo the
-// gates the loop itself applies before sending.
-var lendableByName = map[string]bool{
-	"whatsapp_view_media": true,
-	"whatsapp_read":       true,
-	"memory_retrieve":     true,
-	"memory_search":       true,
 }
 
 // outboundTools are the tools whose effect lands in front of another human —
