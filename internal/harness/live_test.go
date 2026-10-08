@@ -109,8 +109,7 @@ func TestLiveWarmSessionIsFastAndRemembers(t *testing.T) {
 		Policies: map[string]Policy{
 			"chat": {Model: "sonnet", Idle: time.Minute, TurnTimeout: 90 * time.Second, MaxTurns: 10},
 		},
-		Env:       os.Environ(),
-		Allowlist: map[string]bool{"karmax": true},
+		Env: os.Environ(),
 	}, st, NewBreaker(0.95, nil), testLog{t}, nil)
 	defer sup.Shutdown()
 

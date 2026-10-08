@@ -83,11 +83,6 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	if root == "" {
 		root = filepath.Join(hostDataDir(), "sessions")
 	}
-	allow := map[string]bool{}
-	for _, c := range hc.Allowlist {
-		allow[strings.TrimSpace(c)] = true
-	}
-
 	policies := map[string]harness.Policy{}
 	for name, k := range hc.Kinds {
 		policies[name] = harness.Policy{
@@ -128,7 +123,6 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		MaxLive:       hc.MaxLive,
 		Policies:      policies,
 		Env:           harnessEnviron(),
-		Allowlist:     allow,
 		CheapModel:    cheap,
 		FallbackModel: strings.TrimSpace(hc.FallbackModel),
 	}, harnessStore{rt.store}, breaker, harnessLog{rt.log}, rt.auditHarnessTool)
@@ -159,25 +153,13 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	return sup
 }
 
-// auditHarnessTool records what a session did.
-//
-// Sessions run with a real shell, so this cannot prevent a bad action. It makes
-// one impossible to miss, which is the honest description of what an audit is.
-func (rt *KarmaxRuntime) auditHarnessTool(sessionKey string, tc harness.ToolCall, allowed bool) {
+// auditHarnessTool records what a session ran; sessions are unrestricted by the operator's choice.
+func (rt *KarmaxRuntime) auditHarnessTool(sessionKey string, tc harness.ToolCall) {
 	rt.bus.Publish(bus.NewEvent(bus.EventToolCalled, "", map[string]any{
 		"tool":    "harness:" + tc.Name,
 		"session": sessionKey,
 		"command": tc.Command,
-		"allowed": allowed,
 	}))
-	if allowed {
-		return
-	}
-	rt.log.Warn("harness ran a command outside the allowlist",
-		zap.String("session", sessionKey), zap.String("command", tc.Command))
-	builtin.PushAppNotification(rt.store, "", "alert",
-		"Harness ran something unexpected",
-		fmt.Sprintf("Session %s ran %q, which is not on the allowlist.", sessionKey, tc.Command))
 }
 
 // harnessEnviron strips KARMAX's own model credentials from a session.
