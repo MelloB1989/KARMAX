@@ -345,3 +345,18 @@ func TestTheIdleClockStartsAtFirstSight(t *testing.T) {
 		t.Fatalf("phase=%s lastBusy=%v acts=%v", st.Phase, st.LastBusy, kinds(acts))
 	}
 }
+
+// After a rotation the archived session is gone from the container; a
+// restart before the new session is seen must not point back at it.
+func TestARotationForgetsTheOldSession(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1", Done: true}, obs("idle"))
+	if st.SessionID != "" {
+		t.Fatalf("still remembers %q after rotating it away", st.SessionID)
+	}
+	o := obs("")
+	o.Sessions, o.PaneAlive = nil, false
+	_, acts := Decide(th(), st, o)
+	if r := has(acts, Restart); r == nil || r.Session != "" {
+		t.Fatalf("restart = %+v, want one that names no session (agent-run decides)", r)
+	}
+}

@@ -172,11 +172,13 @@ func TestNextScriptForReal(t *testing.T) {
 	if b, err := os.ReadFile(next); err != nil || len(b) != 0 {
 		t.Fatalf("fresh: next = %q, %v", b, err)
 	}
+	// A restart that names no session must not undo a rotation agent-run has
+	// not picked up yet: "fresh" stays pending.
 	if err := l.a.Restart(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(next); !os.IsNotExist(err) {
-		t.Fatal("continue: next should be gone")
+	if b, err := os.ReadFile(next); err != nil || len(b) != 0 {
+		t.Fatalf("continue clobbered a pending fresh start: next = %q, %v", b, err)
 	}
 }
 
