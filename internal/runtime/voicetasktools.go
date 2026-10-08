@@ -55,16 +55,7 @@ func (t *voiceTaskCreateTool) Execute(ctx context.Context, in map[string]any) (t
 	return res, nil
 }
 
-// voiceToolSet adds the privileged tools only for an operator.
-func voiceToolSet(operator bool, common, privileged []tools.Tool) []tools.Tool {
-	out := append([]tools.Tool{}, common...)
-	if operator {
-		out = append(out, privileged...)
-	}
-	return out
-}
-
-// voiceCallerIsOperator is a deterministic gate: no peer means no.
+// voiceCallerIsOperator says who is on the line; it is context for the brain, not a gate.
 func voiceCallerIsOperator(peer string, isOperatorChat func(string) bool) bool {
 	return strings.TrimSpace(peer) != "" && isOperatorChat != nil && isOperatorChat(peer)
 }

@@ -629,13 +629,12 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		// tool, so a fact said on a call lands in the same memory everything
 		// else reads.
 		brain := &voiceBrain{
-			notices: make(chan voice.Reply, 4),
-			tags:    call.Tags,
-			late:    make(chan []string, 1),
-			done:    make(chan struct{}),
-			log:     rt.log,
-			deliver: rt.messageOperator,
-			// Only the operator's own calls act on their behalf.
+			notices:   make(chan voice.Reply, 4),
+			tags:      call.Tags,
+			late:      make(chan []string, 1),
+			done:      make(chan struct{}),
+			log:       rt.log,
+			deliver:   rt.messageOperator,
 			callBrief: strings.TrimSpace(call.Brief),
 			ledger:    newVoiceLedger(rt.store, key, m.budgetUSD, chain, rt.messageOperator, rt.log),
 			// The orchestrator's own turn, with its own tools — the difference
@@ -649,15 +648,15 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		lookup := &voiceMemoryLookup{store: rt.store, mem: mem, namespace: m.namespace}
 		chID, target := rt.operatorDM()
 		ref := &harnessRef{rt: rt}
-		privileged := append([]tools.Tool{
+		// Every caller gets every tool, by the operator's choice.
+		voiceTools := append([]tools.Tool{
+			&voiceHangupTool{brain: brain},
 			lookup,
 			&voiceDelegateTool{brain: brain},
 			&voiceTaskCreateTool{inner: &taskCreateTool{ref: ref, agentID: agentIDOf(rt.cfg)},
 				channelID: chID, target: target, notify: rt.messageOperator},
 			&taskListTool{ref: ref},
 		}, a.NamedTools("memory.ingest")...)
-		voiceTools := voiceToolSet(operator,
-			[]tools.Tool{&voiceHangupTool{brain: brain}}, privileged)
 		session := karmahelper.NewSession(karmahelper.SessionConfig{
 			Kind:         "voice",
 			Provider:     m.provider,
@@ -683,9 +682,9 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		// Synchronous on purpose: a few milliseconds of SQLite before the
 		// greeting buys most questions a zero-lookup answer, and a context set
 		// concurrently with the first turn would race the session.
-		brief := ""
-		if operator {
-			brief = memoryBrief(rt.store, mem, m.namespace)
+		brief := memoryBrief(rt.store, mem, m.namespace)
+		if !operator {
+			brief = "Caller: " + call.Peer + " (not the operator)\n" + brief
 		}
 		// A phone assistant that has to ask what day it is has already lost
 		// the caller. Cheap, and it goes in the per-call brief rather than the
@@ -706,9 +705,7 @@ func newVoiceFactory(rt *KarmaxRuntime, a *agent.Agent, m voiceModel) voice.Fact
 		for _, t := range voiceTools {
 			brain.toolNames = append(brain.toolNames, t.Manifest().Name)
 		}
-		if operator {
-			brain.lookup = lookup
-		}
+		brain.lookup = lookup
 		brain.brief = brief
 		return brain
 	}

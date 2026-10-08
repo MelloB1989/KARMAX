@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/broker"
-	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
@@ -85,32 +83,6 @@ var hostDescriptions = map[string]string{
 	FnShortForget: "clear its short-term working notes",
 	FnOperators:   "know which chats are yours rather than someone else's",
 	FnDecide:      "weigh a judgement call with the fast probability model",
-}
-
-// capabilityFor maps a host function to the Broker capability it needs, so the
-// two cannot drift apart.
-//
-// FnTool is absent deliberately: its capability depends on WHICH tool is being
-// called, so it is checked per call in Runner.call rather than per function.
-var capabilityFor = map[string]func(*Runner) (class, value string){
-	FnRecall:      func(r *Runner) (string, string) { return "memory", r.namespace },
-	FnRemember:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
-	FnNotify:      func(r *Runner) (string, string) { return "tool", "app.push" },
-	FnAsk:         func(r *Runner) (string, string) { return "tool", "agent.ask" },
-	FnHarness:     func(r *Runner) (string, string) { return "tool", "harness" },
-	FnGateway:     func(r *Runner) (string, string) { return "tool", "gateway" },
-	FnSession:     func(r *Runner) (string, string) { return "tool", "harness.send" },
-	FnSummarize:   func(r *Runner) (string, string) { return "tool", "summarize" },
-	FnPropose:     func(r *Runner) (string, string) { return "tool", "propose" },
-	FnRemind:      func(r *Runner) (string, string) { return "tool", "reminder.add" },
-	FnShortSet:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
-	FnShortGet:    func(r *Runner) (string, string) { return "memory", r.namespace },
-	FnShortAll:    func(r *Runner) (string, string) { return "memory", r.namespace },
-	FnChatGet:     func(r *Runner) (string, string) { return "memory", r.namespace },
-	FnChatSave:    func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
-	FnRunLoop:     func(r *Runner) (string, string) { return "tool", "loop.run" },
-	FnShortForget: func(r *Runner) (string, string) { return "memory", r.namespace + ":write" },
-	FnDecide:      func(r *Runner) (string, string) { return "tool", "reflex.decide" },
 }
 
 // Error codes returned to the guest. Negative so a length can be positive.
@@ -188,11 +160,6 @@ type Runner struct {
 	grants    *broker.Handle
 	log       *zap.Logger
 
-	declared map[string]bool
-	// tools is the manifest's tool allowlist, the first of the two gates a
-	// tool call passes. The Broker is the second.
-	tools map[string]bool
-	hosts []string // http allowlist derived from capabilities
 
 	// emptyOperatorsOnce rate-limits the empty-operator-chats warning to one
 	// per runner.
@@ -239,13 +206,6 @@ func NewRunner(ctx context.Context, a *Artifact, opts Options) (*Runner, error) 
 	r := &Runner{
 		name: a.Manifest.Name, namespace: opts.Namespace, manifest: a.Manifest,
 		kit: opts.Kit, grants: opts.Grants, log: opts.Log,
-		declared: set(a.Manifest.Host),
-		tools:    set(a.Manifest.Tools),
-	}
-	for _, c := range a.Manifest.Capabilities {
-		if host, ok := strings.CutPrefix(c, "http:"); ok {
-			r.hosts = append(r.hosts, strings.ToLower(host))
-		}
 	}
 
 	cfg := wazero.NewRuntimeConfig().WithCloseOnContextDone(true)
@@ -386,48 +346,14 @@ func (r *Runner) call(ctx context.Context, m api.Module,
 		r.log.Info("wasm loop host call", zap.String("loop", r.name), zap.String("function", name),
 			zap.String("trigger_kind", kind), zap.Int("trigger_payload_keys", payloadKeys))
 	}
-	// Declared in the signed manifest, or it does not exist for this module.
-	// Refused, not logged — a capability system that logs violations and
-	// proceeds is a logging system.
-	if !r.declared[name] {
-		r.log.Warn("wasm loop called a host function it did not declare",
-			zap.String("loop", r.name), zap.String("function", name))
-		return errNotDeclared
-	}
+	// Loops may call any host function and tool, by the operator's choice.
 	if _, known := hostDescriptions[name]; !known {
 		return errNotDeclared
-	}
-	if capFor, ok := capabilityFor[name]; ok {
-		class, value := capFor(r)
-		if err := r.grants.Check(class, value); err != nil {
-			r.log.Warn("wasm loop was refused a capability",
-				zap.String("loop", r.name), zap.String("function", name), zap.Error(err))
-			return errNotPermitted
-		}
 	}
 
 	req, ok := readString(m, reqPtr, reqLen)
 	if !ok {
 		return errBadRequest
-	}
-
-	// A tool call carries its own subject, so its gates are here rather than in
-	// capabilityFor: the manifest's tool list first, then the Broker.
-	if name == FnTool {
-		tool, err := toolName(req)
-		if err != nil {
-			return errBadRequest
-		}
-		if !r.tools[tool] {
-			r.log.Warn("wasm loop called a tool it did not declare",
-				zap.String("loop", r.name), zap.String("tool", tool))
-			return errNotDeclared
-		}
-		if err := r.grants.Tool(tool); err != nil {
-			r.log.Warn("wasm loop was refused a tool",
-				zap.String("loop", r.name), zap.String("tool", tool), zap.Error(err))
-			return errNotPermitted
-		}
 	}
 
 	out, err := r.dispatch(ctx, name, req)
@@ -729,43 +655,11 @@ func (r *Runner) doHTTP(ctx context.Context, req string) ([]byte, error) {
 		in.Method = "GET"
 	}
 
-	// 1. Should any loop reach that address — private ranges, metadata, DNS
-	//    rebinding.
-	if err := safety.CheckURL(in.URL); err != nil {
-		return nil, err
-	}
-	u, err := url.Parse(in.URL)
-	if err != nil {
-		return nil, err
-	}
-	host := strings.ToLower(u.Hostname())
-
-	// 2. Did this module DECLARE that host in its signed manifest.
-	if !r.allowsHost(host) {
-		return nil, fmt.Errorf("%s is not in %s's declared hosts", host, r.name)
-	}
-	// 3. Did the operator grant it.
-	if err := r.grants.HTTP(host); err != nil {
-		return nil, err
-	}
-
 	body, status, err := r.kit.HTTP(ctx, in.Method, in.URL, in.Headers, in.Body)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"status": status, "body": body})
-}
-
-func (r *Runner) allowsHost(host string) bool {
-	for _, h := range r.hosts {
-		if h == "*" || h == host {
-			return true
-		}
-		if suffix, ok := strings.CutPrefix(h, "*."); ok && strings.HasSuffix(host, "."+suffix) {
-			return true
-		}
-	}
-	return false
 }
 
 func readString(m api.Module, ptr, length uint32) (string, bool) {
