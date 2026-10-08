@@ -24,6 +24,9 @@ const (
 	EventSystemCritical EventKind = "system.critical"
 	EventTimerFired     EventKind = "timer.fired"
 	EventDelegationDone EventKind = "delegation.completed"
+	// EventHarnessBackgroundTurn is a turn a harness session ran without being
+	// asked: another Claude Code session messaged it while it was idle.
+	EventHarnessBackgroundTurn EventKind = "harness.turn.background"
 )
 
 type Event struct {
@@ -63,4 +66,18 @@ const (
 	SubRecipeEvent    = "recipes.event"
 	SubAgentRouter    = "agents.router"
 	SubCritical       = "alerts.critical"
+)
+
+// Meta keys carrying System One's verdict on an event.
+//
+// They live here rather than with the screener because both ends need them and
+// the agent cannot import the runtime that routes to it. An event with none of
+// these was never screened, and must be handled as if reflex did not exist.
+const (
+	MetaReflexAction   = "reflex.action"
+	MetaReflexEffort   = "reflex.effort"
+	MetaReflexUrgency  = "reflex.urgency"
+	MetaReflexRisk     = "reflex.risk"
+	MetaReflexApproval = "reflex.approval"
+	MetaReflexReason   = "reflex.reason"
 )

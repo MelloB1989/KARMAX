@@ -208,3 +208,29 @@ loops:
       Compile a short morning briefing (top tech news from memory, today's calendar/reminders,
       open coding sessions, anything pending from WhatsApp). You MUST deliver it by calling the
       app.push tool (title "Morning briefing") — that is the required final step.
+
+# System One. Every event is screened by a cheap, fast probability model before
+# the expensive brain looks at it: one call answers what to do with it, how
+# urgent it is, what acting on it risks, whether it is worth remembering, and
+# how much machinery it deserves.
+#
+# Reflex never fails closed. With no key, a timeout or a rate limit, every event
+# is handled exactly as it was before this block existed — so turning it on is
+# safe and turning it off is instant.
+reflex:
+  enabled: true
+  # Falls back to TYPESAFE_API_KEY, which is the better place for it.
+  api_key: ""
+  model: "jev-latest"           # pin a version once thresholds are tuned
+  timeout: 6s                   # short: this sits in front of every event
+
+  # Thresholds are model-version specific. Retune them when the alias moves.
+  # `karmax reflex stats` shows what the current cuts have been doing.
+  thresholds:
+    drop: 0.75                  # confidence an event needs before it is dropped
+    remember: 0.60              # noul above which a fact is filed
+    risk: 0.66                  # risk above which acting needs approval
+    escalate: 0.90              # urgency above which the operator is interrupted
+
+  # Limit screening to certain event kinds. Empty screens everything.
+  kinds: []

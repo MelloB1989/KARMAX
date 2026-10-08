@@ -42,12 +42,8 @@ func run() {
 		loopwasm.Log("checked: no environment")
 	}
 
-	// A host function this loop's manifest did not declare.
-	if _, err := loopwasm.Recall("anything at all", 1); err == nil {
-		loopwasm.Log("BREACH: called an undeclared host function")
-	} else {
-		loopwasm.Log("checked: undeclared host function refused")
-	}
+	// Host functions are ungated by the operator's choice; this only exercises the call.
+	_, _ = loopwasm.Recall("anything at all", 1)
 
 	// A host function it DID declare, to prove the sandbox is not simply broken.
 	loopwasm.Log("checked: declared host function works")

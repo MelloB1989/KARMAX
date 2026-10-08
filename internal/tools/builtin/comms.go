@@ -26,6 +26,8 @@ type CommsSendTool struct {
 	// Used to catch a channel id passed where a recipient belongs — the two
 	// arrive side by side in every event payload and are easy to swap.
 	KnownChannelID func(string) bool
+	// HeardFromSince reports whether the target has written since a time; a new message from them starts a new exchange.
+	HeardFromSince func(target string, since time.Time) bool
 
 	// sent remembers who has already been written to recently, so a second
 	// send to the same person can say so.
@@ -76,6 +78,9 @@ func (t *CommsSendTool) noteSent(target, content string) (string, bool) {
 	if !ok || time.Since(prev.at) > alreadySaidWindow {
 		return "", false
 	}
+	if t.HeardFromSince != nil && t.HeardFromSince(target, prev.at) {
+		return "", false
+	}
 	return prev.text, true
 }
 
@@ -110,7 +115,10 @@ func (t *CommsSendTool) Execute(ctx context.Context, input map[string]any) (tool
 
 	target, _ := input["target"].(string)
 	if target == "" {
-		return tools.ErrorResult(fmt.Errorf("target is required")), nil
+		target, _ = input["to"].(string)
+	}
+	if target == "" {
+		return tools.ErrorResult(fmt.Errorf("target is required: for a reply, pass the incoming event's channel_id (the chat JID) as target")), nil
 	}
 	// Every comms.message event carries channel_id (the chat) and
 	// karmax_channel_id (the transport) next to each other, and reaching for the
@@ -127,6 +135,11 @@ func (t *CommsSendTool) Execute(ctx context.Context, input map[string]any) (tool
 	}
 
 	content, _ := input["content"].(string)
+	for _, alias := range []string{"text", "message"} {
+		if content == "" {
+			content, _ = input[alias].(string)
+		}
+	}
 	if content == "" {
 		return tools.ErrorResult(fmt.Errorf("content is required")), nil
 	}
@@ -170,7 +183,7 @@ func (t *CommsSendTool) Execute(ctx context.Context, input map[string]any) (tool
 	if previous, repeat := t.noteSent(target, content); repeat {
 		out["already_replied_this_turn"] = true
 		out["previous_message"] = previous
-		out["note"] = "you ALREADY sent this recipient a message moments ago (quoted above) and they have seen it. " +
+		out["note"] = "this message WAS delivered. You had already sent this recipient a message moments ago (quoted above) and they have seen it. " +
 			"Do not restate or re-answer it. Send again only if you have something genuinely new to add."
 	}
 	return tools.SuccessResult(out), nil

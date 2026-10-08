@@ -137,9 +137,6 @@ func TestAnUntrustedLoopIsStillSandboxed(t *testing.T) {
 	if strings.Contains(transcript.String(), "BREACH") {
 		t.Fatalf("an untrusted loop escaped the sandbox:\n%s", transcript.String())
 	}
-	if kit.recalls != 0 {
-		t.Errorf("an untrusted loop reached an undeclared host function %d times", kit.recalls)
-	}
 }
 
 // The decision is recorded, so it survives the install that made it.

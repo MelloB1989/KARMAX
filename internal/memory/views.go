@@ -110,6 +110,35 @@ func (m *Manager) Survey(ctx context.Context, limit int) ([]MemoryEntry, error) 
 	return fromStored(entries), nil
 }
 
+// Older returns up to limit memories last updated before cutoff, newest first.
+func (m *Manager) Older(ctx context.Context, cutoff time.Time, limit int) ([]MemoryEntry, error) {
+	m.mu.Lock()
+	remote := m.remote
+	m.mu.Unlock()
+	if limit <= 0 || limit > listCap {
+		limit = listCap
+	}
+	if remote != nil {
+		return remote.list(ctx, limit, cutoff)
+	}
+
+	entries, err := m.db.ListMemoryEntries(m.namespace, 5000)
+	if err != nil {
+		return nil, err
+	}
+	var out []MemoryEntry
+	for _, e := range fromStored(entries) {
+		if e.CreatedAt.Before(cutoff) {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // Load returns one memory in full.
 func (m *Manager) Load(ctx context.Context, handle string) (*MemoryEntry, error) {
 	m.mu.Lock()
@@ -287,13 +316,19 @@ func (g *gitloomBackend) graph(ctx context.Context, limit int) (*Graph, error) {
 	return out, nil
 }
 
-// survey lists every memory with its summary, in one call.
+// survey lists memories: the newest-updated for a limit one call serves, else the whole tree.
 func (g *gitloomBackend) survey(ctx context.Context, limit int) ([]MemoryEntry, error) {
+	if limit > 0 && limit <= listCap {
+		return g.list(ctx, limit, time.Time{})
+	}
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
 	res, err := g.client.Tree(cctx, &gitloom.TreeOptions{Namespace: g.cfg.Namespace, Depth: 8})
 	if err != nil {
+		if isNamespaceMissing(err) {
+			return nil, nil
+		}
 		g.setHealth(false, err)
 		return nil, err
 	}
@@ -322,9 +357,9 @@ func (g *gitloomBackend) load(ctx context.Context, path string) (*MemoryEntry, e
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
-	m, err := g.client.Get(cctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	m, err := g.current(cctx, path)
 	if err != nil {
-		if isNotFound(err) {
+		if isAbsent(err) {
 			return nil, nil
 		}
 		g.setHealth(false, err)
@@ -335,20 +370,14 @@ func (g *gitloomBackend) load(ctx context.Context, path string) (*MemoryEntry, e
 	}
 	g.setHealth(true, nil)
 
-	e := &MemoryEntry{
+	return &MemoryEntry{
 		ID: m.Path, Namespace: g.cfg.Namespace, Role: RoleGitLoom,
-		Content: strings.TrimSpace(m.Content), Tags: m.Tags,
+		Content: strings.TrimSpace(m.Content), Tags: userTags(m),
 		Category: firstNonEmpty(m.Tier, "facts"),
-	}
-	// Updated over Created: staleness is about when a fact was last confirmed,
-	// not when it was first written down.
-	for _, stamp := range []string{m.Updated, m.Created} {
-		if t, err := time.Parse(time.RFC3339, stamp); err == nil {
-			e.CreatedAt = t
-			break
-		}
-	}
-	return e, nil
+		// Updated over Created: staleness is about when a fact was last
+		// confirmed, not when it was first written down.
+		CreatedAt: firstTime(stamp(m.UpdatedAt, m.Updated), stamp(m.CreatedAt, m.Created)), OccurredAt: m.OccurredAt,
+	}, nil
 }
 
 // append adds a correction to a memory as a new section, keeping the rest.
@@ -356,7 +385,8 @@ func (g *gitloomBackend) append(ctx context.Context, path, content string) error
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
-	existing, err := g.client.Get(cctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	defer g.lockPath(path)()
+	existing, err := g.current(cctx, path)
 	if err != nil {
 		g.setHealth(false, err)
 		return err
@@ -364,16 +394,15 @@ func (g *gitloomBackend) append(ctx context.Context, path, content string) error
 	if existing == nil || strings.TrimSpace(existing.Content) == "" {
 		return fmt.Errorf("gitloom: %s read back empty; refusing to overwrite what is there", path)
 	}
-	merged := AppendSection(existing.Content, gitloom.Memory{Path: path, Content: content})
-	merged.Tags = unionStrings(existing.Tags, merged.Tags, 24)
+	now := time.Now()
+	merged := AppendSection(existing.Content, gitloom.NewMemory{Path: path, Content: content}, now, g.loc)
+	merged.Tags = unionTags(userTags(existing), nil)
 	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
 	merged.Related = unionStrings(existing.Related, merged.Related, 32)
-	if err := g.client.Write(cctx, []gitloom.Memory{merged}, nil); err != nil {
-		g.setHealth(false, err)
-		return err
-	}
-	g.setHealth(true, nil)
-	return nil
+	merged.Confidence = existing.Confidence
+	occurred := laterOf(existing.OccurredAt, now)
+	merged.OccurredAt = gitloom.At(occurred)
+	return g.put(cctx, merged, occurred)
 }
 
 // update rewrites one memory's text, keeping its metadata.
@@ -381,22 +410,25 @@ func (g *gitloomBackend) update(ctx context.Context, path, content string) error
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
-	existing, err := g.client.Get(cctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
+	defer g.lockPath(path)()
+	existing, err := g.current(cctx, path)
 	if err != nil {
 		g.setHealth(false, err)
 		return err
 	}
-	m := gitloom.Memory{Path: path, Content: content}
+	m := gitloom.NewMemory{Path: path, Content: content}
 	if existing != nil {
-		m.Tags, m.Cues, m.Related = existing.Tags, existing.Cues, existing.Related
+		m.Tags, m.Cues, m.Related = userTags(existing), existing.Cues, existing.Related
 		m.Confidence = existing.Confidence
+		if !existing.OccurredAt.IsZero() {
+			m.OccurredAt = gitloom.At(existing.OccurredAt)
+		}
 	}
-	if err := g.client.Write(cctx, []gitloom.Memory{m}, nil); err != nil {
-		g.setHealth(false, err)
-		return err
+	var occurred time.Time
+	if existing != nil {
+		occurred = existing.OccurredAt
 	}
-	g.setHealth(true, nil)
-	return nil
+	return g.put(cctx, m, occurred)
 }
 
 // fromStored converts local rows to the shared entry shape.

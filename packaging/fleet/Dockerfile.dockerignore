@@ -1,0 +1,14 @@
+# Used by BuildKit for packaging/fleet/Dockerfile only.
+**/.git
+.superpowers
+karmax
+karmax.*
+memcat
+memingest
+memread
+memverify
+voiceprobe
+dist
+app/node_modules
+**/node_modules
+spikes

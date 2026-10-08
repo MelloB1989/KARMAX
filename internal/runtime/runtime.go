@@ -47,6 +47,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/mesh"
 	"github.com/MelloB1989/karmax/internal/recipes"
+	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/review"
 	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
@@ -142,6 +143,8 @@ type KarmaxRuntime struct {
 	// waChannel is kept so voice can teach it to answer incoming calls once the
 	// brain is up — the channel is built long before the brain is.
 	waChannel *whatsapp.WhatsAppChannel
+
+	taskHooks taskHooks
 	// messageOperator delivers text to the operator's own chat, for things
 	// that finish after whoever asked for them has gone — a call that ended
 	// before the task it handed off came back. Nil when there is no channel.
@@ -154,6 +157,15 @@ type KarmaxRuntime struct {
 	// its ticket names. Installed by the GitHub connector when an App is
 	// configured; nil means the broader fallback.
 	repoTokenMinter RepoTokenMinter
+
+	// pending holds event triggers that arrived while a loop was running, so a
+	// busy loop delays a message instead of destroying it.
+	pending *pendingTriggers
+
+	// reflex is System One: the cheap probability model every event is
+	// screened by before anything expensive looks at it. Nil-safe — an
+	// unconfigured reflex passes every event through untouched.
+	reflex *reflex.Evaluator
 
 	// startedAt is when this process came up. A loop that has not succeeded
 	// yet is judged against this rather than against the epoch, so a restart
@@ -631,6 +643,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		SendFunc:         commsMgr.Send,
 		DefaultChannelID: commsMgr.DefaultChannelID,
 		KnownChannelID:   commsMgr.HasChannel,
+		HeardFromSince:   s.HeardFromSince,
 	})
 	// WhatsApp comes from wacli itself.
 	//
@@ -1169,6 +1182,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		voice:        voiceReg,
 		routedKinds:  routedKinds,
 		mesh:         meshNode,
+		pending:      newPendingTriggers(),
 		startedAt:    startedAt,
 		wasmByName:   map[string]*wasmloop.Runner{},
 		attributions: newAttributions(),
@@ -1222,11 +1236,28 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// closes over the runtime and the runtime does not exist until now.
 	for _, a := range agentReg.List() {
 		a.SetLentTools(rt.lentToolsForEvent)
+		a.SetScreener(rt.screenEvent)
+		a.SetDecider(rt.decide)
 	}
 
 	// The tools were registered before the agents; this is the runtime they
 	// were waiting for.
 	harnessRT.rt = rt
+
+	// System One. An error here is a misconfiguration worth refusing to start
+	// over; a missing key is not, and returns a nil evaluator that passes every
+	// event straight through.
+	rt.reflex, err = reflex.New(cfg.Reflex, log.Named("reflex"))
+	if err != nil {
+		return nil, fmt.Errorf("reflex: %w", err)
+	}
+	if rt.reflex != nil {
+		log.Info("reflex screening is on",
+			zap.String("model", cfg.Reflex.Model),
+			zap.Float64("drop_threshold", rt.reflex.Thresholds().Drop))
+	}
+
+	rt.installOperatorMirror(s, waAgentID, rt.messageOperator)
 
 	return rt, nil
 }
@@ -1237,6 +1268,9 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// Started before anything can ask for a session, and it reaps the previous
 	// process's orphans on the way up.
 	rt.harness = rt.startHarness()
+	// Before anything can open a model session: every claude-code session
+	// runs on the harness, and one opened before this would find no path.
+	rt.wireClaudeCodeInference()
 	if rt.harness != nil {
 		rt.startHarnessReaper(ctx)
 		// Brains are wired AFTER agents start, further down. An agent's API
@@ -1871,6 +1905,7 @@ func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {
 		Tools:                cfg.Tools,
 		CoreTools:            cfg.CoreTools,
 		MCPs:                 cfg.MCPs,
+		HarnessKind:          cfg.HarnessKind,
 		RestartPolicy:        agent.RestartPolicy(cfg.RestartPolicy),
 		MaxRestarts:          cfg.MaxRestarts,
 		Env:                  cfg.Env,
@@ -1884,6 +1919,14 @@ func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {
 			Model:    cfg.SummaryModel.Model,
 			Provider: cfg.SummaryModel.Provider,
 		},
+		VoiceModelCfg: agent.ModelConfig{
+			Model:    cfg.VoiceModel.Model,
+			Provider: cfg.VoiceModel.Provider,
+		},
+		VoiceFallbackModels: voiceFallbackDefs(cfg.VoiceFallbacks),
+		VoiceBedrockKeyEnv:  cfg.VoiceBedrockKeyEnv,
+		VoiceBedrockRegion:  cfg.VoiceBedrockRegion,
+		VoiceBudgetUSD:      cfg.VoiceBudgetUSD,
 		Memory: agent.AgentMemoryConfig{
 			Enabled:    cfg.Memory.Enabled,
 			Namespace:  cfg.Memory.Namespace,
@@ -2039,4 +2082,13 @@ func consoleDistDir() string {
 		return filepath.Join(home, ".karmax", "console")
 	}
 	return "console"
+}
+
+// voiceFallbackDefs converts the configured call fallbacks.
+func voiceFallbackDefs(in []config.FallbackModelConfig) []agent.FallbackModelDef {
+	out := make([]agent.FallbackModelDef, 0, len(in))
+	for _, f := range in {
+		out = append(out, agent.FallbackModelDef{Provider: f.Provider, Model: f.Model})
+	}
+	return out
 }

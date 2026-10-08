@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/MelloB1989/karmax/internal/mcp"
+	"github.com/MelloB1989/karmax/internal/reflex"
 )
 
 type KarmaxConfig struct {
@@ -17,6 +18,7 @@ type KarmaxConfig struct {
 	Loops    []LoopConfig          `yaml:"loops"`
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 	Harness  HarnessConfig         `yaml:"harness"`
+	Reflex   reflex.Config         `yaml:"reflex"`
 	// Which services this install manages. Omitted means every one compiled
 	// in, so an upgrade never switches somebody's integrations off.
 	Connectors   RegistryConfig `yaml:"connectors"`
@@ -52,9 +54,6 @@ type HarnessConfig struct {
 	MaxLive int `yaml:"max_live"`
 	// WorkdirRoot is where each session runs, away from the repo.
 	WorkdirRoot string `yaml:"workdir_root"`
-	// Allowlist are the shell commands a session is expected to run. Anything
-	// else still runs — sessions hold a real shell — but raises an alert.
-	Allowlist []string `yaml:"allowlist"`
 	// Kinds are the per-use-case policies, keyed by kind name.
 	Kinds map[string]HarnessKindConfig `yaml:"kinds"`
 }
@@ -67,6 +66,18 @@ type HarnessKindConfig struct {
 	TurnTimeout string  `yaml:"turn_timeout"` // e.g. "45s"
 	MaxCostUSD  float64 `yaml:"max_cost_usd"`
 	Ephemeral   bool    `yaml:"ephemeral"`
+	// Launch is an argv prefix the CLI runs under, e.g.
+	// [docker, exec, -i, -w, "{workdir}", karmax-brain] to run this kind's
+	// sessions inside a container (see docs/AGENT-FLEET.md). Empty runs the
+	// CLI directly.
+	Launch []string `yaml:"launch"`
+	// Name is passed to the CLI as --name: what other Claude Code sessions
+	// call this one when they message it. Empty passes no flag.
+	Name string `yaml:"name"`
+	// Resident keeps this kind's sessions up: never idle-reaped, never
+	// evicted, not counted in max_live, and revived if one dies. For a
+	// session other sessions message, which has no inbox while it is down.
+	Resident bool `yaml:"resident"`
 }
 
 // DatabaseConfig points the store at a backend. See store.ParseDSN for the
@@ -234,21 +245,37 @@ type FallbackModelConfig struct {
 }
 
 type AgentDefConfig struct {
-	ID                   string                `yaml:"id"`
-	Name                 string                `yaml:"name"`
-	Description          string                `yaml:"description"`
-	Tags                 []string              `yaml:"tags"`
-	SystemPrompt         string                `yaml:"system_prompt"`
-	Model                string                `yaml:"model"`
-	Provider             string                `yaml:"provider"`
-	Temperature          float32               `yaml:"temperature"`
-	MaxTokens            int                   `yaml:"max_tokens"`
-	Tools                []string              `yaml:"tools"`
-	CoreTools            []string              `yaml:"core_tools"`
-	MCPs                 []string              `yaml:"mcps"`
-	Memory               AgentMemoryConfig     `yaml:"memory"`
-	MemoryModel          AgentModelConfig      `yaml:"memory_model"`
-	SummaryModel         AgentModelConfig      `yaml:"summary_model"`
+	ID           string   `yaml:"id"`
+	Name         string   `yaml:"name"`
+	Description  string   `yaml:"description"`
+	Tags         []string `yaml:"tags"`
+	SystemPrompt string   `yaml:"system_prompt"`
+	Model        string   `yaml:"model"`
+	Provider     string   `yaml:"provider"`
+	Temperature  float32  `yaml:"temperature"`
+	MaxTokens    int      `yaml:"max_tokens"`
+	Tools        []string `yaml:"tools"`
+	CoreTools    []string `yaml:"core_tools"`
+	MCPs         []string `yaml:"mcps"`
+	// HarnessKind is the harness.kinds entry this agent thinks in. Empty is
+	// "agent". Lets one agent run as the fleet's orchestrator (a launched,
+	// named, resident kind) without making every agent one.
+	HarnessKind  string            `yaml:"harness_kind"`
+	Memory       AgentMemoryConfig `yaml:"memory"`
+	MemoryModel  AgentModelConfig  `yaml:"memory_model"`
+	SummaryModel AgentModelConfig  `yaml:"summary_model"`
+	// VoiceModel answers calls. Unset, calls use memory_model.
+	VoiceModel AgentModelConfig `yaml:"voice_model"`
+	// VoiceFallbacks are tried in order when the call model fails, before
+	// memory_model.
+	VoiceFallbacks []FallbackModelConfig `yaml:"voice_fallback_models"`
+	// VoiceBedrockKeyEnv names the env var holding the calls-only Bedrock API
+	// key (default KARMAX_VOICE_BEDROCK_API_KEY); VoiceBedrockRegion defaults
+	// to us-east-1; VoiceBudgetUSD is the hard lifetime spend cap for that
+	// key, zero meaning no cap.
+	VoiceBedrockKeyEnv   string                `yaml:"voice_bedrock_api_key_env"`
+	VoiceBedrockRegion   string                `yaml:"voice_bedrock_region"`
+	VoiceBudgetUSD       float64               `yaml:"voice_budget_usd"`
 	FallbackModels       []FallbackModelConfig `yaml:"fallback_models"`
 	CompactionThreshold  int                   `yaml:"compaction_threshold"`
 	CompactionKeepRecent int                   `yaml:"compaction_keep_recent"`

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func dial(t *testing.T, brain Brain) (*websocket.Conn, func()) {
 		if err != nil {
 			return
 		}
-		ServeConversation(r.Context(), c, func() Brain { return brain }, zap.NewNop())
+		ServeConversation(r.Context(), c, func(Call) Brain { return brain }, zap.NewNop())
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
@@ -139,5 +140,107 @@ func TestHangupFollowsGoodbyeAndEndsTheBrain(t *testing.T) {
 	case <-brain.ended:
 	case <-time.After(2 * time.Second):
 		t.Fatal("End was not called when the conversation finished")
+	}
+}
+
+// A brain that streams a reply sentence by sentence while it is still composing.
+type streamBrain struct {
+	testBrain
+	sentences []string
+	gap       time.Duration
+}
+
+func (b *streamBrain) Answer(ctx context.Context, u Utterance) (Reply, error) {
+	say := SayFrom(ctx)
+	for _, s := range b.sentences {
+		if !say(s) {
+			return Reply{}, nil
+		}
+		time.Sleep(b.gap)
+	}
+	return Reply{Hangup: strings.Contains(u.Text, "bye")}, nil
+}
+
+func TestStreamedSentencesArriveBeforeTheTurnEndsAndAreFlushed(t *testing.T) {
+	brain := &streamBrain{testBrain: testBrain{notices: make(chan Reply, 1), ended: make(chan struct{})},
+		sentences: []string{"One.", "Two.", "Three."}, gap: 150 * time.Millisecond}
+	conn, done := dial(t, brain)
+	defer done()
+	send(t, conn, wire{Type: "start"})
+	recv(t, conn, 2*time.Second) // greeting
+	send(t, conn, wire{Type: "utterance", ID: 1, Text: "bye now"})
+	var got []wire
+	first := time.Now()
+	for {
+		m, ok := recv(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatalf("stream ended early: %+v", got)
+		}
+		if len(got) == 0 && time.Since(first) > 300*time.Millisecond {
+			t.Fatal("first sentence waited for the whole turn")
+		}
+		got = append(got, m)
+		if m.Type == "hangup" {
+			break
+		}
+	}
+	var seq []string
+	for _, m := range got {
+		seq = append(seq, m.Type+":"+m.Text+":"+strconv.FormatBool(m.More))
+	}
+	want := []string{"say:One.:false", "say:Two.:true", "say:Three.:true", "flush::false", "hangup::false"}
+	if strings.Join(seq, " ") != strings.Join(want, " ") {
+		t.Fatalf("sequence = %v, want %v", seq, want)
+	}
+}
+
+func TestSentencesStopOnceTheCallerMovesOn(t *testing.T) {
+	brain := &streamBrain{testBrain: testBrain{notices: make(chan Reply, 1), ended: make(chan struct{})},
+		sentences: []string{"One.", "Two.", "Three.", "Four."}, gap: 200 * time.Millisecond}
+	conn, done := dial(t, brain)
+	defer done()
+	send(t, conn, wire{Type: "start"})
+	recv(t, conn, 2*time.Second)
+	send(t, conn, wire{Type: "utterance", ID: 1, Text: "hello"})
+	recv(t, conn, 2*time.Second)
+	send(t, conn, wire{Type: "utterance", ID: 2, Text: "wait, actually"})
+	count := 0
+	for {
+		m, ok := recv(t, conn, 1500*time.Millisecond)
+		if !ok {
+			break
+		}
+		if m.For == 1 && m.Type == "say" {
+			count++
+		}
+	}
+	if count > 1 {
+		t.Fatalf("%d more sentences of a stale reply were sent", count)
+	}
+}
+
+func TestStartCarriesTheTagCapability(t *testing.T) {
+	got := make(chan Call, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ServeConversation(r.Context(), c, func(call Call) Brain {
+			got <- call
+			return &testBrain{notices: make(chan Reply, 1), ended: make(chan struct{})}
+		}, zap.NewNop())
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	send(t, conn, wire{Type: "start", TTSTags: true})
+	if c := <-got; !c.Tags {
+		t.Fatalf("call = %+v", c)
 	}
 }

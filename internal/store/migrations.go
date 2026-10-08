@@ -425,10 +425,21 @@ var migrations = []string{
 
 	// Carry the old events table across so the operator's history survives the
 	// switch. Ordered by time so seq matches the order things actually happened.
+	//
+	// Only into an EMPTY log. This list is replayed on every store open, and
+	// retention prunes event_log while leaving the old table untouched — so
+	// without the guard, every open after a prune re-inserted the pruned history
+	// under fresh sequence numbers, and every subscriber read months-old events
+	// as new. On 27 Sep that put 27,447 events from June to August on the live
+	// bus at once, and wa-monitor answered three-month-old conversations in ten
+	// chats, a client's among them. OR IGNORE only skips rows still present;
+	// it was never protection against rows that had been deliberately removed.
 	`INSERT OR IGNORE INTO event_log (event_id, workspace, kind, agent_id, payload, meta, created_at)
 	 SELECT id, 'default', kind, agent_id,
 	        COALESCE(NULLIF(payload, ''), '{}'), COALESCE(NULLIF(meta, ''), '{}'), created_at
-	 FROM events ORDER BY created_at ASC`,
+	 FROM events
+	 WHERE NOT EXISTS (SELECT 1 FROM event_log)
+	 ORDER BY created_at ASC`,
 
 	// 020_timers — "wait three days, then continue" as durable state.
 	`CREATE TABLE IF NOT EXISTS timers (
@@ -976,6 +987,27 @@ var migrations = []string{
 		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_outreach_campaign ON outreach_ledger(campaign)`,
+
+	// What reflex decided about each event, and the probabilities behind it.
+	// Thresholds are model-version specific and can only be retuned against
+	// real traffic, so the numbers are kept rather than just the outcome.
+	`CREATE TABLE IF NOT EXISTS reflex_verdicts (
+		event_id    TEXT PRIMARY KEY,
+		event_kind  TEXT NOT NULL DEFAULT '',
+		agent_id    TEXT NOT NULL DEFAULT '',
+		action      TEXT NOT NULL,
+		verdict     TEXT NOT NULL DEFAULT '',
+		created_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_reflex_action ON reflex_verdicts(action, created_at DESC)`,
+
+	// 034_voice_spend — running spend per voice API key, by fingerprint.
+	`CREATE TABLE IF NOT EXISTS voice_spend (
+		key_fp      TEXT PRIMARY KEY,
+		spent_usd   REAL NOT NULL DEFAULT 0,
+		alerted     INTEGER NOT NULL DEFAULT 0,
+		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+	)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

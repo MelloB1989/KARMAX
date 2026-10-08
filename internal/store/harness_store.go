@@ -51,6 +51,11 @@ func (s *Store) SaveHarnessSession(h HarnessSession) error {
 			 output_tokens, cache_read, last_error)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(key) DO UPDATE SET
+			turns = CASE WHEN harness_session_id = excluded.harness_session_id THEN turns ELSE excluded.turns END,
+			cost_usd = CASE WHEN harness_session_id = excluded.harness_session_id THEN cost_usd ELSE excluded.cost_usd END,
+			input_tokens = CASE WHEN harness_session_id = excluded.harness_session_id THEN input_tokens ELSE excluded.input_tokens END,
+			output_tokens = CASE WHEN harness_session_id = excluded.harness_session_id THEN output_tokens ELSE excluded.output_tokens END,
+			cache_read = CASE WHEN harness_session_id = excluded.harness_session_id THEN cache_read ELSE excluded.cache_read END,
 			harness_session_id = excluded.harness_session_id,
 			kind = excluded.kind, model = excluded.model, pid = excluded.pid,
 			state = excluded.state, workdir = excluded.workdir,

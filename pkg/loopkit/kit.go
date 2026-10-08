@@ -119,6 +119,13 @@ type Kit interface {
 	// and remember but must not put a message in anybody's chat.
 	Observe(ctx context.Context, prompt string) (string, error)
 
+	// Decide puts typed questions to a calibrated probability model and returns
+	// numbers to branch on. Far cheaper and faster than Ask, and it answers
+	// every question in one pass — so ask all of them at once rather than
+	// calling this repeatedly. Returns an error when the model is unavailable,
+	// which a loop should treat as "do whatever you did before".
+	Decide(ctx context.Context, state any, questions Questions) (*Decision, error)
+
 	// Session is a long-lived conversation with a coding harness, addressed by
 	// a key the WORKFLOW chooses and the kernel never interprets.
 	//

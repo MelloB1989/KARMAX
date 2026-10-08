@@ -83,13 +83,7 @@ func runStep(ctx context.Context, r *Recipe, k loopkit.Kit, b Bindings, s Step, 
 		return k.Step(id, func() (string, error) { return k.Ask(ctx, p) })
 
 	case VerbObserve:
-		// A pass that reads and remembers, and cannot send.
-		//
-		// hot-sync was an `ask` told in capitals that it does not speak. It
-		// spoke: it answered a question in the operator's own chat ninety
-		// minutes after that question had already been answered, so the
-		// operator saw KARMAX reply twice to one message. Instructions are not
-		// a boundary. This verb removes the tools instead of forbidding them.
+		// Same as ask now; the operator chose to withhold nothing.
 		p, err := text()
 		if err != nil {
 			return nil, err
