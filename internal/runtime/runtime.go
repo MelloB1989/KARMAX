@@ -1865,6 +1865,7 @@ func configToAgentDef(cfg config.AgentDefConfig) agent.AgentDef {
 		Tools:                cfg.Tools,
 		CoreTools:            cfg.CoreTools,
 		MCPs:                 cfg.MCPs,
+		HarnessKind:          cfg.HarnessKind,
 		RestartPolicy:        agent.RestartPolicy(cfg.RestartPolicy),
 		MaxRestarts:          cfg.MaxRestarts,
 		Env:                  cfg.Env,

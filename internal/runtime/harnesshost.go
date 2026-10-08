@@ -605,10 +605,18 @@ func (rt *KarmaxRuntime) wireHarnessBrains() {
 				zap.String("agent", a.Def().ID))
 			continue
 		}
-		a.SetHarnessBrain(agent.NewHarnessBrain(sender, "agent:"+a.Def().ID, "agent", fallback))
+		a.SetHarnessBrain(agent.NewHarnessBrain(sender, "agent:"+a.Def().ID, harnessKindOf(a.Def()), fallback))
 		rt.log.Info("harness: agent thinking routed to a session",
 			zap.String("agent", a.Def().ID))
 	}
+}
+
+// harnessKindOf is the harness kind an agent thinks in: its own, or "agent".
+func harnessKindOf(def agent.AgentDef) string {
+	if k := strings.TrimSpace(def.HarnessKind); k != "" {
+		return k
+	}
+	return "agent"
 }
 
 // harnessAnswer runs one prompt in a named long-lived session.

@@ -53,8 +53,11 @@ type AgentDef struct {
 	// so it can report a capability gap instead of inventing a tool name to
 	// fill it — the failure this was written for looked like a broken bridge
 	// and was really four names that had quietly stopped existing.
-	UnknownTools         []string           `yaml:"-" json:"unknown_tools,omitempty"`
-	MCPs                 []string           `yaml:"mcps"                  json:"mcps"`
+	UnknownTools []string `yaml:"-" json:"unknown_tools,omitempty"`
+	MCPs         []string `yaml:"mcps"                  json:"mcps"`
+	// HarnessKind is the harness kind this agent's thinking runs in; empty
+	// means "agent".
+	HarnessKind          string             `yaml:"harness_kind" json:"harness_kind,omitempty"`
 	Memory               AgentMemoryConfig  `yaml:"memory"                json:"memory"`
 	MemoryModelCfg       ModelConfig        `yaml:"memory_model"          json:"memory_model"`
 	SummaryModelCfg      ModelConfig        `yaml:"summary_model"         json:"summary_model"`

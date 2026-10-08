@@ -245,18 +245,22 @@ type FallbackModelConfig struct {
 }
 
 type AgentDefConfig struct {
-	ID           string            `yaml:"id"`
-	Name         string            `yaml:"name"`
-	Description  string            `yaml:"description"`
-	Tags         []string          `yaml:"tags"`
-	SystemPrompt string            `yaml:"system_prompt"`
-	Model        string            `yaml:"model"`
-	Provider     string            `yaml:"provider"`
-	Temperature  float32           `yaml:"temperature"`
-	MaxTokens    int               `yaml:"max_tokens"`
-	Tools        []string          `yaml:"tools"`
-	CoreTools    []string          `yaml:"core_tools"`
-	MCPs         []string          `yaml:"mcps"`
+	ID           string   `yaml:"id"`
+	Name         string   `yaml:"name"`
+	Description  string   `yaml:"description"`
+	Tags         []string `yaml:"tags"`
+	SystemPrompt string   `yaml:"system_prompt"`
+	Model        string   `yaml:"model"`
+	Provider     string   `yaml:"provider"`
+	Temperature  float32  `yaml:"temperature"`
+	MaxTokens    int      `yaml:"max_tokens"`
+	Tools        []string `yaml:"tools"`
+	CoreTools    []string `yaml:"core_tools"`
+	MCPs         []string `yaml:"mcps"`
+	// HarnessKind is the harness.kinds entry this agent thinks in. Empty is
+	// "agent". Lets one agent run as the fleet's orchestrator (a launched,
+	// named, resident kind) without making every agent one.
+	HarnessKind  string            `yaml:"harness_kind"`
 	Memory       AgentMemoryConfig `yaml:"memory"`
 	MemoryModel  AgentModelConfig  `yaml:"memory_model"`
 	SummaryModel AgentModelConfig  `yaml:"summary_model"`
