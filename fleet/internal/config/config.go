@@ -51,6 +51,7 @@ type Config struct {
 	Orchestrator Orchestrator     `yaml:"orchestrator"`
 	Agents       map[string]Agent `yaml:"agents"`
 	Karmax       Karmax           `yaml:"karmax"`
+	Build        Build            `yaml:"build"`
 	Thresholds   Thresholds       `yaml:"thresholds"`
 }
 
@@ -68,12 +69,16 @@ type Host struct {
 	KarmaxURL string `yaml:"karmax_url"`
 }
 
-// Orchestrator is KARMAX's own harness session, run inside karmax-brain.
+// Orchestrator is KARMAX's own harness session, run inside karmax-brain —
+// or, with Native, on fleetd's host itself under that host's Claude login.
 type Orchestrator struct {
 	Name      string `yaml:"name"`
 	Host      string `yaml:"host"`
 	Container string `yaml:"container"`
 	TokenEnv  string `yaml:"token_env"`
+	// Native runs the orchestrator outside Docker on its host, which must be
+	// fleetd's own: no karmax-brain, no token, and relays to it run there.
+	Native bool `yaml:"native"`
 	// KarmaxAgent is the KARMAX agent id whose harness session is the
 	// orchestrator (karmax.yaml agents[].id). When set, fleetctl render
 	// writes the fleet's paragraph into that session's .claude/CLAUDE.md.
@@ -90,6 +95,15 @@ type Agent struct {
 	Container string   `yaml:"container"`
 	CPUs      string   `yaml:"cpus"`
 	Memory    string   `yaml:"memory"`
+}
+
+// Build is a Docker engine agents send heavy builds to, over SSH. Docker
+// access there is root on that machine; give it a user of its own.
+type Build struct {
+	// DockerHost is DOCKER_HOST in every agent, e.g. ssh://fleetbuild@kali.
+	DockerHost string `yaml:"docker_host"`
+	// KeyEnv names the env var holding the base64 private key for it.
+	KeyEnv string `yaml:"key_env"`
 }
 
 // Karmax is where fleetd tells KARMAX things.
@@ -266,13 +280,18 @@ func (c *Config) validate() error {
 	if _, ok := c.Hosts[c.Orchestrator.Host]; !ok {
 		return fmt.Errorf("orchestrator: unknown host %q", c.Orchestrator.Host)
 	}
-	if err := checkTokenEnv("orchestrator", c.Orchestrator.TokenEnv); err != nil {
-		return err
+	if !c.Orchestrator.Native {
+		if err := checkTokenEnv("orchestrator", c.Orchestrator.TokenEnv); err != nil {
+			return err
+		}
 	}
 	if len(c.Agents) == 0 {
 		return fmt.Errorf("no agents")
 	}
-	seenToken := map[string]string{c.Orchestrator.TokenEnv: "orchestrator"}
+	seenToken := map[string]string{}
+	if !c.Orchestrator.Native {
+		seenToken[c.Orchestrator.TokenEnv] = "orchestrator"
+	}
 	for _, name := range c.AgentNames() {
 		a := c.Agents[name]
 		if !namePattern.MatchString(name) {
@@ -291,6 +310,11 @@ func (c *Config) validate() error {
 			return fmt.Errorf("agent %q: token_env %s is already %s's — one subscription per agent", name, a.TokenEnv, other)
 		}
 		seenToken[a.TokenEnv] = name
+	}
+	if c.Build.DockerHost != "" {
+		if err := checkTokenEnv("build", c.Build.KeyEnv); err != nil {
+			return err
+		}
 	}
 	th := c.Thresholds
 	if th.Low5h < 0 || th.Low5h > 100 || th.Reserved7d < 0 || th.Reserved7d > 100 {

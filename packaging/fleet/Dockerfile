@@ -29,6 +29,8 @@ ARG CLAUDE_VERSION=2.1.294
 ARG NODE_VERSION=22.12.0
 ARG GO_VERSION=1.26.3
 ARG BUN_VERSION=1.2.2
+# The client for the build host (fleet.yaml build:); match its engine.
+ARG DOCKER_VERSION=28.5.2
 ARG UID=1000
 ARG GID=1000
 ARG HOME_DIR=/home/op
@@ -44,7 +46,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; arch=$(dpkg --print-architecture); \
-    case "$arch" in amd64) node=x64; bun=x64 ;; arm64) node=arm64; bun=aarch64 ;; *) echo "unsupported $arch"; exit 1 ;; esac; \
+    case "$arch" in amd64) node=x64; bun=x64; dk=x86_64 ;; arm64) node=arm64; bun=aarch64; dk=aarch64 ;; *) echo "unsupported $arch"; exit 1 ;; esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${dk}/docker-${DOCKER_VERSION}.tgz" | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node}.tar.xz" | tar -xJ -C /usr/local --strip-components=1; \
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" | tar -xz -C /usr/local; \
     curl -fsSL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-${bun}.zip"; \
@@ -62,10 +65,11 @@ RUN set -eux; \
     chown -R "$UID:$GID" "$HOME_DIR" /work /run/fleet
 
 COPY packaging/fleet/agent-run /opt/fleet/agent-run
+COPY packaging/fleet/kbuild /usr/local/bin/kbuild
 COPY packaging/fleet/home/status.sh packaging/fleet/home/event.sh packaging/fleet/home/settings.json /opt/fleet/
 COPY packaging/fleet/home/gitconfig /etc/gitconfig
 COPY --from=build /out/karmax /out/fleetctl /usr/local/bin/
-RUN chmod 755 /opt/fleet/agent-run /opt/fleet/*.sh \
+RUN chmod 755 /opt/fleet/agent-run /opt/fleet/*.sh /usr/local/bin/kbuild \
  && cp /opt/fleet/settings.json "$HOME_DIR/.claude/settings.json" && chown "$UID:$GID" "$HOME_DIR/.claude/settings.json"
 
 ENV HOME=${HOME_DIR} \

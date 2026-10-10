@@ -395,6 +395,10 @@ func run(cmd string, args []string) error {
 		}
 		fmt.Printf("rendered into %s:\n", out)
 		for _, h := range cfg.HostNames() {
+			if !render.Runs(cfg, h) {
+				fmt.Printf("  %s: nothing to run, no compose file\n", h)
+				continue
+			}
 			fmt.Printf("  compose.%s.yaml  (%s)\n", h, strings.Join(cfg.AgentsOn(h), ", "))
 		}
 		fmt.Println("  agents/*.env      (0600, one token each)")
@@ -418,6 +422,12 @@ func run(cmd string, args []string) error {
 			hc, ok := cfg.Hosts[h]
 			if !ok {
 				return fmt.Errorf("no host %q", h)
+			}
+			if !render.Runs(cfg, h) {
+				if len(args) > 0 {
+					return fmt.Errorf("%s has nothing to run", h)
+				}
+				continue
 			}
 			file := filepath.Join(cfg.StateDir, "render", "compose."+h+".yaml")
 			argv := append(append([]string{}, hc.Exec...), "compose", "-p", "fleet", "-f", file)

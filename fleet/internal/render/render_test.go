@@ -263,3 +263,62 @@ func TestRenderWritesTheOrchestratorBriefOnlyWhenAsked(t *testing.T) {
 		t.Fatal("overwrote the session's own CLAUDE.md")
 	}
 }
+
+const nativeYAML = `home: /home/op
+image: karmax-fleet:2.1.294
+hosts:
+  kali: {exec: [docker]}
+  pc2:  {exec: [docker, --context, pc2], fleetd_url: "http://192.168.1.10:7879"}
+orchestrator: {host: kali, native: true}
+agents:
+  agent-01: {host: pc2, token_env: CLAUDE_TOKEN_AGENT_01}
+`
+
+// A native orchestrator runs on the host outside Docker: no karmax-brain, no
+// env file for it, and a host left with nothing to run gets no compose file,
+// so `fleetctl up` starts nothing there.
+func TestRenderWithANativeOrchestrator(t *testing.T) {
+	c, err := config.Parse([]byte(nativeYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "render")
+	if err := Render(c, map[string]string{"CLAUDE_TOKEN_AGENT_01": "sk-ant-oat01-A1", "FLEET_TOKEN": "full", "FLEET_RELAY_TOKEN": "relay"}, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "agents", "karmax-brain.env")); !os.IsNotExist(err) {
+		t.Errorf("karmax-brain.env written for a native orchestrator: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "compose.kali.yaml")); !os.IsNotExist(err) {
+		t.Errorf("compose.kali.yaml written for a host with nothing to run: %v", err)
+	}
+	pc2 := loadCompose(t, filepath.Join(dir, "compose.pc2.yaml"))
+	if _, ok := pc2.Services["agent-01"]; !ok || len(pc2.Services) != 2 {
+		t.Errorf("pc2 services = %v", pc2.Services)
+	}
+}
+
+// With a build host, every agent's docker commands go to it over SSH: the
+// address is plain config in the compose file, the key only in the 0600 env.
+func TestRenderPointsAgentsAtTheBuildHost(t *testing.T) {
+	c, err := config.Parse([]byte(nativeYAML + "build: {docker_host: \"ssh://fleetbuild@192.168.1.10\", key_env: FLEET_BUILD_KEY}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "render")
+	e := map[string]string{"CLAUDE_TOKEN_AGENT_01": "sk-ant-oat01-A1", "FLEET_TOKEN": "full", "FLEET_RELAY_TOKEN": "relay"}
+	if err := Render(c, e, dir); err == nil || !strings.Contains(err.Error(), "FLEET_BUILD_KEY") {
+		t.Fatalf("render without the build key: %v", err)
+	}
+	e["FLEET_BUILD_KEY"] = "a2V5"
+	if err := Render(c, e, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEnv(t, filepath.Join(dir, "agents", "agent-01.env"))["FLEET_BUILD_KEY"]; got != "a2V5" {
+		t.Errorf("agent-01.env FLEET_BUILD_KEY = %q", got)
+	}
+	env := loadCompose(t, filepath.Join(dir, "compose.pc2.yaml")).Services["agent-01"].Environment
+	if env["DOCKER_HOST"] != "ssh://fleetbuild@192.168.1.10" || env["FLEET_BUILD_IMAGE"] != "karmax-fleet:2.1.294" {
+		t.Errorf("agent-01 environment = %v", env)
+	}
+}

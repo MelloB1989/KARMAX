@@ -74,3 +74,28 @@ func TestAttachArgv(t *testing.T) {
 		t.Fatalf("argv = %q", got)
 	}
 }
+
+// A Container with no exec prefix and no name is this machine itself: the
+// orchestrator's session when it runs on fleetd's host, outside any container.
+func TestANativeTargetRunsOnThisMachine(t *testing.T) {
+	r := &fakeRunner{}
+	c := Container{Runner: r}
+	if _, err := c.RunInEnv(context.Background(), []string{"FLEET_ROLE=relay"}, strings.NewReader("hi"), "claude", "-p"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"env", "FLEET_ROLE=relay", "claude", "-p"}; !slices.Equal(r.calls[0], want) {
+		t.Fatalf("argv = %q\nwant   %q", r.calls[0], want)
+	}
+	if r.stdins[0] != "hi" {
+		t.Fatalf("stdin = %q", r.stdins[0])
+	}
+	if _, err := c.Run(context.Background(), "tmux", "ls"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"tmux", "ls"}; !slices.Equal(r.calls[1], want) {
+		t.Fatalf("argv = %q\nwant   %q", r.calls[1], want)
+	}
+	if up, err := c.Running(context.Background()); err != nil || !up {
+		t.Fatalf("a native target is always running: %v %v", up, err)
+	}
+}

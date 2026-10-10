@@ -21,6 +21,13 @@ cp /opt/fleet/settings.json "$C/settings.json"
 if [ -n "${FLEET_CLAUDE_MD:-}" ]; then
   printf '%s' "$FLEET_CLAUDE_MD" | base64 -d > "$C/CLAUDE.md"
 fi
+# The build host's key (fleet.yaml build:), for DOCKER_HOST=ssh://… and kbuild.
+if [ -n "${FLEET_BUILD_KEY:-}" ] && [ -n "${DOCKER_HOST:-}" ]; then
+  bh=${DOCKER_HOST#ssh://}; bh=${bh#*@}; bh=${bh%%:*}
+  (umask 077; mkdir -p "$HOME/.ssh"
+   printf '%s' "$FLEET_BUILD_KEY" | base64 -d > "$HOME/.ssh/fleet_build"
+   printf 'Host %s\n  IdentityFile ~/.ssh/fleet_build\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n' "$bh" > "$HOME/.ssh/config")
+fi
 # Onboarding done, /work and the shared code trusted, bypass mode accepted,
 # the "make auto mode your default?" nudge seen (2.1.294 opens it on first
 # start, and the pane then sits on it, deaf to messages) — merged into

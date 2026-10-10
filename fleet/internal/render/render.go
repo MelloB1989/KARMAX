@@ -98,9 +98,15 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 	if err := privateDir(filepath.Join(dir, "agents")); err != nil {
 		return err
 	}
-	need := []string{c.Orchestrator.TokenEnv}
+	var need []string
+	if !c.Orchestrator.Native {
+		need = append(need, c.Orchestrator.TokenEnv)
+	}
 	for _, n := range c.AgentNames() {
 		need = append(need, c.Agents[n].TokenEnv)
+	}
+	if c.Build.DockerHost != "" {
+		need = append(need, c.Build.KeyEnv)
 	}
 	var missing []string
 	for _, k := range need {
@@ -123,16 +129,21 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 		if c.Hosts[c.Agents[n].Host].OTLPURL != "" && env[c.RelayTokenEnv] != "" {
 			kv["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=Bearer%20" + env[c.RelayTokenEnv]
 		}
+		if c.Build.DockerHost != "" {
+			kv["FLEET_BUILD_KEY"] = env[c.Build.KeyEnv]
+		}
 		if err := writeEnv(filepath.Join(dir, "agents", n+".env"), kv); err != nil {
 			return err
 		}
 	}
-	if err := writeEnv(filepath.Join(dir, "agents", c.Orchestrator.Container+".env"), map[string]string{
-		"CLAUDE_CODE_OAUTH_TOKEN": env[c.Orchestrator.TokenEnv],
-		"FLEET_TOKEN":             env[c.TokenEnv],
-		"KARMAX_API_TOKEN":        env["KARMAX_API_TOKEN"],
-	}); err != nil {
-		return err
+	if !c.Orchestrator.Native {
+		if err := writeEnv(filepath.Join(dir, "agents", c.Orchestrator.Container+".env"), map[string]string{
+			"CLAUDE_CODE_OAUTH_TOKEN": env[c.Orchestrator.TokenEnv],
+			"FLEET_TOKEN":             env[c.TokenEnv],
+			"KARMAX_API_TOKEN":        env["KARMAX_API_TOKEN"],
+		}); err != nil {
+			return err
+		}
 	}
 
 	if p := OrchestratorBriefPath(c); p != "" {
@@ -149,11 +160,20 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 	}
 
 	for _, h := range c.HostNames() {
+		file := filepath.Join(dir, "compose."+h+".yaml")
+		if !Runs(c, h) {
+			// Nothing to run there: no file, and none left from an earlier
+			// render for `fleetctl up` to start.
+			if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			continue
+		}
 		doc, err := Compose(c, h, dir)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, "compose."+h+".yaml"), doc, 0o600); err != nil {
+		if err := os.WriteFile(file, doc, 0o600); err != nil {
 			return err
 		}
 	}
@@ -227,6 +247,12 @@ type composeDoc struct {
 	Volumes  map[string]any     `yaml:"volumes"`
 }
 
+// Runs reports whether a host has any container to run: an agent, or the
+// orchestrator's karmax-brain.
+func Runs(c *config.Config, host string) bool {
+	return len(c.AgentsOn(host)) > 0 || (c.Orchestrator.Host == host && !c.Orchestrator.Native)
+}
+
 // Compose is one host's compose file: the anchor every container shares a
 // PID namespace with, the host's agents, and on the orchestrator's host the
 // karmax-brain container its harness sessions run in.
@@ -277,6 +303,9 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 		env := common(name)
 		env["FLEET_AGENT"] = name
 		env["FLEET_CLAUDE_MD"] = base64.StdEncoding.EncodeToString([]byte(b))
+		if c.Build.DockerHost != "" {
+			env["DOCKER_HOST"], env["FLEET_BUILD_IMAGE"] = c.Build.DockerHost, c.Image
+		}
 		if a.Model != "" {
 			env["FLEET_MODEL"] = a.Model
 		}
@@ -292,7 +321,7 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 		doc.Volumes[name+"-home"] = map[string]any{}
 		doc.Volumes[name+"-work"] = map[string]any{}
 	}
-	if c.Orchestrator.Host == host {
+	if c.Orchestrator.Host == host && !c.Orchestrator.Native {
 		o := c.Orchestrator
 		karmax := filepath.Join(c.Home, ".karmax")
 		doc.Services[o.Container] = service{

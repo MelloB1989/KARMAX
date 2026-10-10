@@ -87,7 +87,11 @@ func run(cfgPath string, once bool) error {
 		boxes[n] = &agent.Agent{Name: n, C: target.Container{Exec: cfg.Hosts[a.Host].Exec, Name: a.Container}}
 	}
 	o := cfg.Orchestrator
-	boxes[o.Name] = &agent.Agent{Name: o.Name, C: target.Container{Exec: cfg.Hosts[o.Host].Exec, Name: o.Container}}
+	oc := target.Container{Exec: cfg.Hosts[o.Host].Exec, Name: o.Container}
+	if o.Native {
+		oc = target.Container{} // this machine: relays run under its own Claude login
+	}
+	boxes[o.Name] = &agent.Agent{Name: o.Name, C: oc}
 
 	var push daemon.Pusher
 	if cfg.Karmax.WebhookURL != "" {

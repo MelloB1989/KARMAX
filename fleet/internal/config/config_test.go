@@ -108,3 +108,19 @@ func TestTheShippedExampleParses(t *testing.T) {
 		t.Errorf("the example is the plan's 3/5 split: %v / %v", c.AgentsOn("kali"), c.AgentsOn("pc2"))
 	}
 }
+
+// An orchestrator that runs natively on fleetd's host uses that host's own
+// Claude Code login, so it needs no token of its own.
+func TestANativeOrchestratorNeedsNoToken(t *testing.T) {
+	c, err := Parse([]byte("home: /h\nhosts: {kali: {exec: [docker]}, pc2: {exec: [docker, --context, pc2]}}\n" +
+		"orchestrator: {host: kali, native: true}\nagents: {agent-01: {host: pc2, token_env: T}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Orchestrator.Native {
+		t.Fatal("native not read")
+	}
+	if got := c.AgentsOn("kali"); len(got) != 0 {
+		t.Errorf("kali agents = %v", got)
+	}
+}

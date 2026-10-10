@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Phase 1 of docs/AGENT-FLEET.md: prepare a fleet host. Run with sudo, once.
 #
-#   sudo packaging/fleet/host-bootstrap.sh kali --pc2-ip 192.168.1.20
+#   sudo packaging/fleet/host-bootstrap.sh kali --pc2-ip 192.168.1.20 \
+#        [--build-pubkey "ssh-ed25519 AAAA… fleet-build"]
 #   sudo ./host-bootstrap.sh pc2 --kali-ip 192.168.1.10 --code /home/<you>/code \
 #        --pubkey "ssh-ed25519 AAAA… you@kali"
 #
 # kali: Docker and compose from Kali's repos, NFSv4 export of the code
 #       directory to PC2 only, held packages, a weekly `git gc` for every repo
 #       (the image turns gc.auto off, so eight agents never gc one .git at once).
-# pc2:  for a Debian 13 netinst with only "SSH server" and "standard system
-#       utilities": Docker CE, a key-only `fleet` user in the docker group
+#       With --build-pubkey, a `fleetbuild` user whose key can do nothing but
+#       reach Docker (agents' DOCKER_HOST and kbuild). Docker access is root
+#       here: an agent holding that key can do anything on this machine.
+# pc2:  for a minimal Debian 13 or Ubuntu server: Docker CE, a key-only `fleet` user in the docker group
 #       (docker group ≈ root), the code directory over NFS at the SAME absolute
 #       path as on Kali, suspend masked, security-only unattended upgrades.
 #
@@ -22,13 +25,14 @@ die() { echo "host-bootstrap: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
 mode="${1:-}"; shift || true
 operator="${SUDO_USER:-}"
-code=""; pc2_ip=""; kali_ip=""; pubkey=""; fleet_user=fleet
+code=""; pc2_ip=""; kali_ip=""; pubkey=""; build_pubkey=""; fleet_user=fleet
 while [ $# -gt 0 ]; do
   case "$1" in
     --code) code="$2"; shift 2 ;;
     --pc2-ip) pc2_ip="$2"; shift 2 ;;
     --kali-ip) kali_ip="$2"; shift 2 ;;
     --pubkey) pubkey="$2"; shift 2 ;;
+    --build-pubkey) build_pubkey="$2"; shift 2 ;;
     --user) fleet_user="$2"; shift 2 ;;
     *) die "unknown argument $1" ;;
   esac
@@ -58,6 +62,17 @@ kali)
 17 4 * * 0 $operator find $code -maxdepth 2 -name .git -type d -prune -execdir git gc --quiet \\; 2>/dev/null
 EOF
 
+  if [ -n "$build_pubkey" ]; then
+    id fleetbuild >/dev/null 2>&1 || useradd -m -s /bin/sh fleetbuild
+    usermod -aG docker fleetbuild
+    bh=$(getent passwd fleetbuild | cut -d: -f6)
+    install -d -m 700 -o fleetbuild -g fleetbuild "$bh/.ssh"
+    # The docker CLI's ssh transport runs exactly this; nothing else is allowed.
+    echo "restrict,command=\"docker system dial-stdio\" $build_pubkey" > "$bh/.ssh/authorized_keys"
+    chown fleetbuild:fleetbuild "$bh/.ssh/authorized_keys"; chmod 600 "$bh/.ssh/authorized_keys"
+    systemctl is-active --quiet ssh || systemctl enable --now ssh
+  fi
+
   if command -v ufw >/dev/null && ufw status | grep -q active; then
     ufw allow from "$pc2_ip" to any port nfs
     ufw allow from "$pc2_ip" to any port 7879 proto tcp   # fleetd relay API
@@ -76,10 +91,11 @@ pc2)
   apt-get update
   apt-get install -y ca-certificates curl gnupg nfs-common unattended-upgrades jq
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
   . /etc/os-release
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $VERSION_CODENAME stable" \
+  case "$ID" in debian|ubuntu) ;; *) die "pc2 mode supports Debian and Ubuntu, not $ID" ;; esac
+  curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \
     > /etc/apt/sources.list.d/docker.list
   apt-get update
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -105,7 +121,7 @@ EOF
   mount "$code" 2>/dev/null || true
 
   systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null
-  # Debian's default unattended-upgrades origin is the security pocket only.
+  # The default unattended-upgrades origins are the security pocket only.
   echo 'APT::Periodic::Update-Package-Lists "1"; APT::Periodic::Unattended-Upgrade "1";' \
     > /etc/apt/apt.conf.d/20auto-upgrades
   echo "pc2 ready. From Kali: docker context create pc2 --docker host=ssh://$fleet_user@<this host>"

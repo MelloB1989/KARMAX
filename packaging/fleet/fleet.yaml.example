@@ -38,6 +38,9 @@ orchestrator:
   karmax_agent: karmax-agent   # karmax.yaml agents[].id — render writes its fleet brief
   # name: karmax               # what agents call it; match harness.kinds.agent.name
   # container: karmax-brain
+  # native: true             # run it on this host outside Docker, under the host's own
+  #                          # Claude login: no karmax-brain, no token_env (use it when
+  #                          # no agent runs on this host)
 
 agents:
   agent-01: {host: kali, token_env: CLAUDE_TOKEN_AGENT_01, models: [sonnet, opus], cpus: "2", memory: 4g}
@@ -48,6 +51,10 @@ agents:
   agent-06: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_06, models: [sonnet]}
   agent-07: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_07, models: [sonnet]}
   agent-08: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_08, models: [sonnet]}
+
+# build:                     # heavy builds on another machine's Docker (agents' DOCKER_HOST, kbuild).
+#   docker_host: ssh://fleetbuild@192.168.1.10   # host-bootstrap.sh kali --build-pubkey; root there
+#   key_env: FLEET_BUILD_KEY   # base64 of the private key, in env_file
 
 karmax:
   webhook_url: http://127.0.0.1:9090/fleet   # KARMAX webhooks port (default 9090) + the route in the README

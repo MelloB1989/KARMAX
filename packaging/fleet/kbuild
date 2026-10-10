@@ -1,0 +1,21 @@
+#!/bin/sh
+# kbuild — run a heavy command on the fleet's build host (fleet.yaml build:)
+# instead of this container:
+#
+#   kbuild go build ./...
+#   kbuild "npm ci && npm run build"
+#
+# It runs in the fleet image, as you, in this same directory: the shared code
+# directory has the same path on every machine, so nothing is copied. Plain
+# `docker …` here also goes to the build host (DOCKER_HOST).
+set -eu
+[ -n "${DOCKER_HOST:-}" ] || { echo "kbuild: no build host (fleet.yaml build:)" >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: kbuild <command…>" >&2; exit 2; }
+code=${FLEET_CODE:-$HOME/code}
+case "$PWD/" in
+  "$code"/*) ;;
+  *) echo "kbuild: $PWD is not under $code, so the build host cannot see it; work in the shared code directory" >&2; exit 2 ;;
+esac
+tty=; [ -t 0 ] && [ -t 1 ] && tty=-t
+exec docker run --rm -i $tty --init -u "$(id -u):$(id -g)" -e HOME="$HOME" \
+  -v "$code:$code" -w "$PWD" --entrypoint sh "${FLEET_BUILD_IMAGE:?FLEET_BUILD_IMAGE is not set}" -c "$*"

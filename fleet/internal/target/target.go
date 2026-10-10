@@ -37,7 +37,9 @@ func (Exec) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, er
 	return out.Bytes(), nil
 }
 
-// Container is one container on one host.
+// Container is one container on one host. The zero prefix and name is this
+// machine itself, outside any container: an orchestrator running natively on
+// fleetd's host.
 type Container struct {
 	Exec   []string
 	Name   string
@@ -51,7 +53,24 @@ func (c Container) runner() Runner {
 	return c.Runner
 }
 
+func (c Container) native() bool { return len(c.Exec) == 0 && c.Name == "" }
+
 func (c Container) argv(flags []string, cmd []string) []string {
+	if c.native() {
+		// Only -e reaches a native command: stdin is always passed, and
+		// there is no terminal flag to give.
+		var env []string
+		for i := 0; i+1 < len(flags); i++ {
+			if flags[i] == "-e" {
+				env = append(env, flags[i+1])
+				i++
+			}
+		}
+		if len(env) == 0 {
+			return append([]string{}, cmd...)
+		}
+		return append(append([]string{"env"}, env...), cmd...)
+	}
 	out := append([]string{}, c.Exec...)
 	out = append(out, "exec")
 	out = append(out, flags...)
@@ -91,6 +110,9 @@ func (c Container) InteractiveArgv(cmd ...string) []string {
 
 // Running reports whether the container is up.
 func (c Container) Running(ctx context.Context) (bool, error) {
+	if c.native() {
+		return true, nil
+	}
 	argv := append(append([]string{}, c.Exec...), "inspect", "-f", "{{.State.Running}}", c.Name)
 	out, err := c.runner().Run(ctx, argv, nil)
 	if err != nil {
