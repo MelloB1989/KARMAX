@@ -635,3 +635,9 @@ func (rt *KarmaxRuntime) harnessAnswer(ctx context.Context, key, prompt string) 
 	}
 	return turn.Text, true
 }
+
+// proctrackLog adapts the runtime's zap logger to proctrack.Logger.
+type proctrackLog struct{ l *zap.Logger }
+
+func (p proctrackLog) Info(msg string, kv ...any) { p.l.Sugar().Infow(msg, kv...) }
+func (p proctrackLog) Warn(msg string, kv ...any) { p.l.Sugar().Warnw(msg, kv...) }

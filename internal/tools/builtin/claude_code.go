@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/fsscope"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/memory"
+	"github.com/MelloB1989/karmax/internal/proctrack"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/google/uuid"
@@ -543,7 +545,20 @@ func (t *ClaudeCodeTool) runCLIOnce(ctx context.Context, workingDir, prompt, ses
 	cmd.Cancel = func() error { return terminateGroup(cmd, done) }
 	cmd.WaitDelay = 5 * time.Second
 
-	return cmd.CombinedOutput()
+	// CombinedOutput, unrolled: the pid has to be recorded between Start and
+	// Wait, so a later engine can kill this process group if this engine is
+	// SIGKILLed before it can (see internal/proctrack). One shared writer for
+	// both streams is exactly what CombinedOutput does.
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	proctrack.Register(cmd)
+	defer proctrack.Unregister(cmd)
+	err := cmd.Wait()
+	return out.Bytes(), err
 }
 
 // looksLikeUUID reports whether s is syntactically a session id the CLI

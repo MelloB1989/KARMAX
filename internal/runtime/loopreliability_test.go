@@ -130,6 +130,7 @@ func TestCronTickDoesNotRestartAFailedRunsCheckpoints(t *testing.T) {
 		})
 		return err
 	}}
+	rt.loopkitLoops = map[string]loopkit.Loop{l.Name: l} // dispatchable by the retry worker
 	ctx := context.Background()
 	tick := loopkit.Trigger{Kind: loopkit.TriggerSchedule}
 
@@ -173,5 +174,35 @@ func TestRetryThatCannotGetTheLeaseStaysPending(t *testing.T) {
 	rt.runLoopDurable(context.Background(), l, loopkit.Trigger{Kind: "retry"}, 2)
 	if p, _ := rt.store.LoopRetryPending("busy"); !p {
 		t.Error("a retry that lost the lease race must stay pending, not vanish")
+	}
+}
+
+// A loop the retry worker cannot dispatch (a recipe) must not make cron ticks
+// skip: its due retry is cleared unrun, so skipping would only delay recovery.
+func TestCronTickRunsWhenThePendingRetryCannotBeDispatched(t *testing.T) {
+	rt := loopTestRuntime(t)
+	var runs atomic.Int32
+	fail := atomic.Bool{}
+	fail.Store(true)
+	l := loopkit.Loop{Name: "recipe:r", Run: func(context.Context, loopkit.Kit) error {
+		runs.Add(1)
+		if fail.Load() {
+			return errors.New("boom")
+		}
+		return nil
+	}}
+	// Deliberately not in rt.loopkitLoops, as a recipe loop is not.
+	tick := loopkit.Trigger{Kind: loopkit.TriggerSchedule}
+	rt.runLoopDurable(context.Background(), l, tick, 1)
+	if p, _ := rt.store.LoopRetryPending(l.Name); !p {
+		t.Fatal("retry should be pending after the failure")
+	}
+	fail.Store(false)
+	rt.runLoopDurable(context.Background(), l, tick, 1)
+	if runs.Load() != 2 {
+		t.Fatalf("runs = %d; the tick must run, since the pending retry will never be dispatched", runs.Load())
+	}
+	if rt.retryDispatchable(l.Name) {
+		t.Error("a loop outside loopkitLoops is not dispatchable")
 	}
 }

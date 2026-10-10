@@ -46,6 +46,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/mesh"
+	"github.com/MelloB1989/karmax/internal/proctrack"
 	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/review"
@@ -1264,6 +1265,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.printBanner()
+
+	// Before any harness process can start: finish off the process groups a
+	// previous engine left running (it was SIGKILLed or crashed), so a task
+	// the new engine re-runs is not also still executing in the old one.
+	proctrack.Init(rt.cfg.Karmax.DataDir, proctrackLog{rt.log})
 
 	// Started before anything can ask for a session, and it reaps the previous
 	// process's orphans on the way up.

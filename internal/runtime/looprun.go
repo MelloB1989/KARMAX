@@ -125,7 +125,7 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 	if trigger.Kind == loopkit.TriggerSchedule && execution == "" {
 		if pending, err := rt.store.LoopRetryPending(l.Name); err != nil {
 			rt.log.Warn("could not check for a pending loop retry", zap.String("loop", l.Name), zap.Error(err))
-		} else if pending {
+		} else if pending && rt.retryDispatchable(l.Name) {
 			rt.log.Info("loop has a retry pending; skipping this tick so the retry resumes from its checkpoints",
 				zap.String("loop", l.Name))
 			return
@@ -450,8 +450,14 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			for _, st := range due {
 				l, ok := rt.loopkitLoops[st.Loop]
 				if !ok {
-					// The loop was uninstalled between the failure and the
-					// retry; clear it rather than retrying forever.
+					// Either the loop was uninstalled between the failure and
+					// the retry, or it is a recipe, which this worker does not
+					// dispatch (a recipe's next scheduled run is its retry).
+					// Clear it rather than keep it pending forever, but say so:
+					// a silent clear made a failure look like it had a retry.
+					rt.log.Warn("clearing a due retry for a loop the retry worker does not dispatch",
+						zap.String("loop", st.Loop), zap.Int("attempt", st.RetryAttempt+1),
+						zap.Bool("recipe", rt.isRecipeLoop(st.Loop)))
 					_ = rt.store.ClearLoopRetry(st.Loop)
 					continue
 				}
@@ -614,3 +620,19 @@ func (p *partialWorkFailure) Error() string {
 	return fmt.Sprintf("%v (after %d outbound send(s))", p.err, p.sends)
 }
 func (p *partialWorkFailure) Unwrap() error { return p.err }
+
+// retryDispatchable says whether retryWorker can actually re-run this loop.
+// It looks only in loopkitLoops, so a recipe never is: its retry is cleared
+// unrun, and honouring that pending flag would only make the cron tick skip
+// for nothing, delaying recovery by a tick or two.
+func (rt *KarmaxRuntime) retryDispatchable(name string) bool {
+	_, ok := rt.loopkitLoops[name]
+	return ok
+}
+
+func (rt *KarmaxRuntime) isRecipeLoop(name string) bool {
+	rt.recipeMu.RLock()
+	defer rt.recipeMu.RUnlock()
+	_, ok := rt.recipeLoops[strings.TrimPrefix(name, "recipe:")]
+	return ok
+}
