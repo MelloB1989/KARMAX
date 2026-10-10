@@ -157,9 +157,12 @@ something in a repo, and watch `fleetctl ls` and `fleetctl events`.
   `FLEET_RELAY_TOKEN` (tell and status only) is for every agent, and is also
   what the OTLP receiver accepts.
 - **Relay.** A relayed message is untrusted text from another host. The relay
-  session overrides the container's bypass mode (`--permission-mode dontAsk`),
-  gets only `SendMessage` and `ListAgents` (`--tools`), and is capped at
-  4 turns. Spike S1b checks that it really cannot run Bash.
+  session gets only `SendMessage` and `ListAgents` (`--tools`), no MCP server
+  (`--strict-mcp-config`), and at most 4 turns. It runs in bypass mode like
+  every receiver: Claude Code holds a message from a session in another
+  permission mode (`peer_message_hold`, `mode-mismatch`), and a `-p`
+  receiver such as the orchestrator never reads a held one. Spike S1b checks
+  that it cannot run Bash and still delivers.
 - **Senders.** A relayed message names its sender (`FLEET_NAME`), and fleetd
   refuses senders that a reply can't reach. Only a full-scope token may send
   as `operator`.

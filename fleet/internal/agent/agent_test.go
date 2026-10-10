@@ -226,17 +226,20 @@ func TestRelayArgv(t *testing.T) {
 		t.Fatalf("argv = %q", argv)
 	}
 	rest := strings.Join(argv[6:], " ")
-	// The container's settings put every session in bypass mode, so the relay
-	// must override the mode and narrow the tool set itself: --allowedTools
-	// alone only adds allow rules on top of bypass.
+	// Claude Code holds a peer message whose sender runs in another permission
+	// mode ("mode-mismatch"), and a -p receiver never reads a held one — so the
+	// relay runs in bypass, like every receiver. What it can do is the tool
+	// set: only the messaging tools, and no MCP server at all (--tools does not
+	// cover MCP tools, which bypass would run unasked).
 	for _, want := range []string{"claude -p", "--model haiku", "--name relay-from-agent-05",
-		"--permission-mode dontAsk", "--tools SendMessage,ListAgents", "--allowedTools SendMessage,ListAgents", "--max-turns"} {
+		"--permission-mode bypassPermissions", "--tools SendMessage,ListAgents", "--allowedTools SendMessage,ListAgents",
+		"--strict-mcp-config", "--max-turns"} {
 		if !strings.Contains(rest, want) {
 			t.Errorf("relay argv lacks %q: %s", want, rest)
 		}
 	}
-	if strings.Contains(rest, "dangerously") || strings.Contains(rest, "please rebase") {
-		t.Errorf("relay argv must not bypass permissions or carry the text: %s", rest)
+	if strings.Contains(rest, "--mcp-config") || strings.Contains(rest, "please rebase") {
+		t.Errorf("relay argv must load no MCP server and not carry the text: %s", rest)
 	}
 	in := r.stdins[0]
 	if !strings.Contains(in, "agent-03") || !strings.Contains(in, "please rebase onto main") || !strings.Contains(in, "agent-05") {
