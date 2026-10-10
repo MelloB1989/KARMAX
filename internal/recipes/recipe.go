@@ -9,7 +9,9 @@ package recipes
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
@@ -54,6 +56,9 @@ var verbs = []string{
 	VerbAwait, VerbForeach, VerbSandbox,
 }
 
+// OnErrorContinue is the one value on_error accepts.
+const OnErrorContinue = "continue"
+
 // Recipe is one YAML file.
 type Recipe struct {
 	Name    string  `yaml:"name"`
@@ -93,6 +98,9 @@ type Step struct {
 	As   string
 	When string
 	Else []Step
+	// OnError is "" (a failure fails the run, as always) or "continue" (the
+	// failure is captured into <as>_error and the run goes on).
+	OnError string
 
 	// Steps is foreach's nested body — the one place a step's value is a list
 	// of steps rather than a set of fields.
@@ -199,6 +207,13 @@ func decodeStep(path string, node *yaml.Node) (Step, error) {
 			s.As = val.Value
 		case "when":
 			s.When = val.Value
+		case "on_error":
+			if val.Kind != yaml.ScalarNode || val.Value != OnErrorContinue {
+				return s, &Error{Path: path, Line: val.Line,
+					Message: fmt.Sprintf("on_error must be %q, not %q", OnErrorContinue, val.Value),
+					Fix:     "write 'on_error: continue' to keep the run going when this step fails, or leave it out"}
+			}
+			s.OnError = val.Value
 		case "else":
 			nested, err := decodeStepList(path, val)
 			if err != nil {
@@ -244,6 +259,10 @@ func decodeStep(path string, node *yaml.Node) (Step, error) {
 							return s, err
 						}
 						s.Steps = nested
+					case key == VerbHTTP && name.Value == "retry":
+						if err := decodeRetry(path, v, s.Args); err != nil {
+							return s, err
+						}
 					case key == VerbForeach && name.Value == "in":
 						items, err := decodeForeachIn(path, v)
 						if err != nil {
@@ -384,6 +403,32 @@ func (s Step) validate(path string) error {
 		return &Error{Path: path, Line: s.Line, Message: "\"send\" needs \"to\" or \"channel\"",
 			Fix: "give a WhatsApp target as 'to', or a channel to post into as 'channel' (or 'to' — \"#eng\" works as either)"}
 	}
+	if s.OnError != "" && s.OnError != OnErrorContinue {
+		return &Error{Path: path, Line: s.Line, Message: fmt.Sprintf("on_error must be %q", OnErrorContinue)}
+	}
+	if s.OnError != "" && s.Verb == VerbAwait {
+		return &Error{Path: path, Line: s.Line,
+			Message: "on_error cannot be used on await, whose parking is not a failure",
+			Fix:     "remove on_error, or give await a timeout"}
+	}
+	if raw, ok := s.Args["max_turns"]; ok {
+		if s.Verb != VerbHarness {
+			return &Error{Path: path, Line: s.Line, Message: fmt.Sprintf("max_turns only applies to harness, not %q", s.Verb)}
+		}
+		if err := checkPositiveInt(path, s.Line, "max_turns", raw); err != nil {
+			return err
+		}
+	}
+	if raw, ok := s.Args["limit"]; ok && s.Verb == VerbForeach {
+		if err := checkPositiveInt(path, s.Line, "limit", raw); err != nil {
+			return err
+		}
+	}
+	if s.Verb == VerbHTTP {
+		if err := validateRetry(path, s); err != nil {
+			return err
+		}
+	}
 	if s.Verb == VerbForeach {
 		if strings.TrimSpace(s.Args["in"]) == "" && len(s.In) == 0 {
 			return &Error{Path: path, Line: s.Line, Message: "\"foreach\" needs \"in\"",
@@ -396,6 +441,71 @@ func (s Step) validate(path string) error {
 		if len(s.Steps) == 0 {
 			return &Error{Path: path, Line: s.Line, Message: "\"foreach\" needs \"steps\"",
 				Fix: "add a nested 'steps:' list — the body to run once per item"}
+		}
+	}
+	return nil
+}
+
+// checkPositiveInt validates a literal count. A template ("{{ ... }}") cannot
+// be checked until the run, where the same rule is applied.
+func checkPositiveInt(path string, line int, field, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if strings.Contains(raw, "{{") {
+		return nil
+	}
+	if n, err := strconv.Atoi(raw); err != nil || n < 1 {
+		return &Error{Path: path, Line: line,
+			Message: fmt.Sprintf("%q must be a positive whole number, not %q", field, raw),
+			Fix:     fmt.Sprintf("write it like '%s: 5'", field)}
+	}
+	return nil
+}
+
+// MaxRetryAttempts bounds http retry: attempts, so a typo cannot make a
+// per-minute loop hammer an endpoint for the whole run.
+const MaxRetryAttempts = 10
+
+// decodeRetry flattens an http step's retry: {attempts, backoff} block into
+// Args["retry.attempts"] and Args["retry.backoff"].
+func decodeRetry(path string, v *yaml.Node, args map[string]string) error {
+	if v.Kind != yaml.MappingNode {
+		return &Error{Path: path, Line: v.Line, Message: "\"retry\" under \"http\" must be a set of fields",
+			Fix: "write it as:\n    retry: { attempts: 3, backoff: 2s }"}
+	}
+	for i := 0; i+1 < len(v.Content); i += 2 {
+		name, val := v.Content[i], v.Content[i+1]
+		if val.Kind != yaml.ScalarNode || (name.Value != "attempts" && name.Value != "backoff") {
+			return &Error{Path: path, Line: val.Line,
+				Message: fmt.Sprintf("unknown field %q under \"retry\"", name.Value),
+				Fix:     "retry takes 'attempts' (a number) and 'backoff' (a duration like 2s)"}
+		}
+		args["retry."+name.Value] = val.Value
+	}
+	if _, ok := args["retry.attempts"]; !ok {
+		return &Error{Path: path, Line: v.Line, Message: "\"retry\" needs \"attempts\"",
+			Fix: "retry: { attempts: 3, backoff: 2s }"}
+	}
+	return nil
+}
+
+func validateRetry(path string, s Step) error {
+	attempts, hasAttempts := s.Args["retry.attempts"]
+	backoff, hasBackoff := s.Args["retry.backoff"]
+	if !hasAttempts && !hasBackoff {
+		return nil
+	}
+	if err := checkPositiveInt(path, s.Line, "retry.attempts", attempts); err != nil {
+		return err
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(attempts)); err == nil && n > MaxRetryAttempts {
+		return &Error{Path: path, Line: s.Line,
+			Message: fmt.Sprintf("retry.attempts %d is more than the %d allowed", n, MaxRetryAttempts)}
+	}
+	if hasBackoff && !strings.Contains(backoff, "{{") {
+		if d, err := time.ParseDuration(strings.TrimSpace(backoff)); err != nil || d <= 0 {
+			return &Error{Path: path, Line: s.Line,
+				Message: fmt.Sprintf("retry.backoff %q is not a positive duration", backoff),
+				Fix:     "write it like '2s' or '500ms'"}
 		}
 	}
 	return nil

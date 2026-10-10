@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,10 @@ type ClaudeCodeTool struct {
 	// disables the injection entirely (today's behaviour: no such env vars).
 	EngineAPIURL       string
 	EngineBrowserToken string
+	// MaxTurns, when positive, is passed to the CLI as --max-turns so a
+	// runaway agent loop ends on its own instead of burning the whole run
+	// deadline. Zero leaves the CLI's own behaviour.
+	MaxTurns int
 }
 
 // browserArgs attaches the operator's browser to one invocation.
@@ -469,6 +474,9 @@ func (t *ClaudeCodeTool) runCLIOnce(ctx context.Context, workingDir, prompt, ses
 	policy := fsscope.Load(t.DataDir)
 	settings := policy.SettingsJSON(t.DataDir)
 	args := []string{"--print", "--output-format", "text"}
+	if t.MaxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(t.MaxTurns))
+	}
 	if settings == "" {
 		args = append(args, "--dangerously-skip-permissions")
 	} else {
