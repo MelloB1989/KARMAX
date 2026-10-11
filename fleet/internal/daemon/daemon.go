@@ -397,6 +397,9 @@ func (f *Fleet) Done(name, task, outcome, branch, pr string, now time.Time) erro
 		st.Task = task
 	}
 	st.Done = true
+	if st.Phase == reconcile.Waiting {
+		st.Phase = reconcile.Standby // the task is closed now; only the rotation waits for the idle tick
+	}
 	f.setState(st)
 	f.event(name, "fleet.done", st.SessionID, map[string]string{"task": task, "outcome": outcome})
 	if task == "" {
@@ -601,7 +604,14 @@ func (f *Fleet) Status(now time.Time) []Row {
 		if !st.LastBusy.IsZero() && st.Phase != reconcile.Working {
 			idle = Dur(now.Sub(st.LastBusy))
 		}
-		rows = append(rows, Row{Agent: name, Host: a.Host, Account: a.Account, State: string(st.Phase), Task: st.Task,
+		phase, task := st.Phase, st.Task
+		if st.Done { // closed: the archive and fresh session wait for the idle tick, the task does not
+			task = ""
+			if phase == reconcile.Waiting {
+				phase = reconcile.Standby
+			}
+		}
+		rows = append(rows, Row{Agent: name, Host: a.Host, Account: a.Account, State: string(phase), Task: task,
 			Idle: idle, FiveHour: st.Quota.FiveHour, SevenDay: st.Quota.SevenDay, FiveResets: st.Quota.FiveHourResets,
 			SevenResets: st.Quota.SevenDayResets, QuotaAt: st.Quota.At, Context: st.ContextPct, Low: st.Low,
 			Reserved: st.Reserved, Models: a.Models, Session: st.SessionID, Reason: st.DisabledReason, Cooling: st.CoolingUntil})

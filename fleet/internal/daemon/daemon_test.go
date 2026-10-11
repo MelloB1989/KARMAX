@@ -574,3 +574,48 @@ func TestWaitOnAnUnknownAgentFails(t *testing.T) {
 		t.Fatal("want an error")
 	}
 }
+
+// Friction #4: `fleetctl done` showed in status only at the next tick.
+func TestDoneShowsInStatusAtOnce(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	boxes["agent-03"].transcript["s-agent-03"] = transcript
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
+	f.Tick(context.Background(), t0) // the agent is idle on its task: waiting
+	row := func() Row {
+		for _, r := range f.Status(t0) {
+			if r.Agent == "agent-03" {
+				return r
+			}
+		}
+		t.Fatal("no row")
+		return Row{}
+	}
+	if r := row(); r.Task != "T1" || r.State != string(reconcile.Waiting) {
+		t.Fatalf("before done: %+v", r)
+	}
+
+	if err := f.Done("agent-03", "T1", "done", "", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	// no tick in between
+	if r := row(); r.Task != "" || r.State != string(reconcile.Standby) {
+		t.Fatalf("right after done: task %q state %q, want none / standby", r.Task, r.State)
+	}
+	if tk, err := f.DB().Task("T1"); err != nil || tk.Closed.IsZero() || tk.Outcome != "done" {
+		t.Fatalf("task = %+v %v", tk, err)
+	}
+	// wait sees it at once too
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if w, err := f.Wait(ctx, "agent-03", "T1", 0); err != nil || w.Reason != "closed" {
+		t.Fatalf("wait = %+v %v", w, err)
+	}
+	// the rotation still waits for the tick, and still knows the task
+	if st := f.State("agent-03"); st.Task != "T1" || !st.Done {
+		t.Fatalf("the pending rotation lost its task: %+v", st)
+	}
+	f.Tick(context.Background(), t0.Add(time.Minute))
+	if r := row(); r.Task != "" || r.State != string(reconcile.Standby) {
+		t.Fatalf("after the rotation tick: %+v", r)
+	}
+}
