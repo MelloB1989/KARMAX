@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -122,5 +123,50 @@ func TestWhoamiAndApi(t *testing.T) {
 	}
 	if out, _ := fleetctl(t, f, "api"); !strings.Contains(out, "GET /v1/status") || !strings.Contains(out, "relay") {
 		t.Fatalf("api = %q", out)
+	}
+}
+
+func TestUpDryRunPrintsThePlanAndRecreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	state := dir + "/state"
+	if err := os.MkdirAll(state+"/render/agents", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	yml := "home: /home/op\nimage: img:2\nstate_dir: " + state + "\nhosts:\n  h1: {exec: [docker]}\n" +
+		"orchestrator: {host: h1, native: true}\nagents:\n  agent-01: {host: h1, token_env: T1}\n"
+	_ = os.WriteFile(dir+"/fleet.yaml", []byte(yml), 0o600)
+	_ = os.WriteFile(state+"/render/agents/agent-01.env", []byte("T=1\n"), 0o600)
+	_ = os.WriteFile(state+"/render/compose.h1.yaml", []byte("services:\n  agent-01:\n    image: img:2\n    container_name: agent-01\n    env_file: [agents/agent-01.env]\n    environment: {FLEET_CLAUDE_MD: NEW}\n"), 0o600)
+	t.Setenv("FLEET_CONFIG", dir+"/fleet.yaml")
+
+	var mu sync.Mutex
+	var calls []string
+	old := runDocker
+	defer func() { runDocker = old }()
+	runDocker = func(_ context.Context, argv []string) ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, strings.Join(argv, " "))
+		switch {
+		case strings.Contains(strings.Join(argv, " "), "image inspect"):
+			return []byte("sha-2\n"), nil
+		case argv[1] == "inspect":
+			return []byte(`[{"Image":"sha-2","Config":{"Env":["T=1","FLEET_CLAUDE_MD=OLD"],"Labels":{}}}]`), nil
+		}
+		return nil, errors.New("not a read-only call")
+	}
+	for _, flag := range []string{"--dry-run", "--plan"} {
+		out, err := fleetctl(t, &fakeFleetd{}, "up", flag, "--when-idle")
+		if err != nil {
+			t.Fatalf("up %s: %v\n%s", flag, err, out)
+		}
+		if !strings.Contains(out, "agent-01 will be RECREATED — brief changed") || !strings.Contains(out, "dry run") {
+			t.Errorf("up %s printed:\n%s", flag, out)
+		}
+	}
+	for _, c := range calls {
+		if strings.Contains(c, " up") || strings.Contains(c, " down") {
+			t.Errorf("a dry run ran %q", c)
+		}
 	}
 }
