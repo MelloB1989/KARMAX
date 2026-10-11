@@ -117,6 +117,10 @@ test("O opens the office and every desk screen has pixels", async ({ page }) => 
       });
     }, BG);
   await expect.poll(async () => (await lit()).filter((n) => n > 500).length, { timeout: 20_000 }).toBe(5);
+  // the framing holds at both sizes: look at e2e-office.png and e2e-office-720.png
   await page.waitForTimeout(1500); // let the scene settle for the picture
   await shot(page, "office");
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.waitForTimeout(2500);
+  await shot(page, "office-720");
 });
