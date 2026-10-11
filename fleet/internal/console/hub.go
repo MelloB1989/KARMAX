@@ -64,6 +64,7 @@ func (h *Hub) Run(ctx context.Context) {
 func (h *Hub) rebuild() {
 	var s Snapshot
 	h.fill(&s)
+	s.Build = BuildID()
 	b, err := json.Marshal(s)
 	if err != nil {
 		return

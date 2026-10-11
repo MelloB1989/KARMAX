@@ -42,8 +42,18 @@ export function isControlHeld(): boolean {
 
 /** Holds the keyboard for an agent; onRelease runs once, on Ctrl+]. */
 export function setControlHeld(h: boolean, onRelease?: () => void): void {
+  const was = held;
   held = h;
   release = h ? (onRelease ?? null) : null;
+  if (was !== h) heldListeners.forEach((l) => l());
+}
+
+const heldListeners = new Set<() => void>();
+
+/** Calls `l` whenever the keyboard is taken or given back; returns the unsubscribe. */
+export function onControlHeldChange(l: () => void): () => void {
+  heldListeners.add(l);
+  return () => heldListeners.delete(l);
 }
 
 /** Dispatches one key event; exported for tests. Returns true when handled. */

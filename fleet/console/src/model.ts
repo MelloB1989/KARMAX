@@ -12,6 +12,8 @@ export interface Source {
 
 export interface Snapshot {
   at: string;
+  /** The console's build id; the panel reloads when it differs from the one it loaded with. */
+  build?: string;
   sources: Partial<Record<SourceKey, Source>>;
   host: HostInfo;
   orchestrator: Orchestrator | null;

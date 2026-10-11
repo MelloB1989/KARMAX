@@ -172,8 +172,9 @@ func TestHealthzWithTokenHasSourcesAndVersion(t *testing.T) {
 	var m struct {
 		Sources map[string]Source
 		Version string
+		Build   string
 	}
-	if json.NewDecoder(r.Body).Decode(&m) != nil || m.Version == "" || len(m.Sources) != 2 {
+	if json.NewDecoder(r.Body).Decode(&m) != nil || m.Version == "" || m.Build != BuildID() || len(m.Sources) != 2 {
 		t.Fatalf("healthz = %+v", m)
 	}
 	if m.Sources[SrcGit].Error == "" {
@@ -219,7 +220,7 @@ func TestWatchOverWebSocket(t *testing.T) {
 		return m
 	}
 	first := read()
-	if first.Type != "snapshot" || first.Snapshot == nil {
+	if first.Type != "snapshot" || first.Snapshot == nil || first.Snapshot.Build != BuildID() {
 		t.Fatalf("first = %+v", first)
 	}
 	h.Changed()
@@ -474,5 +475,19 @@ func TestTermControlKeptWhileItAnswersPings(t *testing.T) {
 	time.Sleep(600 * time.Millisecond)
 	if terms.Holder("a1") != "alice" {
 		t.Fatal("a client that answers pings lost the keyboard")
+	}
+}
+
+func TestBuildIDFollowsTheVersionAndThePanel(t *testing.T) {
+	a := fstest.MapFS{"index.html": {Data: []byte("a")}, ".keep": {Data: nil}}
+	b := fstest.MapFS{"index.html": {Data: []byte("b")}}
+	if x, y := buildIDOf("v1", a), buildIDOf("v1", b); x == y {
+		t.Fatalf("different panels share a build id: %s", x)
+	}
+	if buildIDOf("v1", a) != buildIDOf("v1", fstest.MapFS{"index.html": {Data: []byte("a")}}) {
+		t.Fatal("the placeholder files must not count")
+	}
+	if buildIDOf("v1", a) == buildIDOf("v2", a) || !strings.HasPrefix(buildIDOf("v2", a), "v2-") {
+		t.Fatal("the version is part of the id")
 	}
 }

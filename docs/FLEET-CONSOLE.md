@@ -233,9 +233,13 @@ against a live RustDesk 1.4.9: check that `ss -tnp | grep rustdesk` shows no pub
 unaffected either way.
 
 **Upgrade.** Build the panel and the binary (`npm ci && npm run build` in `fleet/console`, then
-`go build ./cmd/fleet-console` in `fleet/`), put the binary at its path on PC2, and restart the user service
-(`systemctl --user restart fleet-console`). Reload the kiosk with `sudo systemctl restart fleet-kiosk`. The panel
-is embedded in the binary, so there is nothing else to deploy.
+`go build -ldflags "-X github.com/MelloB1989/karmax/fleet/internal/console.Version=$(git describe --tags --always --dirty)" ./cmd/fleet-console`
+in `fleet/`; without the flag it reports `dev`), put the binary at its path on PC2, and restart the user service
+(`systemctl --user restart fleet-console`). The panel
+is embedded in the binary, so there is nothing else to deploy. The kiosk reloads itself: `/healthz` and every watch
+snapshot carry a `build` id (the version plus a hash of the embedded panel), and a panel that sees it change calls
+`location.reload()`, waiting if the keyboard is held until it is given back. `sudo systemctl restart fleet-kiosk`
+is only needed for a console too old to send `build`.
 
 **Undo.** From a shell (SSH is enough):
 
