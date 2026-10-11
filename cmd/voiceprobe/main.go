@@ -2,7 +2,10 @@
 // protocol over the same socket — without placing a call. It is how the
 // conversation can be exercised, timed and regressed without ringing anybody.
 //
-//	go run ./cmd/voiceprobe "Who is Omer?" -wait 60 "bye"
+//	VOICEPROBE_PEER=<jid> VOICEPROBE_PEER_NAME=<name> go run ./cmd/voiceprobe "Who is Alice?" -wait 60 "bye"
+//
+// The peer is who the brain believes is calling: the operator's own JID to
+// probe as the operator, anyone else's to probe as a stranger.
 //
 // Each argument is spoken as one utterance; "-wait N" lingers N seconds so a
 // handed-off task can come back as an unprompted say. A hangup from the brain
@@ -20,6 +23,11 @@ import (
 )
 
 func main() {
+	peer := os.Getenv("VOICEPROBE_PEER")
+	if peer == "" {
+		fmt.Println("set VOICEPROBE_PEER to the JID the call should come from (and VOICEPROBE_PEER_NAME to its name)")
+		os.Exit(2)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	conn, _, err := websocket.Dial(ctx, "ws://127.0.0.1:9090/voice", nil)
@@ -59,8 +67,8 @@ func main() {
 		}
 	}
 
-	send(map[string]any{"type": "start", "call_id": "probe", "peer": "100000000000001@lid",
-		"peer_name": "Quinn Avery", "language": "en-IN", "direction": "incoming"})
+	send(map[string]any{"type": "start", "call_id": "probe", "peer": peer,
+		"peer_name": os.Getenv("VOICEPROBE_PEER_NAME"), "language": "en-IN", "direction": "incoming"})
 	if g, ok := recv(15 * time.Second); ok {
 		fmt.Printf("greeting: %v\n", g["text"])
 	}

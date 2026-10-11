@@ -30,7 +30,7 @@ func mdnsHost() string {
 //
 // It uses RegisterProxy (rather than Register) specifically so the advertised
 // hostname is "karmax.local" — with plain Register the A record follows the
-// machine's real hostname (e.g. "mellob.local"), which the app can't predict.
+// machine's real hostname (e.g. "my-laptop.local"), which the app can't predict.
 // Best-effort: a failure is logged but never fatal (Tailscale / manual address
 // still work).
 func advertiseMDNS(port int, log *zap.Logger) *mdnsAd {

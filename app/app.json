@@ -2,7 +2,6 @@
   "expo": {
     "name": "KARMAX",
     "slug": "karmax",
-    "owner": "mellob",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -10,7 +9,7 @@
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0a0d12",
     "ios": {
-      "bundleIdentifier": "in.example.karmax",
+      "bundleIdentifier": "com.example.karmax",
       "supportsTablet": true,
       "infoPlist": {
         "NSCalendarsUsageDescription": "KARMAX adds your events and meetings to your calendar.",
@@ -39,7 +38,7 @@
       }
     },
     "android": {
-      "package": "in.example.karmax",
+      "package": "com.example.karmax",
       "adaptiveIcon": {
         "backgroundColor": "#0a0d12",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -95,16 +94,10 @@
       "reactCompiler": true
     },
     "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "7741eced-b3f7-4608-a805-bcf90ea7033b"
-      }
+      "router": {}
     },
     "runtimeVersion": {
       "policy": "appVersion"
-    },
-    "updates": {
-      "url": "https://u.expo.dev/7741eced-b3f7-4608-a805-bcf90ea7033b"
     }
   }
 }

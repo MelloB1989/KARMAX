@@ -28,6 +28,13 @@ if [ -n "${FLEET_BUILD_KEY:-}" ] && [ -n "${DOCKER_HOST:-}" ]; then
    printf '%s' "$FLEET_BUILD_KEY" | base64 -d > "$HOME/.ssh/fleet_build"
    printf 'Host %s\n  IdentityFile ~/.ssh/fleet_build\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n' "$bh" > "$HOME/.ssh/config")
 fi
+# The operator's own ssh_config names for github.com (fleet.yaml
+# github.ssh_aliases), rewritten to HTTPS like github.com's own forms in
+# /etc/gitconfig, so a clone made on the host as git@<alias>: still pushes.
+git config --global --unset-all url.https://github.com/.insteadOf 2>/dev/null
+for a in ${FLEET_GITHUB_SSH_ALIASES:-}; do
+  git config --global --add url.https://github.com/.insteadOf "git@$a:"
+done
 # Onboarding done, /work and the shared code trusted, bypass mode accepted,
 # the "make auto mode your default?" nudge seen (2.1.294 opens it on first
 # start, and the pane then sits on it, deaf to messages) — merged into

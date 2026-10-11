@@ -77,7 +77,7 @@ func connectorsSetupCmd() *cobra.Command {
 		Use:   "setup <id>",
 		Short: "Supply a connector's configuration",
 		Long: "Values are given as --set key=value, repeated.\n\n" +
-			"  karmax connectors setup github --set token=ghp_… --set default_repo=MelloB1989/karmax\n\n" +
+			"  karmax connectors setup github --set token=ghp_… --set default_repo=acme/api\n\n" +
 			"Run without --set to see what the connector needs.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {

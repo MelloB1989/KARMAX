@@ -10,13 +10,14 @@
 #   curl -fsSL https://github.com/MelloB1989/KARMAX/releases/latest/download/install.sh | bash
 #
 # Overrides: KARMAX_PREFIX (install dir, default ~/.local/bin),
-#            KARMAX_DATA_DIR (data dir, default ~/.karmax).
+#            KARMAX_DATA_DIR (data dir, default ~/.karmax),
+#            KARMAX_LAUNCHD_LABEL (LaunchAgent label, default local.karmax).
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${KARMAX_PREFIX:-$HOME/.local/bin}"
 DATA_DIR="${KARMAX_DATA_DIR:-$HOME/.karmax}"
-LABEL="in.mellob.karmax"
+LABEL="${KARMAX_LAUNCHD_LABEL:-local.karmax}"
 AGENTS="$HOME/Library/LaunchAgents"
 PLIST="$AGENTS/$LABEL.plist"
 UID_NUM="$(id -u)"
@@ -66,6 +67,14 @@ cat > "$PLIST" <<EOF
 </dict>
 </plist>
 EOF
+
+# An install under an earlier label would keep running beside this one, on
+# the same ports: retire any other *.karmax LaunchAgent first.
+for old in "$AGENTS"/*.karmax.plist; do
+	[ -f "$old" ] && [ "$old" != "$PLIST" ] || continue
+	launchctl bootout "gui/$UID_NUM/$(basename "$old" .plist)" 2>/dev/null || true
+	rm -f "$old"
+done
 
 # (Re)load the agent into the current GUI session.
 launchctl bootout "gui/$UID_NUM/$LABEL" 2>/dev/null || true

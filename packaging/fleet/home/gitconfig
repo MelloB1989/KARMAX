@@ -6,14 +6,11 @@
 [push]
 	autoSetupRemote = true
 # GitHub over HTTPS with the fleet's token (GH_TOKEN, fleet.yaml github:), via
-# gh. Containers hold no SSH keys, so the operator's SSH remotes — including
-# their ~/.ssh/config aliases — are rewritten to HTTPS here.
+# gh. Containers hold no SSH keys, so SSH remotes are rewritten to HTTPS here;
+# the operator's ~/.ssh/config aliases (github.ssh_aliases) are added by agent-run.
 [credential "https://github.com"]
 	helper =
 	helper = !gh auth git-credential
 [url "https://github.com/"]
 	insteadOf = git@github.com:
 	insteadOf = ssh://git@github.com/
-	insteadOf = git@github:
-	insteadOf = git@contoso:
-	insteadOf = git@workgit:

@@ -36,8 +36,8 @@ func directoryMapCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "map <kind> <external-id> <member>",
 		Short: "Point an external identity at an org member",
-		Example: "  karmax directory map slack U0123456789 mellob --name 'Quinn Avery'\n" +
-			"  karmax directory map github quinn-dev mellob",
+		Example: "  karmax directory map slack U0123456789 alice --name 'Alice Example'\n" +
+			"  karmax directory map github alice-dev alice",
 		Args: cobra.ExactArgs(3),
 		RunE: func(_ *cobra.Command, args []string) error {
 			kind, id, member := strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), strings.TrimSpace(args[2])

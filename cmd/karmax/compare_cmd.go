@@ -25,8 +25,8 @@ import (
 // shares no words with the memory it needs returns nothing, and the agent
 // answers "I don't have that information" about something it was told in June.
 //
-// So the probes below are deliberately written in the operator's words rather
-// than the memory's.
+// So the probes are written in the operator's words rather than the memory's,
+// in a file of their own (see loadProbes).
 
 // probe is one question, with the substring that proves the right memory came
 // back. The marker is what makes this a measurement rather than a demo: without
@@ -36,17 +36,35 @@ type probe struct {
 	marker   string
 }
 
-var probes = []probe{
-	{"who is my main contact for the Contoso work", "omer"},
-	{"what did we agree the VAPT engagement would cost", "contoso"},
-	{"who knows that I run an AI agent on my WhatsApp", "karmax"},
-	{"which client has been chasing me about a late app build", "anselm"},
-	{"am I looking for a new job", "job"},
-	{"what is the state of my driving licence", "licence"},
-	{"who is the CTO at the college product company", "viktor"},
-	{"what is Fabrikam built on", "fabrikam"},
-	{"which of my projects is written in Go", "karmax"},
-	{"who complained about my assistant messaging them", "omar"},
+// probeFormat is shown when the probes file is missing or malformed. The probes
+// are about the operator's own life, so they live in the data dir, never here.
+const probeFormat = `one probe per line, "question => marker", where marker is a word the right memory contains:
+  # comments and blank lines are skipped
+  who is my main contact for the client work => alice`
+
+// loadProbes reads the operator's probes from path.
+func loadProbes(path string) ([]probe, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read probes %s: %w\n%s", path, err, probeFormat)
+	}
+	var out []probe
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		q, m, ok := strings.Cut(line, "=>")
+		q, m = strings.TrimSpace(q), strings.ToLower(strings.TrimSpace(m))
+		if !ok || q == "" || m == "" {
+			return nil, fmt.Errorf("%s line %d: %q\n%s", path, i+1, line, probeFormat)
+		}
+		out = append(out, probe{q, m})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s has no probes\n%s", path, probeFormat)
+	}
+	return out, nil
 }
 
 func compareCmd() *cobra.Command {
@@ -54,25 +72,34 @@ func compareCmd() *cobra.Command {
 		namespace string
 		limit     int
 		verbose   bool
+		probes    string
 	)
 	cmd := &cobra.Command{
 		Use:   "compare",
 		Short: "Compare local SQLite retrieval against GitLoom on the same questions",
 		RunE: func(c *cobra.Command, _ []string) error {
-			return runCompare(c.Context(), namespace, limit, verbose)
+			return runCompare(c.Context(), namespace, limit, verbose, probes)
 		},
 	}
 	cmd.Flags().StringVar(&namespace, "namespace", "", "GitLoom namespace")
 	cmd.Flags().IntVar(&limit, "limit", 8, "results per query")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "print the top hit from each side")
+	cmd.Flags().StringVar(&probes, "probes", "", "probes file (default <data_dir>/compare-probes.txt)")
 	return cmd
 }
 
-func runCompare(ctx context.Context, namespace string, limit int, verbose bool) error {
+func runCompare(ctx context.Context, namespace string, limit int, verbose bool, probesPath string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	cfg, err := config.Load(findConfig())
+	if err != nil {
+		return err
+	}
+	if probesPath == "" {
+		probesPath = filepath.Join(cfg.Karmax.DataDir, "compare-probes.txt")
+	}
+	probes, err := loadProbes(probesPath)
 	if err != nil {
 		return err
 	}

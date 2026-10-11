@@ -185,8 +185,10 @@ To verify, ask KARMAX on WhatsApp to fix something in a repo, and watch
 - **GitHub.** `github.token_env` in `fleet.yaml` names a token in the env
   file (`gh auth token --user <account>`). Every agent gets it as `GH_TOKEN`:
   `gh` uses it, and so does git, through gh's credential helper in the
-  image. The image rewrites SSH remotes, including `~/.ssh/config` aliases
-  such as `git@github:`, to HTTPS, because containers hold no SSH keys.
+  image. Containers hold no SSH keys, so the image rewrites `git@github.com:`
+  remotes to HTTPS. If your clones use `~/.ssh/config` aliases for
+  github.com (`git@work-gh:…`), list them in `github.ssh_aliases` and they
+  are rewritten too.
 - **Git identity.** `git.name` and `git.email`. Each agent commits as
   `<name> (agent-NN)`.
 - **Heavy work.** `build.docker_host` points every agent's Docker at a

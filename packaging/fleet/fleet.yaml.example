@@ -61,6 +61,7 @@ agents:
 
 # github:                    # agents push and use gh as this account (GH_TOKEN in each agent)
 #   token_env: GH_TOKEN_FLEET  # in env_file: gh auth token --user <account>
+#   ssh_aliases: [work-gh]     # your ~/.ssh/config Host names for github.com, if clones use them
 # git:                       # the identity agents commit under; the agent's name is appended
 #   name: "Your coding agent"
 #   email: agents@example.com

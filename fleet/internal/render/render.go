@@ -325,6 +325,9 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 		if c.Build.DockerHost != "" {
 			env["DOCKER_HOST"], env["FLEET_BUILD_IMAGE"] = c.Build.DockerHost, c.Image
 		}
+		if len(c.GitHub.SSHAliases) > 0 {
+			env["FLEET_GITHUB_SSH_ALIASES"] = strings.Join(c.GitHub.SSHAliases, " ")
+		}
 		if c.Git.Name != "" {
 			who := c.Git.Name + " (" + name + ")"
 			env["GIT_AUTHOR_NAME"], env["GIT_COMMITTER_NAME"] = who, who

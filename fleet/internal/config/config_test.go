@@ -77,6 +77,7 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"name clash":          "orchestrator: {host: kali, token_env: O, name: agent-01}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"no exec":             "hosts: {kali: {}}\norchestrator: {host: kali, token_env: O}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"low above reserved?": "thresholds: {low_5h: 120}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"bad ssh alias":       "github: {ssh_aliases: ['gh; rm -rf /']}\nagents: {agent-01: {host: kali, token_env: T}}",
 	}
 	for name, body := range cases {
 		src := "home: /h\nhosts: {kali: {exec: [docker]}}\norchestrator: {host: kali, token_env: O}\n" + body

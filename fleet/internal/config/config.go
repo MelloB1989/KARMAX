@@ -116,10 +116,14 @@ type Build struct {
 // (gh, and git through gh's credential helper in the image).
 type GitHub struct {
 	TokenEnv string `yaml:"token_env"`
+	// SSHAliases are the operator's ~/.ssh/config Host names for github.com,
+	// so a remote cloned as git@<alias>:owner/repo is rewritten to HTTPS in
+	// the agents, which hold no SSH keys.
+	SSHAliases []string `yaml:"ssh_aliases"`
 }
 
 // Git is the identity agents commit under; each agent's name is appended,
-// e.g. "MelloB's coding agent (agent-01)".
+// e.g. "Example coding agent (agent-01)".
 type Git struct {
 	Name  string `yaml:"name"`
 	Email string `yaml:"email"`
@@ -335,6 +339,11 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
+	for _, a := range c.GitHub.SSHAliases {
+		if !hostAlias.MatchString(a) {
+			return fmt.Errorf("github: ssh_aliases: %q is not a host name", a)
+		}
+	}
 	if c.Build.DockerHost != "" {
 		if err := checkTokenEnv("build", c.Build.KeyEnv); err != nil {
 			return err
@@ -348,6 +357,9 @@ func (c *Config) validate() error {
 }
 
 var envName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// hostAlias is an ssh_config Host name; agent-run writes it into git config.
+var hostAlias = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // checkTokenEnv refuses a missing name and, without echoing it, anything that
 // looks like a token pasted where its env var's name belongs.

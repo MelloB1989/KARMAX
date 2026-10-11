@@ -370,7 +370,7 @@ func TestOrchestratorBriefSaysHowToReportToTheOperator(t *testing.T) {
 // Agents commit under the fleet's git identity, named per agent, and push
 // with the fleet's GitHub token — which, being a secret, is only in the env file.
 func TestRenderGivesAgentsAGitIdentityAndGitHubToken(t *testing.T) {
-	c, err := config.Parse([]byte(nativeYAML + "github: {token_env: GH_TOKEN_FLEET}\ngit: {name: \"MelloB's coding agent\", email: build@example.com}\n"))
+	c, err := config.Parse([]byte(nativeYAML + "github: {token_env: GH_TOKEN_FLEET}\ngit: {name: \"Example coding agent\", email: build@example.com}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,11 +392,29 @@ func TestRenderGivesAgentsAGitIdentityAndGitHubToken(t *testing.T) {
 	}
 	env := loadCompose(t, filepath.Join(dir, "compose.pc2.yaml")).Services["agent-01"].Environment
 	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
-		if env[k] != "MelloB's coding agent (agent-01)" {
+		if env[k] != "Example coding agent (agent-01)" {
 			t.Errorf("%s = %q", k, env[k])
 		}
 	}
 	if env["GIT_AUTHOR_EMAIL"] != "build@example.com" || env["GIT_COMMITTER_EMAIL"] != "build@example.com" {
 		t.Errorf("git email: %v", env)
+	}
+}
+
+// The operator's own SSH host aliases for GitHub (~/.ssh/config Host entries)
+// are config, not image: the image rewrites only github.com's own forms.
+func TestRenderPassesGitHubSSHAliasesToAgents(t *testing.T) {
+	c, err := config.Parse([]byte(nativeYAML + "github: {token_env: GH_TOKEN_FLEET, ssh_aliases: [gh-work, gh-personal]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "render")
+	e := map[string]string{"CLAUDE_TOKEN_AGENT_01": "sk-ant-oat01-A1", "FLEET_TOKEN": "full", "FLEET_RELAY_TOKEN": "relay", "GH_TOKEN_FLEET": "gho_secret"}
+	if err := Render(c, e, dir); err != nil {
+		t.Fatal(err)
+	}
+	env := loadCompose(t, filepath.Join(dir, "compose.pc2.yaml")).Services["agent-01"].Environment
+	if got := env["FLEET_GITHUB_SSH_ALIASES"]; got != "gh-work gh-personal" {
+		t.Errorf("FLEET_GITHUB_SSH_ALIASES = %q", got)
 	}
 }
