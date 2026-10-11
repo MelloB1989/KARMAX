@@ -47,13 +47,13 @@ export function flyTarget(f: ScreenFrame, fovDeg: number, aspect: number): { pos
 
 export const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
-/** The desks' share of the frame width: wide enough that little bare floor shows below them. */
-export const HOME_FILL = 0.78;
+/** The desks' share of the frame width: as wide as fits with a margin, so the outer desks are never clipped. */
+export const HOME_FILL = 0.74;
 export const HOME_ELEVATION = (25 * Math.PI) / 180;
 const DESK_W = 2.2;
 export const DESK_EYE = 0.9; // the camera sits relative to desk height
-/** The camera aims this far above the centroid. Zero keeps the desk row's centre near 55% of the frame height. */
-export const LOOK_LIFT = 0;
+/** The camera aims this far above the centroid; this puts the desk row's vertical centre at ~55% of the frame. */
+export const LOOK_LIFT = 0.3;
 
 /** The overview: the camera looks over the desks' centroid (x, z), 25° up, with the desks filling HOME_FILL of the width. */
 export function homeView(
