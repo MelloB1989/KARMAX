@@ -3,6 +3,7 @@
 #
 #   sudo packaging/fleet/host-bootstrap.sh kali --pc2-ip 192.168.1.20 \
 #        [--build-pubkey "ssh-ed25519 AAAA… fleet-build"]
+#   packaging/fleet/host-bootstrap.sh docker-dropin --code /path/to/code   # prints the Docker drop-in; no root
 #   sudo ./host-bootstrap.sh pc2 --kali-ip 192.168.1.10 --code /home/<you>/code \
 #        --pubkey "ssh-ed25519 AAAA… you@kali"
 #
@@ -12,7 +13,8 @@
 #       With --build-pubkey, a `fleetbuild` user whose key can do nothing but
 #       reach Docker (agents' DOCKER_HOST and kbuild). Docker access is root
 #       here: an agent holding that key can do anything on this machine.
-# pc2:  for a minimal Debian 13 or Ubuntu server: Docker CE, a key-only `fleet` user in the docker group
+# pc2:  for a minimal Debian 13 or Ubuntu server (with a docker.service drop-in so Docker waits for
+#       the code mount after a reboot): Docker CE, a key-only `fleet` user in the docker group
 #       (docker group ≈ root), the code directory over NFS at the SAME absolute
 #       path as on Kali, suspend masked, security-only unattended upgrades.
 #
@@ -22,8 +24,31 @@
 set -euo pipefail
 
 die() { echo "host-bootstrap: $*" >&2; exit 1; }
+
+# docker_mount_dropin CODE_DIR: the systemd drop-in that makes Docker wait for the code mount.
+# Docker never retries a container that failed to create, so if it starts before the NFS mount
+# is up, every agent whose bind mount is under CODE_DIR stays dead after a reboot. The mount unit
+# is derived from the path (config), not written into the source.
+docker_mount_dropin() {
+  local unit
+  unit=$(systemd-escape --path --suffix=mount "$1") || die "cannot derive the mount unit for $1"
+  cat <<EOF
+# installed by host-bootstrap.sh: start Docker only once the shared code directory is mounted
+[Unit]
+Wants=$unit network-online.target
+After=$unit network-online.target
+EOF
+}
+
+mode="${1:-}"
+# no root needed to see what would be installed
+if [ "$mode" = docker-dropin ]; then
+  [ "${2:-}" = --code ] && [ -n "${3:-}" ] || die "usage: host-bootstrap.sh docker-dropin --code <path>"
+  docker_mount_dropin "$3"
+  exit 0
+fi
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
-mode="${1:-}"; shift || true
+shift || true
 operator="${SUDO_USER:-}"
 code=""; pc2_ip=""; kali_ip=""; pubkey=""; build_pubkey=""; fleet_user=fleet
 while [ $# -gt 0 ]; do
@@ -117,6 +142,9 @@ EOF
   mkdir -p "$code"
   fstab="$kali_ip:$code $code nfs4 _netdev,x-systemd.automount,noatime 0 0"
   grep -qF "$kali_ip:$code " /etc/fstab || echo "$fstab" >> /etc/fstab
+  # Docker must not start before the code mount exists (see docker_mount_dropin).
+  install -d -m 0755 /etc/systemd/system/docker.service.d
+  docker_mount_dropin "$code" > /etc/systemd/system/docker.service.d/fleet-code-mount.conf
   systemctl daemon-reload
   mount "$code" 2>/dev/null || true
 
