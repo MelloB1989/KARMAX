@@ -50,9 +50,18 @@ export interface DeskScreen {
   dispose(): void;
 }
 
-export function createDeskScreen(agent: string, cols: number, rows: number): DeskScreen {
+/**
+ * Paints into `into` when given, so a texture built on that canvas never has its image swapped
+ * (a WebGL texture's size is fixed at its first upload).
+ */
+export function createDeskScreen(
+  agent: string,
+  cols: number,
+  rows: number,
+  into?: HTMLCanvasElement | OffscreenCanvas,
+): DeskScreen {
   const canvas: HTMLCanvasElement | OffscreenCanvas =
-    typeof document !== "undefined" ? document.createElement("canvas") : new OffscreenCanvas(1, 1);
+    into ?? (typeof document !== "undefined" ? document.createElement("canvas") : new OffscreenCanvas(1, 1));
   canvas.width = cols * CELL_W;
   canvas.height = rows * CELL_H;
   const ctx = canvas.getContext("2d") as CanvasRenderingContext2D | null;

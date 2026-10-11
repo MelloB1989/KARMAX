@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { CanvasTexture, SRGBColorSpace, type PointLight, type MeshStandardMaterial } from "three";
+import type { PointLight, MeshStandardMaterial } from "three";
 import type { Agent, Orchestrator, Task } from "../model";
 import { palette, phaseLook } from "../state/derive";
-import { createDeskScreen } from "./painter";
-import { drawOrchestratorScreen } from "./orchestratorScreen";
+import { createSurface } from "./surface";
 import { Figure } from "./Figure";
 import { Label } from "./Label";
 
@@ -12,7 +11,6 @@ export const SCREEN_W = 1.5;
 export const SCREEN_H = 0.68; // 2.2 : 1, the terminal's 220x50 cells at 8x16 px
 /** Where the laptop screen's centre sits, relative to the desk group. */
 export const SCREEN_POS: [number, number, number] = [0, 1.05, 0.02];
-const FRAME_MS = 1000 / 30;
 const DEFAULT_TERM = { cols: 220, rows: 50 };
 
 export interface DeskProps {
@@ -29,57 +27,20 @@ function useScreenTexture(id: string, agent: Agent | undefined, orch: DeskProps[
   const cols = agent?.term?.cols || DEFAULT_TERM.cols;
   const rows = agent?.term?.rows || DEFAULT_TERM.rows;
   const isOrch = !!orch;
-  const paint = useRef<{ tick: (now: number) => void }>({ tick: () => {} });
   const orchRef = useRef(orch);
   orchRef.current = orch;
 
-  const tex = useMemo(() => {
-    const canvas = document.createElement("canvas");
-    return new CanvasTexture(canvas);
-  }, []);
+  // canvas and texture are built together at their final size; only a size change makes a new one
+  const surface = useMemo(() => createSurface(cols, rows), [cols, rows]);
+  useEffect(() => () => surface.dispose(), [surface]);
 
   useEffect(() => {
-    tex.colorSpace = SRGBColorSpace;
-    if (isOrch) {
-      const c = document.createElement("canvas");
-      c.width = cols * 8;
-      c.height = rows * 16;
-      tex.image = c;
-      const ctx = c.getContext("2d")!;
-      let last = "";
-      let at = 0;
-      paint.current.tick = (now) => {
-        if (now - at < 500) return;
-        at = now;
-        const o = orchRef.current!;
-        const key = JSON.stringify([o.info, o.tasks]);
-        if (key === last) return;
-        last = key;
-        drawOrchestratorScreen(ctx, c.width, c.height, o.info, o.tasks);
-        tex.needsUpdate = true;
-      };
-      return () => void (paint.current.tick = () => {});
-    }
-    const screen = createDeskScreen(id, cols, rows);
-    tex.image = screen.canvas;
-    screen.paint();
-    tex.needsUpdate = true;
-    let at = 0;
-    paint.current.tick = (now) => {
-      if (now - at < FRAME_MS || !screen.dirty()) return;
-      at = now;
-      screen.paint();
-      tex.needsUpdate = true;
-    };
-    return () => {
-      paint.current.tick = () => {};
-      screen.dispose();
-    };
-  }, [id, cols, rows, isOrch, tex]);
+    if (isOrch) return surface.attachOrchestrator(() => orchRef.current!);
+    return surface.attachTerminal(id);
+  }, [surface, id, isOrch]);
 
-  useEffect(() => () => tex.dispose(), [tex]);
-  useFrame(() => paint.current.tick(performance.now()));
-  return tex;
+  useFrame(() => surface.tick(performance.now()));
+  return surface.texture;
 }
 
 export function Desk({ id, x, z, rotY, agent, orchestrator, onSelect }: DeskProps) {
@@ -91,6 +52,8 @@ export function Desk({ id, x, z, rotY, agent, orchestrator, onSelect }: DeskProp
   const dim = phase === "standby" || phase === "cooling" || off;
   // the orchestrator's screen is drawn, not streamed: it glows at the level of an idle desk, not a working one
   const level = dim || !!orchestrator;
+  // and its lamp too: it keeps its amber look but lights the desk like an idle one
+  const lightPhase = orchestrator ? "standby" : phase;
   const lamp = useRef<PointLight>(null);
   const bulb = useRef<MeshStandardMaterial>(null);
   const screenMat = useRef<MeshStandardMaterial>(null);
@@ -99,7 +62,7 @@ export function Desk({ id, x, z, rotY, agent, orchestrator, onSelect }: DeskProp
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     const pulse = look.pulse ? 0.6 + 0.4 * Math.sin(t * 3) : 1;
-    const base = off ? 0 : phase === "working" ? 1.6 : phase === "standby" ? 0.4 : phase === "cooling" ? 0.6 : 1.1;
+    const base = off ? 0 : lightPhase === "working" ? 1.6 : lightPhase === "standby" ? 0.4 : lightPhase === "cooling" ? 0.6 : 1.1;
     if (lamp.current) lamp.current.intensity = base * pulse;
     if (bulb.current) bulb.current.emissiveIntensity = base * pulse;
     if (glow.current) glow.current.intensity = down ? 0 : (level ? 1.2 : 3.2) * (look.pulse ? 0.8 + 0.2 * Math.sin(t * 3) : 1);
