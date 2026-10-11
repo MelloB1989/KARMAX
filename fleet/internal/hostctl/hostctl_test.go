@@ -135,3 +135,16 @@ func TestExecRunnerDoesNotHangOnGrandchild(t *testing.T) {
 		t.Fatal("ExecRunner still blocked 10s after its context ended")
 	}
 }
+
+// Both commands write their stderr to the one writer, concurrently.
+func TestExecPiperBothCommandsMayWriteStderrAtOnce(t *testing.T) {
+	var out bytes.Buffer
+	sh := func(script string) []string { return []string{"sh", "-c", script} }
+	loud := "i=0; while [ $i -lt 200 ]; do echo err >&2; i=$((i+1)); done"
+	if err := ExecPiper(context.Background(), sh(loud+"; echo data"), sh(loud+"; cat"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(out.String(), "err\n"); got != 400 || !strings.Contains(out.String(), "data\n") {
+		t.Errorf("err lines %d, out has data: %v", got, strings.Contains(out.String(), "data"))
+	}
+}
