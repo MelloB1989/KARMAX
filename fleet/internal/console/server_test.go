@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/creack/pty"
 )
 
 const testToken = "client-token-0123456789"
@@ -229,4 +231,91 @@ func TestRefusesAWorldReadableTokenFile(t *testing.T) {
 	if _, err := ReadTokenFile(p); err == nil {
 		t.Fatal("an empty token must be refused")
 	}
+}
+
+func TestUnknownAPIPathIs404NotThePanel(t *testing.T) {
+	srv, _ := testServer(t, map[string]string{"index.html": "<p>panel</p>"}, nil)
+	for _, p := range []string{"/v1/nothing", "/v1/term", "/healthz/x"} {
+		req, _ := http.NewRequest("GET", srv.URL+p, nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		want := 404
+		if p == "/healthz/x" {
+			want = 200 // not an API path: the panel's own routing
+		}
+		if r.StatusCode != want || (want == 404 && (strings.Contains(string(b), "panel") || !strings.Contains(r.Header.Get("Content-Type"), "json"))) {
+			t.Errorf("%s = %d %q", p, r.StatusCode, b)
+		}
+	}
+	if r, _ := http.Get(srv.URL + "/v1/term/agent-01"); r.StatusCode != 401 {
+		t.Errorf("unauthenticated unknown term = %d", r.StatusCode)
+	}
+}
+
+func TestTermRouteControlHolderAndBytes(t *testing.T) {
+	cfg := &Config{Term: TermSize{Cols: 80, Rows: 24}, Agents: []AgentConf{{Name: "a1", Live: true}}}
+	terms := NewTerms(cfg, func([]string) (*os.File, *exec.Cmd, error) {
+		cmd := exec.Command("cat")
+		f, err := pty.Start(cmd)
+		return f, cmd, err
+	})
+	var n atomic.Int64
+	h := newHub(countingFill(&n), 10*time.Millisecond, nil)
+	srv := httptest.NewServer(newHandler(h, terms, testToken, nil, fstest.MapFS{}))
+	defer srv.Close()
+	hdr := http.Header{"Authorization": {"Bearer " + testToken}}
+	ws := "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c, _, err := websocket.Dial(ctx, ws+"/v1/term/a1?control=1&who=alice", &websocket.DialOptions{HTTPHeader: hdr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if err := c.Write(ctx, websocket.MessageBinary, []byte("ping\n")); err != nil {
+		t.Fatal(err)
+	}
+	var got strings.Builder
+	var hello bool
+	for !strings.Contains(got.String(), "ping") {
+		typ, b, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("read: %v (got %q)", err, got.String())
+		}
+		if typ == websocket.MessageText {
+			var f TermFrame
+			json.Unmarshal(b, &f)
+			hello = hello || f.Type == "hello" && f.Mode == "control" && f.Cols == 80
+		} else {
+			got.Write(b)
+		}
+	}
+	if !hello {
+		t.Fatal("no hello frame")
+	}
+
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/term/a1?control=1&who=bob", nil)
+	req.Header = hdr
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct{ Holder string }
+	json.NewDecoder(r.Body).Decode(&body)
+	if r.StatusCode != 409 || body.Holder != "alice" {
+		t.Fatalf("second controller = %d %+v", r.StatusCode, body)
+	}
+	if req.URL.Path = "/v1/term/zzz"; true {
+		if r, _ := http.DefaultClient.Do(req); r.StatusCode != 404 {
+			t.Fatalf("unknown agent = %d", r.StatusCode)
+		}
+	}
+
+	c.CloseNow() // the socket drops
+	waitFor(t, 2*time.Second, "the lock to release", func() bool { return terms.Holder("a1") == "" })
 }

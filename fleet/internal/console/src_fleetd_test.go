@@ -86,6 +86,9 @@ func TestFleetdFillsRecordedFields(t *testing.T) {
 	if err := f.pollToday(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if src := f.source(now); !src.OK || src.Error != "" {
+		t.Fatalf("source = %+v", src)
+	}
 	if f.cursor != 8 || len(f.events) != 2 || f.events[0].ID != 7 {
 		t.Fatalf("events/cursor = %+v / %d", f.events, f.cursor)
 	}
@@ -154,5 +157,48 @@ func TestFleetdOutageMarksStaleThenRecovers(t *testing.T) {
 	}
 	if f.cursor != 8 || len(f.events) != 2 {
 		t.Fatalf("events must not duplicate or gap across the outage: %d %d", f.cursor, len(f.events))
+	}
+}
+
+func TestFleetdMissingRouteDoesNotBlankTheRoster(t *testing.T) {
+	// a fleetd that predates /v1/tasks, /v1/today and /v1/activity
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/status":
+			w.Write([]byte(statusJSON))
+		case "/v1/events":
+			w.Write([]byte(eventsJSON))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	now := time.Date(2026, 10, 11, 14, 0, 5, 0, time.UTC)
+	f := newFleetdSrc(NewFleetdClient(srv.URL, writeToken(t)), func() time.Time { return now }, "karmax", []string{"agent-01"})
+	ctx := context.Background()
+	if err := f.poll(ctx); err != nil {
+		t.Fatalf("poll returns the roster's error only: %v", err)
+	}
+	f.pollActivity(ctx)
+	f.pollToday(ctx)
+
+	src := f.source(now)
+	if !src.OK {
+		t.Fatalf("the roster answered, so fleetd is ok: %+v", src)
+	}
+	for _, want := range []string{"tasks: 404", "activity: 404", "today: 404", "last_task: 404"} {
+		if !strings.Contains(src.Error, want) {
+			t.Errorf("error %q lacks %q", src.Error, want)
+		}
+	}
+	if strings.Contains(src.Error, "status") || strings.Contains(src.Error, "events") {
+		t.Errorf("error %q names routes that worked", src.Error)
+	}
+	if f.rows["agent-01"].State != "working" || f.orch == nil || len(f.events) != 2 {
+		t.Fatalf("what worked was blanked: %+v %v %d", f.rows, f.orch, len(f.events))
+	}
+	// and the missing route's value is still the zero, not an error in the data
+	if len(f.tasks) != 0 {
+		t.Fatalf("tasks = %+v", f.tasks)
 	}
 }
