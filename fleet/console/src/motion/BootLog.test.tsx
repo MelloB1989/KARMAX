@@ -52,4 +52,19 @@ describe("BootLog", () => {
     advance(600);
     expect(host.querySelector(".boot")).toBeNull();
   });
+
+  it("stays gone-bound when a source blips not-ok after everything was ok", () => {
+    const blip = (ok: boolean): Snapshot => ({ ...base, sources: { ...base.sources, [SOURCES[0]]: { ok, at: base.sources[SOURCES[0]]?.at } } });
+    act(() => root.render(<BootLog snapshot={base} />));
+    advance(300);
+    act(() => root.render(<BootLog snapshot={blip(false)} />));
+    advance(100);
+    act(() => root.render(<BootLog snapshot={base} />));
+    advance(300);
+    act(() => root.render(<BootLog snapshot={blip(false)} />));
+    advance(100);
+    act(() => root.render(<BootLog snapshot={base} />));
+    advance(200); // 1 s in: the fade timer was never reset
+    expect(host.querySelector(".boot")).toBeNull();
+  });
 });
