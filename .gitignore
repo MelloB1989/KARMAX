@@ -22,6 +22,8 @@ spikes/wasm/guest.wasm
 
 # Built and signed loop artifacts (make loops).
 dist/
+# fleet-console embeds its panel build from here; only the placeholder is tracked.
+!fleet/internal/console/dist/
 /memingest
 /memverify
 /memread

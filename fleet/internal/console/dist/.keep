@@ -1,0 +1,1 @@
+go:embed needs this directory to exist before the panel is built.
