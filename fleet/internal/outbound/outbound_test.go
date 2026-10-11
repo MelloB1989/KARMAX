@@ -124,3 +124,11 @@ func TestParseDockerStats(t *testing.T) {
 		t.Fatalf("samples = %+v", s)
 	}
 }
+
+func TestParseDockerStatsKeepsLimitAndNetIO(t *testing.T) {
+	out := "\x1b[2J\x1b[H" + `{"Name":"agent-01","CPUPerc":"1.31%","MemUsage":"128.3MiB / 1.5GiB","NetIO":"2.38MB / 1.78MB"}` + "\n"
+	s := ParseDockerStats([]byte(out), time.Unix(100, 0))
+	if len(s) != 1 || s[0].CPU != 1.31 || s[0].MemLimit != 1610612736 || s[0].NetRx != 2380000 || s[0].NetTx != 1780000 {
+		t.Fatalf("samples = %+v", s)
+	}
+}

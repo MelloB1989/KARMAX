@@ -469,6 +469,10 @@ type HostSample struct {
 	CPU       float64 // percent
 	MemBytes  int64
 	MemPct    float64
+	// From the streaming reader only; zero when docker did not say.
+	MemLimit int64
+	NetRx    int64
+	NetTx    int64
 }
 
 // AddHostSample records a sample.
