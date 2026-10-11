@@ -1,0 +1,11 @@
+[Unit]
+Description=Fleet console (live agent panel)
+After=network-online.target
+
+[Service]
+ExecStart=@CONSOLE_BIN@ --config @CONSOLE_DIR@/console.yaml
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
