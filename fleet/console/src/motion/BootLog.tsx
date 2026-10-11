@@ -10,19 +10,25 @@ export function BootLog({ snapshot }: { snapshot: Snapshot | null }) {
   const [gone, setGone] = useState(false);
   const lines = bootLines(snapshot, elapsed);
   const done = bootDone(lines, elapsed);
+  // Once every source has answered (or the 6 s are up) the log is done for
+  // good: a source that blips not-ok in a later patch must not bring it back.
+  const [latched, setLatched] = useState(false);
+  useEffect(() => {
+    if (done) setLatched(true);
+  }, [done]);
 
   // Tick only until done; once done, the fade timer below must not be reset by re-renders.
   useEffect(() => {
-    if (done) return;
+    if (latched) return;
     const id = setInterval(() => setElapsed(Date.now() - t0), 200);
     return () => clearInterval(id);
-  }, [t0, done]);
+  }, [t0, latched]);
   useEffect(() => {
-    if (!done) return;
+    if (!latched) return;
     // linger a beat so the last line is readable before it fades
     const id = setTimeout(() => setGone(true), 500);
     return () => clearTimeout(id);
-  }, [done]);
+  }, [latched]);
 
   const log = (
     <pre>

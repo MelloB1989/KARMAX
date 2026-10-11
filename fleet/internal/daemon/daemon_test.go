@@ -54,6 +54,10 @@ func (b *box) Fresh(context.Context) error {
 	return nil
 }
 func (b *box) Prompt(_ context.Context, t string) error { b.log("prompt " + t); return nil }
+func (b *box) Peek(_ context.Context, n int) (string, error) {
+	b.log("peek " + itoa(n))
+	return "screen", nil
+}
 func (b *box) StopPID(_ context.Context, pid int) error { b.log("stop " + itoa(pid)); return nil }
 func (b *box) DeleteTranscript(_ context.Context, sid string) error {
 	b.log("delete " + sid)
@@ -643,8 +647,8 @@ func TestCloseKeepsTheSessionAndTheCurrentTaskGoesAway(t *testing.T) {
 	if task.Outcome != "done" || task.Branch != "fleet/agent-03/x" || task.Closed.IsZero() {
 		t.Errorf("task = %+v", task)
 	}
-	if st := f.State("agent-03"); st.Task != "" || st.Done {
-		t.Errorf("state = %+v, want no task and not marked done (that is what rotates)", st)
+	if st := f.State("agent-03"); st.Task != "" || st.Done || st.Phase == reconcile.Waiting {
+		t.Errorf("state = %+v, want no task, not waiting, and not marked done (that is what rotates)", st)
 	}
 	f.Tick(ctx, t0.Add(time.Minute))
 	if len(b.calls) != 0 {
@@ -671,5 +675,50 @@ func TestCloseKeepsTheSessionAndTheCurrentTaskGoesAway(t *testing.T) {
 	_ = f.Done("agent-03", "T2", "done", "", "", t0)
 	if st := f.State("agent-03"); !st.Done {
 		t.Error("Done no longer marks the session for rotation")
+	}
+}
+
+// Friction #4: `fleetctl done` showed in status only at the next tick.
+func TestDoneShowsInStatusAtOnce(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	boxes["agent-03"].transcript["s-agent-03"] = transcript
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
+	f.Tick(context.Background(), t0) // the agent is idle on its task: waiting
+	row := func() Row {
+		for _, r := range f.Status(t0) {
+			if r.Agent == "agent-03" {
+				return r
+			}
+		}
+		t.Fatal("no row")
+		return Row{}
+	}
+	if r := row(); r.Task != "T1" || r.State != string(reconcile.Waiting) {
+		t.Fatalf("before done: %+v", r)
+	}
+
+	if err := f.Done("agent-03", "T1", "done", "", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	// no tick in between
+	if r := row(); r.Task != "" || r.State != string(reconcile.Standby) {
+		t.Fatalf("right after done: task %q state %q, want none / standby", r.Task, r.State)
+	}
+	if tk, err := f.DB().Task("T1"); err != nil || tk.Closed.IsZero() || tk.Outcome != "done" {
+		t.Fatalf("task = %+v %v", tk, err)
+	}
+	// wait sees it at once too
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if w, err := f.Wait(ctx, "agent-03", "T1", 0); err != nil || w.Reason != "closed" {
+		t.Fatalf("wait = %+v %v", w, err)
+	}
+	// the rotation still waits for the tick, and still knows the task
+	if st := f.State("agent-03"); st.Task != "T1" || !st.Done {
+		t.Fatalf("the pending rotation lost its task: %+v", st)
+	}
+	f.Tick(context.Background(), t0.Add(time.Minute))
+	if r := row(); r.Task != "" || r.State != string(reconcile.Standby) {
+		t.Fatalf("after the rotation tick: %+v", r)
 	}
 }

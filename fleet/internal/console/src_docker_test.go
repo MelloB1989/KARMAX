@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -74,5 +75,42 @@ func TestDockerStatsLinesWithANSIParse(t *testing.T) {
 	}
 	if c := d.container("agent-03", clock); c == nil || c.CPUPct != 5 {
 		t.Fatalf("trailing-ESC line: %+v", c)
+	}
+}
+
+func TestDockerStreamThatParsesNothingIsStale(t *testing.T) {
+	pr, pw := io.Pipe()
+	sp := func(context.Context, []string) (io.ReadCloser, error) { return pr, nil }
+	clock := time.Unix(1000, 0)
+	var mu sync.Mutex
+	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
+	ch := make(chan struct{}, 16)
+	d := newDockerSrc()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.run(ctx, sp, []string{"docker"}, now, func() { ch <- struct{}{} })
+	<-ch // process is up, nothing parsed yet
+
+	if src := d.tr.source(now()); !src.OK {
+		t.Fatalf("a process that has just started is not stale: %+v", src)
+	}
+	// it keeps running and printing lines we cannot parse
+	pw.Write([]byte("Error response from daemon: something unexpected\n"))
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	clock = clock.Add(11 * time.Second) // more than 2 x CadenceDocker
+	mu.Unlock()
+	src := d.tr.source(now())
+	if src.OK || !strings.Contains(src.Error, "no stats parsed for 11 s") {
+		t.Fatalf("source = %+v, want not ok: no stats parsed for 11 s", src)
+	}
+	if !d.tr.stale(now()) {
+		t.Fatal("stale() must agree")
+	}
+	// a parsed frame brings it back
+	pw.Write([]byte(`{"Name":"agent-01","CPUPerc":"1.00%","MemUsage":"1MiB / 2MiB","NetIO":"1B / 1B"}` + "\n"))
+	<-ch
+	if src := d.tr.source(now()); !src.OK || src.Error != "" {
+		t.Fatalf("after a parsed frame: %+v", src)
 	}
 }

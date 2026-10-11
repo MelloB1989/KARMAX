@@ -54,6 +54,11 @@ type State struct {
 	Reserved bool  `json:"reserved,omitempty"`
 	Quota    Quota `json:"quota"`
 
+	// Model is the last status line's model, and RecordedAt the tick that
+	// wrote this state: the console shows both next to what it saw live.
+	Model      string    `json:"model,omitempty"`
+	RecordedAt time.Time `json:"recorded_at,omitzero"`
+
 	ContextPct float64 `json:"context_pct,omitempty"`
 	CostUSD    float64 `json:"cost_usd,omitempty"`
 	// Alerted keys alerts already sent, so each fires once per episode.

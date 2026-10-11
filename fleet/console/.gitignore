@@ -1,2 +1,5 @@
 node_modules/
 *.tsbuildinfo
+test-results/
+playwright-report/
+e2e/screens/
