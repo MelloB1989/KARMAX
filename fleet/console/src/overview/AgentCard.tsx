@@ -3,6 +3,8 @@ import { ageOf, fmtAge, phaseLook } from "../state/derive";
 import { sourceStale } from "../state/cadence";
 import { isRemote } from "./roster";
 import { Bar } from "./Bar";
+import { Num } from "../motion/tween";
+import { useFlash } from "../motion/useFlash";
 
 const mb = (b: number) => `${Math.round(b / 1048576)} MB`;
 
@@ -31,12 +33,13 @@ export function AgentCard({
   const lineStale = remote || sourceStale(s, "statusline", now);
   const dockerStale = remote || sourceStale(s, "docker", now);
   const look = phaseLook(a.phase, a.alerts);
+  const flash = useFlash(a.phase);
   const toolSecs = a.current_tool ? ageOf(a.current_tool.since, now) : 0;
 
   return (
     <button
       type="button"
-      className={`card${selected ? " selected" : ""}${look.pulse ? " pulse" : ""}`}
+      className={`card${selected ? " selected" : ""}${look.pulse ? " pulse" : ""}${flash ? " flash" : ""}`}
       style={{ ["--phase" as string]: look.color }}
       data-phase={a.phase}
       onClick={onSelect}
@@ -81,7 +84,7 @@ export function AgentCard({
           </span>
         ) : (
           <span>
-            {a.container.cpu_pct.toFixed(0)}% cpu · {mb(a.container.mem)}
+            <Num value={a.container.cpu_pct} />% cpu · {mb(a.container.mem)}
           </span>
         )}
       </div>
