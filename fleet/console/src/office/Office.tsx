@@ -14,10 +14,9 @@ import { Desk } from "./Desk";
 import { deskLayout } from "./layout";
 import { RelayLights } from "./RelayLights";
 import { createGovernor, type Governor } from "./governor";
-import { FLY_MS, easeInOut, flyTarget, screenFrame, type V3 } from "./camera";
+import { FLY_MS, easeInOut, flyTarget, homeView, screenFrame, type V3 } from "./camera";
+import type { DeskPlace } from "./layout";
 
-const HOME_POS: V3 = [0, 5, 9];
-const HOME_TARGET: V3 = [0, 1, -2];
 const FOV = 45;
 const DEG = Math.PI / 180;
 
@@ -36,6 +35,7 @@ interface Fly {
 }
 
 interface RigProps {
+  places: DeskPlace[];
   selected: string | null;
   focusAt: { x: number; z: number } | null;
   flown: boolean;
@@ -46,7 +46,7 @@ interface RigProps {
 }
 
 /** Camera drift, orbit, fly-in/out, the screen's projected rectangle, and the fps governor. */
-function Rig({ selected, focusAt, flown, onFlown, onRect, governor, onStats }: RigProps) {
+function Rig({ places, selected, focusAt, flown, onFlown, onRect, governor, onStats }: RigProps) {
   const controls = useRef<CameraControlsImpl>(null);
   const { camera, size } = useThree();
   const fly = useRef<Fly | null>(null);
@@ -56,10 +56,22 @@ function Rig({ selected, focusAt, flown, onFlown, onRect, governor, onStats }: R
   const lastStats = useRef(0);
   const prevSelected = useRef<string | null>(null);
 
+  const aspect = size.width / size.height;
+  const home = useMemo(() => homeView(places, FOV, aspect), [places, aspect]);
+  const homeRef = useRef(home);
+  homeRef.current = home;
+
+  // frame the desk cluster whenever the roster or the window changes (not mid-selection)
+  useEffect(() => {
+    const c = controls.current;
+    if (!c || prevSelected.current) return;
+    c.setLookAt(...home.pos, ...home.target, false);
+    base.current.ready = false;
+  }, [home]);
+
   useEffect(() => {
     const c = controls.current;
     if (!c) return;
-    c.setLookAt(...HOME_POS, ...HOME_TARGET, false);
     c.minDistance = 2;
     c.maxDistance = 26;
     c.maxPolarAngle = 88 * DEG;
@@ -90,7 +102,7 @@ function Rig({ selected, focusAt, flown, onFlown, onRect, governor, onStats }: R
     } else {
       fly.current = {
         from: { pos, target },
-        to: { pos: HOME_POS, target: HOME_TARGET },
+        to: { pos: homeRef.current.pos, target: homeRef.current.target },
         t0: null,
         done: () => {
           c.enabled = true;
@@ -204,12 +216,16 @@ export function Office() {
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: palette.ground }}>
-      <Canvas camera={{ position: HOME_POS, fov: FOV }} dpr={[1, 1.5]} onPointerMissed={() => selected && !control && leave()}>
-        <color attach="background" args={[palette.ground]} />
-        <ambientLight intensity={0.35} />
-        <directionalLight position={[4, 8, 6]} intensity={0.5} />
+    <div style={{ position: "fixed", inset: 0, background: "radial-gradient(ellipse 1100px 700px at 50% 60%,#141826 0%,#07080C 72%)" }}>
+      <Canvas camera={{ position: [0, 8, 14], fov: FOV }} dpr={[1, 1.5]} onPointerMissed={() => selected && !control && leave()}>
+        <color attach="background" args={["#07080C"]} />
+        <fog attach="fog" args={["#07080C", 16, 42]} />
+        <ambientLight intensity={0.28} color="#8FA0B5" />
+        <directionalLight position={[3, 7, 8]} intensity={0.25} />
+        {/* rim light from behind the desks: edges of figures and chairs against the dark */}
+        <directionalLight position={[0, 5, -16]} intensity={1.1} color="#8BE9FF" />
         <Rig
+          places={places}
           selected={selected}
           focusAt={focusAt}
           flown={flown}
@@ -264,6 +280,10 @@ export function Office() {
         {stats.fps > 0 ? `${Math.round(stats.fps)} fps` : "— fps"}
         {!stats.bloom && " · bloom off"}
       </div>
+      <div
+        aria-hidden
+        style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "radial-gradient(ellipse at 50% 55%, transparent 55%, rgba(0,0,0,.45) 100%)" }}
+      />
       <style>{"@keyframes office-fade{from{opacity:0}to{opacity:1}}"}</style>
     </div>
   );
