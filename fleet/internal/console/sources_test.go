@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -102,4 +103,39 @@ func TestEventsFromAnotherSessionStayOutOfTheStream(t *testing.T) {
 	if len(snap.Events) != 5 {
 		t.Fatalf("no known session: stream = %d events, want all 5 stream-kind ones", len(snap.Events))
 	}
+}
+
+// A poll that never returns must be cut off after twice the cadence, and the
+// next poll must still run.
+func TestEveryBoundsEachPoll(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
+	cut := make(chan time.Duration, 4)
+	go every(ctx, 20*time.Millisecond, func(c context.Context) {
+		dl, ok := c.Deadline()
+		if !ok {
+			t.Error("poll context has no deadline")
+			return
+		}
+		if calls.Add(1) <= 2 {
+			start := time.Now()
+			<-c.Done() // a hung command
+			cut <- time.Since(start)
+		} else if time.Until(dl) <= 0 {
+			t.Error("deadline already passed")
+		}
+		_ = dl
+	})
+	for range 2 {
+		select {
+		case d := <-cut:
+			if d < 30*time.Millisecond || d > time.Second {
+				t.Fatalf("hung poll cut after %v, want about 40ms", d)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a hung poll was never cut off")
+		}
+	}
+	waitFor(t, 2*time.Second, "a poll after the hung ones", func() bool { return calls.Load() >= 3 })
 }

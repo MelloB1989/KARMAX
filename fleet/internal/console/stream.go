@@ -187,9 +187,17 @@ func streamOnce(ctx context.Context, sp spawner, argv []string, tr *tracker, onS
 	return sc.Err()
 }
 
-// every runs fn now and then each period until ctx is done.
+// every runs fn now and then each period until ctx is done. Each call gets
+// its own context that ends after 2*period, so one hung command (a docker
+// exec to a dead host) cannot stall its source: the poll fails and the next
+// one starts.
 func every(ctx context.Context, period time.Duration, fn func(context.Context)) {
-	fn(ctx)
+	once := func() {
+		pctx, cancel := context.WithTimeout(ctx, 2*period)
+		defer cancel()
+		fn(pctx)
+	}
+	once()
 	t := time.NewTicker(period)
 	defer t.Stop()
 	for {
@@ -197,7 +205,7 @@ func every(ctx context.Context, period time.Duration, fn func(context.Context)) 
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			fn(ctx)
+			once()
 		}
 	}
 }
