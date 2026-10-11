@@ -180,6 +180,15 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		delete(st.Alerted, "reserved")
 	}
 
+	// agent-run holds off starting claude while HOME is unwritable (an image
+	// built with another home than fleet.yaml's); it logs this on each retry.
+	for _, e := range o.Events {
+		if e.Event == "agent-run.home_unwritable" && !st.Alerted["home"] {
+			push("home_unwritable", st.Name+": HOME is not writable in its container")
+			alertOnce("home", fmt.Sprintf("%s: HOME is not writable in its container, so it cannot start — the image's home does not match fleet.yaml; rebuild with fleetctl image build", st.Name))
+		}
+	}
+
 	// A subscription that refused the agent is not fought with restarts.
 	if st.Phase == Disabled {
 		return st, nil
@@ -280,6 +289,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		st.Phase = Standby
 	}
 	delete(st.Alerted, "crashloop")
+	delete(st.Alerted, "home") // a session is up: HOME is writable now
 	// A dialog nobody answers leaves the session deaf to messages. Say so,
 	// once per episode, after a few minutes: it may be a passing prompt.
 	if mine.Activity() == "waiting" && mine.WaitingFor != "" {

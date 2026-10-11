@@ -12,6 +12,8 @@
 #   KARMAX_API_TOKEN=…           already there if KARMAX's API is on
 
 home: /home/you              # HOME inside every container — your own, so paths match
+# image: karmax-fleet:2.1.294
+# claude_version: 2.1.294   # pinned into the image by `fleetctl image build`; uid, gid, user default to yours
 # code: /home/you/code       # shared with every agent, same path on every host
 image: karmax-fleet:2.1.294  # the tag you built (packaging/fleet/Dockerfile)
 # uid: 1000                  # default: yours

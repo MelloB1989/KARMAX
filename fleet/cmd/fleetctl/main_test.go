@@ -373,3 +373,36 @@ func TestDoneKeepSessionIsSentToTheRoute(t *testing.T) {
 		t.Fatalf("plain done sent %s", f.reqs[0])
 	}
 }
+
+func TestImageBuildAndShipRunDockerFromFleetYAML(t *testing.T) {
+	dir := t.TempDir()
+	repo := dir + "/repo"
+	_ = os.MkdirAll(repo+"/packaging/fleet", 0o755)
+	_ = os.WriteFile(repo+"/packaging/fleet/Dockerfile", nil, 0o644)
+	yml := "home: /home/op\nimage: img:3\nuid: 1000\ngid: 1000\nuser: op\nhosts:\n  h1: {exec: [docker]}\n  pc2: {exec: [docker, --context, pc2]}\n" +
+		"orchestrator: {host: h1, native: true}\nagents:\n  agent-01: {host: h1, token_env: T1}\n"
+	_ = os.WriteFile(dir+"/fleet.yaml", []byte(yml), 0o600)
+	hostYAML = dir + "/fleet.yaml"
+	t.Cleanup(func() { hostYAML = "" })
+
+	var built, saved, loaded string
+	oldRun, oldPipe := imageRun, imagePipe
+	defer func() { imageRun, imagePipe = oldRun, oldPipe }()
+	imageRun = func(_ context.Context, argv []string, _ io.Writer) error { built = strings.Join(argv, " "); return nil }
+	imagePipe = func(_ context.Context, from, to []string, _ io.Writer) error {
+		saved, loaded = strings.Join(from, " "), strings.Join(to, " ")
+		return nil
+	}
+	out, err := fleetctl(t, &fakeFleetd{}, "image", "build", "--tag", "img:4", "--src", repo)
+	if err != nil || !strings.HasPrefix(out, "$ docker build ") || !strings.Contains(built, "-t img:4") ||
+		!strings.Contains(built, "HOME_DIR=/home/op") || !strings.Contains(built, "UID=1000") {
+		t.Fatalf("build = %q, ran %q, %v", out, built, err)
+	}
+	out, err = fleetctl(t, &fakeFleetd{}, "image", "ship", "pc2")
+	if err != nil || saved != "docker save img:3" || loaded != "docker --context pc2 load" || !strings.HasPrefix(out, "$ docker save img:3 | ") {
+		t.Fatalf("ship = %q, %q | %q, %v", out, saved, loaded, err)
+	}
+	if _, err := fleetctl(t, &fakeFleetd{}, "image", "ship"); err == nil {
+		t.Error("ship needs a host")
+	}
+}

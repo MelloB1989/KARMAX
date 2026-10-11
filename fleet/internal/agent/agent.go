@@ -78,6 +78,11 @@ if cd "$HOME/.claude/fleet" 2>/dev/null; then
   [ -f events.taking ] || { [ -f events.jsonl ] && mv events.jsonl events.taking; }
   cat events.taking 2>/dev/null
 fi
+# agent-run's own events when HOME was unwritable (it cannot log under it).
+if cd "${FLEET_WORK:-/work}/.fleet" 2>/dev/null; then
+  [ -f events.taking ] || { [ -f events.jsonl ] && mv events.jsonl events.taking; }
+  cat events.taking 2>/dev/null
+fi
 true
 `
 
@@ -100,7 +105,7 @@ func (a *Agent) Observe(ctx context.Context, now time.Time) (reconcile.Obs, erro
 // AckEvents drops the hook events the last Observe returned, once they are
 // stored. Until then they are returned again.
 func (a *Agent) AckEvents(ctx context.Context) error {
-	_, err := a.C.Sh(ctx, `rm -f "$HOME/.claude/fleet/events.taking"`)
+	_, err := a.C.Sh(ctx, `rm -f "$HOME/.claude/fleet/events.taking" "${FLEET_WORK:-/work}/.fleet/events.taking"`)
 	return err
 }
 

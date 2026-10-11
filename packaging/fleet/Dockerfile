@@ -1,14 +1,11 @@
 # syntax=docker/dockerfile:1
 #
 # The agent fleet's image: one per agent container, and karmax-brain.
-# Build from the repository root, as yourself, so files the agents write in
-# the shared code directory are yours:
-#
-#   docker build -f packaging/fleet/Dockerfile -t karmax-fleet:2.1.294 \
-#     --build-arg UID=$(id -u) --build-arg GID=$(id -g) --build-arg HOME_DIR=$HOME \
-#     --build-arg CLAUDE_VERSION=2.1.294 .
-#
-# For PC2, build there or `docker save | ssh pc2 docker load` — the same tag.
+# Build it with `fleetctl image build [--tag T]`, which passes UID, GID,
+# USER_NAME, HOME_DIR and CLAUDE_VERSION from fleet.yaml (never by hand: the
+# defaults below are not the fleet's, and an image whose home differs from
+# fleet.yaml's leaves ~/.claude.json unwritable). For PC2:
+# `fleetctl image ship pc2` — the same tag.
 # CLAUDE_VERSION is pinned (the auto-updater is off in the container); bump it
 # deliberately, after `claude agents --json` is checked against the new one.
 

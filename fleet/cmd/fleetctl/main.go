@@ -91,6 +91,9 @@ the up plan are host-side):
                                       docker compose, per host. up first lists the containers it
                                       will recreate and why (image, env, brief); --dry-run stops there; --when-idle
                                       recreates each agent alone, once fleetd says it is not working
+  image build [--tag T] [--src <repo>]  docker build of packaging/fleet/Dockerfile, its UID, GID, user,
+                                      home and Claude Code version from fleet.yaml; prints the command first
+  image ship <host> [--tag T]         docker save | docker --context <host> load (fleet host only)
 `
 
 func main() {
@@ -736,6 +739,9 @@ func run(cmd string, args []string) error {
 
 	case "up", "down":
 		return hostUpDown(cmd, args)
+
+	case "image":
+		return imageCmd(args)
 	}
 	return fmt.Errorf("unknown command %q (fleetctl help)", cmd)
 }
@@ -880,6 +886,53 @@ func hostCmd(cmd string, args []string) error {
 		return errors.New("--out writes on this host; run render here, where fleet.yaml is")
 	}
 	return askFleetd("render", nil)
+}
+
+// imageRun and imagePipe run the docker commands of `image`; tests replace them.
+var (
+	imageRun  hostctl.Runner = hostctl.ExecRunner
+	imagePipe hostctl.Piper  = hostctl.ExecPiper
+)
+
+// imageCmd is `image build` and `image ship`: docker next to fleet.yaml, so
+// the image's identity comes from there and never from typed build args.
+func imageCmd(args []string) error {
+	const use = "image build [--tag T] [--src <repo>] | image ship <host> [--tag T]"
+	if len(args) == 0 {
+		return errors.New("usage: fleetctl " + use)
+	}
+	var tag, src string
+	_, pos, err := flags("image "+args[0], args[1:], func(fs *flag.FlagSet) {
+		fs.StringVar(&tag, "tag", "", "")
+		fs.StringVar(&src, "src", "", "")
+	})
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	switch args[0] {
+	case "build":
+		if len(pos) != 0 {
+			return errors.New("usage: fleetctl " + use)
+		}
+		if src == "" {
+			src = "."
+		}
+		if src, err = hostctl.FindSource(src); err != nil {
+			return err
+		}
+		return hostctl.ImageBuild(ctx, cfg, src, tag, os.Stdout, imageRun)
+	case "ship":
+		if len(pos) != 1 {
+			return errors.New("usage: fleetctl " + use)
+		}
+		return hostctl.ImageShip(ctx, cfg, pos[0], tag, os.Stdout, imagePipe)
+	}
+	return errors.New("usage: fleetctl " + use)
 }
 
 // hostUpDown is up and down: on a fleet host, upDown (with its plan,
