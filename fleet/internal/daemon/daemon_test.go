@@ -547,6 +547,15 @@ func TestWaitReturnsWhenTheTaskCloses(t *testing.T) {
 	}
 }
 
+func TestWaitOnATaskThatDoesNotExistFailsAtOnce(t *testing.T) {
+	f, _, _ := newFleet(t)
+	f.waitEvery = 10 * time.Millisecond
+	_, err := f.Wait(context.Background(), "agent-03", "T404", 0)
+	if !errors.Is(err, ErrNoTask) || err.Error() != "no task T404" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestWaitReturnsOnDownCoolingOrDisabled(t *testing.T) {
 	for _, p := range []reconcile.Phase{reconcile.Down, reconcile.Cooling, reconcile.Disabled} {
 		f, _, _ := newFleet(t)

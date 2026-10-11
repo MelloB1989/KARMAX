@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -131,17 +134,34 @@ func TestEventsPagesByIDWithoutLossOrRepeat(t *testing.T) {
 
 func TestUpAndDownRunComposeOnEachHostThatRunsSomething(t *testing.T) {
 	f, _, _ := newFleet(t)
+	dir := filepath.Join(f.cfg.StateDir, "render")
+	_ = os.MkdirAll(dir, 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "compose.pc2.yaml"), []byte("services:\n  agent-05:\n    image: img:2\n    container_name: agent-05\n    environment: {FLEET_CLAUDE_MD: NEW}\n"), 0o600)
 	var ran []string
-	old := HostRun
+	old, oldDocker := HostRun, HostDocker
+	defer func() { HostRun, HostDocker = old, oldDocker }()
 	HostRun = func(_ context.Context, argv []string, w io.Writer) error {
 		ran = append(ran, strings.Join(argv, " "))
 		return nil
 	}
-	defer func() { HostRun = old }()
+	HostDocker = func(_ context.Context, argv []string) ([]byte, error) {
+		switch {
+		case strings.Contains(strings.Join(argv, " "), "image inspect"):
+			return []byte("sha-2\n"), nil
+		case argv[len(argv)-2] == "inspect":
+			return []byte(`[{"Image":"sha-2","Config":{"Env":["FLEET_CLAUDE_MD=OLD"],"Labels":{}}}]`), nil
+		}
+		return nil, errors.New("not a read-only call")
+	}
 	out, err := f.Up(context.Background(), []string{"pc2"})
 	if err != nil || len(ran) != 1 || !strings.HasPrefix(ran[0], "docker --context pc2 compose -p fleet -f ") ||
-		!strings.HasSuffix(ran[0], "up -d --remove-orphans") || !strings.Contains(out, "$ docker") {
+		!strings.HasSuffix(ran[0], "up -d --remove-orphans") {
 		t.Fatalf("up: ran %v, out %q, %v", ran, out, err)
+	}
+	// The route says what the CLI says: the plan, then the command.
+	plan, cmd := strings.Index(out, "agent-05 will be RECREATED"), strings.Index(out, "$ docker")
+	if plan < 0 || cmd < plan {
+		t.Fatalf("out lacks the plan before the command:\n%s", out)
 	}
 	if _, err := f.Down(context.Background(), []string{"mars"}); err == nil {
 		t.Fatal("an unknown host must be refused")

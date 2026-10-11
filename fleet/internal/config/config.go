@@ -396,6 +396,11 @@ func (c *Config) validate() error {
 		if err := checkTokenEnv("console", k.TokenEnv); err != nil {
 			return err
 		}
+		// One token per scope: a console token that is the full or relay one
+		// would hand the console (or whoever reads its env) a wider scope.
+		if k.TokenEnv == c.TokenEnv || k.TokenEnv == c.RelayTokenEnv {
+			return fmt.Errorf("console: token_env %s is also the fleet API's token_env or relay_token_env — the console needs a token of its own", k.TokenEnv)
+		}
 		if !strings.HasPrefix(k.FleetdURL, "http://") && !strings.HasPrefix(k.FleetdURL, "https://") {
 			return fmt.Errorf("console: fleetd_url %q is not an http(s) URL", k.FleetdURL)
 		}

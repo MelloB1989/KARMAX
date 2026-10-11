@@ -35,6 +35,9 @@ func (f *fake) Inbox(after int64) ([]ledger.Relay, error) {
 }
 func (f *fake) Wait(ctx context.Context, agent, task string, after int64) (daemon.WaitResult, error) {
 	f.calls = append(f.calls, fmt.Sprintf("wait %s %s %d", agent, task, after))
+	if task == "T-missing" {
+		return daemon.WaitResult{}, fmt.Errorf("%w %s", daemon.ErrNoTask, task)
+	}
 	if _, ok := ctx.Deadline(); !ok {
 		return daemon.WaitResult{}, fmt.Errorf("wait without a deadline")
 	}
@@ -423,5 +426,13 @@ func TestHostRoutesAreFullOnlyAndReportOutputAndFailure(t *testing.T) {
 	}
 	if got := strings.Join(f.calls, "|"); !strings.HasPrefix(got, "up [pc2]|render|down []") {
 		t.Errorf("calls = %s", got)
+	}
+}
+
+func TestWaitOnAnUnknownTaskIs404WithTheTaskNamed(t *testing.T) {
+	h := Handler(&fake{}, Tokens{Full: "full"}, nil)
+	rec := do(t, h, "GET", "/v1/wait?agent=agent-03&task=T-missing&timeout=1m", "full", "")
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no task T-missing") {
+		t.Fatalf("= %d %s", rec.Code, rec.Body)
 	}
 }

@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -353,6 +354,9 @@ func (f *Fleet) archiveSession(ctx context.Context, name string, b Box, st recon
 	return m, nil
 }
 
+// ErrNoTask is a wait on a task the ledger has never heard of.
+var ErrNoTask = errors.New("no task")
+
 func (f *Fleet) known(name string) error {
 	if _, ok := f.cfg.Agents[name]; !ok {
 		return fmt.Errorf("no agent named %q", name)
@@ -532,6 +536,12 @@ type WaitResult struct {
 func (f *Fleet) Wait(ctx context.Context, agent, task string, after int64) (WaitResult, error) {
 	if err := f.known(agent); err != nil {
 		return WaitResult{}, err
+	}
+	// A task nobody assigned would never close: say so now, not at the timeout.
+	if task != "" {
+		if _, err := f.db.Task(task); errors.Is(err, sql.ErrNoRows) {
+			return WaitResult{}, fmt.Errorf("%w %s", ErrNoTask, task)
+		}
 	}
 	t := time.NewTicker(f.waitEvery)
 	defer t.Stop()

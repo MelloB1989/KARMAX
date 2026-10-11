@@ -75,6 +75,9 @@ func run(cfgPath string, once bool) error {
 	if cfg.Console != nil {
 		tokens.Console = env[cfg.Console.TokenEnv]
 	}
+	if err := checkTokens(tokens, cfg); err != nil {
+		return err
+	}
 	if tokens.Full == "" && !once {
 		return fmt.Errorf("%s is not set in %s: fleetd refuses to serve its API without a token", cfg.TokenEnv, cfg.EnvFile)
 	}
@@ -205,4 +208,16 @@ func writeDashboard(d outbound.Dashboard, f *daemon.Fleet, db *ledger.DB, orch *
 		"events":       events,
 		"updated":      map[string]any{"at": now.UTC()},
 	})
+}
+
+// checkTokens refuses a console token whose value is the full or relay
+// token's: two scopes sharing one secret are one scope (the widest).
+func checkTokens(t server.Tokens, cfg *config.Config) error {
+	if t.Console == "" {
+		return nil
+	}
+	if t.Console == t.Full || t.Console == t.Relay {
+		return fmt.Errorf("%s has the same value as %s or %s: the console needs a token of its own", cfg.Console.TokenEnv, cfg.TokenEnv, cfg.RelayTokenEnv)
+	}
+	return nil
 }

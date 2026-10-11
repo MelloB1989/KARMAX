@@ -10,6 +10,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/hostctl"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
+	"github.com/MelloB1989/karmax/fleet/internal/recreate"
 )
 
 // The reads and actions behind fleetd's HTTP routes. Each is one method, so
@@ -193,6 +194,9 @@ func (f *Fleet) PruneArchives(before time.Time) (int, error) {
 // HostRun runs commands for Up and Down; tests replace it.
 var HostRun hostctl.Runner = hostctl.ExecRunner
 
+// HostDocker runs the plan's read-only docker calls; tests replace it.
+var HostDocker recreate.Runner = hostctl.RealDocker
+
 // Render writes the compose files and agent env files, and says what it wrote.
 func (f *Fleet) Render() (string, error) {
 	var out bytes.Buffer
@@ -211,6 +215,6 @@ func (f *Fleet) Down(ctx context.Context, hosts []string) (string, error) {
 
 func (f *Fleet) compose(ctx context.Context, up bool, hosts []string) (string, error) {
 	var out bytes.Buffer
-	err := hostctl.Compose(ctx, f.cfg, up, hosts, &out, HostRun)
+	err := hostctl.Update(ctx, f.cfg, up, hosts, hostctl.Options{Run: HostRun, Docker: HostDocker}, &out)
 	return out.String(), err
 }
