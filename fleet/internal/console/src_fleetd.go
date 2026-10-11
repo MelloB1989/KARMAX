@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +72,17 @@ func urlErr(err error) error {
 	return err
 }
 
+// httpError is a non-200 answer from fleetd.
+type httpError struct {
+	path string
+	code int
+	msg  string
+}
+
+func (e *httpError) Error() string {
+	return fmt.Sprintf("fleetd GET %s: %d %s", e.path, e.code, e.msg)
+}
+
 func (c *FleetdClient) get(ctx context.Context, path string, out any) error {
 	code, b, err := c.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -82,7 +93,7 @@ func (c *FleetdClient) get(ctx context.Context, path string, out any) error {
 		if len(msg) > 200 {
 			msg = msg[:200] + "…"
 		}
-		return fmt.Errorf("fleetd GET %s: %d %s", strings.SplitN(path, "?", 2)[0], code, msg)
+		return &httpError{path: strings.SplitN(path, "?", 2)[0], code: code, msg: msg}
 	}
 	if err := json.Unmarshal(b, out); err != nil {
 		return fmt.Errorf("fleetd GET %s: %w", strings.SplitN(path, "?", 2)[0], err)
@@ -172,15 +183,18 @@ func kindsParam() string {
 	return strings.Join(StreamKinds, ",")
 }
 
-// fleetdSrc polls fleetd and keeps the last good value of each answer. When
-// fleetd is down the values stay, with their old `recorded_at`, and the
-// source says it is stale.
+// fleetdSrc polls fleetd, one sub-poll per route. Each keeps its own last
+// good value and its own error, so a route that is missing or failing blanks
+// nothing else. sources.fleetd.ok is the roster (status) being fresh; the
+// other routes' errors ride in sources.fleetd.error, e.g. "tasks: 404".
+// When fleetd is down the values stay, with their old `recorded_at`.
 type fleetdSrc struct {
 	cl  *FleetdClient
 	now func() time.Time
-	tr  *tracker
+	tr  *tracker // the roster: /v1/status
 
 	mu       sync.Mutex
+	errs     map[string]string // sub-poll name → short error; absent when its last poll was good
 	rows     map[string]fleetdRow
 	orch     *Orchestrator
 	tasks    []Task
@@ -195,33 +209,60 @@ type fleetdSrc struct {
 }
 
 func newFleetdSrc(cl *FleetdClient, now func() time.Time, orchName string, agents []string) *fleetdSrc {
-	return &fleetdSrc{cl: cl, now: now, tr: newTracker(CadenceFleetd, false), rows: map[string]fleetdRow{},
+	return &fleetdSrc{cl: cl, now: now, tr: newTracker(CadenceFleetd, false), errs: map[string]string{}, rows: map[string]fleetdRow{},
 		activity: map[string][]Bucket{}, lastTask: map[string]*LastTask{}, orchName: orchName, agents: agents}
 }
 
-// poll is one 5 s round: status, open tasks, new events. Any failure marks
-// the source failed; the values stay as they were.
-func (f *fleetdSrc) poll(ctx context.Context) error {
-	err := f.pollOnce(ctx)
-	if err != nil {
-		f.tr.failure(err)
-		return err
+// record notes a sub-poll's outcome and passes err through.
+func (f *fleetdSrc) record(name string, err error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil {
+		delete(f.errs, name)
+		return nil
 	}
-	f.tr.success(f.now())
-	return nil
+	var he *httpError
+	if errors.As(err, &he) {
+		f.errs[name] = fmt.Sprintf("%s: %d", name, he.code)
+	} else {
+		f.errs[name] = name + ": " + err.Error()
+	}
+	return err
 }
 
-func (f *fleetdSrc) pollOnce(ctx context.Context) error {
+// source is the snapshot's view: ok when the roster is fresh; error names
+// every sub-poll that failed.
+func (f *fleetdSrc) source(now time.Time) Source {
+	s := f.tr.source(now)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var parts []string
+	for _, n := range []string{"status", "tasks", "events", "activity", "today", "last_task"} {
+		if e, ok := f.errs[n]; ok {
+			parts = append(parts, e)
+		}
+	}
+	s.Error = strings.Join(parts, "; ")
+	return s
+}
+
+// poll is one 5 s round: status, open tasks, new events, each on its own.
+// It returns the roster's error; the others are in source().
+func (f *fleetdSrc) poll(ctx context.Context) error {
+	err := f.record("status", f.pollStatus(ctx))
+	if err != nil {
+		f.tr.failure(err)
+	} else {
+		f.tr.success(f.now())
+	}
+	f.record("tasks", f.pollTasks(ctx))
+	f.record("events", f.pollEvents(ctx))
+	return err
+}
+
+func (f *fleetdSrc) pollStatus(ctx context.Context) error {
 	var st fleetdStatus
 	if err := f.cl.get(ctx, "/v1/status", &st); err != nil {
-		return err
-	}
-	var tasks []fleetdTask
-	if err := f.cl.get(ctx, "/v1/tasks?open=1", &tasks); err != nil {
-		return err
-	}
-	evs, err := f.newEvents(ctx)
-	if err != nil {
 		return err
 	}
 	now := f.now()
@@ -236,15 +277,36 @@ func (f *fleetdSrc) pollOnce(ctx context.Context) error {
 		f.orch = &Orchestrator{Name: f.orchName, FiveHourPct: o.FiveHour, SevenDayPct: o.SevenDay,
 			FiveHourResets: o.FiveHourResets, SevenDayResets: o.SevenDayResets, At: now}
 	}
-	f.tasks = f.tasks[:0:0]
-	for _, t := range tasks {
-		f.tasks = append(f.tasks, Task{ID: t.ID, Agent: t.Agent, Assigner: t.Assigner, Since: t.Assigned})
+	f.polledAt = now
+	return nil
+}
+
+func (f *fleetdSrc) pollTasks(ctx context.Context) error {
+	var tasks []fleetdTask
+	if err := f.cl.get(ctx, "/v1/tasks?open=1", &tasks); err != nil {
+		return err
 	}
+	out := make([]Task, 0, len(tasks))
+	for _, t := range tasks {
+		out = append(out, Task{ID: t.ID, Agent: t.Agent, Assigner: t.Assigner, Since: t.Assigned})
+	}
+	f.mu.Lock()
+	f.tasks = out
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fleetdSrc) pollEvents(ctx context.Context) error {
+	evs, err := f.newEvents(ctx)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
 	f.events = append(f.events, evs...)
 	if len(f.events) > liveEventsCap {
 		f.events = append([]Event(nil), f.events[len(f.events)-liveEventsCap:]...)
 	}
-	f.polledAt = now
+	f.mu.Unlock()
 	return nil
 }
 
@@ -255,7 +317,8 @@ const (
 
 // newEvents reads the stream events after the cursor, ascending by id. The
 // first call pages from the beginning and keeps the tail (the route is a
-// cursor, so the newest 200 are only known after reading to the end).
+// cursor, so the newest 200 are only known after reading to the end). The
+// cursor moves only when the caller keeps what this returns.
 func (f *fleetdSrc) newEvents(ctx context.Context) ([]Event, error) {
 	f.mu.Lock()
 	after := f.cursor
@@ -287,7 +350,7 @@ func (f *fleetdSrc) newEvents(ctx context.Context) ([]Event, error) {
 // pollActivity is the 60 s round. Its failure leaves the old buckets.
 func (f *fleetdSrc) pollActivity(ctx context.Context) error {
 	var a fleetdActivity
-	if err := f.cl.get(ctx, "/v1/activity?since=24h&bucket=15m", &a); err != nil {
+	if err := f.record("activity", f.cl.get(ctx, "/v1/activity?since=24h&bucket=15m", &a)); err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -296,12 +359,23 @@ func (f *fleetdSrc) pollActivity(ctx context.Context) error {
 	return nil
 }
 
-// pollToday is the 30 s round: today's totals and each agent's last task.
+// pollToday is the 30 s round: today's totals, then each agent's last task;
+// either failing leaves the other's value.
 func (f *fleetdSrc) pollToday(ctx context.Context) error {
 	var td fleetdToday
-	if err := f.cl.get(ctx, "/v1/today", &td); err != nil {
-		return err
+	err := f.record("today", f.cl.get(ctx, "/v1/today", &td))
+	if err == nil {
+		f.mu.Lock()
+		f.today = Today{Since: td.Since, TasksClosed: td.TasksClosed, SpendUSD: td.SpendUSD, OutputTokens: td.OutputTokens}
+		f.mu.Unlock()
 	}
+	if err2 := f.record("last_task", f.pollLastTasks(ctx)); err == nil {
+		err = err2
+	}
+	return err
+}
+
+func (f *fleetdSrc) pollLastTasks(ctx context.Context) error {
 	last := map[string]*LastTask{}
 	for _, name := range f.agents {
 		var ts []fleetdTask
@@ -313,7 +387,7 @@ func (f *fleetdSrc) pollToday(ctx context.Context) error {
 		}
 		lt := &LastTask{ID: ts[0].ID, Outcome: ts[0].Outcome, Ended: ts[0].Closed}
 		var ss []fleetdSession
-		if err := f.cl.get(ctx, "/v1/history?agent="+url.QueryEscape(name)+"&n="+strconv.Itoa(20), &ss); err == nil {
+		if err := f.cl.get(ctx, "/v1/history?agent="+url.QueryEscape(name)+"&n=20", &ss); err == nil {
 			for _, s := range ss {
 				if s.task() == lt.ID {
 					lt.CostUSD += s.cost()
@@ -323,7 +397,6 @@ func (f *fleetdSrc) pollToday(ctx context.Context) error {
 		last[name] = lt
 	}
 	f.mu.Lock()
-	f.today = Today{Since: td.Since, TasksClosed: td.TasksClosed, SpendUSD: td.SpendUSD, OutputTokens: td.OutputTokens}
 	f.lastTask = last
 	f.mu.Unlock()
 	return nil

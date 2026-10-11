@@ -187,7 +187,7 @@ func (s *Sources) Fill(snap *Snapshot) {
 		SrcDocker:     s.docker.tr.source(now),
 		SrcStatusline: s.status.source(now),
 		SrcEvents:     s.events.source(now),
-		SrcFleetd:     s.fleetd.tr.source(now),
+		SrcFleetd:     s.fleetd.source(now),
 		SrcTerminals:  {Error: "not started"},
 	}
 	if s.Terminals != nil {
