@@ -60,13 +60,20 @@ Work (fleetd):
   enable <agent>                      after fixing a disabled subscription
 
 Your keyboard (host only, no fleetd):
-  attach <agent>                      the live session's TUI (detach: Ctrl-b d)
+  attach <agent> [--direct]           the live session's TUI, through the console when the
+                                      host runs one (one controller; give it back: Ctrl-])
   prompt <agent> <text…>              type into it, as you
   peek <agent> [-n 80]                its last lines
 
 About fleetd:
   whoami                              which scope this token has
   api                                 every route and the scopes it allows
+
+The console (fleet-console on its host, reached over ssh; or FLEET_CONSOLE_URL + FLEET_CONSOLE_TOKEN):
+  console snapshot [--json]           agents, tools, load, and every source with its age
+  console watch [--json]              the snapshot, then patches, one JSON object per line
+  console term <agent>                an agent's terminal bytes, raw, to stdout
+  console health [--json]             the sources and their ages
 
 Setup (host only):
   render [--out <dir>]                env files, compose files, briefs
@@ -522,6 +529,9 @@ func run(cmd string, args []string) error {
 		}
 		return post("/v1/restore", map[string]string{"archive": pos[0], "agent": onto})
 
+	case "console":
+		return consoleCmd(args)
+
 	case "attach", "prompt", "peek":
 		return keyboard(cmd, args)
 
@@ -665,12 +675,19 @@ func archiveCmd(args []string) error {
 // keyboard is attach, prompt and peek: straight to the container.
 func keyboard(cmd string, args []string) error {
 	var n int
-	_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.IntVar(&n, "n", 80, "") })
+	var direct bool
+	_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
+		fs.IntVar(&n, "n", 80, "")
+		fs.BoolVar(&direct, "direct", false, "")
+	})
 	if err != nil {
 		return err
 	}
 	if err := need(pos, 1, cmd+" <agent>"); err != nil {
 		return err
+	}
+	if cmd == "attach" && !direct && os.Getenv("FLEET_CONSOLE_URL") != "" {
+		return attachViaConsole(pos[0])
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -679,6 +696,9 @@ func keyboard(cmd string, args []string) error {
 	a, ok := cfg.Agents[pos[0]]
 	if !ok {
 		return fmt.Errorf("no agent %q", pos[0])
+	}
+	if cmd == "attach" && !direct && consoleFor(a.Host) {
+		return attachViaConsole(pos[0])
 	}
 	ag := &agent.Agent{Name: pos[0], C: target.Container{Exec: cfg.Hosts[a.Host].Exec, Name: a.Container}}
 	ctx := context.Background()
@@ -698,6 +718,17 @@ func keyboard(cmd string, args []string) error {
 		fmt.Print(out)
 		return err
 	}
+}
+
+// attachViaConsole: the console owns the one-controller rule, so attach
+// goes through it whenever the agent's host runs one. --direct bypasses it.
+func attachViaConsole(agentName string) error {
+	ctx := context.Background()
+	c, err := newConsole(ctx)
+	if err != nil {
+		return fmt.Errorf("%w (attach --direct goes to the container without the console's one-controller rule)", err)
+	}
+	return consoleAttach(ctx, c, agentName)
 }
 
 func table(rows []daemon.Row, orch *outbound.Quota) error {

@@ -19,6 +19,7 @@ const statusScript = `f="$HOME/.claude/fleet/status.json"; stat -c %Y "$f" && ca
 // StatusLine is one agent's last status-line snapshot.
 type StatusLine struct {
 	Model          string
+	SessionID      string
 	ContextPct     float64
 	FiveHourPct    float64
 	SevenDayPct    float64
@@ -51,7 +52,7 @@ func parseStatusOut(out []byte) (StatusLine, error) {
 	if err != nil {
 		return StatusLine{}, fmt.Errorf("status.json: %w", err)
 	}
-	sl := StatusLine{Model: st.Model.DisplayName, ContextPct: st.ContextPct(), At: time.Unix(mtime, 0)}
+	sl := StatusLine{Model: st.Model.DisplayName, SessionID: st.SessionID, ContextPct: st.ContextPct(), At: time.Unix(mtime, 0)}
 	if sl.Model == "" {
 		sl.Model = st.Model.ID
 	}

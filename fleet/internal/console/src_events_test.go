@@ -21,21 +21,21 @@ func TestPreThenPostSetsAndClearsCurrentTool(t *testing.T) {
 	e := newEventsSrc([]string{"agent-01"})
 	now := time.Unix(2000, 0)
 	e.handle("agent-01", ev(1990, "PreToolUse", "Bash"), now)
-	tool, last := e.tool("agent-01")
+	tool, last := e.tool("agent-01", "s1")
 	if tool == nil || tool.Name != "Bash" || !tool.Since.Equal(time.Unix(1990, 0)) || !last.Equal(time.Unix(1990, 0)) {
 		t.Fatalf("after Pre: %+v %v", tool, last)
 	}
 	e.handle("agent-01", ev(1995, "PostToolUse", "Read"), now) // a different tool finishing does not clear it
-	if tool, _ := e.tool("agent-01"); tool == nil {
+	if tool, _ := e.tool("agent-01", "s1"); tool == nil {
 		t.Fatal("a Post for another tool cleared the current one")
 	}
 	e.handle("agent-01", ev(1996, "PostToolUse", "Bash"), now)
-	if tool, _ := e.tool("agent-01"); tool != nil {
+	if tool, _ := e.tool("agent-01", "s1"); tool != nil {
 		t.Fatalf("after Post: %+v", tool)
 	}
 	e.handle("agent-01", ev(1997, "PreToolUse", "Edit"), now)
 	e.handle("agent-01", ev(1998, "Stop", ""), now)
-	if tool, _ := e.tool("agent-01"); tool != nil {
+	if tool, _ := e.tool("agent-01", "s1"); tool != nil {
 		t.Fatalf("Stop must clear the tool: %+v", tool)
 	}
 }
@@ -48,7 +48,7 @@ func TestToolEventsStayOutOfTheStream(t *testing.T) {
 	}
 	e.handle("agent-01", ev(1991, "UserPromptSubmit", ""), now)
 	e.handle("agent-01", ev(1992, "Stop", ""), now)
-	live := e.liveEvents()
+	live := e.liveEvents(nil)
 	if len(live) != 2 || live[0].Kind != "UserPromptSubmit" || live[1].Kind != "Stop" || live[0].ID != 0 {
 		t.Fatalf("live = %+v", live)
 	}
@@ -137,7 +137,7 @@ func TestTailSurvivesTheFileBeingMoved(t *testing.T) {
 	waitLive(t, e, 4)
 
 	time.Sleep(300 * time.Millisecond) // and nothing arrives twice
-	live := e.liveEvents()
+	live := e.liveEvents(nil)
 	var kinds []string
 	for _, l := range live {
 		kinds = append(kinds, l.Kind)
@@ -149,9 +149,9 @@ func TestTailSurvivesTheFileBeingMoved(t *testing.T) {
 
 func waitLive(t *testing.T, e *eventsSrc, n int) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); len(e.liveEvents()) < n; {
+	for deadline := time.Now().Add(5 * time.Second); len(e.liveEvents(nil)) < n; {
 		if time.Now().After(deadline) {
-			t.Fatalf("want %d live events, have %d", n, len(e.liveEvents()))
+			t.Fatalf("want %d live events, have %d", n, len(e.liveEvents(nil)))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
