@@ -221,17 +221,25 @@ func ReadEnv(path string) (map[string]string, error) {
 	return out, sc.Err()
 }
 
-// ParseDockerStats reads `docker stats --no-stream --format '{{json .}}'`.
+// ParseDockerStats reads `docker stats --format '{{json .}}'`, streaming or
+// not. A streamed frame may start with a terminal clear sequence; anything
+// before the first brace is skipped.
 func ParseDockerStats(b []byte, at time.Time) []ledger.HostSample {
 	var out []ledger.HostSample
 	for _, l := range bytes.Split(b, []byte("\n")) {
-		var r struct{ Name, CPUPerc, MemUsage, MemPerc string }
+		if i := bytes.IndexByte(l, '{'); i > 0 {
+			l = l[i:]
+		}
+		var r struct{ Name, CPUPerc, MemUsage, MemPerc, NetIO string }
 		if json.Unmarshal(l, &r) != nil || r.Name == "" {
 			continue
 		}
-		used, _, _ := strings.Cut(r.MemUsage, "/")
+		used, limit, _ := strings.Cut(r.MemUsage, "/")
+		rx, tx, _ := strings.Cut(r.NetIO, "/")
 		out = append(out, ledger.HostSample{Container: r.Name, At: at, CPU: pct(r.CPUPerc),
-			MemBytes: bytesOf(strings.TrimSpace(used)), MemPct: pct(r.MemPerc)})
+			MemBytes: bytesOf(strings.TrimSpace(used)), MemPct: pct(r.MemPerc),
+			MemLimit: bytesOf(strings.TrimSpace(limit)),
+			NetRx:    bytesOf(strings.TrimSpace(rx)), NetTx: bytesOf(strings.TrimSpace(tx))})
 	}
 	return out
 }

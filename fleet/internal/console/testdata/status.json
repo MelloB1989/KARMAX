@@ -1,0 +1,5 @@
+{"session_id":"00000000-0000-4000-8000-000000000001","cwd":"/work","session_name":"agent-01",
+ "model":{"id":"claude-sonnet-5-5","display_name":"Sonnet 5.5"},
+ "cost":{"total_cost_usd":0.35},
+ "context_window":{"context_window_size":1000000,"used_percentage":8,"remaining_percentage":92},
+ "rate_limits":{"five_hour":{"used_percentage":3,"resets_at":1791744000},"seven_day":{"used_percentage":11,"resets_at":1792200000}}}
