@@ -36,7 +36,7 @@ function useFitScale(): number {
 function Collapse({ side, hidden, children }: { side: "left" | "right" | "bottom"; hidden: boolean; children: React.ReactNode }) {
   const reduce = useReducedMotion();
   const vertical = side === "bottom";
-  const full = vertical ? 190 : 420;
+  const full = vertical ? 172 : 464;
   return (
     <motion.div
       className={`collapse collapse-${side}`}
@@ -84,11 +84,12 @@ export function Overview() {
     else if (control.phase !== "idle") releaseControl();
     else setFocus(false);
   });
-  useKey("enter", () => {
+  const takeControl = () => {
     if (!current || remote || wantsControl(control)) return;
     setFocus(true);
     dispatch({ type: "request" });
-  });
+  };
+  useKey("enter", takeControl);
   useKey("p", () => current && setBar({ target: current.id, label: `PROMPT → ${current.id}` }));
   useKey("m", () => orch && setBar({ target: orch, label: `BRIEF → ${orch}` }));
 
@@ -113,6 +114,8 @@ export function Overview() {
               focus={focus}
               control={control}
               onFocus={() => setFocus(true)}
+              onTakeControl={takeControl}
+              onTell={() => current && setBar({ target: current.id, label: `PROMPT → ${current.id}` })}
               onFrame={(f) => dispatch({ type: "frame", frame: f })}
               onRelease={releaseControl}
             />

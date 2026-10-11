@@ -4,6 +4,7 @@
 import { useSyncExternalStore } from "react";
 import { applyPatch, type Operation } from "fast-json-patch";
 import type { Message, Snapshot } from "../model";
+import { freezeClock } from "./hooks";
 
 export type Conn = "connecting" | "live" | "lost";
 
@@ -87,7 +88,9 @@ function reconnect(delay: number): void {
 async function loadFixture(): Promise<void> {
   // Development only: compiled out of the production bundle.
   const mod = await import("../../dev/snapshot.json");
-  set({ snapshot: mod.default as unknown as Snapshot, conn: "live", seq: 1 });
+  const snapshot = mod.default as unknown as Snapshot;
+  freezeClock(Date.parse(snapshot.at));
+  set({ snapshot, conn: "live", seq: 1 });
 }
 
 /** Starts the stream on first use. */

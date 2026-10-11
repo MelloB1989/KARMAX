@@ -6,7 +6,7 @@ import { Bar } from "./Bar";
 import { Num } from "../motion/tween";
 import { useFlash } from "../motion/useFlash";
 
-const mb = (b: number) => `${Math.round(b / 1048576)} MB`;
+const mib = (b: number) => `${Math.round(b / 1048576)} MiB`;
 
 /** A stale value renders as its age in dim text, never as the old number. */
 function Aged({ at, now }: { at?: string; now: number }) {
@@ -45,51 +45,51 @@ export function AgentCard({
       onClick={onSelect}
     >
       <div className="card-head">
-        <span className="card-key">{index + 1}</span>
+        <span className="dot" />
         <span className="card-name">{a.id}</span>
-        {remote && <span className="tag">remote · no live view</span>}
-        <span className="card-phase">
-          {fleetdStale ? <Aged at={a.recorded_at} now={now} /> : look.label}
-        </span>
+        <span className="card-key dim">{index + 1}</span>
+        {remote && <span className="remote">remote · no live view</span>}
+        <span className="grow" />
+        <span className="card-phase">{fleetdStale ? <Aged at={a.recorded_at} now={now} /> : look.label}</span>
       </div>
-      <div className="card-line">
+      <div className="card-meta dim">
         {a.phase === "working" && a.current_tool && !remote ? (
           <span className="tool">
-            {a.current_tool.name} <span className="dim">{fmtAge(toolSecs)}</span>
+            {a.current_tool.name} {fmtAge(toolSecs)}
           </span>
         ) : fleetdStale ? (
-          <span className="dim">idle —</span>
+          <span>idle —</span>
         ) : (
-          <span className="dim">idle {fmtAge(a.idle_s)}</span>
+          <span>idle {fmtAge(a.idle_s)}</span>
         )}
-        <span className="dim card-model">{lineStale ? "" : a.model}</span>
+        <span>{lineStale ? "" : a.model}</span>
+        <span>{a.session ? `sess ${a.session.slice(0, 8)}` : ""}</span>
       </div>
-      <div className="card-bars">
-        {lineStale ? (
-          <span className="dim">
-            quota <Aged at={a.statusline_at} now={now} />
-          </span>
-        ) : (
-          <>
-            <Bar label="ctx" pct={a.context_pct} />
-            <Bar label="5h" pct={a.five_hour_pct} />
-            <Bar label="7d" pct={a.seven_day_pct} />
-          </>
-        )}
-      </div>
+      {lineStale ? (
+        <div className="card-stale dim">
+          quota <Aged at={a.statusline_at} now={now} />
+        </div>
+      ) : (
+        <div className="card-bars">
+          <Bar label="CTX" pct={a.context_pct} />
+          <Bar label="5H" pct={a.five_hour_pct} />
+          <Bar label="7D" pct={a.seven_day_pct} />
+        </div>
+      )}
       <div className="card-foot">
+        <span className="dim">
+          last <span className="text">{a.last_task ? `${a.last_task.id}` : "none yet"}</span>
+          {a.last_task ? ` · $${a.last_task.cost_usd.toFixed(2)}` : ""}
+        </span>
         {dockerStale || !a.container ? (
           <span className="dim">
             cpu / mem <Aged at={a.container?.at} now={now} />
           </span>
         ) : (
-          <span>
-            <Num value={a.container.cpu_pct} />% cpu · {mb(a.container.mem)}
+          <span className="dim">
+            cpu <Num value={a.container.cpu_pct} digits={1} />% · {mib(a.container.mem)}
           </span>
         )}
-      </div>
-      <div className="card-last dim">
-        {a.last_task ? `last ${a.last_task.id} · ${a.last_task.outcome} · $${a.last_task.cost_usd.toFixed(2)}` : "no task yet"}
       </div>
     </button>
   );
