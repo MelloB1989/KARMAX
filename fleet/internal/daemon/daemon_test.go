@@ -186,7 +186,7 @@ func TestDoneArchivesThenStartsFresh(t *testing.T) {
 		{Path: "/work/wt/fix", Upstream: "origin/x"},
 		{Path: "/work/wt/wip", Dirty: 1},
 	}
-	if err := f.Assign("agent-03", "T1", t0); err != nil {
+	if err := f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Done("agent-03", "T1", "done", "fleet/agent-03/fix", "", t0); err != nil {
@@ -219,7 +219,7 @@ func TestAFailedArchiveLeavesTheSessionAlone(t *testing.T) {
 	b := boxes["agent-03"]
 	b.transcript["s-agent-03"] = transcript
 	b.badHash = true
-	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
 	_ = f.Done("agent-03", "T1", "done", "", "", t0)
 
 	f.Tick(context.Background(), t0)
@@ -244,7 +244,7 @@ func TestAFailedArchiveLeavesTheSessionAlone(t *testing.T) {
 // A session that never had a turn has nothing to archive; it is simply replaced.
 func TestRotatingASessionWithNoTranscript(t *testing.T) {
 	f, boxes, _ := newFleet(t)
-	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
 	_ = f.Done("agent-03", "T1", "done", "", "", t0)
 	f.Tick(context.Background(), t0)
 	if b := boxes["agent-03"]; !slices.Equal(b.calls, []string{"fresh"}) {
@@ -281,7 +281,7 @@ func TestPushesAndAlertsGoOut(t *testing.T) {
 
 func TestAssignRefusesAnUnknownOrDisabledAgent(t *testing.T) {
 	f, _, _ := newFleet(t)
-	if err := f.Assign("agent-99", "T", t0); err == nil {
+	if err := f.Assign(context.Background(), "agent-99", "T", "operator", "", t0); err == nil {
 		t.Error("assigned to an unknown agent")
 	}
 }
@@ -290,7 +290,7 @@ func TestStatusRows(t *testing.T) {
 	f, boxes, _ := newFleet(t)
 	st, _ := observe.ParseStatus([]byte(`{"context_window":{"used_percentage":33},"rate_limits":{"five_hour":{"used_percentage":85,"resets_at":1891430000},"seven_day":{"used_percentage":20}}}`))
 	boxes["agent-03"].obs.Status = st
-	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
 	f.Tick(context.Background(), t0)
 	rows := f.Status(t0.Add(10 * time.Minute))
 	if len(rows) != 2 {
@@ -329,7 +329,7 @@ func TestRestoreArchivesTheCurrentSessionFirst(t *testing.T) {
 	f, boxes, _ := newFleet(t)
 	b := boxes["agent-03"]
 	b.transcript["s-agent-03"] = transcript
-	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
 	_ = f.Done("agent-03", "T1", "done", "", "", t0)
 	f.Tick(context.Background(), t0)
 	hist, _ := f.db.History("agent-03", 1)
@@ -361,7 +361,7 @@ func TestAMessageAfterTheArchiveIsArchivedBeforeDeletion(t *testing.T) {
 	b.transcript["s-agent-03"] = transcript
 	late := `{"type":"user","sessionId":"s-agent-03","timestamp":"2026-10-08T10:31:00Z","turnOrigin":"peer","message":{"role":"user","content":"next task: T2"}}` + "\n"
 	b.onStop = func(b *box) { b.transcript["s-agent-03"] += late; b.onStop = nil }
-	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
 	_ = f.Done("agent-03", "T1", "done", "", "", t0)
 	f.Tick(context.Background(), t0)
 
@@ -391,7 +391,7 @@ func TestALateMessageThatCannotBeArchivedKeepsTheTranscript(t *testing.T) {
 	b := boxes["agent-03"]
 	b.transcript["s-agent-03"] = transcript
 	b.onStop = func(b *box) { b.transcript["s-agent-03"] += "{}\n"; b.badHash = true }
-	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
 	_ = f.Done("agent-03", "T1", "done", "", "", t0)
 	f.Tick(context.Background(), t0)
 	if slices.Contains(b.calls, "delete s-agent-03") {
@@ -420,7 +420,7 @@ func TestRestoreRefusesTheLiveSessionAndABusyAgent(t *testing.T) {
 	f, boxes, _ := newFleet(t)
 	b := boxes["agent-03"]
 	b.transcript["s-agent-03"] = transcript
-	_ = f.Assign("agent-03", "T1", t0)
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
 	_ = f.Done("agent-03", "T1", "done", "", "", t0)
 	f.Tick(context.Background(), t0)
 	hist, _ := f.db.History("agent-03", 1)
@@ -442,5 +442,135 @@ func TestRestoreRefusesTheLiveSessionAndABusyAgent(t *testing.T) {
 	b.calls = nil
 	if err := f.Restore(context.Background(), id, "", t0.Add(time.Hour)); err == nil || len(b.calls) != 0 {
 		t.Fatalf("restored onto an agent mid-turn: %v %q", err, b.calls)
+	}
+}
+
+func TestTellToOperatorIsStoredNotRelayed(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	if err := f.Tell(context.Background(), "agent-03", "operator", "ready on fleet/agent-03/x", t0); err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range boxes {
+		if len(b.calls) != 0 {
+			t.Fatalf("%s was called: %v", name, b.calls)
+		}
+	}
+	msgs, err := f.Inbox(0)
+	if err != nil || len(msgs) != 1 || msgs[0].From != "agent-03" || msgs[0].Text != "ready on fleet/agent-03/x" || msgs[0].ID == 0 {
+		t.Fatalf("inbox = %+v, %v", msgs, err)
+	}
+	if later, _ := f.Inbox(msgs[0].ID); len(later) != 0 {
+		t.Fatalf("inbox after its last id = %+v", later)
+	}
+}
+
+func TestAnUnknownSenderCannotWriteToTheInbox(t *testing.T) {
+	f, _, _ := newFleet(t)
+	if err := f.Tell(context.Background(), "agent-99", "operator", "hi", t0); err == nil {
+		t.Fatal("want an error")
+	}
+}
+
+func TestAssignWithBriefRecordsAssignerAndDeliversTheBrief(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	if err := f.Assign(context.Background(), "agent-05", "T7", "operator", "build the thing", t0); err != nil {
+		t.Fatal(err)
+	}
+	task, err := f.DB().Task("T7")
+	if err != nil || task.Assigner != "operator" || task.Agent != "agent-05" {
+		t.Fatalf("task = %+v, %v", task, err)
+	}
+	if want := "relay operator→agent-05: build the thing"; !slices.Contains(boxes["agent-05"].calls, want) {
+		t.Fatalf("calls = %v, want %q", boxes["agent-05"].calls, want)
+	}
+}
+
+func TestAssignWithoutBriefDeliversNothing(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	_ = f.Assign(context.Background(), "agent-05", "T8", "karmax", "", t0)
+	if len(boxes["agent-05"].calls) != 0 {
+		t.Fatalf("calls = %v", boxes["agent-05"].calls)
+	}
+}
+
+func waitAsync(f *Fleet, ctx context.Context, agent, task string, after int64) chan WaitResult {
+	done := make(chan WaitResult, 1)
+	go func() {
+		r, err := f.Wait(ctx, agent, task, after)
+		if err != nil {
+			r.Reason = "error: " + err.Error()
+		}
+		done <- r
+	}()
+	return done
+}
+
+func await(t *testing.T, done chan WaitResult) WaitResult {
+	t.Helper()
+	select {
+	case r := <-done:
+		return r
+	case <-time.After(5 * time.Second):
+		t.Fatal("wait did not return")
+		return WaitResult{}
+	}
+}
+
+func TestWaitReturnsOnTheAgentsMessageToTheOperator(t *testing.T) {
+	f, _, _ := newFleet(t)
+	f.waitEvery = 10 * time.Millisecond
+	_ = f.Tell(context.Background(), "agent-05", "operator", "old news", t0)
+	old, _ := f.Inbox(0)
+	done := waitAsync(f, context.Background(), "agent-03", "", old[0].ID)
+	time.Sleep(30 * time.Millisecond)
+	_ = f.Tell(context.Background(), "agent-05", "operator", "not mine", t0)
+	_ = f.Tell(context.Background(), "agent-03", "operator", "ready", t0)
+	r := await(t, done)
+	if r.Reason != "message" || r.Message == nil || r.Message.Text != "ready" {
+		t.Fatalf("wait = %+v", r)
+	}
+}
+
+func TestWaitReturnsWhenTheTaskCloses(t *testing.T) {
+	f, _, _ := newFleet(t)
+	f.waitEvery = 10 * time.Millisecond
+	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
+	done := waitAsync(f, context.Background(), "agent-03", "T1", 0)
+	time.Sleep(30 * time.Millisecond)
+	_ = f.Done("agent-03", "T1", "done", "fleet/agent-03/x", "", t0)
+	if r := await(t, done); r.Reason != "closed" {
+		t.Fatalf("wait = %+v", r)
+	}
+}
+
+func TestWaitReturnsOnDownCoolingOrDisabled(t *testing.T) {
+	for _, p := range []reconcile.Phase{reconcile.Down, reconcile.Cooling, reconcile.Disabled} {
+		f, _, _ := newFleet(t)
+		f.waitEvery = 10 * time.Millisecond
+		done := waitAsync(f, context.Background(), "agent-03", "", 0)
+		time.Sleep(30 * time.Millisecond)
+		st := f.State("agent-03")
+		st.Phase = p
+		f.setState(st)
+		if r := await(t, done); r.Reason != "phase" || r.Phase != string(p) {
+			t.Fatalf("%s: wait = %+v", p, r)
+		}
+	}
+}
+
+func TestWaitTimesOutWithoutAnError(t *testing.T) {
+	f, _, _ := newFleet(t)
+	f.waitEvery = 10 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if r := await(t, waitAsync(f, ctx, "agent-03", "", 0)); r.Reason != "timeout" {
+		t.Fatalf("wait = %+v", r)
+	}
+}
+
+func TestWaitOnAnUnknownAgentFails(t *testing.T) {
+	f, _, _ := newFleet(t)
+	if _, err := f.Wait(context.Background(), "agent-99", "", 0); err == nil {
+		t.Fatal("want an error")
 	}
 }

@@ -40,10 +40,15 @@ A relayed message starts with `[relayed from <name> — reply with: fleetctl tel
 
 - Commit early and often, and push your branch. Never push to `main`.
 - Do not run `git gc`; it runs on a schedule, so eight agents never gc one repo at once.
-- When the task is finished, message {{.Orchestrator}}: what changed, the branch,
-  the PR if you opened one, and anything left undone — then say **done**. Your
-  session is archived and you start the next task fresh, so put everything that
-  matters in that report and in your commits.
+- A task's brief starts `Task <id> from <name>.` — report to whoever assigned it,
+  {{.Orchestrator}} if the brief does not say: `fleetctl tell <name> "<report>"`.
+  The operator is `fleetctl tell operator "<report>"`; it waits in their inbox.
+  Report at each milestone the brief asks for, and when you are blocked on a
+  decision that is theirs (then wait for the answer).
+- When the task is finished, report: what changed, the branch, the PR if you
+  opened one, and anything left undone — then say **done**. Your session is
+  archived and you start the next task fresh, so put everything that matters in
+  that report and in your commits.
 
 {{if .BuildHost}}## Heavy work — run it on the build host
 

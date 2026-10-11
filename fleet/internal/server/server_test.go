@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -26,9 +27,19 @@ func (f *fake) Tell(_ context.Context, from, to, text string, _ time.Time) error
 	f.calls = append(f.calls, "tell "+from+" "+to+" "+text)
 	return nil
 }
-func (f *fake) Assign(name, task string, _ time.Time) error {
-	f.calls = append(f.calls, "assign "+name+" "+task)
+func (f *fake) Assign(_ context.Context, name, task, from, brief string, _ time.Time) error {
+	f.calls = append(f.calls, "assign "+name+" "+task+" "+from+" "+brief)
 	return nil
+}
+func (f *fake) Inbox(after int64) ([]ledger.Relay, error) {
+	return []ledger.Relay{{ID: after + 1, From: "agent-03", To: "operator", Text: "ready"}}, nil
+}
+func (f *fake) Wait(ctx context.Context, agent, task string, after int64) (daemon.WaitResult, error) {
+	f.calls = append(f.calls, fmt.Sprintf("wait %s %s %d", agent, task, after))
+	if _, ok := ctx.Deadline(); !ok {
+		return daemon.WaitResult{}, fmt.Errorf("wait without a deadline")
+	}
+	return daemon.WaitResult{Reason: "message", Message: &ledger.Relay{ID: after + 1, From: agent, Text: "ready"}}, nil
 }
 func (f *fake) Done(name, task, outcome, branch, pr string, _ time.Time) error {
 	f.calls = append(f.calls, "done "+name+" "+task+" "+outcome+" "+branch)
@@ -54,7 +65,7 @@ func setup(t *testing.T) (*fake, http.Handler) {
 	}
 	t.Cleanup(func() { db.Close() })
 	f := &fake{db: db}
-	return f, Handler(f, Tokens{Full: "full", Relay: "relay"}, nil)
+	return f, Handler(f, Tokens{Full: "full", Relay: "relay", Console: "console"}, nil)
 }
 
 func do(t *testing.T, h http.Handler, method, path, token, body string) *httptest.ResponseRecorder {
@@ -84,6 +95,15 @@ func TestScopes(t *testing.T) {
 		{"POST", "/v1/assign", "relay", `{"agent":"agent-03","task":"T1"}`, 403},
 		{"POST", "/v1/restore", "relay", `{"archive":"a/b"}`, 403},
 		{"POST", "/v1/assign", "full", `{"agent":"agent-03","task":"T1"}`, 200},
+		{"POST", "/v1/assign", "console", `{"agent":"agent-03","task":"T1"}`, 403},
+		{"POST", "/v1/done", "console", `{"agent":"agent-03"}`, 403},
+		{"POST", "/v1/rotate", "console", `{"agent":"agent-03"}`, 200},
+		{"POST", "/v1/rotate", "relay", `{"agent":"agent-03"}`, 403},
+		{"GET", "/v1/events?agent=agent-03&since=2h", "console", "", 200},
+		{"GET", "/v1/inbox", "console", "", 200},
+		{"GET", "/v1/inbox", "relay", "", 403},
+		// Agents report to the operator; they still cannot speak as one.
+		{"POST", "/v1/tell", "relay", `{"from":"agent-03","to":"operator","text":"ready"}`, 200},
 		{"GET", "/v1/events?agent=agent-03&since=2h", "full", "", 200},
 		{"GET", "/v1/events?agent=agent-03&since=2h", "relay", "", 403},
 	}
@@ -139,5 +159,88 @@ func TestParseSince(t *testing.T) {
 	}
 	if _, err := ParseSince("soon", now); err == nil {
 		t.Error("want an error")
+	}
+}
+
+func TestForbiddenNamesWhatTheTokenMay(t *testing.T) {
+	_, h := setup(t)
+	rec := do(t, h, "POST", "/v1/assign", "console", `{"agent":"agent-03","task":"T1"}`)
+	if rec.Code != 403 || !strings.Contains(rec.Body.String(), "console") || !strings.Contains(rec.Body.String(), "POST /v1/rotate") {
+		t.Fatalf("403 body = %s", rec.Body)
+	}
+}
+
+func TestAConsoleTellSpeaksAsTheOperator(t *testing.T) {
+	f, h := setup(t)
+	do(t, h, "POST", "/v1/tell", "console", `{"from":"agent-05","to":"agent-03","text":"hi"}`)
+	if got := f.calls[len(f.calls)-1]; got != "tell operator agent-03 hi" {
+		t.Fatalf("call = %q", got)
+	}
+}
+
+func TestIndexListsEveryRouteWithItsScopes(t *testing.T) {
+	_, h := setup(t)
+	rec := do(t, h, "GET", "/v1", "relay", "")
+	var idx []struct {
+		Route  string   `json:"route"`
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &idx); err != nil || len(idx) < 14 {
+		t.Fatalf("index = %s", rec.Body)
+	}
+	for _, r := range idx {
+		if r.Route == "POST /v1/assign" && strings.Join(r.Scopes, ",") != "full" {
+			t.Fatalf("assign scopes = %v", r.Scopes)
+		}
+	}
+}
+
+func TestAssignPassesFromAndBriefAndDefaultsFromToOperator(t *testing.T) {
+	f, h := setup(t)
+	do(t, h, "POST", "/v1/assign", "full", `{"agent":"agent-03","task":"T1","brief":"build it"}`)
+	do(t, h, "POST", "/v1/assign", "full", `{"agent":"agent-03","task":"T2","from":"mira"}`)
+	want := "assign agent-03 T1 operator build it|assign agent-03 T2 mira "
+	if got := strings.Join(f.calls, "|"); got != want {
+		t.Fatalf("calls = %q", got)
+	}
+}
+
+func TestInboxRouteReturnsOperatorMessagesAfterAnID(t *testing.T) {
+	_, h := setup(t)
+	rec := do(t, h, "GET", "/v1/inbox?after=41", "full", "")
+	var msgs []ledger.Relay
+	if err := json.Unmarshal(rec.Body.Bytes(), &msgs); err != nil || len(msgs) != 1 || msgs[0].ID != 42 {
+		t.Fatalf("inbox = %s", rec.Body)
+	}
+}
+
+func TestWaitRouteGivesTheWaitADeadline(t *testing.T) {
+	f, h := setup(t)
+	rec := do(t, h, "GET", "/v1/wait?agent=agent-03&task=T1&after=7&timeout=2m", "console", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"reason":"message"`) {
+		t.Fatalf("wait = %d %s", rec.Code, rec.Body)
+	}
+	if got := f.calls[len(f.calls)-1]; got != "wait agent-03 T1 7" {
+		t.Fatalf("call = %q", got)
+	}
+	if rec := do(t, h, "GET", "/v1/wait?agent=agent-03&timeout=soon", "full", ""); rec.Code != 400 {
+		t.Fatalf("bad timeout = %d", rec.Code)
+	}
+}
+
+func TestWhoamiNamesTheScope(t *testing.T) {
+	_, h := setup(t)
+	for tok, want := range map[string]string{"full": `"scope":"full"`, "relay": `"scope":"relay"`, "console": `"scope":"console"`} {
+		if rec := do(t, h, "GET", "/v1/whoami", tok, ""); !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("whoami as %s = %s", tok, rec.Body)
+		}
+	}
+}
+
+func TestHealthzNeedsNoToken(t *testing.T) {
+	_, h := setup(t)
+	rec := do(t, h, "GET", "/healthz", "", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"version"`) {
+		t.Fatalf("healthz = %d %s", rec.Code, rec.Body)
 	}
 }

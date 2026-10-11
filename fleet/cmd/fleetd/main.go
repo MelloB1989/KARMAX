@@ -72,6 +72,9 @@ func run(cfgPath string, once bool) error {
 	}
 	env := loadEnv(cfg.EnvFile)
 	tokens := server.Tokens{Full: env[cfg.TokenEnv], Relay: env[cfg.RelayTokenEnv]}
+	if cfg.Console != nil {
+		tokens.Console = env[cfg.Console.TokenEnv]
+	}
 	if tokens.Full == "" && !once {
 		return fmt.Errorf("%s is not set in %s: fleetd refuses to serve its API without a token", cfg.TokenEnv, cfg.EnvFile)
 	}
