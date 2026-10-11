@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { OfficeHud } from "../office/OfficeHud";
+import { ViewSwitch } from "../ViewSwitch";
+import { CenterHead } from "../overview/CenterHead";
+import type { Agent } from "../model";
 import { rotate, tell } from "../api";
 import { isControlHeld } from "../keys";
 import { applyControlFrame } from "../term/control";
@@ -112,5 +116,55 @@ describe("focus and control", () => {
     await tell("karmax", "status?");
     vi.unstubAllGlobals();
     expect(calls).toEqual([["/v1/tell", `{"from":"operator","to":"karmax","text":"status?"}`]]);
+  });
+});
+
+describe("mouse-only control (over remote desktop, Ctrl+] and Esc may never arrive)", () => {
+  const agent = { id: "agent-01", host: "pc2", live: true, term: { cols: 220, rows: 50 } } as unknown as Agent;
+  const center = (control: ControlState, focus: boolean) =>
+    renderToStaticMarkup(
+      <CenterHead
+        agent={agent}
+        remote={false}
+        focus={focus}
+        control={control}
+        onUnfocus={() => {}}
+        onTakeControl={() => {}}
+        onTell={() => {}}
+        onRelease={() => {}}
+      />,
+    );
+
+  it("a held keyboard turns TAKE CONTROL into a GIVE BACK button", () => {
+    const held = center({ phase: "held" }, true);
+    expect(held).toContain("GIVE BACK");
+    expect(held).not.toContain("TAKE CONTROL");
+    expect(center({ phase: "idle" }, false)).toContain("TAKE CONTROL");
+  });
+
+  it("focus has a button back to the overview", () => {
+    expect(center({ phase: "idle" }, true)).toContain("OVERVIEW");
+    expect(center({ phase: "idle" }, false)).not.toContain("OVERVIEW");
+  });
+
+  it("the control bar says the button works too", () => {
+    expect(renderToStaticMarkup(<ControlBar state={{ phase: "held" }} />)).toContain("GIVE BACK");
+  });
+});
+
+describe("office and view switch buttons", () => {
+  const noop = () => {};
+  it("the office HUD offers take control and leave, then give back while held", () => {
+    const idle = renderToStaticMarkup(<OfficeHud error={null} control={false} canControl onTake={noop} onGiveBack={noop} onLeave={noop} />);
+    expect(idle).toContain("TAKE CONTROL");
+    expect(idle).toContain("LEAVE");
+    const held = renderToStaticMarkup(<OfficeHud error={null} control canControl onTake={noop} onGiveBack={noop} onLeave={noop} />);
+    expect(held).toContain("GIVE BACK");
+    expect(held).not.toContain("TAKE CONTROL");
+  });
+
+  it("the view switch names the other view", () => {
+    expect(renderToStaticMarkup(<ViewSwitch view="overview" onToggle={noop} />)).toContain("OFFICE");
+    expect(renderToStaticMarkup(<ViewSwitch view="office" onToggle={noop} />)).toContain("MISSION CONTROL");
   });
 });

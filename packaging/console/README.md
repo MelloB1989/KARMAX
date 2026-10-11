@@ -72,6 +72,11 @@ password by hand, and `install.sh` never sees it:
 sudo rustdesk --password <a password you choose>
 ```
 
+Sessions are accepted by password only (`approve-mode password`), which lets RustDesk hide its
+connection popup (`allow-hide-cm Y`). The kiosk runs openbox only so that keyboard focus follows
+clicks: with no window manager, the popup took the focus when it opened and kept it, and no key
+reached Chrome.
+
 `RUSTDESK_MODE=public` uses RustDesk's public rendezvous servers. `RUSTDESK_MODE=direct` sets
 `direct-server Y` and the direct access port, and points `custom-rendezvous-server`, `relay-server`
 and `api-server` at 127.0.0.1 and turns off LAN discovery. `direct-server Y` alone would keep the

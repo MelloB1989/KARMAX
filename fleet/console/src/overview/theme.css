@@ -139,3 +139,5 @@ span.btn { cursor: default; }
 .orch-tasks { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .orch-task { display: grid; grid-template-columns: 64px minmax(0,1fr) auto; gap: 8px; white-space: nowrap; }
 .orch-task span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
+.view-switch { all: unset; position: fixed; right: 14px; bottom: 12px; z-index: 50; padding: 6px 12px; font: 11px "IBM Plex Mono", monospace; letter-spacing: 2px; color: var(--text); background: rgba(7, 8, 12, .78); border: 1px solid var(--line2); cursor: pointer; }
+.view-switch:hover { border-color: var(--amber); color: var(--amber); }

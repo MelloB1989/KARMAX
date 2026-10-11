@@ -201,7 +201,7 @@ step_cmdline() {
 step_packages() {
 	say "== packages: Xorg, Chrome from its apt repo, RustDesk's pinned .deb"
 	as_root apt-get update
-	as_root apt-get install -y xserver-xorg-core xinit x11-xserver-utils unclutter curl gpg ca-certificates
+	as_root apt-get install -y xserver-xorg-core xinit x11-xserver-utils unclutter openbox curl gpg ca-certificates
 	run_sh "curl -fsSL '$CHROME_KEY_URL' | gpg --dearmor | sudo tee /usr/share/keyrings/google-chrome.gpg >/dev/null"
 	put_root /etc/apt/sources.list.d/google-chrome.list 0644 <<EOF
 deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] $CHROME_APT_URL stable main
@@ -273,6 +273,11 @@ Environment=XAUTHORITY=$KIOSK_HOME/.Xauthority
 EOF
 	as_root systemctl daemon-reload
 	as_root systemctl enable --now rustdesk.service
+	# Sessions are accepted by password only, so RustDesk's connection popup (which takes the
+	# kiosk's keyboard focus) can be hidden: nobody is at PC2 to click it anyway.
+	as_root rustdesk --option approve-mode password
+	as_root rustdesk --option verification-method use-permanent-password
+	as_root rustdesk --option allow-hide-cm Y
 	if [[ "$RUSTDESK_MODE" == direct ]]; then
 		say "RUSTDESK_MODE=direct: direct IP access, with the rendezvous and relay servers pointed at 127.0.0.1"
 		as_root rustdesk --option direct-server Y

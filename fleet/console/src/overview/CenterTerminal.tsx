@@ -2,6 +2,7 @@ import type { Agent, Snapshot, TermFrame } from "../model";
 import { LiveTerminal } from "../term/LiveTerminal";
 import { isRemote } from "./roster";
 import { ControlBar } from "../focus/ControlBar";
+import { CenterHead } from "./CenterHead";
 import { wantsControl, type ControlState } from "../focus/controlState";
 
 export function CenterTerminal({
@@ -10,6 +11,7 @@ export function CenterTerminal({
   focus,
   control,
   onFocus,
+  onUnfocus,
   onTakeControl,
   onTell,
   onFrame,
@@ -20,6 +22,7 @@ export function CenterTerminal({
   focus: boolean;
   control: ControlState;
   onFocus: () => void;
+  onUnfocus: () => void;
   onTakeControl: () => void;
   onTell: () => void;
   onFrame: (f: TermFrame) => void;
@@ -30,17 +33,16 @@ export function CenterTerminal({
   const remote = isRemote(agent, snapshot);
   return (
     <main className={`center${held ? " held" : ""}`}>
-      <div className="center-head">
-        <span className={`live-dot${remote ? " off" : ""}`} />
-        <span className="live-tag">{remote ? "RECORDED" : "LIVE"}</span>
-        <span>
-          {agent.id} <span className="dim">· tmux main · {agent.term.cols}×{agent.term.rows}</span>
-        </span>
-        <span className="grow" />
-        <span className="btn dim" title="hold R for 1 s">ROTATE · hold R</span>
-        <button type="button" className="btn" onClick={onTell}>TELL</button>
-        <button type="button" className="btn primary" disabled={remote} onClick={onTakeControl}>TAKE CONTROL ⏎</button>
-      </div>
+      <CenterHead
+        agent={agent}
+        remote={remote}
+        focus={focus}
+        control={control}
+        onUnfocus={onUnfocus}
+        onTakeControl={onTakeControl}
+        onTell={onTell}
+        onRelease={onRelease}
+      />
       <ControlBar state={control} />
       <div className="center-term" onClick={onFocus}>
         {remote ? (

@@ -13,10 +13,13 @@ xset s off
 xset -dpms
 xset s noblank
 unclutter -idle 0.5 -root &
+# A window manager, only so that keyboard focus follows clicks: without one, the first
+# window to take focus (RustDesk's connection popup) keeps it, and no key reaches Chrome.
+openbox &
 
 while true; do
-	# No window manager runs here, so --kiosk alone leaves Chrome at its default
-	# window size: place and size the window on the whole output ourselves.
+	# Place and size the window on the whole output ourselves, so Chrome fills it even if
+	# the window manager is not up yet.
 	google-chrome --kiosk --start-fullscreen --window-position=0,0 --window-size="${MODE_W},${MODE_H}" --incognito --no-first-run --noerrdialogs --disable-session-crashed-bubble \
 		--ignore-gpu-blocklist \
 		"http://${CONSOLE_LISTEN}/login?k=$(cat "${CONSOLE_DIR}/client.token")"

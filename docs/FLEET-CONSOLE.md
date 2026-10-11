@@ -122,6 +122,11 @@ keyboard back. (The agents' tmux also binds `Ctrl+]` to detach, and has no prefi
 held keyboard can never run a tmux command.) There is one controller per agent: a second request is refused
 with the holder's name, and closing the connection, or reloading the browser, releases it.
 
+**Every key has a button.** Over a remote desktop, `Ctrl+]` or `Esc` may be taken by your own machine and never
+reach the page. While you hold the keyboard, TAKE CONTROL becomes **GIVE BACK**. In Focus, **◂ OVERVIEW** leaves
+it, giving the keyboard back first. In the office, the desk's **TAKE CONTROL**, **GIVE BACK** and **LEAVE**
+buttons do the same. **OFFICE ▸** / **◂ MISSION CONTROL**, bottom right, is the `O` key.
+
 **Prompt** types into the session as the operator through fleetd. It is instant and costs nothing; there is no
 relay hop.
 

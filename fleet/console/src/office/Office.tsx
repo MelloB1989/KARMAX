@@ -8,6 +8,7 @@ import { useFleet } from "../state/store";
 import { palette } from "../state/derive";
 import { useKey } from "../keys";
 import { LiveTerminal } from "../term/LiveTerminal";
+import { OfficeHud } from "./OfficeHud";
 import type { TermFrame } from "../model";
 import { Room } from "./Room";
 import { Desk } from "./Desk";
@@ -271,10 +272,14 @@ export function Office() {
         </div>
       )}
       {selected && flown && (
-        <div style={{ position: "absolute", left: 16, bottom: 16, color: palette.dim, font: '12px "IBM Plex Mono", monospace' }}>
-          {error && <span style={{ color: palette.alert }}>{error} · </span>}
-          {control ? "Ctrl+] gives the keyboard back" : agent ? "Enter takes control · Esc leaves" : "Esc leaves"}
-        </div>
+        <OfficeHud
+          error={error}
+          control={control}
+          canControl={!!agent}
+          onTake={() => setControl(true)}
+          onGiveBack={() => setControl(false)}
+          onLeave={leave}
+        />
       )}
       <div style={{ position: "absolute", right: 12, top: 8, color: palette.dim, font: '11px "IBM Plex Mono", monospace' }}>
         {stats.fps > 0 ? `${Math.round(stats.fps)} fps` : "— fps"}
@@ -288,3 +293,4 @@ export function Office() {
     </div>
   );
 }
+

@@ -114,6 +114,11 @@ export function Overview() {
               focus={focus}
               control={control}
               onFocus={() => setFocus(true)}
+              onUnfocus={() => {
+                setBar(null);
+                releaseControl();
+                setFocus(false);
+              }}
               onTakeControl={takeControl}
               onTell={() => current && setBar({ target: current.id, label: `PROMPT → ${current.id}` })}
               onFrame={(f) => dispatch({ type: "frame", frame: f })}
