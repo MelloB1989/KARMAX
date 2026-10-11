@@ -28,6 +28,7 @@ type Source struct {
 
 type Snapshot struct {
 	At           time.Time           `json:"at"`
+	Build        string              `json:"build"` // see BuildID: the panel reloads when it changes
 	Sources      map[string]Source   `json:"sources"`
 	Host         HostInfo            `json:"host"`
 	Orchestrator *Orchestrator       `json:"orchestrator"`
