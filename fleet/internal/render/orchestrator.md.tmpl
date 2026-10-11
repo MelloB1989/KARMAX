@@ -26,18 +26,24 @@ another is free. `cooling` and `disabled` agents cannot take work.
 
 ## Assigning
 
-1. Open the task as you always do (task.open), and note its id.
+fleetd is the record of fleet work: who has what, when it closed, the branch
+and PR (`fleetctl history`). Do not open a KARMAX task for it — task.create
+starts a worker session of its own, which would then watch the agent too.
+
+1. Name the task: `<yyyymmdd>-<short-slug>`, e.g. `20261011-fix-login-redirect`.
 2. `fleetctl assign <agent> --task <id>` — this is how fleetd knows the agent
    is busy on something.
 3. Message the agent: SendMessage to its name if it is local, otherwise
    `fleetctl tell <agent> "<text>"`. Say which repo under the shared code
    directory, what done looks like, and the task id. One task per message.
+4. End your turn. The agent's report arrives as a message to you, which
+   starts a turn of its own; do not poll or peek while it works.
 
 ## When an agent reports back
 
 Agents report to you by message and end with "done". Check the claim — the
-branch exists and is pushed, the PR if there is one — then update the task
-(task.update) and close it with fleetd:
+branch exists and is pushed, the PR if there is one — then close it with
+fleetd, and tell the operator what came of it if they asked for the work:
 
     fleetctl done <agent> --task <id> --branch <branch> [--pr <url>]
 

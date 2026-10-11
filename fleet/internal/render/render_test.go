@@ -233,6 +233,11 @@ func TestOrchestratorBrief(t *testing.T) {
 			t.Errorf("orchestrator brief lacks %q", want)
 		}
 	}
+	// KARMAX's task.create starts a worker session of its own, which then
+	// watches the agent too; fleet work is tracked by fleetd alone.
+	if strings.Contains(b, "task.open") || strings.Contains(b, "task.update") || !strings.Contains(b, "Do not open a KARMAX task") {
+		t.Errorf("orchestrator brief must keep fleet work out of KARMAX tasks:\n%s", section(b, "Assigning"))
+	}
 }
 
 // The persona lands only where the operator pointed it, beside — never over —
