@@ -10,8 +10,32 @@
 # kills the pane, and this loop starts the next one.
 set -u
 : "${FLEET_AGENT:?FLEET_AGENT is not set}"
-W=/work/.fleet
+W="${FLEET_WORK:-/work}/.fleet"
 C="$HOME/.claude"
+
+event() { # a line in the hook log, so fleetd records what this loop did
+  # (the third argument is a detail). With HOME unwritable the log cannot
+  # live under it: it goes to $W/events.jsonl, which fleetd reads too.
+  d="$C/fleet"; [ -w "$d" ] || d="$W"
+  mkdir -p "$d" 2>/dev/null
+  jq -nc --arg e "$1" --arg s "$2" --arg d "${3:-}" \
+    '{t: (now|floor), event: $e, session: $s} + (if $d != "" then {detail: $d} else {} end)' >> "$d/events.jsonl" 2>/dev/null
+}
+
+# HOME must be writable: Claude Code keeps ~/.claude.json there, and a start
+# without it opens the first-run wizard, which hears no messages. That is an
+# image built with a home that is not fleet.yaml's (`fleetctl image build`
+# takes it from there). Say so, loudly, and keep retrying — never start
+# claude into onboarding. fleetd alerts on the event.
+home_writable() {
+  [ -d "$HOME" ] && t=$(mktemp "$HOME/.agent-run.XXXXXX" 2>/dev/null) && rm -f "$t"
+}
+while ! home_writable; do
+  echo "agent-run: HOME=$HOME is not writable by uid $(id -u); the image's home does not match fleet.yaml — rebuild it with 'fleetctl image build'. Retrying." >&2
+  event "agent-run.home_unwritable" "" "$HOME uid=$(id -u)"
+  sleep "${FLEET_HOME_RETRY:-30}"
+done
+
 mkdir -p "$W" /work/wt "$C/fleet" "$C/sessions"
 
 # Fleet-managed settings, refreshed on every start so an image update reaches
@@ -50,10 +74,6 @@ jq --arg code "${FLEET_CODE:-$HOME/code}" '. * {
     hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, hasSeenAutoDefaultNudge: true,
     projects: {"/work": {hasTrustDialogAccepted: true}, ($code): {hasTrustDialogAccepted: true}}
   }' "$HOME/.claude.json" > "$HOME/.claude.json.tmp" && mv "$HOME/.claude.json.tmp" "$HOME/.claude.json"
-
-event() { # a line in the hook log, so fleetd records what this loop did
-  jq -nc --arg e "$1" --arg s "$2" '{t: (now|floor), event: $e, session: $s}' >> "$C/fleet/events.jsonl"
-}
 
 quick=0
 start() {

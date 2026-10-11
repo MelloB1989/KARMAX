@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -101,4 +102,113 @@ func Compose(ctx context.Context, cfg *config.Config, up bool, hosts []string, w
 		}
 	}
 	return nil
+}
+
+// Dockerfile is the fleet image's recipe, relative to the repository root.
+const Dockerfile = "packaging/fleet/Dockerfile"
+
+// FindSource is the repository root holding the Dockerfile: start, or the
+// nearest directory above it.
+func FindSource(start string) (string, error) {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, Dockerfile)); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no %s at or above %s (run from the repository, or pass --src)", Dockerfile, start)
+		}
+		dir = parent
+	}
+}
+
+// BuildArgv is the docker build of the fleet image, its identity taken from
+// fleet.yaml — never typed by hand, since an image whose home is not the
+// fleet's leaves every agent unable to write ~/.claude.json. An empty tag is
+// fleet.yaml's image.
+func BuildArgv(cfg *config.Config, src, tag string) ([]string, error) {
+	if tag == "" {
+		tag = cfg.Image
+	}
+	if !filepath.IsAbs(cfg.Home) || filepath.Clean(cfg.Home) == "/" {
+		return nil, fmt.Errorf("fleet.yaml home %q must be an absolute path other than /", cfg.Home)
+	}
+	if cfg.User == "" {
+		return nil, fmt.Errorf("no user name for the image: set user in fleet.yaml")
+	}
+	argv := []string{"docker", "build", "-f", filepath.Join(src, Dockerfile), "-t", tag,
+		"--build-arg", fmt.Sprintf("UID=%d", cfg.UID),
+		"--build-arg", fmt.Sprintf("GID=%d", cfg.GID),
+		"--build-arg", "USER_NAME=" + cfg.User,
+		"--build-arg", "HOME_DIR=" + cfg.Home,
+	}
+	if cfg.ClaudeVersion != "" {
+		argv = append(argv, "--build-arg", "CLAUDE_VERSION="+cfg.ClaudeVersion)
+	}
+	return append(argv, src), nil
+}
+
+// ImageBuild builds the image, echoing the command first.
+func ImageBuild(ctx context.Context, cfg *config.Config, src, tag string, w io.Writer, run Runner) error {
+	argv, err := BuildArgv(cfg, src, tag)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(w, "$", strings.Join(argv, " "))
+	return run(ctx, argv, w)
+}
+
+// Piper runs `from | to`, writing both commands' stderr to w.
+type Piper func(ctx context.Context, from, to []string, w io.Writer) error
+
+// ExecPiper runs the pipeline for real.
+func ExecPiper(ctx context.Context, from, to []string, w io.Writer) error {
+	src := exec.CommandContext(ctx, from[0], from[1:]...)
+	dst := exec.CommandContext(ctx, to[0], to[1:]...)
+	src.Stderr, dst.Stdout, dst.Stderr = w, w, w
+	pipe, err := src.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	dst.Stdin = pipe
+	if err := dst.Start(); err != nil {
+		return err
+	}
+	if err := src.Start(); err != nil {
+		_ = dst.Process.Kill()
+		_ = dst.Wait()
+		return err
+	}
+	serr, derr := src.Wait(), dst.Wait()
+	if serr != nil {
+		return fmt.Errorf("%s: %w", strings.Join(from, " "), serr)
+	}
+	if derr != nil {
+		return fmt.Errorf("%s: %w", strings.Join(to, " "), derr)
+	}
+	return nil
+}
+
+// ImageShip sends the image to a host's engine: docker save | docker
+// --context <host> load, with the host's own exec prefix. An empty tag is
+// fleet.yaml's image.
+func ImageShip(ctx context.Context, cfg *config.Config, host, tag string, w io.Writer, pipe Piper) error {
+	hc, ok := cfg.Hosts[host]
+	if !ok {
+		return fmt.Errorf("no host %q", host)
+	}
+	if len(hc.Exec) == 0 {
+		return fmt.Errorf("host %q has no exec prefix", host)
+	}
+	if tag == "" {
+		tag = cfg.Image
+	}
+	from := []string{"docker", "save", tag}
+	to := append(append([]string{}, hc.Exec...), "load")
+	fmt.Fprintln(w, "$", strings.Join(from, " "), "|", strings.Join(to, " "))
+	return pipe(ctx, from, to, w)
 }

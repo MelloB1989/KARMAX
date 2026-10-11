@@ -497,3 +497,29 @@ func TestDialogSeesThroughWrappedLinesAndIgnoresRegisteredSessions(t *testing.T)
 		t.Fatalf("a registered session raised the dialog alert: %v", acts)
 	}
 }
+
+// agent-run will not start claude into the first-run wizard when HOME is
+// unwritable; it says so in the event log, and you are told once.
+func TestAnUnwritableHomeIsAlertedOncePerEpisode(t *testing.T) {
+	o := obs("")
+	o.Sessions, o.PaneAlive = nil, false
+	o.Events = []observe.Event{{T: t0.Unix(), Event: "agent-run.home_unwritable"}}
+	st, acts := Decide(th(), State{Name: "agent-03"}, o)
+	a := has(acts, Alert)
+	if a == nil || !strings.Contains(a.Text, "HOME is not writable") || !strings.Contains(a.Text, "fleetctl image build") {
+		t.Fatalf("acts = %v", acts)
+	}
+	if p := has(acts, Push); p == nil || p.Event != "fleet.agent.home_unwritable" {
+		t.Errorf("orchestrator not told: %v", kinds(acts))
+	}
+	o.Now = t0.Add(time.Minute)
+	if _, acts = Decide(th(), st, o); has(acts, Alert) != nil {
+		t.Fatalf("alerted twice: %v", kinds(acts))
+	}
+	// A session comes up: HOME is writable; a later episode alerts again.
+	up := obs("idle")
+	up.Now = t0.Add(2 * time.Minute)
+	if st, _ = Decide(th(), st, up); st.Alerted["home"] {
+		t.Fatal("episode not cleared once a session is up")
+	}
+}

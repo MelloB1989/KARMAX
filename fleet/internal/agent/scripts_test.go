@@ -455,3 +455,46 @@ func TestShippedSettingsSkipTheBypassDialogAndAgentRunReinstallsThem(t *testing.
 		t.Fatal("agent-run no longer copies the shipped settings.json on every start")
 	}
 }
+
+// With HOME unwritable agent-run must not start claude (into the first-run
+// wizard): it logs agent-run.home_unwritable where fleetd reads it, and retries.
+func TestAgentRunHoldsOffWhileHomeIsUnwritable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	l := newLocal(t)
+	// As in the broken image: no ~/.claude at all, and a HOME nobody can write.
+	if err := os.RemoveAll(l.home + "/.claude"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(l.home, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(l.home, 0o755)
+	cmd := exec.Command("sh", "../../../packaging/fleet/agent-run")
+	cmd.Env = append(os.Environ(), "FLEET_AGENT=agent-03", "FLEET_HOME_RETRY=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	log := filepath.Join(l.work, ".fleet", "events.jsonl")
+	var lines []string
+	for i := 0; i < 100 && len(lines) < 2; i++ { // two lines: it retries
+		time.Sleep(100 * time.Millisecond)
+		b, _ := os.ReadFile(log)
+		lines = strings.Split(strings.TrimSpace(string(b)), "\n")
+	}
+	if len(lines) < 2 {
+		t.Fatalf("no retried event in %s: %v", log, lines)
+	}
+	var e struct{ Event, Detail string }
+	if err := json.Unmarshal([]byte(lines[0]), &e); err != nil || e.Event != "agent-run.home_unwritable" || !strings.Contains(e.Detail, l.home) {
+		t.Fatalf("event = %s (%v)", lines[0], err)
+	}
+	if exec.Command("tmux", "has-session", "-t", "main").Run() == nil {
+		t.Error("claude was started with HOME unwritable")
+	}
+	if _, err := os.Stat(filepath.Join(l.home, ".claude.json")); err == nil {
+		t.Error("~/.claude.json written")
+	}
+}

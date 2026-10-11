@@ -60,10 +60,15 @@ What its output decides:
 
 ## Phase 2 — agents
 
-    docker build -f packaging/fleet/Dockerfile -t karmax-fleet:2.1.294 \
-      --build-arg UID=$(id -u) --build-arg GID=$(id -g) --build-arg HOME_DIR=$HOME \
-      --build-arg USER_NAME=$(id -un) --build-arg CLAUDE_VERSION=2.1.294 .
-    docker save karmax-fleet:2.1.294 | docker --context pc2 load
+    fleetctl image build --tag karmax-fleet:2.1.294   # from the repo root
+    fleetctl image ship pc2 --tag karmax-fleet:2.1.294
+
+`image build` takes UID, GID, USER_NAME, HOME_DIR and CLAUDE_VERSION from
+fleet.yaml (`uid`, `gid`, `user`, `home`, `claude_version`; uid, gid and user
+default to yours) and prints the `docker build` it runs. Do not build by hand:
+an image whose home is not fleet.yaml's leaves `~/.claude.json` unwritable and
+every agent in Claude Code's first-run wizard. (agent-run now refuses to start
+claude then, logs `agent-run.home_unwritable`, and fleetd alerts.)
 
     (cd fleet && go build -o ~/.local/bin/ ./cmd/fleetd ./cmd/fleetctl)
     mkdir -p ~/.karmax/fleet && chmod 700 ~/.karmax/fleet

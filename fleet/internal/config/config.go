@@ -9,6 +9,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -25,12 +26,18 @@ type Config struct {
 	Home string `yaml:"home"`
 	// Code is the shared checkout root, mounted at this same path in every
 	// container on every host.
-	Code     string `yaml:"code"`
-	Image    string `yaml:"image"`
-	UID      int    `yaml:"uid"`
-	GID      int    `yaml:"gid"`
-	EnvFile  string `yaml:"env_file"`
-	StateDir string `yaml:"state_dir"`
+	Code  string `yaml:"code"`
+	Image string `yaml:"image"`
+	UID   int    `yaml:"uid"`
+	GID   int    `yaml:"gid"`
+	// User is the account name inside the image (`fleetctl image build`);
+	// empty is the operator's own login name.
+	User string `yaml:"user"`
+	// ClaudeVersion pins Claude Code in the image; empty keeps the
+	// Dockerfile's own pin.
+	ClaudeVersion string `yaml:"claude_version"`
+	EnvFile       string `yaml:"env_file"`
+	StateDir      string `yaml:"state_dir"`
 
 	// Listen is fleetd's local API. RelayListen, when set, is the second
 	// listener PC2's agents reach for `fleetctl tell`; it requires the bearer
@@ -248,6 +255,11 @@ func (c *Config) defaults() {
 	}
 	if c.GID == 0 {
 		c.GID = os.Getgid()
+	}
+	if c.User == "" {
+		if u, err := user.Current(); err == nil {
+			c.User = u.Username
+		}
 	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:7878"
