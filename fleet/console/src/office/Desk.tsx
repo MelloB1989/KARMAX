@@ -89,6 +89,8 @@ export function Desk({ id, x, z, rotY, agent, orchestrator, onSelect }: DeskProp
   const down = phase === "down";
   const off = down || phase === "disabled";
   const dim = phase === "standby" || phase === "cooling" || off;
+  // the orchestrator's screen is drawn, not streamed: it glows at the level of an idle desk, not a working one
+  const level = dim || !!orchestrator;
   const lamp = useRef<PointLight>(null);
   const bulb = useRef<MeshStandardMaterial>(null);
   const screenMat = useRef<MeshStandardMaterial>(null);
@@ -100,8 +102,8 @@ export function Desk({ id, x, z, rotY, agent, orchestrator, onSelect }: DeskProp
     const base = off ? 0 : phase === "working" ? 1.6 : phase === "standby" ? 0.4 : phase === "cooling" ? 0.6 : 1.1;
     if (lamp.current) lamp.current.intensity = base * pulse;
     if (bulb.current) bulb.current.emissiveIntensity = base * pulse;
-    if (glow.current) glow.current.intensity = down ? 0 : (dim ? 1.2 : 3.2) * (look.pulse ? 0.8 + 0.2 * Math.sin(t * 3) : 1);
-    if (screenMat.current) screenMat.current.emissiveIntensity = down ? 0 : (dim ? 0.8 : 1.25) * (look.pulse ? 0.8 + 0.2 * Math.sin(t * 3) : 1);
+    if (glow.current) glow.current.intensity = down ? 0 : (level ? 1.2 : 3.2) * (look.pulse ? 0.8 + 0.2 * Math.sin(t * 3) : 1);
+    if (screenMat.current) screenMat.current.emissiveIntensity = down ? 0 : (level ? 0.8 : 1.25) * (look.pulse ? 0.8 + 0.2 * Math.sin(t * 3) : 1);
   });
 
   const wood = phase === "cooling" ? "#2A3A4A" : "#2A2F3C";

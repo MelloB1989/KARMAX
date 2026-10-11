@@ -49,9 +49,11 @@ export const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(
 
 export const HOME_ELEVATION = (25 * Math.PI) / 180;
 const DESK_W = 2.2;
-const DESK_EYE = 0.9; // the camera looks at desk height
+export const DESK_EYE = 0.9; // the camera sits relative to desk height
+/** The camera aims this far above the centroid, which seats the desks lower in the frame. */
+export const LOOK_LIFT = 1.7;
 
-/** The overview: the camera aims at the desks' centroid, 25° up, with the desks filling ~75% of the width. */
+/** The overview: the camera looks over the desks' centroid (x, z), 25° up, with the desks filling ~75% of the width. */
 export function homeView(
   places: { x: number; z: number }[],
   fovDeg: number,
@@ -66,7 +68,7 @@ export function homeView(
   const t = Math.tan((fovDeg * Math.PI) / 360);
   const d = span / fill / (2 * t * aspect);
   return {
-    target: [cx, DESK_EYE, cz],
+    target: [cx, DESK_EYE + LOOK_LIFT, cz],
     pos: [cx, DESK_EYE + Math.sin(HOME_ELEVATION) * d, cz + Math.cos(HOME_ELEVATION) * d],
   };
 }
