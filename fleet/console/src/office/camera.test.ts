@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DESK_EYE, LOOK_LIFT, easeInOut, flyTarget, homeView, screenFrame } from "./camera";
+import { DESK_EYE, HOME_FILL, LOOK_LIFT, easeInOut, flyTarget, homeView, screenFrame } from "./camera";
 import { deskLayout } from "./layout";
 
 describe("camera helpers", () => {
@@ -32,12 +32,12 @@ describe("camera helpers", () => {
     expect(Math.atan2(dy, dz) * (180 / Math.PI)).toBeCloseTo(25, 4);
   });
 
-  it("fills ~75% of the width with the desks", () => {
+  it("fills HOME_FILL of the width with the desks", () => {
     const places = deskLayout(["a1", "a2", "a3", "a4"], "mira");
     const aspect = 16 / 9;
     const { pos, target } = homeView(places, 45, aspect);
     const d = Math.hypot(pos[1] - (target[1] - LOOK_LIFT), pos[2] - target[2]);
     const visible = 2 * Math.tan((45 * Math.PI) / 360) * aspect * d;
-    expect((4.8 * 2 + 2.2) / visible).toBeCloseTo(0.75, 4);
+    expect((4.8 * 2 + 2.2) / visible).toBeCloseTo(HOME_FILL, 4);
   });
 });
