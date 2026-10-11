@@ -49,9 +49,11 @@ func run() int {
 	defer stop()
 
 	src := console.NewSources(cfg, target.Exec{}, time.Now)
+	terms := console.NewTerms(cfg, nil)
+	src.Terminals = terms.Source
 	hub := console.NewHub(src)
 	go hub.Run(ctx)
-	srv := &http.Server{Addr: cfg.Listen, Handler: console.Handler(hub, &console.Terms{}, clientToken, src.Fleetd()),
+	srv := &http.Server{Addr: cfg.Listen, Handler: console.Handler(hub, terms, clientToken, src.Fleetd()),
 		ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()

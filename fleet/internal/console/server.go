@@ -35,7 +35,17 @@ func newHandler(h *Hub, t *Terms, clientToken string, fleetd *FleetdClient, asse
 	mux.HandleFunc("GET /v1/watch", func(w http.ResponseWriter, r *http.Request) { watch(h, w, r) })
 	mux.HandleFunc("POST /v1/prompt", proxy(fleetd, "/v1/prompt"))
 	mux.HandleFunc("POST /v1/rotate", proxy(fleetd, "/v1/rotate"))
-	mux.Handle("/", static(assets))
+	mux.HandleFunc("GET /v1/term/{agent}", term(t))
+	spa := static(assets)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Only non-API paths fall back to the panel; an unknown API path
+		// must fail as one (a WebSocket upgrade cannot use a 200 page).
+		if p := r.URL.Path; p == "/healthz" || p == "/v1" || strings.HasPrefix(p, "/v1/") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such route: " + r.Method + " " + p})
+			return
+		}
+		spa.ServeHTTP(w, r)
+	})
 
 	// Everything under /v1 needs the token, including what does not exist.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
