@@ -219,7 +219,7 @@ func (s *Sources) Fill(snap *Snapshot) {
 	f.mu.Unlock()
 	sort.Slice(snap.Tasks, func(i, j int) bool { return snap.Tasks[i].Since.Before(snap.Tasks[j].Since) })
 
-	snap.Events = mergeEvents(s.events.liveEvents(), recorded)
+	snap.Events = mergeEvents(s.events.liveEvents(s.currentSession(rows)), recorded)
 
 	snap.Agents = snap.Agents[:0:0]
 	snap.Activity = map[string][]Bucket{}
@@ -251,11 +251,22 @@ func (s *Sources) Fill(snap *Snapshot) {
 				a.ContextPct, a.FiveHourPct, a.SevenDayPct = sl.ContextPct, sl.FiveHourPct, sl.SevenDayPct
 				a.FiveHourResets, a.StatuslineAt = sl.FiveHourResets, sl.At
 			}
-			a.CurrentTool, a.LastEventAt = s.events.tool(c.Name)
+			a.CurrentTool, a.LastEventAt = s.events.tool(c.Name, s.currentSession(rows)(c.Name))
 			a.Container = s.docker.container(c.Container, now)
 		}
 		snap.Agents = append(snap.Agents, a)
 		snap.Activity[c.Name] = mergeBuckets(fleetdAct[c.Name], s.events.buckets(c.Name, now))
+	}
+}
+
+// currentSession is an agent's own session: the status line's (live), else
+// fleetd's row.
+func (s *Sources) currentSession(rows map[string]fleetdRow) func(string) string {
+	return func(agent string) string {
+		if sl, ok := s.status.get(agent); ok && sl.SessionID != "" {
+			return sl.SessionID
+		}
+		return rows[agent].Session
 	}
 }
 

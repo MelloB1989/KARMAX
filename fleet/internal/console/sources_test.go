@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,5 +55,51 @@ func TestFillMarksRemoteAgentsNotLive(t *testing.T) {
 	}
 	if _, ok := snap.Activity["agent-02"]; !ok {
 		t.Fatal("every roster agent has an activity entry")
+	}
+}
+
+func evSession(t int64, event, tool, session string) []byte {
+	return []byte(strings.Replace(string(ev(t, event, tool)), `"session":"s1"`, `"session":"`+session+`"`, 1))
+}
+
+func TestEventsFromAnotherSessionStayOutOfTheStream(t *testing.T) {
+	cfg := &Config{Host: "pc2", FleetdURL: "http://unused.invalid", FleetdTokenFile: "/nonexistent", Term: TermSize{Cols: 220, Rows: 50},
+		Agents: []AgentConf{{Name: "agent-01", Host: "pc2", Container: "agent-01", Exec: []string{"docker"}, Live: true}}}
+	now := time.Date(2026, 10, 11, 14, 0, 5, 0, time.UTC)
+	s := NewSources(cfg, &fakeRunner{fn: func([]string) ([]byte, error) { return nil, nil }}, func() time.Time { return now })
+	s.status.by["agent-01"] = StatusLine{SessionID: "own", At: now}
+
+	at := now.Unix() - 10
+	// the agent's own session works; a `claude -p` delivery in the same container runs and ends
+	s.events.handle("agent-01", evSession(at, "UserPromptSubmit", "", "own"), now)
+	s.events.handle("agent-01", evSession(at+1, "PreToolUse", "Bash", "own"), now)
+	s.events.handle("agent-01", evSession(at+2, "SessionStart", "", "tell-1"), now)
+	s.events.handle("agent-01", evSession(at+3, "PreToolUse", "Read", "tell-1"), now)
+	s.events.handle("agent-01", evSession(at+4, "UserPromptSubmit", "", "tell-1"), now)
+	s.events.handle("agent-01", evSession(at+5, "Stop", "", "tell-1"), now)
+	s.events.handle("agent-01", evSession(at+6, "SessionEnd", "", "tell-1"), now)
+
+	var snap Snapshot
+	s.Fill(&snap)
+	if len(snap.Events) != 1 || snap.Events[0].Kind != "UserPromptSubmit" || snap.Events[0].Session != "own" {
+		t.Fatalf("stream = %+v, want only the agent's own session", snap.Events)
+	}
+	if tool := snap.Agents[0].CurrentTool; tool == nil || tool.Name != "Bash" {
+		t.Fatalf("current tool = %+v: the other session's Read must not replace it", tool)
+	}
+	var n int
+	for _, b := range snap.Activity["agent-01"] {
+		n += b.N
+	}
+	if n != 7 {
+		t.Fatalf("activity counted %d, want every event (7)", n)
+	}
+	// the other session's Stop must not have cleared the agent's tool either (checked above); and
+	// with the status line gone, fleetd's row.session is the fallback — here neither: nothing is filtered
+	delete(s.status.by, "agent-01")
+	snap = Snapshot{}
+	s.Fill(&snap)
+	if len(snap.Events) != 5 {
+		t.Fatalf("no known session: stream = %d events, want all 5 stream-kind ones", len(snap.Events))
 	}
 }

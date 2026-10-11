@@ -30,9 +30,13 @@ func IsStreamKind(kind string) bool {
 	return false
 }
 
+// liveAgent is what one agent's hook log says. The log is shared by every
+// claude process in the container — each `fleetctl tell` delivery runs a
+// short `claude -p` whose hooks land in the same file — so tools are kept
+// per session, and the snapshot shows only the agent's current one.
 type liveAgent struct {
-	tool *Tool
-	last time.Time
+	tools map[string]*Tool // session → the tool it is running
+	last  time.Time
 }
 
 // eventsSrc is the live tail of every live agent's hook log.
@@ -50,7 +54,7 @@ func newEventsSrc(live []string) *eventsSrc {
 		activity: map[string]map[int64]int{}, names: live}
 	for _, n := range live {
 		e.trs[n] = newTracker(0, true)
-		e.agents[n] = &liveAgent{}
+		e.agents[n] = &liveAgent{tools: map[string]*Tool{}}
 		e.activity[n] = map[int64]int{}
 	}
 	return e
@@ -79,13 +83,13 @@ func (e *eventsSrc) handle(agent string, line []byte, now time.Time) bool {
 	}
 	switch ev.Event {
 	case "PreToolUse":
-		a.tool = &Tool{Name: ev.Tool, Since: at}
+		a.tools[ev.Session] = &Tool{Name: ev.Tool, Since: at}
 	case "PostToolUse":
-		if a.tool != nil && (ev.Tool == "" || ev.Tool == a.tool.Name) {
-			a.tool = nil
+		if t := a.tools[ev.Session]; t != nil && (ev.Tool == "" || ev.Tool == t.Name) {
+			delete(a.tools, ev.Session)
 		}
 	case "Stop", "StopFailure", "SessionEnd":
-		a.tool = nil
+		delete(a.tools, ev.Session)
 	}
 	if IsStreamKind(ev.Event) {
 		e.live = append(e.live, Event{At: at, Agent: agent, Kind: ev.Event, Session: ev.Session, Detail: ev.Raw})
@@ -107,7 +111,9 @@ func (e *eventsSrc) run(ctx context.Context, sp spawner, prefix []string, contai
 	})
 }
 
-func (e *eventsSrc) tool(agent string) (*Tool, time.Time) {
+// tool is what the agent's current session is running. With no known
+// session it is the most recent tool of any session.
+func (e *eventsSrc) tool(agent, session string) (*Tool, time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	a := e.agents[agent]
@@ -115,17 +121,38 @@ func (e *eventsSrc) tool(agent string) (*Tool, time.Time) {
 		return nil, time.Time{}
 	}
 	var t *Tool
-	if a.tool != nil {
-		c := *a.tool
+	if session != "" {
+		t = a.tools[session]
+	} else {
+		for _, c := range a.tools {
+			if t == nil || c.Since.After(t.Since) {
+				t = c
+			}
+		}
+	}
+	if t != nil {
+		c := *t
 		t = &c
 	}
 	return t, a.last
 }
 
-func (e *eventsSrc) liveEvents() []Event {
+// liveEvents are the stream-kind events seen live. current names an agent's
+// current session ("" if unknown); an event from another session of that
+// agent counts toward activity only and is left out.
+func (e *eventsSrc) liveEvents(current func(agent string) string) []Event {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return append([]Event(nil), e.live...)
+	out := make([]Event, 0, len(e.live))
+	for _, ev := range e.live {
+		if current != nil {
+			if cur := current(ev.Agent); cur != "" && ev.Session != cur {
+				continue
+			}
+		}
+		out = append(out, ev)
+	}
+	return out
 }
 
 // buckets are agent's last 24 h of event counts, in 15-minute buckets, only
