@@ -46,3 +46,29 @@ export function flyTarget(f: ScreenFrame, fovDeg: number, aspect: number): { pos
 }
 
 export const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+export const HOME_ELEVATION = (25 * Math.PI) / 180;
+const DESK_W = 2.2;
+export const DESK_EYE = 0.9; // the camera sits relative to desk height
+/** The camera aims this far above the centroid, which seats the desks lower in the frame. */
+export const LOOK_LIFT = 1.7;
+
+/** The overview: the camera looks over the desks' centroid (x, z), 25° up, with the desks filling ~75% of the width. */
+export function homeView(
+  places: { x: number; z: number }[],
+  fovDeg: number,
+  aspect: number,
+  fill = 0.75,
+): { pos: V3; target: V3 } {
+  const n = Math.max(1, places.length);
+  const cx = places.reduce((s, p) => s + p.x, 0) / n;
+  const cz = places.reduce((s, p) => s + p.z, 0) / n;
+  const xs = places.map((p) => p.x);
+  const span = (xs.length ? Math.max(...xs) - Math.min(...xs) : 0) + DESK_W;
+  const t = Math.tan((fovDeg * Math.PI) / 360);
+  const d = span / fill / (2 * t * aspect);
+  return {
+    target: [cx, DESK_EYE + LOOK_LIFT, cz],
+    pos: [cx, DESK_EYE + Math.sin(HOME_ELEVATION) * d, cz + Math.cos(HOME_ELEVATION) * d],
+  };
+}

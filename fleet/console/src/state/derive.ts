@@ -17,9 +17,16 @@ export const palette = {
 /** Seconds between an observation time (ISO 8601) and now (ms epoch); Infinity when unknown. */
 export function ageOf(at: string, now: number): number {
   const t = Date.parse(at);
-  if (Number.isNaN(t)) return Infinity;
+  if (Number.isNaN(t) || t < EPOCH_FLOOR) return Infinity; // Go's zero time is "unknown", not 2000 years ago
   return Math.max(0, (now - t) / 1000);
 }
+
+/** Any time before 2000 (Go's zero time included) means "never observed". */
+const EPOCH_FLOOR = Date.UTC(2000, 0, 1);
+export const isKnown = (at?: string): boolean => !!at && Date.parse(at) >= EPOCH_FLOOR;
+
+/** "6 m ago", or "no data" when the time is unknown. */
+export const agoText = (at: string | undefined, now: number): string => (isKnown(at) ? `${fmtAge(ageOf(at!, now))} ago` : "no data");
 
 /** A source is stale when it failed, never reported, or is at least twice its cadence old. */
 export function isStale(src: Source, cadenceS: number, now: number): boolean {
