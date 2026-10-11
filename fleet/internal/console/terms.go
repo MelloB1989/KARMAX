@@ -45,6 +45,8 @@ type Terms struct {
 	Runner target.Runner
 
 	idleClose time.Duration
+	// Set at construction, read-only after: the term route's ping cadence.
+	pingEvery, pingTimeout time.Duration
 	backoff   time.Duration
 
 	mu      sync.Mutex
@@ -64,7 +66,7 @@ func NewTerms(cfg *Config, start StartFunc) *Terms {
 			return f, cmd, err
 		}
 	}
-	return &Terms{cfg: cfg, start: start, Runner: target.Exec{}, idleClose: watchIdleClose, backoff: backoffMin,
+	return &Terms{cfg: cfg, start: start, Runner: target.Exec{}, idleClose: watchIdleClose, pingEvery: defaultPingEvery, pingTimeout: defaultPingTimeout, backoff: backoffMin,
 		watches: map[string]*termWatch{}, holders: map[string]string{}}
 }
 

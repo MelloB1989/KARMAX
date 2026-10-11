@@ -373,7 +373,7 @@ func TestTermRouteControlHolderAndBytes(t *testing.T) {
 
 // termFixture is a console whose terminals run cat under a PTY and whose
 // tmux queries are answered by a fake that records refresh-client.
-func termFixture(t *testing.T) (ws string, hdr http.Header, terms *Terms, refreshes func() int) {
+func termFixture(t *testing.T, ping, pingWait time.Duration) (ws string, hdr http.Header, terms *Terms, refreshes func() int) {
 	t.Helper()
 	cfg := &Config{Term: TermSize{Cols: 80, Rows: 24}, Agents: []AgentConf{{Name: "a1", Live: true}}}
 	terms = NewTerms(cfg, func([]string) (*os.File, *exec.Cmd, error) {
@@ -388,6 +388,9 @@ func termFixture(t *testing.T) (ws string, hdr http.Header, terms *Terms, refres
 		return nil, nil
 	}}
 	terms.Runner = fr
+	if ping > 0 { // before the server starts, so no handler can race the write
+		terms.pingEvery, terms.pingTimeout = ping, pingWait
+	}
 	var n atomic.Int64
 	h := newHub(countingFill(&n), 10*time.Millisecond, nil)
 	srv := httptest.NewServer(newHandler(h, terms, testToken, nil, fstest.MapFS{}))
@@ -407,7 +410,7 @@ func termFixture(t *testing.T) (ws string, hdr http.Header, terms *Terms, refres
 }
 
 func TestTermWatchRedrawFrameRefreshesTheSharedClient(t *testing.T) {
-	ws, hdr, _, refreshes := termFixture(t)
+	ws, hdr, _, refreshes := termFixture(t, 0, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, ws+"/v1/term/a1", &websocket.DialOptions{HTTPHeader: hdr})
@@ -438,9 +441,7 @@ func TestTermWatchRedrawFrameRefreshesTheSharedClient(t *testing.T) {
 
 // A controller whose socket stops answering pings loses the keyboard.
 func TestTermControlDroppedWhenPingsGoUnanswered(t *testing.T) {
-	pingEvery, pingTimeout = 50*time.Millisecond, 100*time.Millisecond
-	t.Cleanup(func() { pingEvery, pingTimeout = 30*time.Second, 10*time.Second })
-	ws, hdr, terms, _ := termFixture(t)
+	ws, hdr, terms, _ := termFixture(t, 50*time.Millisecond, 100*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, ws+"/v1/term/a1?control=1&who=alice", &websocket.DialOptions{HTTPHeader: hdr})
@@ -455,9 +456,7 @@ func TestTermControlDroppedWhenPingsGoUnanswered(t *testing.T) {
 
 // An answering client is kept.
 func TestTermControlKeptWhileItAnswersPings(t *testing.T) {
-	pingEvery, pingTimeout = 50*time.Millisecond, 500*time.Millisecond
-	t.Cleanup(func() { pingEvery, pingTimeout = 30*time.Second, 10*time.Second })
-	ws, hdr, terms, _ := termFixture(t)
+	ws, hdr, terms, _ := termFixture(t, 50*time.Millisecond, 500*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, ws+"/v1/term/a1?control=1&who=alice", &websocket.DialOptions{HTTPHeader: hdr})
