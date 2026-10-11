@@ -164,6 +164,11 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		}
 		switch kind := e.ErrorType(); kind {
 		case "authentication_failed", "billing_error", "account_on_hold":
+			// Only the agent's own session speaks for its subscription: a
+			// claude it runs in a tool call has no login there, and fails.
+			if st.SessionID != "" && e.Session != "" && e.Session != st.SessionID {
+				continue
+			}
 			st.Phase, st.DisabledReason = Disabled, kind
 			push("disabled", st.Name+" disabled: "+kind)
 			alertOnce("disabled", fmt.Sprintf("%s disabled: %s — its subscription needs you", st.Name, kind))

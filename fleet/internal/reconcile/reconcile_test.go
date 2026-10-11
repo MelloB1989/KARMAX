@@ -418,3 +418,22 @@ func TestTheAgentsOwnSessionIsNeverAStray(t *testing.T) {
 		t.Fatalf("acts = %v, session = %s", acts, st.SessionID)
 	}
 }
+
+// A claude the agent itself runs (a nested `claude -p` in a tool call) has
+// its own session, and no login in the tool's environment; its failure is
+// not the subscription's.
+func TestAFailureInAnotherSessionDoesNotDisableTheAgent(t *testing.T) {
+	o := obs("busy")
+	e := stopFailure("authentication_failed")
+	e.Session = "a-nested-session"
+	o.Events = []observe.Event{e}
+	st, _ := Decide(th(), State{Name: "agent-03", SessionID: "s1"}, o)
+	if st.Phase == Disabled {
+		t.Fatalf("disabled by another session's failure")
+	}
+	e.Session = "s1"
+	o.Events = []observe.Event{e}
+	if st, _ = Decide(th(), State{Name: "agent-03", SessionID: "s1"}, o); st.Phase != Disabled {
+		t.Fatalf("own session's failure: phase=%s", st.Phase)
+	}
+}
