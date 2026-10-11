@@ -13,4 +13,6 @@ export interface RotateReply {
   closes?: string;
   when?: string;
 }
-export const rotate = (agent: string) => post<RotateReply>("/v1/rotate", { agent });
+/** With dryRun, fleetd only says what a rotation would do ({closes, when}); nothing changes. */
+export const rotate = (agent: string, dryRun = false) =>
+  post<RotateReply>("/v1/rotate", dryRun ? { agent, dry_run: true } : { agent });

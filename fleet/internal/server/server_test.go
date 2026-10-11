@@ -6,17 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 )
 
 type fake struct {
-	db    *ledger.DB
 	calls []string
 }
 
@@ -45,26 +44,68 @@ func (f *fake) Done(name, task, outcome, branch, pr string, _ time.Time) error {
 	f.calls = append(f.calls, "done "+name+" "+task+" "+outcome+" "+branch)
 	return nil
 }
-func (f *fake) Rotate(name string, _ time.Time) error {
-	f.calls = append(f.calls, "rotate "+name)
-	return nil
+func (f *fake) Rotate(name string, dry bool, _ time.Time) (daemon.RotatePlan, error) {
+	f.calls = append(f.calls, "rotate "+name+map[bool]string{true: " dry"}[dry])
+	return daemon.RotatePlan{Closes: "T9", When: "next idle tick"}, nil
 }
 func (f *fake) Enable(name string) error { f.calls = append(f.calls, "enable "+name); return nil }
 func (f *fake) Restore(_ context.Context, id, onto string, _ time.Time) error {
 	f.calls = append(f.calls, "restore "+id+" "+onto)
 	return nil
 }
-func (f *fake) DB() *ledger.DB      { return f.db }
-func (f *fake) ArchiveRoot() string { return "/nonexistent" }
+func (f *fake) Events(q daemon.EventsQuery) ([]ledger.Event, error) {
+	f.calls = append(f.calls, fmt.Sprintf("events agent=%q after=%d kinds=%v limit=%d newest=%v since0=%v",
+		q.Agent, q.After, q.Kinds, q.Limit, q.Newest, q.Since.IsZero()))
+	return []ledger.Event{{ID: 7, Agent: "agent-03", Kind: "Stop", Detail: `{"a":1}`}}, nil
+}
+func (f *fake) Usage(by string, _ time.Time) ([]ledger.UsageRow, error) {
+	return []ledger.UsageRow{}, nil
+}
+func (f *fake) History(agent string, n int) ([]ledger.Session, error) {
+	return []ledger.Session{{ID: "s", Agent: agent, CostUSD: 1}}, nil
+}
+func (f *fake) Quota() (map[string]ledger.Quota, error) { return map[string]ledger.Quota{}, nil }
+func (f *fake) Tasks(open bool, agent string, n int) ([]ledger.Task, error) {
+	f.calls = append(f.calls, fmt.Sprintf("tasks open=%v agent=%q n=%d", open, agent, n))
+	return []ledger.Task{{ID: "T1", Agent: "agent-03", Assigner: "operator"}}, nil
+}
+func (f *fake) Activity(_ time.Time, b time.Duration, _ time.Time) (daemon.ActivityReply, error) {
+	f.calls = append(f.calls, "activity "+b.String())
+	return daemon.ActivityReply{BucketS: 900, Agents: map[string][]ledger.Bucket{"agent-03": {{N: 3}}}}, nil
+}
+func (f *fake) Today(time.Time) (daemon.TodayReply, error) {
+	return daemon.TodayReply{TasksClosed: 2, SpendUSD: 0.5}, nil
+}
+func (f *fake) Peek(_ context.Context, agent string, n int) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("peek %s %d", agent, n))
+	return "screen", nil
+}
+func (f *fake) Prompt(_ context.Context, agent, text string) error {
+	f.calls = append(f.calls, "prompt "+agent+" "+text)
+	return nil
+}
+func (f *fake) Archives(time.Time) ([]*archive.Manifest, error) { return []*archive.Manifest{}, nil }
+func (f *fake) Archive(id string) (*daemon.ArchiveDetail, error) {
+	f.calls = append(f.calls, "archive "+id)
+	return &daemon.ArchiveDetail{Manifest: &archive.Manifest{ID: id}, TranscriptLines: 12}, nil
+}
+func (f *fake) PruneArchives(time.Time) (int, error) {
+	f.calls = append(f.calls, "prune")
+	return 4, nil
+}
+func (f *fake) Render() (string, error) { f.calls = append(f.calls, "render"); return "rendered", nil }
+func (f *fake) Up(_ context.Context, h []string) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("up %v", h))
+	return "$ up", nil
+}
+func (f *fake) Down(_ context.Context, h []string) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("down %v", h))
+	return "", fmt.Errorf("boom")
+}
 
 func setup(t *testing.T) (*fake, http.Handler) {
 	t.Helper()
-	db, err := ledger.Open(filepath.Join(t.TempDir(), "f.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	f := &fake{db: db}
+	f := &fake{}
 	return f, Handler(f, Tokens{Full: "full", Relay: "relay", Console: "console"}, nil)
 }
 
@@ -242,5 +283,127 @@ func TestHealthzNeedsNoToken(t *testing.T) {
 	rec := do(t, h, "GET", "/healthz", "", "")
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"version"`) {
 		t.Fatalf("healthz = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestEventsRouteTakesACursorKindsAndNewest(t *testing.T) {
+	f, h := setup(t)
+	rec := do(t, h, "GET", "/v1/events?after=41&kinds=Stop,fleet.&limit=5", "console", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"id":7`) || !strings.Contains(rec.Body.String(), `"detail":{"a":1}`) {
+		t.Fatalf("events = %d %s", rec.Code, rec.Body)
+	}
+	do(t, h, "GET", "/v1/events?newest=30&kinds=Stop", "console", "")
+	do(t, h, "GET", "/v1/events", "console", "")
+	want := `events agent="" after=41 kinds=[Stop fleet.] limit=5 newest=false since0=true` + "|" +
+		`events agent="" after=0 kinds=[Stop] limit=30 newest=true since0=false` + "|" +
+		`events agent="" after=0 kinds=[] limit=0 newest=false since0=false`
+	if got := strings.Join(f.calls, "|"); got != want {
+		t.Fatalf("calls:\n%s\nwant:\n%s", got, want)
+	}
+	if rec := do(t, h, "GET", "/v1/events?after=x", "console", ""); rec.Code != 400 {
+		t.Errorf("after=x = %d, want 400", rec.Code)
+	}
+}
+
+func TestReadRoutesHaveTheShapesTheConsolePolls(t *testing.T) {
+	f, h := setup(t)
+	for path, want := range map[string]string{
+		"/v1/tasks?open=1":                  `"assigner":"operator"`,
+		"/v1/activity?since=24h&bucket=15m": `"bucket_s":900`,
+		"/v1/today":                         `"tasks_closed":2`,
+		"/v1/peek?agent=agent-03&n=10":      `"text":"screen"`,
+		"/v1/history?agent=agent-03&n=20":   `"cost_usd":1`,
+	} {
+		for _, tok := range []string{"console", "full"} {
+			if rec := do(t, h, "GET", path, tok, ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), want) {
+				t.Errorf("%s as %s = %d %s, want it to contain %s", path, tok, rec.Code, rec.Body, want)
+			}
+		}
+		if rec := do(t, h, "GET", path, "relay", ""); rec.Code != 403 {
+			t.Errorf("%s as relay = %d, want 403", path, rec.Code)
+		}
+	}
+	if !strings.Contains(strings.Join(f.calls, "|"), `tasks open=true agent="" n=0`) ||
+		!strings.Contains(strings.Join(f.calls, "|"), "activity 15m0s") || !strings.Contains(strings.Join(f.calls, "|"), "peek agent-03 10") {
+		t.Errorf("calls = %v", f.calls)
+	}
+	if rec := do(t, h, "GET", "/v1/peek", "full", ""); rec.Code != 400 {
+		t.Errorf("peek without agent = %d", rec.Code)
+	}
+}
+
+func TestPromptRouteIsForTheConsoleAndFull(t *testing.T) {
+	f, h := setup(t)
+	if rec := do(t, h, "POST", "/v1/prompt", "console", `{"agent":"agent-03","text":"hi"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("prompt = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "POST", "/v1/prompt", "relay", `{"agent":"agent-03","text":"hi"}`); rec.Code != 403 {
+		t.Errorf("relay prompt = %d, want 403", rec.Code)
+	}
+	if rec := do(t, h, "POST", "/v1/prompt", "full", `{"agent":"agent-03"}`); rec.Code != 400 {
+		t.Errorf("prompt without text = %d, want 400", rec.Code)
+	}
+	if got := strings.Join(f.calls, "|"); got != "prompt agent-03 hi" {
+		t.Errorf("calls = %s", got)
+	}
+}
+
+func TestRotateDryRunReplyNamesWhatItCloses(t *testing.T) {
+	f, h := setup(t)
+	rec := do(t, h, "POST", "/v1/rotate", "console", `{"agent":"agent-03","dry_run":true}`)
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if rec.Code != 200 || got["closes"] != "T9" || got["when"] != "next idle tick" || got["dry_run"] != true || got["ok"] != true {
+		t.Fatalf("dry run = %d %s", rec.Code, rec.Body)
+	}
+	do(t, h, "POST", "/v1/rotate", "console", `{"agent":"agent-03"}`)
+	if got := strings.Join(f.calls, "|"); got != "rotate agent-03 dry|rotate agent-03" {
+		t.Errorf("calls = %s", got)
+	}
+}
+
+func TestArchiveRoutesAreFullOnly(t *testing.T) {
+	f, h := setup(t)
+	rec := do(t, h, "GET", "/v1/archives/agent-03/2026-10-08-abcd", "full", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"transcript_lines":12`) || !strings.Contains(rec.Body.String(), `"id":"agent-03/2026-10-08-abcd"`) {
+		t.Fatalf("archive = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "GET", "/v1/archives/agent-03/x", "console", ""); rec.Code != 403 {
+		t.Errorf("console archive read = %d, want 403", rec.Code)
+	}
+	rec = do(t, h, "DELETE", "/v1/archives?older=180d", "full", "")
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"removed":4}` {
+		t.Fatalf("prune = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "DELETE", "/v1/archives", "full", ""); rec.Code != 400 {
+		t.Errorf("prune without older = %d, want 400", rec.Code)
+	}
+	if rec := do(t, h, "DELETE", "/v1/archives?older=1d", "console", ""); rec.Code != 403 {
+		t.Errorf("console prune = %d, want 403", rec.Code)
+	}
+	_ = f
+}
+
+func TestHostRoutesAreFullOnlyAndReportOutputAndFailure(t *testing.T) {
+	f, h := setup(t)
+	rec := do(t, h, "POST", "/v1/up", "full", `{"hosts":["pc2"]}`)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"output":"$ up"`) || !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("up = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "POST", "/v1/render", "full", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), "rendered") {
+		t.Errorf("render = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "POST", "/v1/down", "full", ""); rec.Code != 500 || !strings.Contains(rec.Body.String(), "boom") {
+		t.Errorf("a failing down = %d %s, want 500 naming the error", rec.Code, rec.Body)
+	}
+	for _, p := range []string{"/v1/up", "/v1/down", "/v1/render"} {
+		for _, tok := range []string{"console", "relay"} {
+			if rec := do(t, h, "POST", p, tok, ""); rec.Code != 403 {
+				t.Errorf("%s as %s = %d, want 403", p, tok, rec.Code)
+			}
+		}
+	}
+	if got := strings.Join(f.calls, "|"); !strings.HasPrefix(got, "up [pc2]|render|down []") {
+		t.Errorf("calls = %s", got)
 	}
 }

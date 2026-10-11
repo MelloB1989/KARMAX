@@ -11,12 +11,16 @@ const C = 2 * Math.PI * R;
 export function RotateRing({ agent }: { agent: string }) {
   const [p, setP] = useState(0);
   const [msg, setMsg] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   const agentRef = useRef(agent);
   agentRef.current = agent;
 
   useEffect(() => {
     let raf = 0;
+    let press = 0; // which press a preview reply belongs to
     const tracker = new HoldTracker(ROTATE_HOLD_MS, () => {
+      press++; // a preview still in flight is now moot
+      setPreview(null);
       setMsg("rotating…");
       rotate(agentRef.current)
         .then((r) => setMsg(rotateText(r)))
@@ -33,6 +37,12 @@ export function RotateRing({ agent }: { agent: string }) {
       e.preventDefault();
       if (!e.repeat) {
         setMsg(null);
+        setPreview(null);
+        const mine = ++press;
+        // fleetd says what a rotation would do, before you commit to it
+        rotate(agentRef.current, true)
+          .then((r) => mine === press && setPreview(rotateText(r)))
+          .catch((er) => mine === press && setPreview(er instanceof Error ? er.message : String(er)));
         tracker.down(performance.now());
         cancelAnimationFrame(raf);
         raf = requestAnimationFrame(loop);
@@ -43,6 +53,8 @@ export function RotateRing({ agent }: { agent: string }) {
       tracker.up();
       cancelAnimationFrame(raf);
       setP(0);
+      press++; // released early: drop the preview
+      setPreview(null);
     };
     window.addEventListener("keydown", down, true);
     window.addEventListener("keyup", up, true);
@@ -53,7 +65,7 @@ export function RotateRing({ agent }: { agent: string }) {
     };
   }, []);
 
-  if (p === 0 && !msg) return null;
+  if (p === 0 && !msg && !preview) return null;
   return (
     <div className="rotate-ring">
       <svg width="44" height="44" viewBox="0 0 44 44">
@@ -63,7 +75,7 @@ export function RotateRing({ agent }: { agent: string }) {
           strokeDasharray={C} strokeDashoffset={C * (1 - p)} transform="rotate(-90 22 22)"
         />
       </svg>
-      <span>{msg ?? `hold R to rotate ${agent}: closes its open task as rotated`}</span>
+      <span>{msg ?? (preview ? `hold R to confirm · ${preview}` : `hold R to rotate ${agent}…`)}</span>
     </div>
   );
 }

@@ -30,13 +30,27 @@ type Ops interface {
 	Tell(ctx context.Context, from, to, text string, now time.Time) error
 	Assign(ctx context.Context, name, task, from, brief string, now time.Time) error
 	Done(name, task, outcome, branch, pr string, now time.Time) error
-	Rotate(name string, now time.Time) error
+	Rotate(name string, dryRun bool, now time.Time) (daemon.RotatePlan, error)
 	Enable(name string) error
 	Restore(ctx context.Context, id, onto string, now time.Time) error
 	Inbox(after int64) ([]ledger.Relay, error)
 	Wait(ctx context.Context, agent, task string, after int64) (daemon.WaitResult, error)
-	DB() *ledger.DB
-	ArchiveRoot() string
+
+	Events(q daemon.EventsQuery) ([]ledger.Event, error)
+	Usage(by string, since time.Time) ([]ledger.UsageRow, error)
+	History(agent string, n int) ([]ledger.Session, error)
+	Quota() (map[string]ledger.Quota, error)
+	Tasks(open bool, agent string, n int) ([]ledger.Task, error)
+	Activity(since time.Time, bucket time.Duration, now time.Time) (daemon.ActivityReply, error)
+	Today(now time.Time) (daemon.TodayReply, error)
+	Peek(ctx context.Context, agent string, n int) (string, error)
+	Prompt(ctx context.Context, agent, text string) error
+	Archives(since time.Time) ([]*archive.Manifest, error)
+	Archive(id string) (*daemon.ArchiveDetail, error)
+	PruneArchives(before time.Time) (int, error)
+	Render() (string, error)
+	Up(ctx context.Context, hosts []string) (string, error)
+	Down(ctx context.Context, hosts []string) (string, error)
 }
 
 // Tokens are the bearer tokens, one per scope.
@@ -194,11 +208,18 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		return ok, ops.Done(in.Agent, in.Task, in.Outcome, in.Branch, in.PR, time.Now())
 	}, fullOnly...)
 	route("POST /v1/rotate", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		var in struct{ Agent string }
+		var in struct {
+			Agent  string
+			DryRun bool `json:"dry_run"`
+		}
 		if err := body(r, &in); err != nil {
 			return nil, err
 		}
-		return ok, ops.Rotate(in.Agent, time.Now())
+		plan, err := ops.Rotate(in.Agent, in.DryRun, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "dry_run": in.DryRun, "closes": plan.Closes, "when": plan.When}, nil
 	}, readers...)
 	route("POST /v1/enable", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct{ Agent string }
@@ -250,22 +271,41 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		return ops.Wait(ctx, q.Get("agent"), q.Get("task"), after)
 	}, readers...)
 	route("GET /v1/events", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		since, err := sinceParam(r, "2h")
+		q := r.URL.Query()
+		after, err := intParam(r, "after")
 		if err != nil {
 			return nil, err
 		}
-		return ops.DB().Events(r.URL.Query().Get("agent"), since)
+		limit, err := intParam(r, "limit")
+		if err != nil {
+			return nil, err
+		}
+		newest, err := intParam(r, "newest")
+		if err != nil {
+			return nil, err
+		}
+		// A cursor reads the ledger from its start unless told otherwise;
+		// without one the window is the last two hours.
+		def := "2h"
+		if q.Has("after") {
+			def = ""
+		}
+		since, err := sinceParam(r, def)
+		if err != nil {
+			return nil, err
+		}
+		eq := daemon.EventsQuery{Agent: q.Get("agent"), Since: since, After: after, Kinds: splitList(q.Get("kinds")), Limit: int(limit)}
+		if newest > 0 {
+			eq.Newest, eq.Limit = true, int(newest)
+		}
+		return ops.Events(eq)
 	}, readers...)
 	route("GET /v1/usage", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		since, err := sinceParam(r, "7d")
 		if err != nil {
 			return nil, err
 		}
-		by := r.URL.Query().Get("by")
-		if by == "" {
-			by = "agent"
-		}
-		rows, err := ops.DB().UsageBy(by, since)
+		rows, err := ops.Usage(r.URL.Query().Get("by"), since)
 		if err != nil {
 			return nil, badRequest{err}
 		}
@@ -273,21 +313,108 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 	}, readers...)
 	route("GET /v1/history", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		n, _ := strconv.Atoi(r.URL.Query().Get("n"))
-		if n <= 0 {
-			n = 20
-		}
-		return ops.DB().History(r.URL.Query().Get("agent"), n)
+		return ops.History(r.URL.Query().Get("agent"), n)
 	}, readers...)
 	route("GET /v1/quota", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		return ops.DB().LatestQuota()
+		return ops.Quota()
+	}, readers...)
+	route("GET /v1/tasks", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		q := r.URL.Query()
+		n, err := intParam(r, "n")
+		if err != nil {
+			return nil, err
+		}
+		return ops.Tasks(q.Get("open") == "1" || q.Get("open") == "true", q.Get("agent"), int(n))
+	}, readers...)
+	route("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		q := r.URL.Query()
+		var since time.Time
+		if q.Get("since") != "" {
+			var err error
+			if since, err = sinceParam(r, ""); err != nil {
+				return nil, err
+			}
+		}
+		var bucket time.Duration
+		if s := q.Get("bucket"); s != "" {
+			var err error
+			if bucket, err = time.ParseDuration(s); err != nil || bucket < time.Second {
+				return nil, badRequest{fmt.Errorf("bucket %q: want e.g. 15m", s)}
+			}
+		}
+		return ops.Activity(since, bucket, time.Now())
+	}, readers...)
+	route("GET /v1/today", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return ops.Today(time.Now())
+	}, readers...)
+	route("GET /v1/peek", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		agent := r.URL.Query().Get("agent")
+		if agent == "" {
+			return nil, badRequest{fmt.Errorf("peek needs agent")}
+		}
+		n, err := intParam(r, "n")
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		defer cancel()
+		text, err := ops.Peek(ctx, agent, int(n))
+		return map[string]string{"agent": agent, "text": text}, err
+	}, readers...)
+	route("POST /v1/prompt", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct{ Agent, Text string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if in.Agent == "" || strings.TrimSpace(in.Text) == "" {
+			return nil, badRequest{fmt.Errorf("prompt needs agent and text")}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		defer cancel()
+		return ok, ops.Prompt(ctx, in.Agent, in.Text)
 	}, readers...)
 	route("GET /v1/archives", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		since, err := sinceParam(r, "")
 		if err != nil {
 			return nil, err
 		}
-		return archive.List(ops.ArchiveRoot(), since)
+		return ops.Archives(since)
 	}, readers...)
+	route("GET /v1/archives/{id...}", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return ops.Archive(r.PathValue("id"))
+	}, fullOnly...)
+	route("DELETE /v1/archives", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		older := r.URL.Query().Get("older")
+		if older == "" {
+			return nil, badRequest{fmt.Errorf("prune needs older, e.g. 180d (archives are otherwise kept forever)")}
+		}
+		before, err := ParseSince(older, time.Now())
+		if err != nil {
+			return nil, badRequest{err}
+		}
+		n, err := ops.PruneArchives(before)
+		return map[string]int{"removed": n}, err
+	}, fullOnly...)
+	hostRoute := func(name string, run func(ctx context.Context, hosts []string) (string, error)) {
+		route("POST /v1/"+name, func(w http.ResponseWriter, r *http.Request) (any, error) {
+			var in struct{ Hosts []string }
+			if r.ContentLength != 0 {
+				if err := body(r, &in); err != nil {
+					return nil, err
+				}
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+			defer cancel()
+			out, err := run(ctx, in.Hosts)
+			if err != nil {
+				return nil, fmt.Errorf("%w\n%s", err, out) // what ran and said is part of the failure
+			}
+			return map[string]any{"ok": true, "output": out}, nil
+		}, fullOnly...)
+	}
+	hostRoute("up", ops.Up)
+	hostRoute("down", ops.Down)
+	hostRoute("render", func(ctx context.Context, _ []string) (string, error) { return ops.Render() })
 	return mux
 }
 
@@ -296,6 +423,17 @@ type scopeKey struct{}
 func scopeOf(r *http.Request) scope {
 	s, _ := r.Context().Value(scopeKey{}).(scope)
 	return s
+}
+
+// splitList is a comma list without blanks.
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func intParam(r *http.Request, name string) (int64, error) {

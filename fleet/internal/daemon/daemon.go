@@ -30,6 +30,7 @@ type Box interface {
 	Restart(ctx context.Context, sessionID string) error
 	Fresh(ctx context.Context) error
 	Prompt(ctx context.Context, text string) error
+	Peek(ctx context.Context, n int) (string, error)
 	StopPID(ctx context.Context, pid int) error
 	DeleteTranscript(ctx context.Context, sid string) error
 	RemoveWorktree(ctx context.Context, w agent.Worktree) error
@@ -203,6 +204,12 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 		old.Quota, old.Low, old.Reserved = next.Quota, next.Low, next.Reserved
 		old.ContextPct, old.CostUSD = next.ContextPct, next.CostUSD
 		next = old
+	}
+	next.RecordedAt = now
+	if s := o.Status; s != nil {
+		if m := firstNonEmpty(s.Model.DisplayName, s.Model.ID); m != "" {
+			next.Model = m
+		}
 	}
 	f.setState(next)
 }
@@ -408,12 +415,6 @@ func (f *Fleet) Done(name, task, outcome, branch, pr string, now time.Time) erro
 	return f.db.CloseTask(task, now, outcome, branch, pr)
 }
 
-// Rotate archives the agent's session and starts a fresh one on its next
-// idle tick, as if its task were done.
-func (f *Fleet) Rotate(name string, now time.Time) error {
-	return f.Done(name, "", "rotated", "", "", now)
-}
-
 // Enable clears a disabled agent, once you have fixed its subscription.
 func (f *Fleet) Enable(name string) error {
 	if err := f.known(name); err != nil {
@@ -578,6 +579,10 @@ type Row struct {
 	State       string    `json:"state"`
 	Task        string    `json:"task,omitempty"`
 	Idle        string    `json:"idle"`
+	IdleS       int64     `json:"idle_s"`
+	Model       string    `json:"model,omitempty"`
+	Alerts      []string  `json:"alerts"`
+	RecordedAt  time.Time `json:"recorded_at,omitzero"`
 	FiveHour    float64   `json:"five_hour_pct"`
 	SevenDay    float64   `json:"seven_day_pct"`
 	FiveResets  time.Time `json:"five_hour_resets,omitzero"`
@@ -592,22 +597,44 @@ type Row struct {
 	Cooling     time.Time `json:"cooling_until,omitzero"`
 }
 
+// activeAlerts is the alerts fired and not yet cleared: reconcile keeps a
+// key in Alerted for exactly as long as its episode lasts.
+func activeAlerts(st reconcile.State) []string {
+	out := []string{}
+	for k, on := range st.Alerted {
+		if on {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Status is the roster, one row per agent, sorted.
 func (f *Fleet) Status(now time.Time) []Row {
 	var rows []Row
 	for _, name := range f.cfg.AgentNames() {
 		st, a := f.State(name), f.cfg.Agents[name]
-		idle := ""
+		idle, idleS := "", int64(0)
 		if !st.LastBusy.IsZero() && st.Phase != reconcile.Working {
-			idle = Dur(now.Sub(st.LastBusy))
+			idle, idleS = Dur(now.Sub(st.LastBusy)), int64(now.Sub(st.LastBusy).Seconds())
 		}
 		rows = append(rows, Row{Agent: name, Host: a.Host, Account: a.Account, State: string(st.Phase), Task: st.Task,
-			Idle: idle, FiveHour: st.Quota.FiveHour, SevenDay: st.Quota.SevenDay, FiveResets: st.Quota.FiveHourResets,
+			Idle: idle, IdleS: idleS, Model: st.Model, Alerts: activeAlerts(st), RecordedAt: st.RecordedAt, FiveHour: st.Quota.FiveHour, SevenDay: st.Quota.SevenDay, FiveResets: st.Quota.FiveHourResets,
 			SevenResets: st.Quota.SevenDayResets, QuotaAt: st.Quota.At, Context: st.ContextPct, Low: st.Low,
 			Reserved: st.Reserved, Models: a.Models, Session: st.SessionID, Reason: st.DisabledReason, Cooling: st.CoolingUntil})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Agent < rows[j].Agent })
 	return rows
+}
+
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // Dur is a short human duration: 45s, 10m, 3h20m, 2d4h.

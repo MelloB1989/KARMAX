@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -175,12 +177,22 @@ func (db *DB) UpsertAgent(a Agent) error {
 
 // Session is one ended session.
 type Session struct {
-	ID, Agent, Task, Reason, Cwd, ArchiveID string
-	Started, Ended                          time.Time
-	Turns                                   int
-	Input, Output, CacheRead, CacheCreation int64
-	CostUSD, PeakContext                    float64
-	Worktrees                               string // JSON
+	ID            string    `json:"id"`
+	Agent         string    `json:"agent"`
+	Task          string    `json:"task,omitempty"`
+	Reason        string    `json:"reason"`
+	Cwd           string    `json:"cwd,omitempty"`
+	ArchiveID     string    `json:"archive_id,omitempty"`
+	Started       time.Time `json:"started,omitzero"`
+	Ended         time.Time `json:"ended,omitzero"`
+	Turns         int       `json:"turns"`
+	Input         int64     `json:"input"`
+	Output        int64     `json:"output"`
+	CacheRead     int64     `json:"cache_read"`
+	CacheCreation int64     `json:"cache_creation"`
+	CostUSD       float64   `json:"cost_usd"`
+	PeakContext   float64   `json:"peak_context,omitempty"`
+	Worktrees     string    `json:"worktrees,omitempty"` // JSON
 }
 
 // EndSession records a session the fleet ended.
@@ -318,13 +330,53 @@ func (db *DB) UsageBy(by string, since time.Time) ([]UsageRow, error) {
 	return out, rows.Err()
 }
 
-// Event is one hook event, OTel error or fleetd action.
+// Event is one hook event, OTel error or fleetd action. ID is its place in
+// the ledger (the cursor for EventsAfter); it is 0 until recorded.
 type Event struct {
+	ID      int64     `json:"id"`
 	Agent   string    `json:"agent"`
 	At      time.Time `json:"at"`
 	Kind    string    `json:"kind"`
 	Session string    `json:"session,omitempty"`
 	Detail  string    `json:"detail,omitempty"` // JSON
+}
+
+// MarshalJSON emits Detail as JSON when it is JSON (it nearly always is),
+// and as a string otherwise.
+func (e Event) MarshalJSON() ([]byte, error) {
+	type plain Event
+	out := struct {
+		plain
+		Detail json.RawMessage `json:"detail,omitempty"`
+	}{plain: plain(e)}
+	switch {
+	case e.Detail == "":
+	case json.Valid([]byte(e.Detail)):
+		out.Detail = json.RawMessage(e.Detail)
+	default:
+		out.Detail, _ = json.Marshal(e.Detail)
+	}
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON reads what MarshalJSON writes.
+func (e *Event) UnmarshalJSON(b []byte) error {
+	type plain Event
+	in := struct {
+		*plain
+		Detail json.RawMessage `json:"detail"`
+	}{plain: (*plain)(e)}
+	if err := json.Unmarshal(b, &in); err != nil {
+		return err
+	}
+	e.Detail = string(in.Detail)
+	if len(in.Detail) > 0 && in.Detail[0] == '"' {
+		var s string
+		if json.Unmarshal(in.Detail, &s) == nil {
+			e.Detail = s
+		}
+	}
+	return nil
 }
 
 // AddEvent records an event.
@@ -337,8 +389,48 @@ func (db *DB) AddEvent(e Event) error {
 // Events is an agent's events since a time, oldest first. An empty agent
 // means every agent.
 func (db *DB) Events(agent string, since time.Time) ([]Event, error) {
-	rows, err := db.sql.Query(`SELECT agent, at, kind, COALESCE(session,''), COALESCE(detail,'') FROM events
-		WHERE (?='' OR agent=?) AND at >= ? ORDER BY at, id`, agent, agent, since.Unix())
+	return db.EventsWhere(EventQuery{Agent: agent, Since: since})
+}
+
+// EventQuery selects events. Every field narrows it; zero values match all.
+type EventQuery struct {
+	Agent string
+	Since time.Time
+	After int64    // only ids above this
+	Kinds []string // exact kinds, or prefixes when they end in "."
+	Limit int      // 0: no limit
+	// Newest takes the last Limit matches instead of the first; either way
+	// the result is oldest first.
+	Newest bool
+}
+
+// EventsWhere is the events a query selects, ascending by id.
+func (db *DB) EventsWhere(q EventQuery) ([]Event, error) {
+	where := []string{"(?='' OR agent=?)", "at >= ?", "id > ?"}
+	args := []any{q.Agent, q.Agent, q.Since.Unix(), q.After}
+	if len(q.Kinds) > 0 {
+		var ors []string
+		for _, k := range q.Kinds {
+			if strings.HasSuffix(k, ".") {
+				ors = append(ors, `kind LIKE ? ESCAPE '\'`)
+				args = append(args, likeEscape(k)+"%")
+			} else {
+				ors = append(ors, "kind = ?")
+				args = append(args, k)
+			}
+		}
+		where = append(where, "("+strings.Join(ors, " OR ")+")")
+	}
+	order := "id"
+	if q.Newest {
+		order = "id DESC"
+	}
+	query := `SELECT id, agent, at, kind, COALESCE(session,''), COALESCE(detail,'') FROM events WHERE ` +
+		strings.Join(where, " AND ") + ` ORDER BY ` + order
+	if q.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", q.Limit)
+	}
+	rows, err := db.sql.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -347,11 +439,50 @@ func (db *DB) Events(agent string, since time.Time) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var at int64
-		if err := rows.Scan(&e.Agent, &at, &e.Kind, &e.Session, &e.Detail); err != nil {
+		if err := rows.Scan(&e.ID, &e.Agent, &at, &e.Kind, &e.Session, &e.Detail); err != nil {
 			return nil, err
 		}
 		e.At = time.Unix(at, 0).UTC()
 		out = append(out, e)
+	}
+	if q.Newest {
+		slices.Reverse(out)
+	}
+	return out, rows.Err()
+}
+
+func likeEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// Bucket is the events one agent had in one time bucket.
+type Bucket struct {
+	T time.Time `json:"t"`
+	N int       `json:"n"`
+}
+
+// Activity counts events since a time, per agent, in buckets of the given
+// size (aligned to the Unix epoch), oldest first.
+func (db *DB) Activity(since time.Time, bucket time.Duration) (map[string][]Bucket, error) {
+	b := int64(bucket.Seconds())
+	if b <= 0 {
+		return nil, fmt.Errorf("bucket must be at least a second")
+	}
+	rows, err := db.sql.Query(`SELECT agent, (at/?)*?, COUNT(*) FROM events WHERE at >= ?
+		GROUP BY 1, 2 ORDER BY 1, 2`, b, b, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]Bucket{}
+	for rows.Next() {
+		var agent string
+		var t int64
+		var n int
+		if err := rows.Scan(&agent, &t, &n); err != nil {
+			return nil, err
+		}
+		out[agent] = append(out[agent], Bucket{T: time.Unix(t, 0).UTC(), N: n})
 	}
 	return out, rows.Err()
 }
@@ -383,8 +514,14 @@ func (db *DB) DailyEventCounts(agent string) ([]DailyCount, error) {
 // Task is one task handed to an agent. Assigner is who gave it: the
 // operator, or the orchestrator by name; the agent reports there.
 type Task struct {
-	ID, Agent, Assigner, Outcome, Branch, PR string
-	Assigned, Closed                         time.Time
+	ID       string    `json:"id"`
+	Agent    string    `json:"agent"`
+	Assigner string    `json:"assigner"`
+	Outcome  string    `json:"outcome,omitempty"`
+	Branch   string    `json:"branch,omitempty"`
+	PR       string    `json:"pr,omitempty"`
+	Assigned time.Time `json:"assigned,omitzero"`
+	Closed   time.Time `json:"closed,omitzero"`
 }
 
 // OpenTask records an assignment.
@@ -417,6 +554,57 @@ func (db *DB) Task(id string) (*Task, error) {
 	}
 	t.Assigned, t.Closed = fromUnix(as), fromUnix(cl)
 	return &t, nil
+}
+
+// Tasks lists tasks, newest assignment first. open keeps only those not yet
+// closed; an agent of "" means every agent; limit <= 0 means all.
+func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
+	q := `SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
+		COALESCE(branch,''), COALESCE(pr,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)`
+	if open {
+		q += ` AND closed IS NULL`
+	}
+	q += ` ORDER BY assigned DESC, id DESC`
+	args := []any{agent, agent}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.sql.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Task{}
+	for rows.Next() {
+		var t Task
+		var as, cl sql.NullInt64
+		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR); err != nil {
+			return nil, err
+		}
+		t.Assigned, t.Closed = fromUnix(as), fromUnix(cl)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// DayTotals is what the fleet did since a time.
+type DayTotals struct {
+	TasksClosed  int
+	SpendUSD     float64
+	OutputTokens int64
+}
+
+// Totals counts tasks closed, and the cost and output of sessions ended,
+// since a time.
+func (db *DB) Totals(since time.Time) (DayTotals, error) {
+	var d DayTotals
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM tasks WHERE closed >= ?`, since.Unix()).Scan(&d.TasksClosed); err != nil {
+		return d, err
+	}
+	err := db.sql.QueryRow(`SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(output),0) FROM sessions WHERE ended >= ?`,
+		since.Unix()).Scan(&d.SpendUSD, &d.OutputTokens)
+	return d, err
 }
 
 // Relay is one message between sessions. One to "operator" is stored for
