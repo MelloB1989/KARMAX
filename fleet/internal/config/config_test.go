@@ -78,6 +78,9 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"no exec":             "hosts: {kali: {}}\norchestrator: {host: kali, token_env: O}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"low above reserved?": "thresholds: {low_5h: 120}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"bad ssh alias":       "github: {ssh_aliases: ['gh; rm -rf /']}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"console host":        "console: {host: nowhere, fleetd_url: 'http://f:7879', token_env: C}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"console token":       "console: {host: kali, fleetd_url: 'http://f:7879', token_env: 'sk-abc'}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"console url":         "console: {host: kali, fleetd_url: 'f:7879', token_env: C}\nagents: {agent-01: {host: kali, token_env: T}}",
 	}
 	for name, body := range cases {
 		src := "home: /h\nhosts: {kali: {exec: [docker]}}\norchestrator: {host: kali, token_env: O}\n" + body
@@ -123,5 +126,27 @@ func TestANativeOrchestratorNeedsNoToken(t *testing.T) {
 	}
 	if got := c.AgentsOn("kali"); len(got) != 0 {
 		t.Errorf("kali agents = %v", got)
+	}
+}
+
+func TestConsoleSectionFillsDefaults(t *testing.T) {
+	c, err := Parse([]byte("home: /h\nhosts: {pc2: {exec: [docker]}}\norchestrator: {host: pc2, token_env: O}\n" +
+		"console: {host: pc2, fleetd_url: 'http://f:7879', token_env: C, repos: [/h/code/r]}\n" +
+		"agents: {agent-01: {host: pc2, token_env: T}}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Console.Listen != "127.0.0.1:7880" || c.Console.Dir != "~/.config/fleet-console" {
+		t.Fatalf("console defaults = %+v", c.Console)
+	}
+}
+
+func TestNoConsoleSectionIsNil(t *testing.T) {
+	c, err := Parse([]byte("home: /h\nhosts: {pc2: {exec: [docker]}}\norchestrator: {host: pc2, token_env: O}\nagents: {agent-01: {host: pc2, token_env: T}}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Console != nil {
+		t.Fatalf("console = %+v, want nil", c.Console)
 	}
 }

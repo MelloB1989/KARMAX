@@ -55,6 +55,25 @@ type Config struct {
 	GitHub       GitHub           `yaml:"github"`
 	Git          Git              `yaml:"git"`
 	Thresholds   Thresholds       `yaml:"thresholds"`
+	// Console is the fleet console on one host; nil means none.
+	Console *Console `yaml:"console"`
+}
+
+// Console is fleet-console: the live panel on one fleet host. fleetctl
+// render writes its console.yaml and its fleetd token from this.
+type Console struct {
+	// Host is the fleet host that runs it; its agents get live views.
+	Host string `yaml:"host"`
+	// Listen is its address on that host, loopback only.
+	Listen string `yaml:"listen"`
+	// FleetdURL is how it reaches fleetd: the relay listener, from there.
+	FleetdURL string `yaml:"fleetd_url"`
+	// TokenEnv names its console-scope token for fleetd, in env_file.
+	TokenEnv string `yaml:"token_env"`
+	// Repos are the git checkouts it watches, as paths on its host.
+	Repos []string `yaml:"repos"`
+	// Dir is its config directory on its host.
+	Dir string `yaml:"dir"`
 }
 
 // Host is one machine running agents, reached through an exec prefix.
@@ -208,6 +227,15 @@ func (c *Config) defaults() {
 		}
 		*p = expand(*p, c.Home)
 	}
+	if k := c.Console; k != nil {
+		// Paths on the console's host: ~ stays, for that host to expand.
+		if k.Listen == "" {
+			k.Listen = "127.0.0.1:7880"
+		}
+		if k.Dir == "" {
+			k.Dir = "~/.config/fleet-console"
+		}
+	}
 	or(&c.Code, filepath.Join(c.Home, "code"))
 	or(&c.EnvFile, filepath.Join(c.Home, ".karmax", ".env"))
 	or(&c.StateDir, filepath.Join(c.Home, ".karmax", "fleet"))
@@ -347,6 +375,17 @@ func (c *Config) validate() error {
 	if c.Build.DockerHost != "" {
 		if err := checkTokenEnv("build", c.Build.KeyEnv); err != nil {
 			return err
+		}
+	}
+	if k := c.Console; k != nil {
+		if _, ok := c.Hosts[k.Host]; !ok {
+			return fmt.Errorf("console: unknown host %q", k.Host)
+		}
+		if err := checkTokenEnv("console", k.TokenEnv); err != nil {
+			return err
+		}
+		if !strings.HasPrefix(k.FleetdURL, "http://") && !strings.HasPrefix(k.FleetdURL, "https://") {
+			return fmt.Errorf("console: fleetd_url %q is not an http(s) URL", k.FleetdURL)
 		}
 	}
 	th := c.Thresholds

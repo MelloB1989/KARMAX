@@ -1,0 +1,1442 @@
+{
+ "__FIXTURE__": true,
+ "at": "2026-10-11T13:57:33Z",
+ "sources": {
+  "terminals": {
+   "ok": true,
+   "at": "2026-10-11T13:57:33Z"
+  },
+  "events": {
+   "ok": true,
+   "at": "2026-10-11T13:57:33Z"
+  },
+  "statusline": {
+   "ok": true,
+   "at": "2026-10-11T13:57:33Z"
+  },
+  "docker": {
+   "ok": true,
+   "at": "2026-10-11T13:57:33Z"
+  },
+  "host": {
+   "ok": true,
+   "at": "2026-10-11T13:57:33Z"
+  },
+  "git": {
+   "ok": true,
+   "at": "2026-10-11T13:57:33Z"
+  },
+  "fleetd": {
+   "ok": true,
+   "at": "2026-10-11T13:57:33Z"
+  }
+ },
+ "host": {
+  "name": "pc2",
+  "uptime_s": 69921,
+  "load": [
+   0.28,
+   0.21,
+   0.13
+  ],
+  "mem_used": 1449897984,
+  "mem_total": 7667843072,
+  "cpus": 4,
+  "at": "2026-10-11T13:57:33Z"
+ },
+ "orchestrator": {
+  "name": "mira",
+  "five_hour_pct": 6,
+  "seven_day_pct": 3,
+  "five_hour_resets": "2026-10-11T20:40:00+05:30",
+  "seven_day_resets": "2026-10-17T21:30:00+05:30",
+  "at": "2026-10-11T13:57:33Z"
+ },
+ "tasks": [
+  {
+   "id": "20261011-console-4B",
+   "agent": "agent-04",
+   "assigner": "operator",
+   "since": "2026-10-11T13:37:33Z"
+  }
+ ],
+ "agents": [
+  {
+   "id": "agent-01",
+   "host": "pc2",
+   "live": true,
+   "phase": "standby",
+   "alerts": [],
+   "task": "",
+   "idle_s": 660,
+   "models": [
+    "sonnet",
+    "opus"
+   ],
+   "session": "99510d5f-aa8a-4c9d-a337-5cf4854e25ba",
+   "recorded_at": "2026-10-11T13:57:33Z",
+   "model": "Sonnet 5.5",
+   "context_pct": 11,
+   "five_hour_pct": 2,
+   "seven_day_pct": 0,
+   "statusline_at": "2026-10-11T13:57:33Z",
+   "current_tool": null,
+   "container": {
+    "running": true,
+    "cpu_pct": 35.78,
+    "mem": 158649548,
+    "mem_limit": 1610612736,
+    "net_rx": 3700000,
+    "net_tx": 3480000,
+    "at": "2026-10-11T13:57:33Z"
+   },
+   "last_task": {
+    "id": "20261011-console-spec-review",
+    "outcome": "task_done",
+    "ended": "2026-10-11T13:45:50Z",
+    "cost_usd": 0.7503
+   },
+   "term": {
+    "cols": 220,
+    "rows": 50
+   }
+  },
+  {
+   "id": "agent-02",
+   "host": "pc2",
+   "live": true,
+   "phase": "standby",
+   "alerts": [],
+   "task": "",
+   "idle_s": 660,
+   "models": [
+    "sonnet",
+    "opus"
+   ],
+   "session": "1387fc38-06b3-46bb-bfcc-1dde175a2d81",
+   "recorded_at": "2026-10-11T13:57:33Z",
+   "model": "Sonnet 5.5",
+   "context_pct": 5,
+   "five_hour_pct": 1,
+   "seven_day_pct": 0,
+   "statusline_at": "2026-10-11T13:57:33Z",
+   "current_tool": null,
+   "container": {
+    "running": true,
+    "cpu_pct": 42.72,
+    "mem": 128345702,
+    "mem_limit": 1610612736,
+    "net_rx": 3660000,
+    "net_tx": 3290000,
+    "at": "2026-10-11T13:57:33Z"
+   },
+   "last_task": {
+    "id": "20261011-cli-http-parity",
+    "outcome": "task_done",
+    "ended": "2026-10-11T13:45:50Z",
+    "cost_usd": 0
+   },
+   "term": {
+    "cols": 220,
+    "rows": 50
+   }
+  },
+  {
+   "id": "agent-03",
+   "host": "pc2",
+   "live": true,
+   "phase": "standby",
+   "alerts": [],
+   "task": "",
+   "idle_s": 60120,
+   "models": [
+    "sonnet",
+    "opus"
+   ],
+   "session": "32109836-b86f-4541-8820-e96b7ddcf9fe",
+   "recorded_at": "2026-10-11T13:57:33Z",
+   "model": "Sonnet 5.5",
+   "context_pct": 0,
+   "five_hour_pct": 0,
+   "seven_day_pct": 0,
+   "statusline_at": "2026-10-11T13:57:33Z",
+   "current_tool": null,
+   "container": {
+    "running": true,
+    "cpu_pct": 30.24,
+    "mem": 130337996,
+    "mem_limit": 1610612736,
+    "net_rx": 2780000,
+    "net_tx": 2110000,
+    "at": "2026-10-11T13:57:33Z"
+   },
+   "last_task": null,
+   "term": {
+    "cols": 220,
+    "rows": 50
+   }
+  },
+  {
+   "id": "agent-04",
+   "host": "pc2",
+   "live": true,
+   "phase": "disabled",
+   "alerts": [],
+   "task": "20261011-console-4B",
+   "idle_s": 120,
+   "models": [
+    "sonnet",
+    "opus"
+   ],
+   "session": "5886d816-6728-4d52-b255-56fd7f6d76d9",
+   "recorded_at": "2026-10-11T13:57:33Z",
+   "model": "Sonnet 5.5",
+   "context_pct": 8,
+   "five_hour_pct": 4,
+   "seven_day_pct": 0,
+   "statusline_at": "2026-10-11T13:57:33Z",
+   "current_tool": {
+    "name": "Bash",
+    "since": "2026-10-11T13:56:42Z"
+   },
+   "container": {
+    "running": true,
+    "cpu_pct": 98.66,
+    "mem": 408839782,
+    "mem_limit": 1610612736,
+    "net_rx": 3480000,
+    "net_tx": 3330000,
+    "at": "2026-10-11T13:57:33Z"
+   },
+   "last_task": null,
+   "term": {
+    "cols": 220,
+    "rows": 50
+   }
+  }
+ ],
+ "events": [
+  {
+   "id": 119,
+   "at": "2026-10-11T13:55:51Z",
+   "agent": "agent-04",
+   "kind": "SessionStart",
+   "session": "299c936f-acea-4c4a-91f7-8102afe3cf60",
+   "detail": null
+  },
+  {
+   "id": 118,
+   "at": "2026-10-11T13:55:51Z",
+   "agent": "agent-04",
+   "kind": "UserPromptSubmit",
+   "session": "299c936f-acea-4c4a-91f7-8102afe3cf60",
+   "detail": null
+  },
+  {
+   "id": 117,
+   "at": "2026-10-11T13:55:51Z",
+   "agent": "agent-04",
+   "kind": "StopFailure",
+   "session": "299c936f-acea-4c4a-91f7-8102afe3cf60",
+   "detail": {
+    "session_id": "299c936f-acea-4c4a-91f7-8102afe3cf60",
+    "transcript_path": "/home/op/.claude/projects/-tmp-claude-1000--work-5886d816-6728-4d52-b255-56fd7f6d76d9-scratchpad/299c936f-acea-4c4a-91f7-8102afe3cf60.jsonl",
+    "cwd": "/tmp/claude-1000/-work/5886d816-6728-4d52-b255-56fd7f6d76d9/scratchpad",
+    "prompt_id": "f90f324b-c955-4410-aecb-48347fdbd324",
+    "effort": {
+     "level": "medium"
+    },
+    "hook_event_name": "StopFailure",
+    "error": "authentication_failed",
+    "last_assistant_message": "Not logged in \u00b7 Please run /login"
+   }
+  },
+  {
+   "id": 116,
+   "at": "2026-10-11T13:55:51Z",
+   "agent": "agent-04",
+   "kind": "SessionEnd",
+   "session": "299c936f-acea-4c4a-91f7-8102afe3cf60",
+   "detail": null
+  },
+  {
+   "id": 115,
+   "at": "2026-10-11T13:55:23Z",
+   "agent": "agent-04",
+   "kind": "fleet.agent.disabled",
+   "session": "",
+   "detail": {
+    "text": "agent-04 disabled: authentication_failed"
+   }
+  },
+  {
+   "id": 114,
+   "at": "2026-10-11T13:55:23Z",
+   "agent": "agent-04",
+   "kind": "fleet.alert",
+   "session": "",
+   "detail": {
+    "text": "agent-04 disabled: authentication_failed \u2014 its subscription needs you"
+   }
+  },
+  {
+   "id": 113,
+   "at": "2026-10-11T13:54:33Z",
+   "agent": "agent-04",
+   "kind": "Stop",
+   "session": "56e77868-3b95-4b9e-8366-e250c06a0001",
+   "detail": null
+  },
+  {
+   "id": 112,
+   "at": "2026-10-11T13:54:33Z",
+   "agent": "agent-04",
+   "kind": "SessionEnd",
+   "session": "56e77868-3b95-4b9e-8366-e250c06a0001",
+   "detail": null
+  },
+  {
+   "id": 111,
+   "at": "2026-10-11T13:54:32Z",
+   "agent": "agent-04",
+   "kind": "UserPromptSubmit",
+   "session": "5886d816-6728-4d52-b255-56fd7f6d76d9",
+   "detail": null
+  },
+  {
+   "id": 110,
+   "at": "2026-10-11T13:54:28Z",
+   "agent": "agent-04",
+   "kind": "SessionStart",
+   "session": "56e77868-3b95-4b9e-8366-e250c06a0001",
+   "detail": null
+  },
+  {
+   "id": 109,
+   "at": "2026-10-11T13:54:28Z",
+   "agent": "agent-04",
+   "kind": "UserPromptSubmit",
+   "session": "56e77868-3b95-4b9e-8366-e250c06a0001",
+   "detail": null
+  },
+  {
+   "id": 108,
+   "at": "2026-10-11T13:53:58Z",
+   "agent": "agent-04",
+   "kind": "fleet.relay",
+   "session": "",
+   "detail": {
+    "delivered": true,
+    "from": "operator",
+    "size": 1155
+   }
+  },
+  {
+   "id": 107,
+   "at": "2026-10-11T13:53:50Z",
+   "agent": "agent-04",
+   "kind": "fleet.assign",
+   "session": "5886d816-6728-4d52-b255-56fd7f6d76d9",
+   "detail": {
+    "task": "20261011-console-4B"
+   }
+  },
+  {
+   "id": 106,
+   "at": "2026-10-11T13:46:33Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "99510d5f-aa8a-4c9d-a337-5cf4854e25ba",
+   "detail": null
+  },
+  {
+   "id": 105,
+   "at": "2026-10-11T13:46:32Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "1387fc38-06b3-46bb-bfcc-1dde175a2d81",
+   "detail": null
+  },
+  {
+   "id": 104,
+   "at": "2026-10-11T13:46:31Z",
+   "agent": "agent-01",
+   "kind": "SessionEnd",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": null
+  },
+  {
+   "id": 103,
+   "at": "2026-10-11T13:46:29Z",
+   "agent": "agent-02",
+   "kind": "SessionEnd",
+   "session": "4ec1e761-d99c-4f8e-b546-c078169bfd8a",
+   "detail": null
+  },
+  {
+   "id": 102,
+   "at": "2026-10-11T13:45:57Z",
+   "agent": "agent-01",
+   "kind": "fleet.archive",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": {
+    "id": "agent-01/2026-10-11-2d210a2a-2",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 101,
+   "at": "2026-10-11T13:45:55Z",
+   "agent": "agent-01",
+   "kind": "fleet.rotate",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": {
+    "reason": "task_done",
+    "task": "20261011-console-spec-review"
+   }
+  },
+  {
+   "id": 100,
+   "at": "2026-10-11T13:45:54Z",
+   "agent": "agent-01",
+   "kind": "fleet.archive",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": {
+    "id": "agent-01/2026-10-11-2d210a2a",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 99,
+   "at": "2026-10-11T13:45:53Z",
+   "agent": "agent-02",
+   "kind": "fleet.rotate",
+   "session": "4ec1e761-d99c-4f8e-b546-c078169bfd8a",
+   "detail": {
+    "reason": "task_done",
+    "task": "20261011-cli-http-parity"
+   }
+  },
+  {
+   "id": 98,
+   "at": "2026-10-11T13:45:23Z",
+   "agent": "agent-01",
+   "kind": "fleet.done",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": {
+    "outcome": "done",
+    "task": "20261011-console-spec-review"
+   }
+  },
+  {
+   "id": 97,
+   "at": "2026-10-11T13:45:23Z",
+   "agent": "agent-02",
+   "kind": "fleet.done",
+   "session": "4ec1e761-d99c-4f8e-b546-c078169bfd8a",
+   "detail": {
+    "outcome": "done",
+    "task": "20261011-cli-http-parity"
+   }
+  },
+  {
+   "id": 96,
+   "at": "2026-10-11T13:44:28Z",
+   "agent": "agent-01",
+   "kind": "Stop",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": null
+  },
+  {
+   "id": 95,
+   "at": "2026-10-11T13:43:03Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "4ec1e761-d99c-4f8e-b546-c078169bfd8a",
+   "detail": null
+  },
+  {
+   "id": 94,
+   "at": "2026-10-11T13:43:02Z",
+   "agent": "agent-02",
+   "kind": "SessionEnd",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": null
+  },
+  {
+   "id": 93,
+   "at": "2026-10-11T13:42:40Z",
+   "agent": "agent-02",
+   "kind": "Stop",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": null
+  },
+  {
+   "id": 92,
+   "at": "2026-10-11T13:42:28Z",
+   "agent": "agent-02",
+   "kind": "fleet.archive",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": {
+    "id": "agent-02/2026-10-11-f9e47715-2",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 91,
+   "at": "2026-10-11T13:42:25Z",
+   "agent": "agent-02",
+   "kind": "fleet.archive",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": {
+    "id": "agent-02/2026-10-11-f9e47715",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 90,
+   "at": "2026-10-11T13:42:25Z",
+   "agent": "agent-02",
+   "kind": "fleet.rotate",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": {
+    "reason": "task_done",
+    "task": "20261011-cli-http-parity"
+   }
+  },
+  {
+   "id": 89,
+   "at": "2026-10-11T13:42:09Z",
+   "agent": "agent-02",
+   "kind": "fleet.done",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": {
+    "outcome": "done",
+    "task": "20261011-cli-http-parity"
+   }
+  },
+  {
+   "id": 88,
+   "at": "2026-10-11T13:41:50Z",
+   "agent": "agent-02",
+   "kind": "Stop",
+   "session": "2042094c-b83a-4a94-9943-d65e74ae806a",
+   "detail": null
+  },
+  {
+   "id": 87,
+   "at": "2026-10-11T13:41:50Z",
+   "agent": "agent-02",
+   "kind": "SessionEnd",
+   "session": "2042094c-b83a-4a94-9943-d65e74ae806a",
+   "detail": null
+  },
+  {
+   "id": 86,
+   "at": "2026-10-11T13:41:48Z",
+   "agent": "agent-02",
+   "kind": "UserPromptSubmit",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": null
+  },
+  {
+   "id": 85,
+   "at": "2026-10-11T13:41:46Z",
+   "agent": "agent-02",
+   "kind": "UserPromptSubmit",
+   "session": "2042094c-b83a-4a94-9943-d65e74ae806a",
+   "detail": null
+  },
+  {
+   "id": 84,
+   "at": "2026-10-11T13:41:45Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "2042094c-b83a-4a94-9943-d65e74ae806a",
+   "detail": null
+  },
+  {
+   "id": 83,
+   "at": "2026-10-11T13:41:44Z",
+   "agent": "agent-01",
+   "kind": "Stop",
+   "session": "abda4318-15aa-420f-af81-c8a68e4213df",
+   "detail": null
+  },
+  {
+   "id": 82,
+   "at": "2026-10-11T13:41:44Z",
+   "agent": "agent-01",
+   "kind": "SessionEnd",
+   "session": "abda4318-15aa-420f-af81-c8a68e4213df",
+   "detail": null
+  },
+  {
+   "id": 81,
+   "at": "2026-10-11T13:41:42Z",
+   "agent": "agent-01",
+   "kind": "UserPromptSubmit",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": null
+  },
+  {
+   "id": 80,
+   "at": "2026-10-11T13:41:40Z",
+   "agent": "agent-01",
+   "kind": "UserPromptSubmit",
+   "session": "abda4318-15aa-420f-af81-c8a68e4213df",
+   "detail": null
+  },
+  {
+   "id": 79,
+   "at": "2026-10-11T13:41:39Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "abda4318-15aa-420f-af81-c8a68e4213df",
+   "detail": null
+  },
+  {
+   "id": 78,
+   "at": "2026-10-11T13:41:15Z",
+   "agent": "agent-02",
+   "kind": "fleet.relay",
+   "session": "",
+   "detail": {
+    "delivered": true,
+    "from": "operator",
+    "size": 774
+   }
+  },
+  {
+   "id": 77,
+   "at": "2026-10-11T13:41:08Z",
+   "agent": "agent-01",
+   "kind": "fleet.relay",
+   "session": "",
+   "detail": {
+    "delivered": true,
+    "from": "operator",
+    "size": 754
+   }
+  },
+  {
+   "id": 76,
+   "at": "2026-10-11T13:41:02Z",
+   "agent": "agent-01",
+   "kind": "fleet.assign",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": {
+    "task": "20261011-console-spec-review"
+   }
+  },
+  {
+   "id": 75,
+   "at": "2026-10-11T13:41:02Z",
+   "agent": "agent-02",
+   "kind": "fleet.assign",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": {
+    "task": "20261011-cli-http-parity"
+   }
+  },
+  {
+   "id": 74,
+   "at": "2026-10-11T10:52:51Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "2d210a2a-94cb-4212-9ae2-6ea3cdc28835",
+   "detail": null
+  },
+  {
+   "id": 73,
+   "at": "2026-10-11T10:52:51Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "f9e47715-9c18-487f-8fee-ad1291bdebea",
+   "detail": null
+  },
+  {
+   "id": 72,
+   "at": "2026-10-11T10:52:51Z",
+   "agent": "agent-03",
+   "kind": "SessionStart",
+   "session": "32109836-b86f-4541-8820-e96b7ddcf9fe",
+   "detail": null
+  },
+  {
+   "id": 71,
+   "at": "2026-10-11T10:52:51Z",
+   "agent": "agent-04",
+   "kind": "SessionStart",
+   "session": "5886d816-6728-4d52-b255-56fd7f6d76d9",
+   "detail": null
+  },
+  {
+   "id": 70,
+   "at": "2026-10-11T10:52:28Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "c40e56cc-484f-4c15-afc6-5bbd2df4f43b",
+   "detail": null
+  },
+  {
+   "id": 69,
+   "at": "2026-10-11T10:52:28Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "456fe193-540f-4ba8-90bb-c87e979376c6",
+   "detail": null
+  },
+  {
+   "id": 68,
+   "at": "2026-10-11T10:52:28Z",
+   "agent": "agent-03",
+   "kind": "SessionStart",
+   "session": "5be10915-34c5-4b3c-9350-9584a2f6181a",
+   "detail": null
+  },
+  {
+   "id": 67,
+   "at": "2026-10-11T10:52:28Z",
+   "agent": "agent-04",
+   "kind": "SessionStart",
+   "session": "7fc9c64c-202a-41ba-8023-2eae77eb8ff7",
+   "detail": null
+  },
+  {
+   "id": 66,
+   "at": "2026-10-11T08:19:49Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "36c828f2-4875-4a58-8e7b-5aa328538c3a",
+   "detail": null
+  },
+  {
+   "id": 65,
+   "at": "2026-10-11T08:19:49Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "667b6378-98ab-4363-bd03-a916e5b674f0",
+   "detail": null
+  },
+  {
+   "id": 64,
+   "at": "2026-10-11T08:19:49Z",
+   "agent": "agent-03",
+   "kind": "SessionStart",
+   "session": "a264e0a5-2623-4d08-9ae2-50c6b3d77290",
+   "detail": null
+  },
+  {
+   "id": 63,
+   "at": "2026-10-11T08:19:49Z",
+   "agent": "agent-04",
+   "kind": "SessionStart",
+   "session": "69a8f984-8410-4ddc-aa94-7ba1ba1b2a6f",
+   "detail": null
+  },
+  {
+   "id": 62,
+   "at": "2026-10-11T07:35:32Z",
+   "agent": "agent-01",
+   "kind": "fleet.observe_failed",
+   "session": "",
+   "detail": {
+    "error": "docker --context pc2 exec agent-01 sh: exit status 1: command [ssh -l fleet -o ConnectTimeout=30 -T -- pc2 docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=Connection closed by 192.168.29.27 port 22"
+   }
+  },
+  {
+   "id": 61,
+   "at": "2026-10-11T07:18:48Z",
+   "agent": "agent-01",
+   "kind": "fleet.agent.down",
+   "session": "",
+   "detail": {
+    "text": "agent-01's container is not running"
+   }
+  },
+  {
+   "id": 60,
+   "at": "2026-10-11T07:18:48Z",
+   "agent": "agent-02",
+   "kind": "fleet.agent.down",
+   "session": "",
+   "detail": {
+    "text": "agent-02's container is not running"
+   }
+  },
+  {
+   "id": 59,
+   "at": "2026-10-11T07:18:48Z",
+   "agent": "agent-03",
+   "kind": "fleet.agent.down",
+   "session": "",
+   "detail": {
+    "text": "agent-03's container is not running"
+   }
+  },
+  {
+   "id": 58,
+   "at": "2026-10-11T07:18:48Z",
+   "agent": "agent-04",
+   "kind": "fleet.agent.down",
+   "session": "",
+   "detail": {
+    "text": "agent-04's container is not running"
+   }
+  },
+  {
+   "id": 57,
+   "at": "2026-10-11T07:15:14Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "c8dda4cb-7041-4304-84eb-1fe061332b29",
+   "detail": null
+  },
+  {
+   "id": 56,
+   "at": "2026-10-11T07:15:12Z",
+   "agent": "agent-02",
+   "kind": "SessionEnd",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": null
+  },
+  {
+   "id": 55,
+   "at": "2026-10-11T07:14:40Z",
+   "agent": "agent-02",
+   "kind": "fleet.archive",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": {
+    "id": "agent-02/2026-10-11-a2ca9d5b-2",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 54,
+   "at": "2026-10-11T07:14:38Z",
+   "agent": "agent-02",
+   "kind": "Stop",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": null
+  },
+  {
+   "id": 53,
+   "at": "2026-10-11T07:14:37Z",
+   "agent": "agent-02",
+   "kind": "fleet.rotate",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": {
+    "reason": "task_done",
+    "task": "20261011-go-version-check"
+   }
+  },
+  {
+   "id": 52,
+   "at": "2026-10-11T07:14:35Z",
+   "agent": "agent-02",
+   "kind": "fleet.archive",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": {
+    "id": "agent-02/2026-10-11-a2ca9d5b",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 51,
+   "at": "2026-10-11T07:14:25Z",
+   "agent": "agent-02",
+   "kind": "Stop",
+   "session": "24aa66ef-51f3-4266-9998-98b34afa9586",
+   "detail": null
+  },
+  {
+   "id": 50,
+   "at": "2026-10-11T07:14:25Z",
+   "agent": "agent-02",
+   "kind": "SessionEnd",
+   "session": "24aa66ef-51f3-4266-9998-98b34afa9586",
+   "detail": null
+  },
+  {
+   "id": 49,
+   "at": "2026-10-11T07:14:24Z",
+   "agent": "agent-02",
+   "kind": "UserPromptSubmit",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": null
+  },
+  {
+   "id": 48,
+   "at": "2026-10-11T07:14:21Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "24aa66ef-51f3-4266-9998-98b34afa9586",
+   "detail": null
+  },
+  {
+   "id": 47,
+   "at": "2026-10-11T07:14:21Z",
+   "agent": "agent-02",
+   "kind": "UserPromptSubmit",
+   "session": "24aa66ef-51f3-4266-9998-98b34afa9586",
+   "detail": null
+  },
+  {
+   "id": 46,
+   "at": "2026-10-11T07:14:04Z",
+   "agent": "agent-02",
+   "kind": "fleet.done",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": {
+    "outcome": "done",
+    "task": "20261011-go-version-check"
+   }
+  },
+  {
+   "id": 45,
+   "at": "2026-10-11T07:13:51Z",
+   "agent": "agent-02",
+   "kind": "fleet.relay",
+   "session": "",
+   "detail": {
+    "delivered": true,
+    "from": "karmax",
+    "size": 217
+   }
+  },
+  {
+   "id": 44,
+   "at": "2026-10-11T07:13:43Z",
+   "agent": "agent-02",
+   "kind": "fleet.assign",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": {
+    "task": "20261011-go-version-check"
+   }
+  },
+  {
+   "id": 43,
+   "at": "2026-10-11T07:11:50Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "a38c57d1-da82-461c-87d9-ca41dc6e02da",
+   "detail": null
+  },
+  {
+   "id": 42,
+   "at": "2026-10-11T07:11:48Z",
+   "agent": "agent-01",
+   "kind": "SessionEnd",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": null
+  },
+  {
+   "id": 41,
+   "at": "2026-10-11T07:11:19Z",
+   "agent": "agent-01",
+   "kind": "Stop",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": null
+  },
+  {
+   "id": 40,
+   "at": "2026-10-11T07:11:15Z",
+   "agent": "agent-01",
+   "kind": "fleet.archive",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": {
+    "id": "agent-01/2026-10-11-4204dc7f-2",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 39,
+   "at": "2026-10-11T07:11:12Z",
+   "agent": "agent-01",
+   "kind": "fleet.rotate",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": {
+    "reason": "task_done",
+    "task": "20261011-fleet-tests-kbuild"
+   }
+  },
+  {
+   "id": 38,
+   "at": "2026-10-11T07:11:11Z",
+   "agent": "agent-01",
+   "kind": "fleet.archive",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": {
+    "id": "agent-01/2026-10-11-4204dc7f",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 37,
+   "at": "2026-10-11T07:10:41Z",
+   "agent": "agent-01",
+   "kind": "fleet.done",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": {
+    "outcome": "done",
+    "task": "20261011-fleet-tests-kbuild"
+   }
+  },
+  {
+   "id": 36,
+   "at": "2026-10-11T07:10:04Z",
+   "agent": "agent-01",
+   "kind": "Stop",
+   "session": "9f6e8fae-c292-4c56-b86f-b31cca626d6e",
+   "detail": null
+  },
+  {
+   "id": 35,
+   "at": "2026-10-11T07:10:04Z",
+   "agent": "agent-01",
+   "kind": "SessionEnd",
+   "session": "9f6e8fae-c292-4c56-b86f-b31cca626d6e",
+   "detail": null
+  },
+  {
+   "id": 34,
+   "at": "2026-10-11T07:10:03Z",
+   "agent": "agent-01",
+   "kind": "UserPromptSubmit",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": null
+  },
+  {
+   "id": 33,
+   "at": "2026-10-11T07:10:00Z",
+   "agent": "agent-01",
+   "kind": "UserPromptSubmit",
+   "session": "9f6e8fae-c292-4c56-b86f-b31cca626d6e",
+   "detail": null
+  },
+  {
+   "id": 32,
+   "at": "2026-10-11T07:09:59Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "9f6e8fae-c292-4c56-b86f-b31cca626d6e",
+   "detail": null
+  },
+  {
+   "id": 31,
+   "at": "2026-10-11T07:09:29Z",
+   "agent": "agent-01",
+   "kind": "fleet.relay",
+   "session": "",
+   "detail": {
+    "delivered": true,
+    "from": "karmax",
+    "size": 305
+   }
+  },
+  {
+   "id": 30,
+   "at": "2026-10-11T07:09:22Z",
+   "agent": "agent-01",
+   "kind": "fleet.assign",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": {
+    "task": "20261011-fleet-tests-kbuild"
+   }
+  },
+  {
+   "id": 29,
+   "at": "2026-10-11T07:07:04Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "4204dc7f-6dc2-4551-ab83-9ea89c748dc6",
+   "detail": null
+  },
+  {
+   "id": 28,
+   "at": "2026-10-11T07:07:03Z",
+   "agent": "agent-01",
+   "kind": "SessionEnd",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": null
+  },
+  {
+   "id": 27,
+   "at": "2026-10-11T07:06:30Z",
+   "agent": "agent-01",
+   "kind": "fleet.archive",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": {
+    "id": "agent-01/2026-10-11-ea3d9e02-2",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 26,
+   "at": "2026-10-11T07:06:28Z",
+   "agent": "agent-01",
+   "kind": "fleet.rotate",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": {
+    "reason": "task_done",
+    "task": "cfd20275-a745-4f3d-b2ef-bda3766b4c66"
+   }
+  },
+  {
+   "id": 25,
+   "at": "2026-10-11T07:06:27Z",
+   "agent": "agent-01",
+   "kind": "Stop",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": null
+  },
+  {
+   "id": 24,
+   "at": "2026-10-11T07:06:27Z",
+   "agent": "agent-01",
+   "kind": "fleet.archive",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": {
+    "id": "agent-01/2026-10-11-ea3d9e02",
+    "kept_worktrees": 0
+   }
+  },
+  {
+   "id": 23,
+   "at": "2026-10-11T07:06:05Z",
+   "agent": "agent-01",
+   "kind": "fleet.done",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": {
+    "outcome": "done",
+    "task": "cfd20275-a745-4f3d-b2ef-bda3766b4c66"
+   }
+  },
+  {
+   "id": 22,
+   "at": "2026-10-11T07:05:17Z",
+   "agent": "agent-01",
+   "kind": "SessionEnd",
+   "session": "b849a0f7-9430-4acc-ba6f-8e025d8cedef",
+   "detail": null
+  },
+  {
+   "id": 21,
+   "at": "2026-10-11T07:05:16Z",
+   "agent": "agent-01",
+   "kind": "Stop",
+   "session": "b849a0f7-9430-4acc-ba6f-8e025d8cedef",
+   "detail": null
+  },
+  {
+   "id": 20,
+   "at": "2026-10-11T07:05:15Z",
+   "agent": "agent-01",
+   "kind": "UserPromptSubmit",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": null
+  },
+  {
+   "id": 19,
+   "at": "2026-10-11T07:05:13Z",
+   "agent": "agent-01",
+   "kind": "UserPromptSubmit",
+   "session": "b849a0f7-9430-4acc-ba6f-8e025d8cedef",
+   "detail": null
+  },
+  {
+   "id": 18,
+   "at": "2026-10-11T07:05:12Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "b849a0f7-9430-4acc-ba6f-8e025d8cedef",
+   "detail": null
+  },
+  {
+   "id": 17,
+   "at": "2026-10-11T07:04:42Z",
+   "agent": "agent-01",
+   "kind": "fleet.relay",
+   "session": "",
+   "detail": {
+    "delivered": true,
+    "from": "operator",
+    "size": 308
+   }
+  },
+  {
+   "id": 16,
+   "at": "2026-10-11T07:04:35Z",
+   "agent": "agent-01",
+   "kind": "fleet.assign",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": {
+    "task": "cfd20275-a745-4f3d-b2ef-bda3766b4c66"
+   }
+  },
+  {
+   "id": 15,
+   "at": "2026-10-11T07:03:31Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": null
+  },
+  {
+   "id": 14,
+   "at": "2026-10-11T07:03:31Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "a2ca9d5b-02ba-4db1-8653-298fea7643e3",
+   "detail": null
+  },
+  {
+   "id": 13,
+   "at": "2026-10-11T07:03:31Z",
+   "agent": "agent-03",
+   "kind": "SessionStart",
+   "session": "ce54606a-4487-420a-b50d-f3948141f45e",
+   "detail": null
+  },
+  {
+   "id": 12,
+   "at": "2026-10-11T07:03:31Z",
+   "agent": "agent-04",
+   "kind": "SessionStart",
+   "session": "4c02527a-7dcd-4fc3-9bf8-8c20b8d02bdc",
+   "detail": null
+  },
+  {
+   "id": 11,
+   "at": "2026-10-10T21:15:28Z",
+   "agent": "agent-01",
+   "kind": "Stop",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": null
+  },
+  {
+   "id": 10,
+   "at": "2026-10-10T21:15:27Z",
+   "agent": "agent-01",
+   "kind": "Stop",
+   "session": "f853b2bd-20db-4098-8f71-7e5d91ee0b9e",
+   "detail": null
+  },
+  {
+   "id": 9,
+   "at": "2026-10-10T21:15:27Z",
+   "agent": "agent-01",
+   "kind": "SessionEnd",
+   "session": "f853b2bd-20db-4098-8f71-7e5d91ee0b9e",
+   "detail": null
+  },
+  {
+   "id": 8,
+   "at": "2026-10-10T21:15:26Z",
+   "agent": "agent-01",
+   "kind": "UserPromptSubmit",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": null
+  },
+  {
+   "id": 7,
+   "at": "2026-10-10T21:15:24Z",
+   "agent": "agent-01",
+   "kind": "UserPromptSubmit",
+   "session": "f853b2bd-20db-4098-8f71-7e5d91ee0b9e",
+   "detail": null
+  },
+  {
+   "id": 6,
+   "at": "2026-10-10T21:15:23Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "f853b2bd-20db-4098-8f71-7e5d91ee0b9e",
+   "detail": null
+  },
+  {
+   "id": 5,
+   "at": "2026-10-10T21:14:53Z",
+   "agent": "agent-01",
+   "kind": "fleet.relay",
+   "session": "",
+   "detail": {
+    "delivered": true,
+    "from": "operator",
+    "size": 100
+   }
+  },
+  {
+   "id": 4,
+   "at": "2026-10-10T21:14:33Z",
+   "agent": "agent-01",
+   "kind": "SessionStart",
+   "session": "ea3d9e02-85e8-46bd-898b-9611cc06c537",
+   "detail": null
+  },
+  {
+   "id": 3,
+   "at": "2026-10-10T21:14:33Z",
+   "agent": "agent-02",
+   "kind": "SessionStart",
+   "session": "e9ec8310-b2f1-40e0-986d-ed06cb664456",
+   "detail": null
+  },
+  {
+   "id": 2,
+   "at": "2026-10-10T21:14:33Z",
+   "agent": "agent-03",
+   "kind": "SessionStart",
+   "session": "9cab5fec-9c97-4db2-bb87-13c4a35706c1",
+   "detail": null
+  },
+  {
+   "id": 1,
+   "at": "2026-10-10T21:14:33Z",
+   "agent": "agent-04",
+   "kind": "SessionStart",
+   "session": "e1a6f682-884e-4cc5-9772-1215f834c10b",
+   "detail": null
+  }
+ ],
+ "today": {
+  "since": "2026-10-10T18:30:00Z",
+  "tasks_closed": 5,
+  "spend_usd": 0.38,
+  "output_tokens": 0
+ },
+ "git": {
+  "repos": [
+   {
+    "name": "KARMAX",
+    "main": {
+     "sha": "2d53971",
+     "subject": "Fleet console: implementation plan",
+     "at": "2026-10-11T19:23:27+05:30"
+    },
+    "branches": [],
+    "commits_7d": 49,
+    "at": "2026-10-11T13:57:33Z"
+   }
+  ]
+ },
+ "activity": {
+  "agent-01": [
+   {
+    "t": "2026-10-10T21:00:00Z",
+    "n": 2
+   },
+   {
+    "t": "2026-10-10T21:15:00Z",
+    "n": 7
+   },
+   {
+    "t": "2026-10-11T07:00:00Z",
+    "n": 35
+   },
+   {
+    "t": "2026-10-11T07:15:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T07:30:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T08:15:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T10:45:00Z",
+    "n": 2
+   },
+   {
+    "t": "2026-10-11T13:30:00Z",
+    "n": 28
+   },
+   {
+    "t": "2026-10-11T13:45:00Z",
+    "n": 6
+   }
+  ],
+  "agent-02": [
+   {
+    "t": "2026-10-10T21:00:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T07:00:00Z",
+    "n": 16
+   },
+   {
+    "t": "2026-10-11T07:15:00Z",
+    "n": 3
+   },
+   {
+    "t": "2026-10-11T08:15:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T10:45:00Z",
+    "n": 2
+   },
+   {
+    "t": "2026-10-11T13:30:00Z",
+    "n": 23
+   },
+   {
+    "t": "2026-10-11T13:45:00Z",
+    "n": 4
+   }
+  ],
+  "agent-03": [
+   {
+    "t": "2026-10-10T21:00:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T07:00:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T07:15:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T08:15:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T10:45:00Z",
+    "n": 2
+   }
+  ],
+  "agent-04": [
+   {
+    "t": "2026-10-10T21:00:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T07:00:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T07:15:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T08:15:00Z",
+    "n": 1
+   },
+   {
+    "t": "2026-10-11T10:45:00Z",
+    "n": 2
+   },
+   {
+    "t": "2026-10-11T13:45:00Z",
+    "n": 34
+   }
+  ]
+ }
+}
