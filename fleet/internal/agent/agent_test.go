@@ -233,7 +233,7 @@ func TestRelayArgv(t *testing.T) {
 	// cover MCP tools, which bypass would run unasked).
 	for _, want := range []string{"claude -p", "--model haiku", "--name relay-from-agent-05",
 		"--permission-mode bypassPermissions", "--tools SendMessage,ListAgents", "--allowedTools SendMessage,ListAgents",
-		"--strict-mcp-config", "--max-turns"} {
+		"--strict-mcp-config", "--max-turns", `--settings {"disableAllHooks":true}`} {
 		if !strings.Contains(rest, want) {
 			t.Errorf("relay argv lacks %q: %s", want, rest)
 		}
