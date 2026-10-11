@@ -38,7 +38,9 @@ A relayed message starts with `[relayed from <name> — reply with: fleetctl tel
 
       git -C {{.Code}}/<repo> worktree add --lock /work/wt/<topic> -b fleet/{{.Agent}}/<topic>
 
-- Commit early and often, and push your branch. Never push to `main`.
+- Commit early and often, and push your branch. Never push to `main`. Never
+  rebase or force-push a branch once you have reported it: it may already be
+  merged. New work goes in new commits, or on a new branch from `origin/main`.
 - Do not run `git gc`; it runs on a schedule, so eight agents never gc one repo at once.
 - A task's brief starts `Task <id> from <name>.` — report to whoever assigned it,
   {{.Orchestrator}} if the brief does not say: `fleetctl tell <name> "<report>"`.
