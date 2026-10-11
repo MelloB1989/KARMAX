@@ -742,7 +742,7 @@
    "kind": "fleet.observe_failed",
    "session": "",
    "detail": {
-    "error": "docker --context pc2 exec agent-01 sh: exit status 1: command [ssh -l fleet -o ConnectTimeout=30 -T -- pc2 docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=Connection closed by 192.168.29.27 port 22"
+    "error": "docker --context pc2 exec agent-01 sh: exit status 1: command [ssh -l operator -o ConnectTimeout=30 -T -- pc2 docker system dial-stdio] has exited with exit status 255, make sure the URL is valid, and Docker 18.09 or later is installed on the remote host: stderr=Connection closed by 192.0.2.27 port 22"
    }
   },
   {

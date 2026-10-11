@@ -223,7 +223,11 @@ steps, in order: `check` (connector, render node, groups), `edid` (a generated E
 initramfs hook), `cmdline` (kernel parameters for the virtual output), `packages` (Xorg, Chrome from its apt
 repo, RustDesk's pinned `.deb` with its sha256 checked), `token` (the client token, 0600, never printed),
 `units` (the console as a user service, the kiosk as a system service) and `rustdesk` (attached to the kiosk's
-display). It is safe to run again; `--only <step>` runs one step.
+display). `RUSTDESK_MODE=direct` sets `direct-server Y` and points RustDesk's rendezvous, relay and API servers at
+127.0.0.1 (RustDesk has no off switch, so this is a workaround; `direct-server Y` alone keeps the public
+registration). It exposes TCP `RUSTDESK_DIRECT_PORT`, password-protected, and cannot connect by ID. It is unverified
+against a live RustDesk 1.4.9: check that `ss -tnp | grep rustdesk` shows no public connection while idle. Xorg's
+`Xwrapper.config` allows only the kiosk user (`allowed_users=$KIOSK_USER`). It is safe to run again; `--only <step>` runs one step.
 
 **The reboot.** The virtual output needs kernel parameters, so the display appears after one reboot. SSH is
 unaffected either way.
