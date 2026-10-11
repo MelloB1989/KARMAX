@@ -7,6 +7,7 @@ package target
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -23,7 +24,7 @@ type Exec struct{}
 
 // Run runs argv and returns its stdout; a failure carries stderr.
 func (Exec) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := HardenCtx(exec.CommandContext(ctx, argv[0], argv[1:]...))
 	cmd.Stdin = stdin
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -31,6 +32,9 @@ func (Exec) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, er
 		msg := strings.TrimSpace(errb.String())
 		if len(msg) > 400 {
 			msg = msg[:400] + "…"
+		}
+		if ce := ctx.Err(); ce != nil && !errors.Is(err, ce) {
+			err = fmt.Errorf("%w: %w", ce, err) // killed because the caller gave up
 		}
 		return out.Bytes(), fmt.Errorf("%s: %w: %s", strings.Join(argv[:min(len(argv), 6)], " "), err, msg)
 	}

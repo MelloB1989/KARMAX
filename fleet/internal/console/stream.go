@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 // Cadences of the polled sources. A source is stale when its last success is
@@ -91,7 +93,7 @@ func (t *tracker) source(now time.Time) Source {
 type spawner func(ctx context.Context, argv []string) (io.ReadCloser, error)
 
 func execSpawn(ctx context.Context, argv []string) (io.ReadCloser, error) {
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := target.HardenCtx(exec.CommandContext(ctx, argv[0], argv[1:]...))
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -109,9 +111,7 @@ type procReader struct {
 
 func (p *procReader) Read(b []byte) (int, error) { return p.out.Read(b) }
 func (p *procReader) Close() error {
-	if p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-	}
+	_ = target.KillGroup(p.cmd)
 	return p.cmd.Wait()
 }
 

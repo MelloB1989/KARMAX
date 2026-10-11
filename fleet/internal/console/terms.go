@@ -229,8 +229,8 @@ func (w *termWatch) idleExpired() {
 	delete(w.t.watches, w.agent)
 	w.mu.Unlock()
 	w.t.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		cmd.Process.Kill()
+	if cmd != nil {
+		target.KillGroup(cmd)
 	}
 }
 
@@ -384,9 +384,7 @@ func (t *Terms) control(ctx context.Context, conf AgentConf, release func(), in 
 	var once sync.Once
 	reap := func() { // after this the client is gone and the lock may go
 		once.Do(func() {
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-			}
+			target.KillGroup(cmd)
 			f.Close()
 			cmd.Wait()
 		})

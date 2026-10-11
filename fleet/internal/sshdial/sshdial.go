@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 // Dialer returns a DialContext that ignores the address it is asked for and
@@ -36,7 +38,7 @@ func Client(host, addr string) *http.Client {
 // Cat reads a file on host.
 func Cat(ctx context.Context, host, path string) ([]byte, error) {
 	var out, errb bytes.Buffer
-	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", host, "cat", path)
+	cmd := target.HardenCtx(exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", host, "cat", path))
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("ssh %s cat %s: %w: %s", host, path, err, strings.TrimSpace(errb.String()))
@@ -57,7 +59,7 @@ func dial(ctx context.Context, host, addr string) (net.Conn, error) {
 	}
 	var stderr bytes.Buffer
 	// Not CommandContext: ctx only bounds the dial; the connection outlives it.
-	cmd := exec.Command("ssh", "-o", "BatchMode=yes", host, "-W", addr)
+	cmd := target.Harden(exec.Command("ssh", "-o", "BatchMode=yes", host, "-W", addr))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, &stderr
 	if err := cmd.Start(); err != nil {
 		inR.Close()
@@ -120,9 +122,7 @@ func (c *conn) Write(b []byte) (int, error) {
 func (c *conn) Close() error {
 	c.once.Do(func() {
 		c.w.Close()
-		if c.cmd.Process != nil {
-			c.cmd.Process.Kill()
-		}
+		target.KillGroup(c.cmd)
 		<-c.exited
 		c.r.Close()
 	})
