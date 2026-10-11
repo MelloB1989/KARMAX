@@ -20,11 +20,12 @@ html, body { background: var(--ground); overflow: hidden; }
 @keyframes scan { from { transform: translateY(-120px); } to { transform: translateY(1100px); } }
 
 /* header */
-.header { grid-area: header; position: relative; z-index: 2; display: flex; align-items: center; gap: 40px; padding: 0 32px; border-bottom: 1px solid var(--line); background: rgba(10,16,24,.85); }
-.brand { display: flex; align-items: baseline; gap: 14px; }
+.header { grid-area: header; position: relative; z-index: 2; display: flex; align-items: center; gap: 32px; padding: 0 32px; border-bottom: 1px solid var(--line); background: rgba(10,16,24,.85); }
+.brand { display: flex; align-items: baseline; gap: 14px; white-space: nowrap; flex: none; }
 .brand-name { font: 700 30px "Barlow Condensed", sans-serif; letter-spacing: 6px; color: var(--amber); }
 .brand-sub { font: 500 20px "Barlow Condensed", sans-serif; letter-spacing: 5px; color: var(--dim); }
-.vital { display: flex; flex-direction: column; gap: 2px; font-size: 16px; }
+.vital-gpu { max-width: 300px; } .vital-gpu span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.vital { display: flex; flex-direction: column; gap: 2px; font-size: 16px; white-space: nowrap; flex: none; }
 .vital-k { font-size: 11px; letter-spacing: 2px; color: var(--dim); }
 .conn { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
 .conn-live { color: var(--cyan); } .conn-lost { color: var(--alert); } .conn-connecting { color: var(--dim); }
@@ -58,6 +59,7 @@ html, body { background: var(--ground); overflow: hidden; }
 .bar-top { display: flex; justify-content: space-between; font-size: 11px; }
 .bar-track { height: 4px; background: var(--track); } .bar-fill { height: 4px; }
 .card-foot { display: flex; justify-content: space-between; font-size: 12px; gap: 8px; }
+.card-foot > span:last-child { white-space: nowrap; flex: none; }
 .card-foot > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* centre */
@@ -133,3 +135,7 @@ span.btn { cursor: default; }
 .xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; background-color: transparent !important; }
 .xterm-viewport::-webkit-scrollbar { display: none; }
 .term-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 14px; letter-spacing: 2px; z-index: 2; pointer-events: none; }
+
+.orch-tasks { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.orch-task { display: grid; grid-template-columns: 64px minmax(0,1fr) auto; gap: 8px; white-space: nowrap; }
+.orch-task span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
