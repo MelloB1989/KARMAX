@@ -13,7 +13,7 @@ export function Figure({ typing, dim }: { typing: boolean; dim: boolean }) {
     if (left.current) left.current.rotation.x = -1.1 + k * Math.sin(t * 14) * 0.12;
     if (right.current) right.current.rotation.x = -1.1 + k * Math.sin(t * 14 + 2) * 0.12;
   });
-  const body = dim ? "#1C2733" : "#2B3C4D";
+  const body = dim ? "#2C3342" : "#3A4152";
   return (
     <group>
       <mesh position={[0, 0.95, 0]}>
@@ -22,7 +22,7 @@ export function Figure({ typing, dim }: { typing: boolean; dim: boolean }) {
       </mesh>
       <mesh position={[0, 1.5, 0]}>
         <sphereGeometry args={[0.17, 20, 16]} />
-        <meshStandardMaterial color={dim ? "#3A4651" : "#8FA3B5"} roughness={0.6} />
+        <meshStandardMaterial color={dim ? "#5F7A8C" : "#8FA0B5"} roughness={0.6} />
       </mesh>
       {[-1, 1].map((s) => (
         <group key={s} ref={s < 0 ? left : right} position={[s * 0.32, 1.2, 0]}>
