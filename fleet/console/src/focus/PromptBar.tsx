@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { prompt } from "../api";
+import { prompt, tell } from "../api";
 
 type Status = { s: "idle" } | { s: "pending" } | { s: "ok" } | { s: "error"; msg: string };
 
 /** Types into `target`'s session as the operator, through the console. */
-export function PromptBar({ target, label, onClose }: { target: string; label: string; onClose: () => void }) {
+export function PromptBar({ target, label, brief = false, onClose }: { target: string; label: string; brief?: boolean; onClose: () => void }) {
   const [text, setText] = useState("");
   const [st, setSt] = useState<Status>({ s: "idle" });
   const input = useRef<HTMLInputElement>(null);
@@ -14,7 +14,7 @@ export function PromptBar({ target, label, onClose }: { target: string; label: s
     if (!text.trim() || st.s === "pending") return;
     setSt({ s: "pending" });
     try {
-      await prompt(target, text);
+      await (brief ? tell : prompt)(target, text);
       setSt({ s: "ok" });
       setText("");
     } catch (e) {

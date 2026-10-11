@@ -69,7 +69,7 @@ export function Overview() {
 
   const [focus, setFocus] = useState(false);
   const [control, dispatch] = useReducer(controlReducer, { phase: "idle" });
-  const [bar, setBar] = useState<{ target: string; label: string } | null>(null);
+  const [bar, setBar] = useState<{ target: string; label: string; brief?: boolean } | null>(null);
   const remote = !!current && !!snapshot && isRemote(current, snapshot);
   const orch = snapshot?.orchestrator?.name;
 
@@ -91,7 +91,7 @@ export function Overview() {
   };
   useKey("enter", takeControl);
   useKey("p", () => current && setBar({ target: current.id, label: `PROMPT → ${current.id}` }));
-  useKey("m", () => orch && setBar({ target: orch, label: `BRIEF → ${orch}` }));
+  useKey("m", () => orch && setBar({ target: orch, label: `BRIEF → ${orch}`, brief: true }));
 
   return (
     <MotionConfig reducedMotion="user">
@@ -127,7 +127,7 @@ export function Overview() {
             </Collapse>
             {bar && (
               <div className="bar-dock">
-                <PromptBar key={bar.target} target={bar.target} label={bar.label} onClose={() => setBar(null)} />
+                <PromptBar key={bar.target} target={bar.target} label={bar.label} brief={bar.brief} onClose={() => setBar(null)} />
               </div>
             )}
             {current && !remote && <RotateRing agent={current.id} />}

@@ -25,6 +25,17 @@ export function comboOf(e: KeyboardEvent): string {
   return parts.join("+");
 }
 
+/**
+ * Whether the key is going into a text field. xterm's helper textarea does
+ * not count: clicking a watched terminal focuses it, and it only matters
+ * while control is held (when dispatch has already stepped aside).
+ */
+export function isTyping(e: KeyboardEvent): boolean {
+  const t = e.target as HTMLElement | null;
+  if (!t || (t.tagName !== "INPUT" && t.tagName !== "TEXTAREA")) return false;
+  return !t.classList?.contains("xterm-helper-textarea");
+}
+
 export function isControlHeld(): boolean {
   return held;
 }
@@ -48,8 +59,7 @@ export function dispatch(e: KeyboardEvent): boolean {
     }
     return false; // the terminal has it
   }
-  const t = e.target as HTMLElement | null;
-  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return false;
+  if (isTyping(e)) return false;
   let hit = false;
   for (const b of bindings) {
     if (b.combo === combo) {

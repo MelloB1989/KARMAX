@@ -20,12 +20,18 @@ export function termURL(agent: string, control = false): string {
   return `${proto}//${location.host}/v1/term/${encodeURIComponent(agent)}${control ? "?control=1" : ""}`;
 }
 
+/** Asks the server for a full screen; a late joiner has missed everything drawn so far. */
+function requestRedraw(ws: WebSocket | null): void {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "redraw" }));
+}
+
 function open(agent: string, s: Stream): void {
   const ws = new WebSocket(termURL(agent));
   ws.binaryType = "arraybuffer";
   s.ws = ws;
   ws.onopen = () => {
     s.retry = 0;
+    requestRedraw(ws); // whoever is waiting joined before the socket was up
   };
   ws.onmessage = (ev) => {
     if (typeof ev.data === "string") {
@@ -64,6 +70,7 @@ export function subscribeTerm(agent: string, onData: DataFn, onFrame?: FrameFn):
   s.data.add(onData);
   if (onFrame) s.frames.add(onFrame);
   if (!s.ws) open(agent, s);
+  else requestRedraw(s.ws);
   const st = s;
   return () => {
     st.data.delete(onData);

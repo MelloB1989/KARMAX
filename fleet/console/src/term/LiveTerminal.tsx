@@ -7,7 +7,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import type { TermFrame } from "../model";
 import { subscribeTerm } from "./stream";
-import { openControl } from "./control";
+import { applyControlFrame, openControl } from "./control";
 import { setControlHeld } from "../keys";
 
 export interface LiveTerminalProps {
@@ -68,13 +68,10 @@ export function LiveTerminal({ agent, cols, rows, control = false, onRelease, on
       c.onFrame((f) => {
         frameRef.current?.(f);
         if (f.type === "reconnecting") setNote("reconnecting…");
-        if (f.type === "released") {
-          setControlHeld(false);
-          releaseRef.current?.();
-        }
+        applyControlFrame(f, () => c.close());
+        if (f.type === "released") releaseRef.current?.();
       });
       const input = term.onData((d) => c.send(d));
-      setControlHeld(true, () => c.close());
       term.focus();
       stop = () => {
         input.dispose();

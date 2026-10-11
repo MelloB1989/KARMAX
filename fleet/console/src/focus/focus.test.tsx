@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { rotate } from "../api";
+import { rotate, tell } from "../api";
+import { isControlHeld } from "../keys";
+import { applyControlFrame } from "../term/control";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ControlBar } from "./ControlBar";
 import { controlReducer, type ControlState } from "./controlState";
 import { HoldTracker, ROTATE_HOLD_MS } from "./hold";
-import { rotateText } from "./rotate";
+import { RotateGate, rotateText } from "./rotate";
 
 const step = (s: ControlState, f: Parameters<typeof controlReducer>[1]) => controlReducer(s, f);
 
@@ -59,5 +61,56 @@ describe("focus and control", () => {
     await rotate("agent-01");
     vi.unstubAllGlobals();
     expect(bodies).toEqual([`{"agent":"agent-01","dry_run":true}`, `{"agent":"agent-01"}`]);
+  });
+
+  it("rotate fires only after the same agent's dry-run preview came back ok", () => {
+    const fire = vi.fn();
+    const g = new RotateGate(fire);
+    let press = g.down("agent-01");
+    g.complete(); // hold done, preview still in flight
+    expect(fire).not.toHaveBeenCalled();
+    g.previewDone(press, true);
+    expect(fire.mock.calls).toEqual([["agent-01"]]);
+
+    press = g.down("agent-02");
+    g.previewDone(press, false); // preview failed
+    g.complete();
+    expect(fire).toHaveBeenCalledTimes(1);
+
+    press = g.down("agent-02");
+    g.previewDone(press, true);
+    g.cancel(); // selection changed during the hold
+    g.complete();
+    g.previewDone(press, true); // a late reply for the old press
+    expect(fire).toHaveBeenCalledTimes(1);
+
+    const stale = g.down("agent-03");
+    g.down("agent-04"); // preview for agent-03 must not arm agent-04
+    g.previewDone(stale, true);
+    g.complete();
+    expect(fire).toHaveBeenCalledTimes(1);
+  });
+
+  it("the keyboard is held only after the control hello, and a refusal never holds it", () => {
+    const rel = vi.fn();
+    applyControlFrame({ type: "hello", mode: "watch" }, rel);
+    expect(isControlHeld()).toBe(false);
+    applyControlFrame({ type: "error", holder: "laptop" }, rel);
+    expect(isControlHeld()).toBe(false);
+    applyControlFrame({ type: "hello", mode: "control" }, rel);
+    expect(isControlHeld()).toBe(true);
+    applyControlFrame({ type: "released" }, rel);
+    expect(isControlHeld()).toBe(false);
+  });
+
+  it("the brief goes through /v1/tell as the operator", async () => {
+    const calls: [string, string][] = [];
+    vi.stubGlobal("fetch", async (u: string, init: { body: string }) => {
+      calls.push([u, init.body]);
+      return { ok: true, json: async () => ({ ok: true }) };
+    });
+    await tell("karmax", "status?");
+    vi.unstubAllGlobals();
+    expect(calls).toEqual([["/v1/tell", `{"from":"operator","to":"karmax","text":"status?"}`]]);
   });
 });

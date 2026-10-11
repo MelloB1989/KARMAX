@@ -8,6 +8,9 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 export const prompt = (agent: string, text: string) => post<{ ok: boolean }>("/v1/prompt", { agent, text });
 
+/** Briefs `to` as the operator; unlike prompt it reaches the orchestrator, who is not on the roster. */
+export const tell = (to: string, text: string) => post<{ ok: boolean }>("/v1/tell", { from: "operator", to, text });
+
 export interface RotateReply {
   ok: boolean;
   closes?: string;

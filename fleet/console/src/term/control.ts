@@ -1,6 +1,7 @@
 // A held keyboard: /v1/term/{agent}?control=1. The server refuses a second
 // controller with an error frame naming the holder.
 import type { TermFrame } from "../model";
+import { setControlHeld } from "../keys";
 import { termURL } from "./stream";
 
 export interface Control {
@@ -8,6 +9,12 @@ export interface Control {
   close(): void;
   onFrame(cb: (f: TermFrame) => void): void;
   onData(cb: (b: Uint8Array) => void): void;
+}
+
+/** The keyboard is ours only once the server says hello in control mode; a refusal or close ends it. */
+export function applyControlFrame(f: TermFrame, release: () => void): void {
+  if (f.type === "hello" && f.mode === "control") setControlHeld(true, release);
+  else if (f.type === "error" || f.type === "released") setControlHeld(false);
 }
 
 export function openControl(agent: string): Control {
