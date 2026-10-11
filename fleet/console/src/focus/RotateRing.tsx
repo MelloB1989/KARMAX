@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { rotate } from "../api";
-import { isControlHeld } from "../keys";
+import { isControlHeld, isTyping } from "../keys";
 import { HoldTracker, ROTATE_HOLD_MS } from "./hold";
-import { rotateText } from "./rotate";
+import { RotateGate, rotateText } from "./rotate";
 
 const R = 18;
 const C = 2 * Math.PI * R;
@@ -15,34 +15,52 @@ export function RotateRing({ agent }: { agent: string }) {
   const agentRef = useRef(agent);
   agentRef.current = agent;
 
+  const cancelRef = useRef<() => void>(() => {});
+
+  // another agent selected mid-hold: the preview and the hold are for the old one
+  useEffect(() => cancelRef.current(), [agent]);
+
   useEffect(() => {
     let raf = 0;
-    let press = 0; // which press a preview reply belongs to
-    const tracker = new HoldTracker(ROTATE_HOLD_MS, () => {
-      press++; // a preview still in flight is now moot
+    const gate = new RotateGate((a) => {
       setPreview(null);
       setMsg("rotating…");
-      rotate(agentRef.current)
+      rotate(a)
         .then((r) => setMsg(rotateText(r)))
         .catch((e) => setMsg(e instanceof Error ? e.message : String(e)));
     });
+    const tracker = new HoldTracker(ROTATE_HOLD_MS, () => gate.complete());
+    cancelRef.current = () => {
+      gate.cancel();
+      tracker.up();
+      cancelAnimationFrame(raf);
+      setP(0);
+      setPreview(null);
+    };
     const loop = () => {
       setP(tracker.tick(performance.now()));
       raf = requestAnimationFrame(loop);
     };
     const isR = (e: KeyboardEvent) => e.key.toLowerCase() === "r" && !e.ctrlKey && !e.metaKey && !e.altKey;
-    const typing = (e: KeyboardEvent) => ["INPUT", "TEXTAREA"].includes((e.target as HTMLElement | null)?.tagName ?? "");
     const down = (e: KeyboardEvent) => {
-      if (!isR(e) || isControlHeld() || typing(e)) return;
+      if (!isR(e) || isControlHeld() || isTyping(e)) return;
       e.preventDefault();
       if (!e.repeat) {
         setMsg(null);
         setPreview(null);
-        const mine = ++press;
-        // fleetd says what a rotation would do, before you commit to it
+        const mine = gate.down(agentRef.current);
+        // fleetd says what a rotation would do; the hold only fires once that came back ok
         rotate(agentRef.current, true)
-          .then((r) => mine === press && setPreview(rotateText(r)))
-          .catch((er) => mine === press && setPreview(er instanceof Error ? er.message : String(er)));
+          .then((r) => {
+            if (mine !== gate.currentPress()) return;
+            setPreview(rotateText(r));
+            gate.previewDone(mine, r.ok !== false);
+          })
+          .catch((er) => {
+            if (mine !== gate.currentPress()) return;
+            setPreview(er instanceof Error ? er.message : String(er));
+            gate.previewDone(mine, false);
+          });
         tracker.down(performance.now());
         cancelAnimationFrame(raf);
         raf = requestAnimationFrame(loop);
@@ -50,11 +68,7 @@ export function RotateRing({ agent }: { agent: string }) {
     };
     const up = (e: KeyboardEvent) => {
       if (!isR(e)) return;
-      tracker.up();
-      cancelAnimationFrame(raf);
-      setP(0);
-      press++; // released early: drop the preview
-      setPreview(null);
+      cancelRef.current(); // released early: drop the hold and its preview
     };
     window.addEventListener("keydown", down, true);
     window.addEventListener("keyup", up, true);

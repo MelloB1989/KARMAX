@@ -80,7 +80,7 @@ func TestAPIRefusesWithoutToken(t *testing.T) {
 			t.Errorf("GET %s = %d, want 401", p, r.StatusCode)
 		}
 	}
-	for _, p := range []string{"/v1/prompt", "/v1/rotate"} {
+	for _, p := range []string{"/v1/prompt", "/v1/tell", "/v1/rotate"} {
 		if r, _ := http.Post(srv.URL+p, "application/json", strings.NewReader("{}")); r.StatusCode != 401 {
 			t.Errorf("POST %s = %d, want 401", p, r.StatusCode)
 		}

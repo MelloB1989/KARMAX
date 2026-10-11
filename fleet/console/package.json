@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "typecheck": "tsc -b --noEmit",
-    "check:dist": "test -f ../internal/console/dist/index.html && ! grep -rl __FIXTURE__ ../internal/console/dist",
+    "check:dist": "test -f ../internal/console/dist/index.html && ! grep -rl __FIXTURE__ ../internal/console/dist && ! grep -rl 'Switch anytime with' ../internal/console/dist",
     "e2e": "npm run build && playwright install chromium && playwright test"
   },
   "dependencies": {

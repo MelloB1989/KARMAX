@@ -40,4 +40,19 @@ describe("keys", () => {
     expect(dispatch(Object.defineProperty(key("f"), "target", { value: input }))).toBe(false);
     expect(f).not.toHaveBeenCalled();
   });
+
+  it("xterm's helper textarea does not swallow panel keys in watch mode, but a real textarea does", () => {
+    const f = vi.fn();
+    bindForTest("f", f);
+    const helper = document.createElement("textarea");
+    helper.className = "xterm-helper-textarea";
+    expect(dispatch(Object.defineProperty(key("f"), "target", { value: helper }))).toBe(true);
+    expect(f).toHaveBeenCalledOnce();
+    const real = document.createElement("textarea");
+    expect(dispatch(Object.defineProperty(key("f"), "target", { value: real }))).toBe(false);
+    // held: the terminal has every key, helper textarea included
+    setControlHeld(true, () => {});
+    expect(dispatch(Object.defineProperty(key("f"), "target", { value: helper }))).toBe(false);
+    expect(f).toHaveBeenCalledOnce();
+  });
 });

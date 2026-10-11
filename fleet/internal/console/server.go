@@ -34,6 +34,7 @@ func newHandler(h *Hub, t *Terms, clientToken string, fleetd *FleetdClient, asse
 	})
 	mux.HandleFunc("GET /v1/watch", func(w http.ResponseWriter, r *http.Request) { watch(h, w, r) })
 	mux.HandleFunc("POST /v1/prompt", proxy(fleetd, "/v1/prompt"))
+	mux.HandleFunc("POST /v1/tell", proxy(fleetd, "/v1/tell"))
 	mux.HandleFunc("POST /v1/rotate", proxy(fleetd, "/v1/rotate"))
 	mux.HandleFunc("GET /v1/term/{agent}", term(t))
 	spa := static(assets)
