@@ -32,6 +32,7 @@ export function LiveTerminal({ agent, cols, rows, control = false, onRelease, on
   const box = useRef<HTMLDivElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
+  const [note, setNote] = useState<string | null>("waiting for terminal…");
   const frameRef = useRef(onFrame);
   frameRef.current = onFrame;
   const releaseRef = useRef(onRelease);
@@ -39,10 +40,12 @@ export function LiveTerminal({ agent, cols, rows, control = false, onRelease, on
 
   useEffect(() => {
     if (!host.current) return;
+    setNote("waiting for terminal…");
     const term = new Terminal({
       cols,
       rows,
       fontSize,
+      scrollback: 0,
       fontFamily: "'IBM Plex Mono', monospace",
       theme,
       disableStdin: !control,
@@ -58,9 +61,13 @@ export function LiveTerminal({ agent, cols, rows, control = false, onRelease, on
     let stop: () => void;
     if (control) {
       const c = openControl(agent);
-      c.onData((b) => term.write(b));
+      c.onData((b) => {
+        setNote(null);
+        term.write(b);
+      });
       c.onFrame((f) => {
         frameRef.current?.(f);
+        if (f.type === "reconnecting") setNote("reconnecting…");
         if (f.type === "released") {
           setControlHeld(false);
           releaseRef.current?.();
@@ -75,7 +82,17 @@ export function LiveTerminal({ agent, cols, rows, control = false, onRelease, on
         c.close();
       };
     } else {
-      stop = subscribeTerm(agent, (b) => term.write(b), (f) => frameRef.current?.(f));
+      stop = subscribeTerm(
+        agent,
+        (b) => {
+          setNote(null);
+          term.write(b);
+        },
+        (f) => {
+          frameRef.current?.(f);
+          if (f.type === "reconnecting") setNote("reconnecting…");
+        },
+      );
     }
     return () => {
       stop();
@@ -101,6 +118,7 @@ export function LiveTerminal({ agent, cols, rows, control = false, onRelease, on
 
   return (
     <div ref={box} style={{ width: "100%", height: "100%", overflow: "hidden", position: "relative" }}>
+      {note && <div className="term-note">{note}</div>}
       <div ref={host} style={{ transform: `scale(${scale})`, transformOrigin: "top left", width: "max-content" }} />
     </div>
   );

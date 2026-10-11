@@ -1,5 +1,5 @@
 import type { Agent, Snapshot } from "../model";
-import { ageOf, fmtAge, phaseLook } from "../state/derive";
+import { ageOf, agoText, fmtAge, isKnown, phaseLook } from "../state/derive";
 import { sourceStale } from "../state/cadence";
 import { isRemote } from "./roster";
 import { Bar } from "./Bar";
@@ -10,7 +10,7 @@ const mib = (b: number) => `${Math.round(b / 1048576)} MiB`;
 
 /** A stale value renders as its age in dim text, never as the old number. */
 function Aged({ at, now }: { at?: string; now: number }) {
-  return <span className="dim">{at ? `${fmtAge(ageOf(at, now))} ago` : "no data"}</span>;
+  return <span className="dim">{agoText(at, now)}</span>;
 }
 
 export function AgentCard({
@@ -50,7 +50,7 @@ export function AgentCard({
         <span className="card-key dim">{index + 1}</span>
         {remote && <span className="remote">remote · no live view</span>}
         <span className="grow" />
-        <span className="card-phase">{fleetdStale ? <Aged at={a.recorded_at} now={now} /> : look.label}</span>
+        <span className="card-phase">{!isKnown(a.recorded_at) ? <span className="dim">no record</span> : fleetdStale ? <Aged at={a.recorded_at} now={now} /> : look.label}</span>
       </div>
       <div className="card-meta dim">
         {a.phase === "working" && a.current_tool && !remote ? (

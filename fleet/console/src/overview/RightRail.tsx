@@ -1,6 +1,6 @@
 import type { Snapshot } from "../model";
-import { ageOf, fmtAge } from "../state/derive";
-import { sourceStale } from "../state/cadence";
+import { ageOf, agoText, fmtAge } from "../state/derive";
+import { sourceNote, sourceStale } from "../state/cadence";
 import { Num } from "../motion/tween";
 import { EventStream } from "./EventStream";
 import { Rings } from "./Rings";
@@ -13,14 +13,15 @@ export function RightRail({ snapshot: s, now }: { snapshot: Snapshot; now: numbe
   const gitStale = sourceStale(s, "git", now);
   const commits = (s.git.repos ?? []).reduce((n, r) => n + r.commits_7d, 0);
   const tasks = s.tasks ?? [];
-  const fleetdAge = `fleetd ${fmtAge(ageOf(s.sources.fleetd?.at ?? "", now))} ago`;
+  const fleetdNote = sourceNote(s, "fleetd", now);
+  const gitNote = sourceNote(s, "git", now);
   return (
     <aside className="rail">
       <section className="orch">
         {o ? (
           stale ? (
-            <div className="dim">
-              {o.name} · {fmtAge(ageOf(o.at, now))} ago
+            <div className="dim" title={fleetdNote.title}>
+              {o.name} · {agoText(o.at, now)}
             </div>
           ) : (
             <>
@@ -44,23 +45,23 @@ export function RightRail({ snapshot: s, now }: { snapshot: Snapshot; now: numbe
             </>
           )
         ) : (
-          <div className="dim">no orchestrator</div>
+          <div className="dim" title={fleetdNote.title}>orchestrator: no data from fleetd</div>
         )}
       </section>
       <div className="tiles">
         <div className="tile">
           <div className="tile-k">TASKS CLOSED</div>
-          <div className="tile-v">{stale ? <span className="dim">{fleetdAge}</span> : <Num value={s.today.tasks_closed} />}</div>
+          <div className="tile-v">{stale ? <span className="dim" title={fleetdNote.title}>{fleetdNote.text}</span> : <Num value={s.today.tasks_closed} />}</div>
           <div className="tile-sub dim">{tasks.length} open</div>
         </div>
         <div className="tile">
           <div className="tile-k">SPEND · TODAY</div>
-          <div className="tile-v">{stale ? <span className="dim">{fleetdAge}</span> : <>$<Num value={s.today.spend_usd} digits={2} /></>}</div>
+          <div className="tile-v">{stale ? <span className="dim" title={fleetdNote.title}>{fleetdNote.text}</span> : <>$<Num value={s.today.spend_usd} digits={2} /></>}</div>
           <div className="tile-sub dim">since midnight</div>
         </div>
         <div className="tile">
           <div className="tile-k">COMMITS · 7D</div>
-          <div className="tile-v">{gitStale ? <span className="dim">{fmtAge(ageOf(s.sources.git?.at ?? "", now))} ago</span> : <Num value={commits} />}</div>
+          <div className="tile-v">{gitStale ? <span className="dim" title={gitNote.title}>{gitNote.text}</span> : <Num value={commits} />}</div>
           <div className="tile-sub dim">on {(s.git.repos ?? []).length} repos</div>
         </div>
       </div>

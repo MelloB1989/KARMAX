@@ -1,6 +1,6 @@
 import type { Snapshot } from "../model";
 import type { Conn } from "../state/store";
-import { ageOf, fmtAge } from "../state/derive";
+import { ageOf, agoText, fmtAge, isKnown } from "../state/derive";
 import { sourceStale } from "../state/cadence";
 
 const gib = (b: number) => (b / 1073741824).toFixed(1);
@@ -19,7 +19,7 @@ export function Header({ snapshot: s, conn, now, gpu }: { snapshot: Snapshot | n
   const hostStale = s ? sourceStale(s, "host", now) : true;
   const gitStale = s ? sourceStale(s, "git", now) : true;
   const main = s?.git.repos?.[0]?.main;
-  const aged = (at: string) => `${fmtAge(ageOf(at, now))} ago`;
+  const aged = (at: string) => agoText(at, now);
   const up = h ? h.name.toUpperCase() : "—";
   const d = new Date(now);
   return (
@@ -37,7 +37,7 @@ export function Header({ snapshot: s, conn, now, gpu }: { snapshot: Snapshot | n
           <Vital k="CORES · GPU" v={`${h.cpus} · ${gpu}`} />
         </>
       )}
-      {main && <Vital k="MAIN" v={gitStale ? aged(main.at) : `${main.sha.slice(0, 7)} · ${fmtAge(ageOf(main.at, now))} ago`} dim={gitStale} />}
+      {main && isKnown(main.at) && <Vital k="MAIN" v={gitStale ? aged(main.at) : `${main.sha.slice(0, 7)} · ${fmtAge(ageOf(main.at, now))} ago`} dim={gitStale} />}
       <div className={`conn conn-${conn}`}>{conn}</div>
       <div className="clock">
         <span className="clock-time">{d.toLocaleTimeString("en-GB")}</span>
