@@ -62,3 +62,18 @@ h3 { font: 600 14px "Barlow Condensed", sans-serif; letter-spacing: .14em; color
 .prompt-bar input { flex: 1; background: var(--ground); color: var(--text); border: 1px solid var(--line); padding: 6px 8px; font: inherit; outline: none; }
 .prompt-status.error { color: var(--alert); } .prompt-status.ok { color: var(--cyan); } .prompt-status.pending { color: var(--dim); }
 .rotate-ring { position: absolute; right: 24px; bottom: 24px; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: var(--panel) !important; border: 1px solid var(--amber); }
+.bg-grid, .scanline { position: absolute; inset: 0; pointer-events: none; background: none !important; z-index: 1; }
+.bg-grid { background-image: linear-gradient(rgba(92,225,230,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(92,225,230,.045) 1px, transparent 1px) !important; background-size: 48px 48px !important; }
+.scanline { height: 120px; inset: auto 0 auto 0; background: linear-gradient(transparent, rgba(92,225,230,.07), transparent) !important; animation: scan 7s linear infinite; }
+@keyframes scan { from { transform: translateY(-120px); } to { transform: translateY(1080px); } }
+.card.flash { animation: flash .6s ease-out; }
+@keyframes flash { 0% { background: rgba(255,181,71,.5); } 100% { background: var(--panel); } }
+.banners { position: absolute; left: 0; right: 0; top: 56px; z-index: 6; display: flex; flex-direction: column; background: transparent !important; }
+.banner { overflow: hidden; display: flex; align-items: center; padding: 0 20px; background: var(--banner) !important; color: var(--ground); font: 700 18px "Barlow Condensed", sans-serif; letter-spacing: .18em; }
+.boot { position: fixed; inset: 0; z-index: 50; background: var(--ground); display: flex; align-items: center; justify-content: center; color: var(--text); font: 14px "IBM Plex Mono", monospace; }
+.boot pre { margin: 0; line-height: 1.8; } .boot-title { color: var(--amber); margin-bottom: 8px; }
+.boot-ok { color: var(--cyan); } .boot-failed { color: var(--alert); } .boot-pending { color: var(--dim); }
+@media (prefers-reduced-motion: reduce) {
+  .scanline { display: none; }
+  .card.pulse .card-phase, .card.flash { animation: none; }
+}
