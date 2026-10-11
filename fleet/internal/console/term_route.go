@@ -77,7 +77,7 @@ func term(t *Terms) http.HandlerFunc {
 			send(websocket.MessageText, b)
 		}
 
-		go keepAlive(ctx, c, cancel)
+		go keepAlive(ctx, c, t.pingEvery, t.pingTimeout, cancel)
 
 		var runErr error
 		if control {
@@ -131,25 +131,25 @@ func term(t *Terms) http.HandlerFunc {
 	}
 }
 
-// Ping cadence and the wait for the pong. A client that vanished without a
-// FIN (a closed laptop, a dead VPN) would otherwise hold the keyboard until
-// TCP gave up.
-var (
-	pingEvery   = 30 * time.Second
-	pingTimeout = 10 * time.Second
+// Ping cadence and the wait for the pong, unless a Terms says otherwise. A
+// client that vanished without a FIN (a closed laptop, a dead VPN) would
+// otherwise hold the keyboard until TCP gave up.
+const (
+	defaultPingEvery   = 30 * time.Second
+	defaultPingTimeout = 10 * time.Second
 )
 
 // keepAlive pings c until ctx ends and calls drop when a ping goes
 // unanswered. It needs a reader running on c, which both term modes have.
-func keepAlive(ctx context.Context, c *websocket.Conn, drop context.CancelFunc) {
-	tk := time.NewTicker(pingEvery)
+func keepAlive(ctx context.Context, c *websocket.Conn, every, timeout time.Duration, drop context.CancelFunc) {
+	tk := time.NewTicker(every)
 	defer tk.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tk.C:
-			pctx, cancel := context.WithTimeout(ctx, pingTimeout)
+			pctx, cancel := context.WithTimeout(ctx, timeout)
 			err := c.Ping(pctx)
 			cancel()
 			if err != nil && ctx.Err() == nil {
