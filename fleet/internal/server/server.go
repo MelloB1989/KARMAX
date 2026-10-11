@@ -30,6 +30,7 @@ type Ops interface {
 	Tell(ctx context.Context, from, to, text string, now time.Time) error
 	Assign(ctx context.Context, name, task, from, brief string, now time.Time) error
 	Done(name, task, outcome, branch, pr string, now time.Time) error
+	Close(name, task, outcome, branch, pr string, now time.Time) error
 	Rotate(name string, dryRun bool, now time.Time) (daemon.RotatePlan, error)
 	Enable(name string) error
 	Restore(ctx context.Context, id, onto string, now time.Time) error
@@ -198,12 +199,18 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		return ok, ops.Assign(ctx, in.Agent, in.Task, in.From, in.Brief, time.Now())
 	}, fullOnly...)
 	route("POST /v1/done", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		var in struct{ Agent, Task, Outcome, Branch, PR string }
+		var in struct {
+			Agent, Task, Outcome, Branch, PR string
+			KeepSession                      bool `json:"keep_session"`
+		}
 		if err := body(r, &in); err != nil {
 			return nil, err
 		}
 		if in.Agent == "" {
 			return nil, badRequest{fmt.Errorf("done needs agent")}
+		}
+		if in.KeepSession {
+			return ok, ops.Close(in.Agent, in.Task, in.Outcome, in.Branch, in.PR, time.Now())
 		}
 		return ok, ops.Done(in.Agent, in.Task, in.Outcome, in.Branch, in.PR, time.Now())
 	}, fullOnly...)

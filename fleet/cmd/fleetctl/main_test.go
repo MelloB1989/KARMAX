@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeFleetd records requests and answers each path with a canned body.
@@ -256,5 +258,118 @@ func TestUpDryRunPrintsThePlanAndRecreatesNothing(t *testing.T) {
 		if strings.Contains(c, " up") || strings.Contains(c, " down") {
 			t.Errorf("a dry run ran %q", c)
 		}
+	}
+}
+
+func TestInboxFollowSurvivesAFleetdRestartAndResumesFromTheLastID(t *testing.T) {
+	var mu sync.Mutex
+	var polls int
+	var afters []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		polls++
+		n := polls
+		afters = append(afters, r.URL.Query().Get("after"))
+		mu.Unlock()
+		switch {
+		case n == 2 || n == 3: // fleetd is restarting behind its proxy
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+		case n == 1:
+			_, _ = io.WriteString(w, `[{"id":7,"from":"agent-03","at":"2026-10-11T20:00:00Z","text":"first"}]`)
+		case n == 4:
+			_, _ = io.WriteString(w, `[{"id":8,"from":"agent-03","at":"2026-10-11T20:01:00Z","text":"second"}]`)
+		default:
+			_, _ = io.WriteString(w, `[]`)
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	var sleeps []time.Duration
+	sleep := func(_ context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		if len(sleeps) == 7 {
+			cancel()
+		}
+		return ctx.Err()
+	}
+	var errOut bytes.Buffer
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+	err := followInbox(ctx, &client{base: srv.URL, token: "tok"}, 0, false, &errOut, sleep)
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("followInbox: %v (Ctrl-C is a clean exit)", err)
+	}
+	if !strings.Contains(string(out), "first") || !strings.Contains(string(out), "second") || strings.Count(string(out), "first") != 1 {
+		t.Errorf("messages:\n%s", out)
+	}
+	if got := strings.Count(errOut.String(), "fleetd unreachable, retrying\n"); got != 2 {
+		t.Errorf("stderr = %q, want one line per failed poll (2)", errOut.String())
+	}
+	if len(sleeps) < 4 || sleeps[1] != time.Second || sleeps[2] != 2*time.Second || sleeps[3] != 2*time.Second {
+		t.Errorf("sleeps = %v: want poll, 1s, 2s back-off, then the poll interval again", sleeps)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if afters[1] != "7" || afters[3] != "7" || afters[4] != "8" {
+		t.Errorf("after= per poll: %v, want to resume from the last id", afters)
+	}
+}
+
+func TestInboxFollowBackoffCapsAt15sAndAnExpiredTokenEnds(t *testing.T) {
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	defer down.Close()
+	var sleeps []time.Duration
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = followInbox(ctx, &client{base: down.URL, token: "t"}, 0, false, io.Discard, func(_ context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		if len(sleeps) == 7 {
+			cancel()
+		}
+		return ctx.Err()
+	})
+	want := []time.Duration{1, 2, 4, 8, 15, 15, 15}
+	for i, d := range want {
+		if sleeps[i] != d*time.Second {
+			t.Fatalf("sleeps = %v, want 1,2,4,8,15,15,15 seconds", sleeps)
+		}
+	}
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+			_, _ = io.WriteString(w, `{"error":"bad token"}`)
+		}))
+		err := followInbox(context.Background(), &client{base: bad.URL, token: "t"}, 0, false, io.Discard,
+			func(context.Context, time.Duration) error {
+				t.Error("retried after a refused token")
+				return context.Canceled
+			})
+		bad.Close()
+		if err == nil || !strings.Contains(err.Error(), "bad token") {
+			t.Errorf("%d: err = %v, want the refusal", code, err)
+		}
+	}
+}
+
+func TestDoneKeepSessionIsSentToTheRoute(t *testing.T) {
+	f := &fakeFleetd{}
+	if _, err := fleetctl(t, f, "done", "agent-03", "--task", "T1", "--outcome", "superseded", "--keep-session"); err != nil {
+		t.Fatal(err)
+	}
+	var in map[string]any
+	_ = json.Unmarshal([]byte(strings.SplitN(f.reqs[0], " ", 3)[2]), &in)
+	if in["keep_session"] != true || in["outcome"] != "superseded" || in["task"] != "T1" {
+		t.Fatalf("request = %s", f.reqs[0])
+	}
+	f = &fakeFleetd{}
+	_, _ = fleetctl(t, f, "done", "agent-03")
+	_ = json.Unmarshal([]byte(strings.SplitN(f.reqs[0], " ", 3)[2]), &in)
+	if in["keep_session"] != false {
+		t.Fatalf("plain done sent %s", f.reqs[0])
 	}
 }

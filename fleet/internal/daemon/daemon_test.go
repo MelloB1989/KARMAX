@@ -579,6 +579,105 @@ func TestWaitOnAnUnknownAgentFails(t *testing.T) {
 	}
 }
 
+func TestAssignSupersedesTheAgentsOpenTasksWithoutRotating(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	ctx := context.Background()
+	// Two stale open tasks (only the latest is the agent's current one), and
+	// another agent's task that must not be touched.
+	_ = f.Assign(ctx, "agent-03", "OLD1", "operator", "", t0)
+	_ = f.Assign(ctx, "agent-03", "OLD2", "operator", "", t0.Add(time.Minute))
+	_ = f.Assign(ctx, "agent-05", "OTHER", "operator", "", t0)
+	if task, _ := f.db.Task("OLD1"); task.Outcome != "superseded" || task.Closed.IsZero() {
+		t.Fatalf("OLD1 after OLD2 was assigned: %+v", task)
+	}
+	if err := f.Assign(ctx, "agent-03", "NEW", "operator", "go", t0.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"OLD1", "OLD2"} {
+		if task, _ := f.db.Task(id); task.Outcome != "superseded" || task.Closed.IsZero() {
+			t.Errorf("%s = %+v, want closed as superseded", id, task)
+		}
+	}
+	if task, _ := f.db.Task("NEW"); !task.Closed.IsZero() || task.Outcome != "" {
+		t.Errorf("NEW = %+v, want open", task)
+	}
+	if task, _ := f.db.Task("OTHER"); !task.Closed.IsZero() {
+		t.Errorf("another agent's task was closed: %+v", task)
+	}
+	// Assigning the same id again does not supersede itself.
+	_ = f.Assign(ctx, "agent-03", "NEW", "operator", "", t0.Add(3*time.Minute))
+	if task, _ := f.db.Task("NEW"); !task.Closed.IsZero() {
+		t.Errorf("a re-assigned task closed itself: %+v", task)
+	}
+	if st := f.State("agent-03"); st.Task != "NEW" || st.Done {
+		t.Errorf("state = %+v", st)
+	}
+	// The session goes on: nothing archived, nothing rotated.
+	f.Tick(ctx, t0.Add(4*time.Minute))
+	for _, c := range b.calls {
+		if strings.HasPrefix(c, "fresh") || strings.HasPrefix(c, "delete") {
+			t.Errorf("assign rotated the session: %q", b.calls)
+		}
+	}
+	if hist, _ := f.db.History("agent-03", 5); len(hist) != 0 {
+		t.Errorf("history = %+v, want none", hist)
+	}
+	evs, _ := f.db.Events("agent-03", time.Time{})
+	n := 0
+	for _, e := range evs {
+		if e.Kind == "fleet.superseded" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("fleet.superseded events = %d, want 2 (OLD1 by OLD2, OLD2 by NEW)", n)
+	}
+}
+
+func TestCloseKeepsTheSessionAndTheCurrentTaskGoesAway(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	ctx := context.Background()
+	_ = f.Assign(ctx, "agent-03", "T1", "operator", "", t0)
+	if err := f.Close("agent-03", "", "done", "fleet/agent-03/x", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := f.db.Task("T1")
+	if task.Outcome != "done" || task.Branch != "fleet/agent-03/x" || task.Closed.IsZero() {
+		t.Errorf("task = %+v", task)
+	}
+	if st := f.State("agent-03"); st.Task != "" || st.Done || st.Phase == reconcile.Waiting {
+		t.Errorf("state = %+v, want no task, not waiting, and not marked done (that is what rotates)", st)
+	}
+	f.Tick(ctx, t0.Add(time.Minute))
+	if len(b.calls) != 0 {
+		t.Errorf("calls = %q, want none: the session was kept", b.calls)
+	}
+	if hist, _ := f.db.History("agent-03", 5); len(hist) != 0 {
+		t.Errorf("history = %+v", hist)
+	}
+	// Nothing to close.
+	if err := f.Close("agent-03", "", "", "", "", t0); err == nil {
+		t.Error("closing with no task succeeded")
+	}
+	// A stale task other than the current one: closed, current untouched.
+	_ = f.Assign(ctx, "agent-05", "S1", "operator", "", t0)
+	f.db.OpenTask("S0", "agent-05", "operator", t0)
+	if err := f.Close("agent-05", "S0", "superseded", "", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	if st := f.State("agent-05"); st.Task != "S1" {
+		t.Errorf("current task = %q, want S1 untouched", st.Task)
+	}
+	// And plain Done still rotates (one task, one session).
+	_ = f.Assign(ctx, "agent-03", "T2", "operator", "", t0)
+	_ = f.Done("agent-03", "T2", "done", "", "", t0)
+	if st := f.State("agent-03"); !st.Done {
+		t.Error("Done no longer marks the session for rotation")
+	}
+}
+
 // Friction #4: `fleetctl done` showed in status only at the next tick.
 func TestDoneShowsInStatusAtOnce(t *testing.T) {
 	f, boxes, _ := newFleet(t)

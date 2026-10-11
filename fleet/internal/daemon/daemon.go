@@ -384,6 +384,15 @@ func (f *Fleet) assign(name, task, from string, now time.Time) error {
 	}
 	st.Task, st.Done, st.NudgedAt, st.LastBusy = task, false, time.Time{}, now
 	f.setState(st)
+	// New work supersedes the agent's open tasks. Its session goes on (it is
+	// still the agent's), so nothing is archived or rotated.
+	old, err := f.db.SupersedeOpen(name, task, now)
+	for _, id := range old {
+		f.event(name, "fleet.superseded", st.SessionID, map[string]string{"task": id, "by": task})
+	}
+	if err != nil {
+		return err
+	}
 	f.event(name, "fleet.assign", st.SessionID, map[string]string{"task": task, "from": from})
 	return f.db.OpenTask(task, name, from, now)
 }
@@ -415,6 +424,37 @@ func (f *Fleet) Done(name, task, outcome, branch, pr string, now time.Time) erro
 	if outcome == "" {
 		outcome = "done"
 	}
+	return f.db.CloseTask(task, now, outcome, branch, pr)
+}
+
+// Close records a task's end and leaves the agent's session alone: nothing is
+// archived or rotated. For a task the agent has already moved on from, or
+// one it should finish and keep its context after. Closing the agent's
+// current task leaves it with none.
+func (f *Fleet) Close(name, task, outcome, branch, pr string, now time.Time) error {
+	if err := f.known(name); err != nil {
+		return err
+	}
+	f.locks[name].Lock()
+	defer f.locks[name].Unlock()
+	st := f.State(name)
+	if task == "" {
+		task = st.Task
+	}
+	if task == "" {
+		return fmt.Errorf("%s has no open task to close (name one with --task)", name)
+	}
+	if outcome == "" {
+		outcome = "done"
+	}
+	if st.Task == task {
+		st.Task = ""
+		if st.Phase == reconcile.Waiting {
+			st.Phase = reconcile.Standby // its task is closed; nothing waits for the tick
+		}
+		f.setState(st)
+	}
+	f.event(name, "fleet.close", st.SessionID, map[string]string{"task": task, "outcome": outcome})
 	return f.db.CloseTask(task, now, outcome, branch, pr)
 }
 
