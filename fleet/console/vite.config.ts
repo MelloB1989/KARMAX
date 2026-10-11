@@ -28,5 +28,5 @@ export default defineConfig({
   server: target
     ? { proxy: { "/v1": { target, ws: true }, "/login": { target } } }
     : undefined,
-  test: { environment: "jsdom" },
+  test: { environment: "jsdom", exclude: ["e2e/**", "node_modules/**"] }, // e2e/ is Playwright's
 });
