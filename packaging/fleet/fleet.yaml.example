@@ -59,6 +59,12 @@ agents:
 #   docker_host: ssh://fleetbuild@192.168.1.10   # host-bootstrap.sh kali --build-pubkey; root there
 #   key_env: FLEET_BUILD_KEY   # base64 of the private key, in env_file
 
+# github:                    # agents push and use gh as this account (GH_TOKEN in each agent)
+#   token_env: GH_TOKEN_FLEET  # in env_file: gh auth token --user <account>
+# git:                       # the identity agents commit under; the agent's name is appended
+#   name: "Your coding agent"
+#   email: agents@example.com
+
 karmax:
   webhook_url: http://127.0.0.1:9090/fleet   # KARMAX webhooks port (default 9090) + the route in the README
   webhook_secret_env: FLEET_WEBHOOK_SECRET

@@ -353,7 +353,8 @@ func TestRestoreArchivesTheCurrentSessionFirst(t *testing.T) {
 var _ = errors.New
 
 // A message can land in the old session after it was archived and before it
-// was stopped. It is archived too — never deleted unarchived.
+// was stopped. It is archived too — never deleted unarchived — and the first
+// archive, now a strict prefix of the second, is not kept beside it.
 func TestAMessageAfterTheArchiveIsArchivedBeforeDeletion(t *testing.T) {
 	f, boxes, _ := newFleet(t)
 	b := boxes["agent-03"]
@@ -365,8 +366,11 @@ func TestAMessageAfterTheArchiveIsArchivedBeforeDeletion(t *testing.T) {
 	f.Tick(context.Background(), t0)
 
 	all, _ := archive.List(f.ArchiveRoot(), time.Time{})
-	if len(all) != 2 {
-		t.Fatalf("archives = %d, want the first and the one with the late message", len(all))
+	if len(all) != 1 {
+		t.Fatalf("archives = %d, want only the one with the late message", len(all))
+	}
+	if hist, _ := f.db.History("agent-03", 5); len(hist) != 1 || hist[0].ArchiveID != all[0].ID {
+		t.Fatalf("history points at %+v, want %s", hist, all[0].ID)
 	}
 	found := false
 	for _, m := range all {

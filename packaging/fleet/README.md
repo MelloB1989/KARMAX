@@ -76,7 +76,18 @@ Check: `fleetctl attach agent-01` shows the session (detach with `Ctrl-b d`).
 Two agents on one host can message each other. `docker restart agent-01`
 brings it back on the same session.
 
-## Phase 3 — KARMAX runs its orchestrator in `karmax-brain`
+## Phase 3 — KARMAX's orchestrator
+
+The orchestrator is one KARMAX agent's harness session, named so agents can
+message it. It runs one of two ways:
+
+- **Native** (`orchestrator.native: true` in `fleet.yaml`): on the host that
+  runs fleetd and KARMAX, outside Docker, under that host's own Claude login.
+  Use it when no agent runs on that host — every agent then reaches it
+  through the relay, and nothing about it lives in a container.
+- **In `karmax-brain`**: a container sharing the agents' PID namespace on the
+  same host, so agents there message it natively. It needs its own
+  subscription token (`orchestrator.token_env`) and a `launch:` prefix.
 
 In `karmax.yaml`, give the one agent that orchestrates its own harness kind.
 Every other agent keeps the default `agent` kind and runs as before. Setting
@@ -84,7 +95,7 @@ Every other agent keeps the default `agent` kind and runs as before. Setting
 
 ```yaml
 agents:
-  - id: karmax-agent
+  - id: nexus
     harness_kind: orchestrator   # only this agent thinks in the fleet's kind
     # …the rest of its definition, unchanged
 
@@ -93,39 +104,52 @@ harness:
   kinds:
     orchestrator:
       model: sonnet
-      idle: 30m
+      idle: 45m
       max_turns: 500
-      turn_timeout: 12m
+      turn_timeout: 3m
       name: karmax          # how agents address it; = fleet.yaml orchestrator.name
       resident: true        # never reaped or evicted, revived if it dies
-      launch: [docker, exec, -i, -w, "{workdir}", karmax-brain]
-    agent: {model: sonnet, idle: 30m, max_turns: 500, turn_timeout: 12m}
-    chat: {model: sonnet, idle: 20m, max_turns: 200, turn_timeout: 4m}
-    task: {model: opus, idle: 5m, max_turns: 20, turn_timeout: 20m}
+      # In karmax-brain only:
+      # launch: [docker, exec, -i, -w, "{workdir}", karmax-brain]
+    agent: {model: sonnet, idle: 45m, max_turns: 500, turn_timeout: 3m}
+    # …every other kind you use
 
 webhooks:
   enabled: true
   routes:
     - path: /fleet
       method: POST
-      agent_id: karmax-agent          # your agent's id
-      bus_event: fleet.agent
+      agent_id: nexus                 # the orchestrating agent
+      # No bus_event: a custom kind is not routed to any agent, so every
+      # fleet event would be dropped. The default, webhook.fired, reaches
+      # agent_id's inbox.
       secret: ${FLEET_WEBHOOK_SECRET}
       signature_header: X-Fleet-Signature
 ```
 
-Check: from an agent, `/list-agents` shows `karmax`. An agent messaging it
-while idle produces `harness.turn.background` on the bus, and the next
-`karmax ask` gets its own answer. Idle for an hour, it is still live.
+KARMAX's environment needs:
+- `FLEET_WEBHOOK_SECRET`, the route's secret, which is the same value as in
+  fleetd's env file;
+- `FLEET_NAME=karmax`, so the orchestrator's `fleetctl tell` is signed as
+  `karmax` and agents report back to it rather than to "the operator".
 
-Known limits of a launched kind:
+A systemd drop-in with an `EnvironmentFile` holding just those two does it.
+Give KARMAX's API a token too (`KARMAX_API_TOKEN` in `~/.karmax/.env`), and
+put the same value in fleetd's env file: without one the API is open to every
+agent on the LAN.
 
-- The CLI's environment is the container's, not the daemon's, so
-  `Thinking` (`MAX_THINKING_TOKENS`) does not cross the prefix.
-- The operator's browser tools are not offered to the `orchestrator` kind:
-  they reach `localhost` on Kali, which the container cannot see.
-- `harness.close` on a resident session closes it for good (until someone
-  writes to it). Every other close, such as the turn limit or a model change,
+Check: an agent's `fleetctl tell karmax "…"` lands in the orchestrator's
+session, which takes a turn by itself — KARMAX logs "a session ran a turn by
+itself". Idle for an hour, it is still live, and a KARMAX restart revives it.
+
+Limits:
+
+- With `launch:`, the CLI's environment is the container's, not the daemon's,
+  so `Thinking` (`MAX_THINKING_TOKENS`) does not cross the prefix, and the
+  operator's browser tools are not offered (they reach `localhost` on the
+  host, which the container cannot see).
+- `harness.close` on a resident session closes it for good, until someone
+  writes to it. Every other close, such as the turn limit or a model change,
   lets it come back.
 
 ## Phase 4 — fleetd
@@ -143,10 +167,31 @@ fleetd rewrites its `data/agents.json`, `quota.json`, `usage.json`,
 ## Phase 5 — the orchestrator
 
 Set `orchestrator.karmax_agent` in `fleet.yaml`, then run `fleetctl render`.
-It writes the fleet's paragraph (the roster; how to pick, assign, close and
-react) into the orchestrator session's `.claude/CLAUDE.md`, beside the
-`CLAUDE.md` the session owns. To verify, ask KARMAX on WhatsApp to fix
-something in a repo, and watch `fleetctl ls` and `fleetctl events`.
+It writes the fleet's paragraph into the orchestrator session's
+`.claude/CLAUDE.md`, beside the `CLAUDE.md` the session owns. The paragraph
+covers the roster and how to pick, assign, close and react.
+
+The orchestrator reads that file when its session starts, so restart KARMAX
+after a render. Set `orchestrator.report` too. A turn an agent's report
+starts has no caller, so its reply reaches nobody unless the orchestrator
+sends it somewhere, for example
+`karmax tool call comms.send target=<number>@s.whatsapp.net content="<text>"`.
+
+To verify, ask KARMAX on WhatsApp to fix something in a repo, and watch
+`fleetctl ls` and `fleetctl events`.
+
+## Agents' tools
+
+- **GitHub.** `github.token_env` in `fleet.yaml` names a token in the env
+  file (`gh auth token --user <account>`). Every agent gets it as `GH_TOKEN`:
+  `gh` uses it, and so does git, through gh's credential helper in the
+  image. The image rewrites SSH remotes, including `~/.ssh/config` aliases
+  such as `git@github:`, to HTTPS, because containers hold no SSH keys.
+- **Git identity.** `git.name` and `git.email`. Each agent commits as
+  `<name> (agent-NN)`.
+- **Heavy work.** `build.docker_host` points every agent's Docker at a
+  bigger machine over SSH, and `kbuild <cmd>` runs a command there in the
+  fleet image, as you, in the same shared-code directory.
 
 ## Security
 

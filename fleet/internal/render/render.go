@@ -121,6 +121,9 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 	if c.Build.DockerHost != "" {
 		need = append(need, c.Build.KeyEnv)
 	}
+	if c.GitHub.TokenEnv != "" {
+		need = append(need, c.GitHub.TokenEnv)
+	}
 	var missing []string
 	for _, k := range need {
 		if strings.TrimSpace(env[k]) == "" {
@@ -144,6 +147,9 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 		}
 		if c.Build.DockerHost != "" {
 			kv["FLEET_BUILD_KEY"] = env[c.Build.KeyEnv]
+		}
+		if c.GitHub.TokenEnv != "" {
+			kv["GH_TOKEN"] = env[c.GitHub.TokenEnv]
 		}
 		if err := writeEnv(filepath.Join(dir, "agents", n+".env"), kv); err != nil {
 			return err
@@ -318,6 +324,13 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 		env["FLEET_CLAUDE_MD"] = base64.StdEncoding.EncodeToString([]byte(b))
 		if c.Build.DockerHost != "" {
 			env["DOCKER_HOST"], env["FLEET_BUILD_IMAGE"] = c.Build.DockerHost, c.Image
+		}
+		if c.Git.Name != "" {
+			who := c.Git.Name + " (" + name + ")"
+			env["GIT_AUTHOR_NAME"], env["GIT_COMMITTER_NAME"] = who, who
+		}
+		if c.Git.Email != "" {
+			env["GIT_AUTHOR_EMAIL"], env["GIT_COMMITTER_EMAIL"] = c.Git.Email, c.Git.Email
 		}
 		if a.Model != "" {
 			env["FLEET_MODEL"] = a.Model

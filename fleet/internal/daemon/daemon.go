@@ -303,9 +303,14 @@ func (f *Fleet) settle(ctx context.Context, name string, b Box, st reconcile.Sta
 	if h == m.SHA256 {
 		return true
 	}
-	if m2, err := f.archiveSession(ctx, name, b, st, sid, task, reason, now); err != nil || m2 == nil {
+	m2, err := f.archiveSession(ctx, name, b, st, sid, task, reason, now)
+	if err != nil || m2 == nil {
 		f.event(name, "fleet.late_archive_failed", sid, map[string]string{"error": fmt.Sprint(err)})
 		return false
+	}
+	// The ledger now points at m2; m is the same transcript cut short.
+	if ok, err := archive.Supersede(f.archiveRoot(), m.ID, m2.ID); err != nil || !ok {
+		f.Log("%s: kept %s beside %s (superseded=%v): %v", name, m.ID, m2.ID, ok, err)
 	}
 	return true
 }

@@ -163,3 +163,37 @@ func TestListAndPrune(t *testing.T) {
 		t.Fatalf("left %+v", left)
 	}
 }
+
+// Supersede drops an archive only when the newer one holds all of it; a
+// transcript that is not its prefix (rewritten, not appended to) keeps both.
+func TestSupersedeOnlyDropsAPrefix(t *testing.T) {
+	root := t.TempDir()
+	archiveOf := func(main string) *Manifest {
+		src := source()
+		src.tr.Main, src.hash = []byte(main), sum(main)
+		m, err := Archive(context.Background(), src, root, Info{Agent: "agent-03", SessionID: "0123456789ab", At: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	first := archiveOf(body)
+	longer := archiveOf(body + `{"type":"user","message":{"role":"user","content":"late"}}` + "\n")
+	other := archiveOf(`{"type":"user","message":{"role":"user","content":"something else"}}` + "\n")
+
+	if ok, err := Supersede(root, first.ID, other.ID); err != nil || ok {
+		t.Fatalf("superseded by a transcript that does not contain it: ok=%v err=%v", ok, err)
+	}
+	if _, err := Load(root, first.ID); err != nil {
+		t.Fatalf("the first archive is gone after a refused supersede: %v", err)
+	}
+	if ok, err := Supersede(root, first.ID, longer.ID); err != nil || !ok {
+		t.Fatalf("not superseded by its own continuation: ok=%v err=%v", ok, err)
+	}
+	if _, err := Load(root, first.ID); err == nil {
+		t.Fatal("the superseded archive is still there")
+	}
+	if _, err := Load(root, longer.ID); err != nil {
+		t.Fatalf("the newer archive went too: %v", err)
+	}
+}

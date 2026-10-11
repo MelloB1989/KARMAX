@@ -52,6 +52,8 @@ type Config struct {
 	Agents       map[string]Agent `yaml:"agents"`
 	Karmax       Karmax           `yaml:"karmax"`
 	Build        Build            `yaml:"build"`
+	GitHub       GitHub           `yaml:"github"`
+	Git          Git              `yaml:"git"`
 	Thresholds   Thresholds       `yaml:"thresholds"`
 }
 
@@ -108,6 +110,19 @@ type Build struct {
 	DockerHost string `yaml:"docker_host"`
 	// KeyEnv names the env var holding the base64 private key for it.
 	KeyEnv string `yaml:"key_env"`
+}
+
+// GitHub is how agents reach GitHub: one token for every agent, as GH_TOKEN
+// (gh, and git through gh's credential helper in the image).
+type GitHub struct {
+	TokenEnv string `yaml:"token_env"`
+}
+
+// Git is the identity agents commit under; each agent's name is appended,
+// e.g. "MelloB's coding agent (agent-01)".
+type Git struct {
+	Name  string `yaml:"name"`
+	Email string `yaml:"email"`
 }
 
 // Karmax is where fleetd tells KARMAX things.
@@ -314,6 +329,11 @@ func (c *Config) validate() error {
 			return fmt.Errorf("agent %q: token_env %s is already %s's — one subscription per agent", name, a.TokenEnv, other)
 		}
 		seenToken[a.TokenEnv] = name
+	}
+	if c.GitHub.TokenEnv != "" {
+		if err := checkTokenEnv("github", c.GitHub.TokenEnv); err != nil {
+			return err
+		}
 	}
 	if c.Build.DockerHost != "" {
 		if err := checkTokenEnv("build", c.Build.KeyEnv); err != nil {

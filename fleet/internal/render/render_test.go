@@ -366,3 +366,37 @@ func TestOrchestratorBriefSaysHowToReportToTheOperator(t *testing.T) {
 		t.Errorf("report section = %q", s)
 	}
 }
+
+// Agents commit under the fleet's git identity, named per agent, and push
+// with the fleet's GitHub token — which, being a secret, is only in the env file.
+func TestRenderGivesAgentsAGitIdentityAndGitHubToken(t *testing.T) {
+	c, err := config.Parse([]byte(nativeYAML + "github: {token_env: GH_TOKEN_FLEET}\ngit: {name: \"MelloB's coding agent\", email: build@example.com}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "render")
+	e := map[string]string{"CLAUDE_TOKEN_AGENT_01": "sk-ant-oat01-A1", "FLEET_TOKEN": "full", "FLEET_RELAY_TOKEN": "relay"}
+	if err := Render(c, e, dir); err == nil || !strings.Contains(err.Error(), "GH_TOKEN_FLEET") {
+		t.Fatalf("render without the GitHub token: %v", err)
+	}
+	e["GH_TOKEN_FLEET"] = "gho_secret"
+	if err := Render(c, e, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEnv(t, filepath.Join(dir, "agents", "agent-01.env"))["GH_TOKEN"]; got != "gho_secret" {
+		t.Errorf("agent-01.env GH_TOKEN = %q", got)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "compose.pc2.yaml"))
+	if strings.Contains(string(b), "gho_secret") {
+		t.Fatal("the GitHub token reached the compose file")
+	}
+	env := loadCompose(t, filepath.Join(dir, "compose.pc2.yaml")).Services["agent-01"].Environment
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		if env[k] != "MelloB's coding agent (agent-01)" {
+			t.Errorf("%s = %q", k, env[k])
+		}
+	}
+	if env["GIT_AUTHOR_EMAIL"] != "build@example.com" || env["GIT_COMMITTER_EMAIL"] != "build@example.com" {
+		t.Errorf("git email: %v", env)
+	}
+}

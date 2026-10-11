@@ -255,6 +255,33 @@ func dirOf(root, id string) (string, error) {
 	return filepath.Join(root, clean), nil
 }
 
+// Supersede removes the archive old once the archive by is known to hold
+// everything it does — every transcript it has, as a prefix of by's copy —
+// and reports whether it did. Anything else leaves both in place.
+func Supersede(root, old, by string) (bool, error) {
+	a, err := ReadTranscript(root, old)
+	if err != nil {
+		return false, err
+	}
+	b, err := ReadTranscript(root, by)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.HasPrefix(b.Main, a.Main) {
+		return false, nil
+	}
+	for p, body := range a.Sub {
+		if !bytes.HasPrefix(b.Sub[p], body) {
+			return false, nil
+		}
+	}
+	dir, err := dirOf(root, old)
+	if err != nil {
+		return false, err
+	}
+	return true, os.RemoveAll(dir)
+}
+
 // Load reads one archive's manifest.
 func Load(root, id string) (*Manifest, error) {
 	dir, err := dirOf(root, id)
