@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
@@ -407,4 +409,49 @@ func isMouseKey(k string) bool {
 		}
 	}
 	return false
+}
+
+// The snapshot carries the pane's text, so a dialog that blocks claude
+// before it registers a session can be seen.
+func TestSnapshotCarriesThePanesScreen(t *testing.T) {
+	l := newLocal(t)
+	text := "By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode."
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", "main", "-x", "200", "-y", "50",
+		"sh", "-c", "printf '%s\\n' \"$0\"; exec sleep 300", text).CombinedOutput(); err != nil {
+		t.Fatalf("tmux: %v %s", err, out)
+	}
+	var o reconcile.Obs
+	for i := 0; i < 50 && !strings.Contains(o.Screen, "Bypass Permissions"); i++ {
+		time.Sleep(100 * time.Millisecond)
+		o, _ = l.a.Observe(context.Background(), time.Now())
+	}
+	if !strings.Contains(o.Screen, text) || reconcile.Dialog(o.Screen) == "" {
+		t.Fatalf("screen = %q", o.Screen)
+	}
+}
+
+// Restart must behave like recreate: Claude Code moves its bypass consent into
+// the user settings and out of ~/.claude.json, and agent-run puts the shipped
+// settings.json back on every start, so that file has to carry the consent.
+func TestShippedSettingsSkipTheBypassDialogAndAgentRunReinstallsThem(t *testing.T) {
+	raw, err := os.ReadFile("../../../packaging/fleet/home/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Skip        bool `json:"skipDangerousModePermissionPrompt"`
+		Permissions struct {
+			DefaultMode string `json:"defaultMode"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Skip || s.Permissions.DefaultMode != "bypassPermissions" {
+		t.Fatalf("settings.json = %s: needs skipDangerousModePermissionPrompt true with bypassPermissions", raw)
+	}
+	run, _ := os.ReadFile("../../../packaging/fleet/agent-run")
+	if !strings.Contains(string(run), `cp /opt/fleet/settings.json "$C/settings.json"`) {
+		t.Fatal("agent-run no longer copies the shipped settings.json on every start")
+	}
 }
