@@ -124,6 +124,9 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 	if c.GitHub.TokenEnv != "" {
 		need = append(need, c.GitHub.TokenEnv)
 	}
+	if c.Console != nil {
+		need = append(need, c.Console.TokenEnv)
+	}
 	var missing []string
 	for _, k := range need {
 		if strings.TrimSpace(env[k]) == "" {
@@ -176,6 +179,10 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 		if err := os.WriteFile(p, []byte(b), 0o644); err != nil {
 			return err
 		}
+	}
+
+	if err := writeConsole(c, env, dir); err != nil {
+		return err
 	}
 
 	for _, h := range c.HostNames() {
