@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/config"
@@ -222,11 +223,25 @@ func ImageBuild(ctx context.Context, cfg *config.Config, src, tag string, w io.W
 // Piper runs `from | to`, writing both commands' stderr to w.
 type Piper func(ctx context.Context, from, to []string, w io.Writer) error
 
+// syncWriter serialises writes to a writer that is not safe for concurrent use.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // ExecPiper runs the pipeline for real.
 func ExecPiper(ctx context.Context, from, to []string, w io.Writer) error {
 	src := exec.CommandContext(ctx, from[0], from[1:]...)
 	dst := exec.CommandContext(ctx, to[0], to[1:]...)
-	src.Stderr, dst.Stdout, dst.Stderr = w, w, w
+	// Both commands write w from their own copy goroutines: one lock for it.
+	sw := &syncWriter{w: w}
+	src.Stderr, dst.Stdout, dst.Stderr = sw, sw, sw
 	pipe, err := src.StdoutPipe()
 	if err != nil {
 		return err
