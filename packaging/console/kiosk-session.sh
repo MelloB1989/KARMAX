@@ -12,7 +12,7 @@ xset s noblank
 unclutter -idle 0.5 -root &
 
 while true; do
-	google-chrome --kiosk --no-first-run --noerrdialogs --disable-session-crashed-bubble \
+	google-chrome --kiosk --incognito --no-first-run --noerrdialogs --disable-session-crashed-bubble \
 		--ignore-gpu-blocklist \
 		"http://${CONSOLE_LISTEN}/login?k=$(cat "${CONSOLE_DIR}/client.token")"
 	sleep 2

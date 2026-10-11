@@ -64,6 +64,14 @@ expect "lingering" "$OUT" "loginctl enable-linger kiosktest"
 expect "rustdesk on :0" "$OUT" "Environment=DISPLAY=:0"
 expect "rustdesk direct mode" "$OUT" "direct-server Y"
 expect "token step" "$OUT" "client.token"
+expect "docker group checked" "$OUT" "grep -w docker"
+expect "units checks console.yaml" "$OUT" "test -s $TMP/console-dir/console.yaml"
+expect "units checks fleetd.token" "$OUT" "test -s $TMP/console-dir/fleetd.token"
+expect "units checks the binary" "$OUT" "test -x /opt/test/fleet-console"
+# the token is made before the units that need it
+tok=$(grep -n '^== token' <<<"$OUT" | cut -d: -f1); uni=$(grep -n '^== units' <<<"$OUT" | cut -d: -f1)
+if [[ -n "$tok" && -n "$uni" && "$tok" -lt "$uni" ]]; then ok "token runs before units"; else fail "token runs before units"; fi
+expect "kiosk Chrome is incognito" "$(cat "$HERE/kiosk-session.sh")" "--incognito"
 expect "operator sets the password" "$OUT" "sudo rustdesk --password"
 refuse "no unrendered placeholder" "$OUT" "@KIOSK_USER@"
 refuse "no unrendered placeholder (dir)" "$OUT" "@CONSOLE_DIR@"
@@ -81,6 +89,16 @@ OUT_ONE="$("$HERE/install.sh" --dry-run --env "$TMP/console.env" --only token 2>
 refuse "--only runs only that step" "$OUT_ONE" "update-grub"
 
 if "$HERE/install.sh" --dry-run --env "$TMP/console.env" --only nope >/dev/null 2>&1; then fail "unknown step rejected"; else ok "unknown step rejected"; fi
+
+# a real units run stops, naming each missing file, before enabling anything
+mkdir -p "$TMP/real"
+sed "s|^CONSOLE_DIR=.*|CONSOLE_DIR=$TMP/real|;s|^CONSOLE_BIN=.*|CONSOLE_BIN=$TMP/real/no-binary|" "$TMP/console.env" >"$TMP/real.env"
+OUT_U="$("$HERE/install.sh" --env "$TMP/real.env" --only units 2>&1)"
+[[ $? -ne 0 ]] && ok "units refuses with files missing" || fail "units refuses with files missing"
+expect "names console.yaml and how to get it" "$OUT_U" "fleetctl render"
+expect "names fleetd.token" "$OUT_U" "real/fleetd.token"
+expect "names the binary" "$OUT_U" "real/no-binary"
+refuse "enabled nothing" "$OUT_U" "systemctl"
 
 # ---- the GRUB edit ----------------------------------------------------------------
 # shellcheck disable=SC1091

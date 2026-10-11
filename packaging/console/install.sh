@@ -7,11 +7,11 @@
 # Run it as the kiosk user. Steps that need root use sudo, one function each, and every
 # command is printed before it runs (--dry-run prints them and runs nothing). Safe to run
 # again. It prints no secret. Steps, in order:
-#   check edid cmdline packages units rustdesk token
+#   check edid cmdline packages token units rustdesk
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ALL_STEPS=(check edid cmdline packages units rustdesk token)
+ALL_STEPS=(check edid cmdline packages token units rustdesk)
 DRY=0
 ENV_FILE="$SCRIPT_DIR/console.env"
 ONLY=""
@@ -138,7 +138,7 @@ step_check() {
 	if ((DRY)); then
 		say "+ test -e /sys/class/drm/card*-$CONNECTOR/status"
 		say "+ ls /dev/dri/renderD*"
-		say "+ id -nG $KIOSK_USER | grep -w video; id -nG $KIOSK_USER | grep -w render"
+		say "+ id -nG $KIOSK_USER | grep -w video; id -nG $KIOSK_USER | grep -w render; id -nG $KIOSK_USER | grep -w docker"
 		return 0
 	fi
 	[[ "$(id -un)" == "$KIOSK_USER" ]] || die "run this as $KIOSK_USER (it is $(id -un))"
@@ -148,7 +148,7 @@ step_check() {
 	say "connector $CONNECTOR is $(cat "$st")"
 	compgen -G '/dev/dri/renderD*' >/dev/null || die "no /dev/dri/renderD*: no GPU render node"
 	local g
-	for g in video render; do
+	for g in video render docker; do
 		id -nG "$KIOSK_USER" | tr ' ' '\n' | grep -qx "$g" || die "$KIOSK_USER is not in the $g group: sudo usermod -aG $g $KIOSK_USER"
 	done
 }
@@ -216,8 +216,24 @@ EOF
 	as_root apt-get install -y "$deb"
 }
 
+# units_preflight: the console must be startable before its service is enabled.
+units_preflight() {
+	local missing=0
+	if ((DRY)); then
+		say "+ test -s $CONSOLE_DIR/console.yaml"
+		say "+ test -s $CONSOLE_DIR/fleetd.token"
+		say "+ test -x $CONSOLE_BIN"
+		return 0
+	fi
+	[[ -s "$CONSOLE_DIR/console.yaml" ]] || { say "missing: $CONSOLE_DIR/console.yaml - on Kali run 'fleetctl render', then copy its console.yaml here" >&2; missing=1; }
+	[[ -s "$CONSOLE_DIR/fleetd.token" ]] || { say "missing: $CONSOLE_DIR/fleetd.token - the console-scope fleetd token; 'fleetctl render' on Kali writes it next to console.yaml, copy it here (mode 0600)" >&2; missing=1; }
+	[[ -x "$CONSOLE_BIN" ]] || { say "missing: $CONSOLE_BIN - build it ('go build ./cmd/fleet-console' after 'npm ci && npm run build' in fleet/console) and copy it here" >&2; missing=1; }
+	((missing == 0)) || die "units: the files above are needed before fleet-console.service can start; nothing was enabled"
+}
+
 step_units() {
 	say "== units: Xorg, the console user service, the kiosk service"
+	units_preflight
 	put_root /etc/X11/Xwrapper.config 0644 <<'EOF'
 allowed_users=anybody
 needs_root_rights=yes
