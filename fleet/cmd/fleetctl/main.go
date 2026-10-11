@@ -18,8 +18,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -170,14 +172,59 @@ func (c *client) do(method, path string, in, out any) error {
 	if resp.StatusCode >= 300 {
 		var e struct{ Error string }
 		if json.Unmarshal(b, &e) == nil && e.Error != "" {
-			return errors.New(e.Error)
+			return &statusError{resp.StatusCode, e.Error}
 		}
-		return fmt.Errorf("fleetd: %s", resp.Status)
+		return &statusError{resp.StatusCode, "fleetd: " + resp.Status}
 	}
 	if out != nil {
 		return json.Unmarshal(b, out)
 	}
 	return nil
+}
+
+// statusError is fleetd answering with an error status.
+type statusError struct {
+	Code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+// refused is an answer that retrying cannot change: the token is wrong.
+func refused(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden)
+}
+
+// followInbox prints the operator's inbox after the given id, and keeps
+// printing as it grows. A failed poll (fleetd restarting) is one line on
+// errOut and a retry, 1 s doubling to 15 s, from the last id; only a refused
+// token or ctx ends it.
+func followInbox(ctx context.Context, c *client, after int64, asJSON bool, errOut io.Writer, sleep func(context.Context, time.Duration) error) error {
+	const poll, minBack, maxBack = 2 * time.Second, time.Second, 15 * time.Second
+	back := minBack
+	for {
+		var msgs []ledger.Relay
+		if err := c.do("GET", fmt.Sprintf("/v1/inbox?after=%d", after), nil, &msgs); err != nil {
+			if refused(err) {
+				return err
+			}
+			fmt.Fprintln(errOut, "fleetd unreachable, retrying")
+			if err := sleep(ctx, back); err != nil {
+				return nil
+			}
+			back = min(back*2, maxBack)
+			continue
+		}
+		back = minBack
+		for _, m := range msgs {
+			printMessage(m, asJSON)
+			after = m.ID
+		}
+		if err := sleep(ctx, poll); err != nil {
+			return nil
+		}
+	}
 }
 
 func printJSON(v any) error {
@@ -384,20 +431,19 @@ func run(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		for {
-			var msgs []ledger.Relay
-			if err := c.do("GET", fmt.Sprintf("/v1/inbox?after=%d", after), nil, &msgs); err != nil {
-				return err
-			}
-			for _, m := range msgs {
-				printMessage(m, asJSON)
-				after = m.ID
-			}
-			if !follow {
-				return nil
-			}
-			time.Sleep(2 * time.Second)
+		if follow {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return followInbox(ctx, c, after, asJSON, os.Stderr, sleepCtx)
 		}
+		var msgs []ledger.Relay
+		if err := c.do("GET", fmt.Sprintf("/v1/inbox?after=%d", after), nil, &msgs); err != nil {
+			return err
+		}
+		for _, m := range msgs {
+			printMessage(m, asJSON)
+		}
+		return nil
 
 	case "wait":
 		var task string
