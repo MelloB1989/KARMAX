@@ -142,15 +142,57 @@ func TestPanelNotBuiltSaysSo(t *testing.T) {
 	}
 }
 
-func TestHealthzHasSourcesAndVersion(t *testing.T) {
-	srv, _ := testServer(t, nil, nil)
-	r, _ := http.Get(srv.URL + "/healthz")
+// downServer is a console whose git source is down with an error string.
+func downServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	h := newHub(func(s *Snapshot) {
+		*s = fixtureSnapshot()
+		s.Sources = map[string]Source{
+			SrcHost: {OK: true},
+			SrcGit:  {OK: false, Error: "git -C /srv/secret-repo: exit 128"},
+		}
+	}, 10*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go h.Run(ctx)
+	srv := httptest.NewServer(newHandler(h, &Terms{}, testToken, nil, fstest.MapFS{}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestHealthzWithTokenHasSourcesAndVersion(t *testing.T) {
+	srv := downServer(t)
+	req, _ := http.NewRequest("GET", srv.URL+"/healthz", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var m struct {
 		Sources map[string]Source
 		Version string
 	}
-	if json.NewDecoder(r.Body).Decode(&m) != nil || m.Version == "" || len(m.Sources) == 0 {
+	if json.NewDecoder(r.Body).Decode(&m) != nil || m.Version == "" || len(m.Sources) != 2 {
 		t.Fatalf("healthz = %+v", m)
+	}
+	if m.Sources[SrcGit].Error == "" {
+		t.Fatalf("with the token the error string is shown: %+v", m.Sources)
+	}
+}
+
+func TestHealthzWithoutTokenHasNoErrorStrings(t *testing.T) {
+	srv := downServer(t)
+	r, _ := http.Get(srv.URL + "/healthz")
+	b, _ := io.ReadAll(r.Body)
+	var m struct {
+		Sources map[string]bool
+		Version string
+	}
+	if r.StatusCode != 200 || json.Unmarshal(b, &m) != nil || m.Version == "" || !m.Sources[SrcHost] || m.Sources[SrcGit] {
+		t.Fatalf("healthz = %d %s", r.StatusCode, b)
+	}
+	if strings.Contains(string(b), "secret-repo") || strings.Contains(string(b), "error") {
+		t.Fatalf("error text leaked without the token: %s", b)
 	}
 }
 

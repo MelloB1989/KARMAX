@@ -27,7 +27,18 @@ func newHandler(h *Hub, t *Terms, clientToken string, fleetd *FleetdClient, asse
 
 	mux.HandleFunc("GET /login", a.login)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"sources": h.Snapshot().Sources, "version": Version})
+		src := h.Snapshot().Sources
+		if a.ok(r) {
+			writeJSON(w, http.StatusOK, map[string]any{"sources": src, "version": Version})
+			return
+		}
+		// Without the token: up or down, never why (error strings carry
+		// hosts, paths and command output).
+		ok := make(map[string]bool, len(src))
+		for n, s := range src {
+			ok[n] = s.OK
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sources": ok, "version": Version})
 	})
 	mux.HandleFunc("GET /v1/snapshot", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, h.Snapshot())
