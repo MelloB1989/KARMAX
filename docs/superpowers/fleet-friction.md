@@ -30,3 +30,4 @@ a reason it stays.
 | 22 | lead, PC2 reboot | fleetd froze for minutes: a tick's `docker --context pc2` was killed on timeout, but its ssh child held the pipes open, so `cmd.Wait` never returned. | agent-01: WaitDelay + kill the process group, everywhere the fleet execs |
 | 23 | lead, PC2 reboot | Every restarted (not recreated) agent stops on Claude Code's Bypass Permissions dialog, though agent-run sets the accepted flag; fleetd could not alert because it was frozen (#22). | agent-02: find what 2.1.294 checks; detect the dialog as stuck |
 | 24 | lead, kiosk | The kiosk's Chrome opened at half the screen (no window manager) and showed UTC. | fixed: window size/position, DISPLAY_TZ |
+| 25 | lead, the console's open tasks | The fleet cannot close a superseded task: `done` always archives and rotates the agent, so 8 finished tasks of agents now on new work stay "open". | agent-04: `give` supersedes the old task; `done --keep-session` |
