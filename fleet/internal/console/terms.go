@@ -175,6 +175,17 @@ func (t *Terms) Watch(ctx context.Context, agent string, out func([]byte), frame
 	}
 }
 
+// Redraw makes tmux repaint agent's shared screen, for a viewer that joined
+// the socket after the first paint. It does nothing when nobody watches.
+func (t *Terms) Redraw(agent string) {
+	t.mu.Lock()
+	w := t.watches[agent]
+	t.mu.Unlock()
+	if w != nil {
+		go w.redraw()
+	}
+}
+
 func (t *Terms) join(conf AgentConf, s *sub) (*termWatch, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

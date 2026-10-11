@@ -12,8 +12,13 @@ import (
 )
 
 // term is GET /v1/term/{agent}: terminal bytes as binary frames, TermFrame
-// JSON as text frames. ?control=1 takes the keyboard (409 with the holder
-// when someone has it); binary frames from the client are keystrokes.
+// JSON as text frames. ?control=1 takes the keyboard; binary frames from the
+// client are keystrokes. When someone else has it the socket is still
+// upgraded (a browser cannot read an HTTP error from a failed upgrade): one
+// {"type":"error","holder":…} frame, then close. A watching client may send
+// {"type":"redraw"} to have tmux repaint the shared screen for a viewer that
+// joined mid-stream. Both kinds are pinged, and a socket that stops
+// answering is dropped, which releases the keyboard.
 func term(t *Terms) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		agent := r.PathValue("agent")
@@ -24,21 +29,13 @@ func term(t *Terms) http.HandlerFunc {
 		}
 		control := r.URL.Query().Get("control") == "1"
 		var release func()
+		var acqErr error
 		if control {
 			who := r.URL.Query().Get("who")
 			if who == "" {
 				who = "client"
 			}
-			var err error
-			if release, err = t.acquire(agent, who); err != nil {
-				var held ErrHeld
-				if errors.As(err, &held) {
-					writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "holder": held.Holder})
-					return
-				}
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-				return
-			}
+			release, acqErr = t.acquire(agent, who)
 		}
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -48,6 +45,19 @@ func term(t *Terms) http.HandlerFunc {
 			return
 		}
 		defer c.CloseNow()
+		if acqErr != nil {
+			f := TermFrame{Type: "error", Agent: agent, Mode: "control", Error: acqErr.Error()}
+			var held ErrHeld
+			if errors.As(acqErr, &held) {
+				f.Holder = held.Holder
+			}
+			b, _ := json.Marshal(f)
+			wctx, wc := context.WithTimeout(r.Context(), 5*time.Second)
+			c.Write(wctx, websocket.MessageText, b)
+			wc()
+			c.Close(websocket.StatusPolicyViolation, acqErr.Error())
+			return
+		}
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
@@ -66,6 +76,8 @@ func term(t *Terms) http.HandlerFunc {
 			b, _ := json.Marshal(f)
 			send(websocket.MessageText, b)
 		}
+
+		go keepAlive(ctx, c, cancel)
 
 		var runErr error
 		if control {
@@ -88,7 +100,23 @@ func term(t *Terms) http.HandlerFunc {
 			}()
 			runErr = t.control(ctx, conf, release, in, out, frame)
 		} else {
-			ctx = c.CloseRead(ctx)
+			c.SetReadLimit(4096)
+			go func() { // a watcher says nothing but "redraw"; the socket closing ends the watch
+				defer cancel()
+				for {
+					typ, b, err := c.Read(ctx)
+					if err != nil {
+						return
+					}
+					if typ != websocket.MessageText {
+						continue
+					}
+					var f TermFrame
+					if json.Unmarshal(b, &f) == nil && f.Type == "redraw" {
+						t.Redraw(agent)
+					}
+				}
+			}()
 			runErr = t.Watch(ctx, agent, out, frame)
 		}
 		switch {
@@ -99,6 +127,35 @@ func term(t *Terms) http.HandlerFunc {
 		default:
 			frame(TermFrame{Type: "error", Agent: agent, Error: runErr.Error()})
 			c.Close(websocket.StatusInternalError, "terminal failed")
+		}
+	}
+}
+
+// Ping cadence and the wait for the pong. A client that vanished without a
+// FIN (a closed laptop, a dead VPN) would otherwise hold the keyboard until
+// TCP gave up.
+var (
+	pingEvery   = 30 * time.Second
+	pingTimeout = 10 * time.Second
+)
+
+// keepAlive pings c until ctx ends and calls drop when a ping goes
+// unanswered. It needs a reader running on c, which both term modes have.
+func keepAlive(ctx context.Context, c *websocket.Conn, drop context.CancelFunc) {
+	tk := time.NewTicker(pingEvery)
+	defer tk.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tk.C:
+			pctx, cancel := context.WithTimeout(ctx, pingTimeout)
+			err := c.Ping(pctx)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				drop()
+				return
+			}
 		}
 	}
 }

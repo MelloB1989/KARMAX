@@ -265,6 +265,18 @@ func consoleAttach(ctx context.Context, c *consoleConn, agent string) error {
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(16 << 20)
+	// The console upgrades even when someone else holds the keyboard, and
+	// says so in the first frame (hello when we have it).
+	var first []byte
+	if _, b, err := conn.Read(ctx); err == nil {
+		first = b
+	}
+	if f, ok := parseFrame(first); ok && f.Type == "error" {
+		if f.Holder != "" {
+			return fmt.Errorf("held by %s", f.Holder)
+		}
+		return errors.New(f.Error)
+	}
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
 		return errors.New("attach needs a terminal")

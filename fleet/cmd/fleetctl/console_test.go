@@ -145,6 +145,23 @@ func TestAttachReportsWhoHoldsControl(t *testing.T) {
 	}
 }
 
+// The console upgrades a second controller and says who holds it in an error
+// frame (a browser cannot read an HTTP 409); attach still says "held by X".
+func TestAttachReportsHolderFromErrorFrame(t *testing.T) {
+	fakeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		c.Write(r.Context(), websocket.MessageText, []byte(`{"type":"error","holder":"alice","error":"held by alice"}`))
+		c.Close(websocket.StatusPolicyViolation, "held by alice")
+	})
+	_, err := capture(t, "attach", "agent-01")
+	if err == nil || err.Error() != "held by alice" {
+		t.Fatalf("err = %v, want %q", err, "held by alice")
+	}
+}
+
 func TestConsoleRefusesWithoutAToken(t *testing.T) {
 	t.Setenv("FLEET_CONSOLE_URL", "http://127.0.0.1:1")
 	t.Setenv("FLEET_CONSOLE_TOKEN", "")
