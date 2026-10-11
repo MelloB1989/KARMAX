@@ -109,6 +109,7 @@ export function Desk({ id, x, z, rotY, agent, orchestrator, onSelect }: DeskProp
       rotation={[0, rotY, 0]}
       onClick={(e) => {
         e.stopPropagation();
+        if (e.delta > 5) return; // a drag, not a click
         onSelect?.(id);
       }}
     >
