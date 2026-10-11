@@ -18,3 +18,4 @@ a reason it stays.
 | 10 | agent-04, 4B | `set -g window-size manual` in a tmux 3.5a config file crashes the server on the first session. | agent-04, 4B (set it from a hook) |
 | 11 | the first briefs | A brief told agents to report with `tell operator` before fleetd could take it; they fell back to files. Rolling out fleetd and briefing agents need an order. | lead process: ship fleetd changes before the briefs that use them |
 | 12 | lead | Rolling out a brief change (`fleetctl render && up`) restarts every agent mid-task. | open: render should say which containers change, and up should wait for idle agents |
+| 13 | agents 02 and 03 | Agents building a UI cannot see it: no browser runs in the image, and the mockup canvas is private to the operator. | mockups committed (54917fc); lead screenshots into `.fleet-out/screens/`; agent-04 adds Chromium's libraries to the image |
