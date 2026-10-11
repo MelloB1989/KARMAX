@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,10 @@ type spec struct {
 	EnvFile       []string          `yaml:"env_file"`
 	Environment   map[string]string `yaml:"environment"`
 	DependsOn     []string          `yaml:"depends_on"`
+	Hostname      string            `yaml:"hostname"`
+	CPUs          string            `yaml:"cpus"`
+	MemLimit      string            `yaml:"mem_limit"`
+	Volumes       []string          `yaml:"volumes"`
 }
 
 // Planner inspects one host's containers through Prefix, e.g. [docker --context pc2].
@@ -98,9 +103,15 @@ func (p Planner) Plan(ctx context.Context) ([]Change, error) {
 		var got []struct {
 			Image  string
 			Config struct {
-				Env    []string
-				Labels map[string]string
+				Env      []string
+				Labels   map[string]string
+				Hostname string
 			}
+			HostConfig struct {
+				NanoCpus int64
+				Memory   int64
+			}
+			Mounts []struct{ Destination string }
 		}
 		if err := json.Unmarshal(out, &got); err != nil || len(got) != 1 {
 			return nil, fmt.Errorf("inspect %s: unreadable", c.Container)
@@ -128,8 +139,47 @@ func (p Planner) Plan(ctx context.Context) ([]Change, error) {
 			sort.Strings(keys)
 			c.Reasons = append(c.Reasons, "env changed: "+strings.Join(keys, ", "))
 		}
+		// Keys the container has that the file no longer sets (and the image
+		// does not bake in): removed from the render.
+		baked := map[string]bool{}
+		if out, err := p.Run(ctx, p.argv("image", "inspect", "--format", "{{json .Config.Env}}", s.Image)); err == nil {
+			var ie []string
+			_ = json.Unmarshal(out, &ie)
+			for _, kv := range ie {
+				k, _, _ := strings.Cut(kv, "=")
+				baked[k] = true
+			}
+		}
+		var gone []string
+		for k := range have {
+			if _, ok := want[k]; !ok && !baked[k] {
+				gone = append(gone, k)
+			}
+		}
+		if len(gone) > 0 {
+			sort.Strings(gone)
+			c.Reasons = append(c.Reasons, "env removed: "+strings.Join(gone, ", "))
+		}
+		if s.Hostname != "" && got[0].Config.Hostname != s.Hostname {
+			c.Reasons = append(c.Reasons, "hostname changed")
+		}
+		if want, err := parseCPUs(s.CPUs); err == nil && want != got[0].HostConfig.NanoCpus {
+			c.Reasons = append(c.Reasons, "cpus limit changed")
+		}
+		if want, err := parseBytes(s.MemLimit); err == nil && want != got[0].HostConfig.Memory {
+			c.Reasons = append(c.Reasons, "memory limit changed")
+		}
+		if len(s.Volumes) > 0 {
+			var have []string
+			for _, m := range got[0].Mounts {
+				have = append(have, m.Destination)
+			}
+			if !sameSet(have, volumeDests(s.Volumes)) {
+				c.Reasons = append(c.Reasons, "volumes changed")
+			}
+		}
 		if h, ok := hashes[n]; ok && len(c.Reasons) == 0 && got[0].Config.Labels["com.docker.compose.config-hash"] != h {
-			c.Reasons = append(c.Reasons, "compose config changed")
+			c.Reasons = append(c.Reasons, "compose config hash differs (env, brief, image, limits, volumes and hostname match the container: something compose hashes that fleetctl does not compare)")
 		}
 		by[n] = c
 	}
@@ -154,6 +204,57 @@ func (p Planner) Plan(ctx context.Context) ([]Change, error) {
 		}
 	}
 	return out, nil
+}
+
+func parseCPUs(v string) (int64, error) {
+	if v == "" {
+		return 0, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	return int64(f * 1e9), err
+}
+
+// parseBytes reads compose's 4g / 512m / 100k / plain bytes.
+func parseBytes(v string) (int64, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return 0, nil
+	}
+	mult := int64(1)
+	for suf, m := range map[string]int64{"gb": 1 << 30, "g": 1 << 30, "mb": 1 << 20, "m": 1 << 20, "kb": 1 << 10, "k": 1 << 10, "b": 1} {
+		if strings.HasSuffix(v, suf) {
+			v, mult = strings.TrimSuffix(v, suf), m
+			break
+		}
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	return int64(n * float64(mult)), err
+}
+
+func volumeDests(vs []string) []string {
+	var out []string
+	for _, v := range vs {
+		if f := strings.Split(v, ":"); len(f) >= 2 {
+			out = append(out, f[1])
+		}
+	}
+	return out
+}
+
+func sameSet(a, b []string) bool {
+	m := map[string]int{}
+	for _, x := range a {
+		m[x]++
+	}
+	for _, x := range b {
+		m[x]--
+	}
+	for _, n := range m {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func hasReason(c *Change, r string) bool {

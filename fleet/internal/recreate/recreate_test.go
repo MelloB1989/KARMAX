@@ -22,6 +22,10 @@ services:
   agent-01:
     image: img:2
     container_name: agent-01
+    hostname: agent-01
+    cpus: "2"
+    mem_limit: 4g
+    volumes: ["/code:/code", "agent-01-work:/work"]
     depends_on: [fleet-anchor]
     env_file: [agents/agent-01.env]
     environment: {FLEET_NAME: agent-01, FLEET_CLAUDE_MD: BRIEF2}
@@ -55,6 +59,11 @@ type container struct {
 	image string
 	env   []string
 	hash  string
+	// optional, as `docker inspect` reports them; zero values match composeFile
+	hostname string
+	nanoCPUs int64
+	memory   int64
+	mounts   []string
 }
 
 func (f *fakeDocker) run(_ context.Context, argv []string) ([]byte, error) {
@@ -67,9 +76,16 @@ func (f *fakeDocker) run(_ context.Context, argv []string) ([]byte, error) {
 		if !ok {
 			return nil, errors.New("no such container")
 		}
+		var mounts []map[string]string
+		for _, m := range c.mounts {
+			mounts = append(mounts, map[string]string{"Destination": m})
+		}
 		b, _ := json.Marshal([]any{map[string]any{"Image": c.image, "Config": map[string]any{
-			"Env": c.env, "Labels": map[string]string{"com.docker.compose.config-hash": c.hash}}}})
+			"Env": c.env, "Hostname": c.hostname, "Labels": map[string]string{"com.docker.compose.config-hash": c.hash}},
+			"HostConfig": map[string]any{"NanoCpus": c.nanoCPUs, "Memory": c.memory}, "Mounts": mounts}})
 		return b, nil
+	case contains(argv, "image") && contains(argv, "inspect") && contains(argv, "{{json .Config.Env}}"):
+		return []byte(`["PATH=/bin","LANG=C.UTF-8"]`), nil
 	case contains(argv, "image") && contains(argv, "inspect"):
 		id, ok := f.imageIDs[argv[len(argv)-1]]
 		if !ok {
@@ -116,6 +132,11 @@ func current(f string) *fakeDocker {
 	d := &fakeDocker{running: map[string]container{}, imageIDs: map[string]string{"img:2": "sha-2"},
 		hashes: "fleet-anchor h0\nagent-01 h1\nagent-02 h2\nagent-03 h3\n"}
 	d.running["fleet-anchor"] = container{image: "sha-2", hash: "h0"}
+	defer func() {
+		c := d.running["agent-01"]
+		c.hostname, c.nanoCPUs, c.memory, c.mounts = "agent-01", 2e9, 4<<30, []string{"/code", "/work"}
+		d.running["agent-01"] = c
+	}()
 	for i, n := range []string{"agent-01", "agent-02", "agent-03"} {
 		brief := "BRIEF1"
 		if n == "agent-01" {
@@ -185,7 +206,7 @@ func TestPlanCatchesComposeConfigChangesAndSurvivesAComposeWithoutHash(t *testin
 	d := current(f)
 	d.hashes = "fleet-anchor h0\nagent-01 h1\nagent-02 NEW\nagent-03 h3\n"
 	cs := plan(t, d, f)
-	if len(cs) != 1 || cs[0].Service != "agent-02" || cs[0].Reasons[0] != "compose config changed" {
+	if len(cs) != 1 || cs[0].Service != "agent-02" || !strings.HasPrefix(cs[0].Reasons[0], "compose config hash differs") {
 		t.Fatalf("plan = %+v", cs)
 	}
 	d.hashesFail = true
@@ -206,7 +227,7 @@ func TestPlanDragsDependentsAlongAndCountsNewContainersAsCreates(t *testing.T) {
 	for _, c := range cs {
 		got[c.Service] = c
 	}
-	if len(cs) != 4 || got["fleet-anchor"].Reasons[0] != "compose config changed" ||
+	if len(cs) != 4 || !strings.HasPrefix(got["fleet-anchor"].Reasons[0], "compose config hash differs") ||
 		got["agent-01"].Reasons[0] != "depends on fleet-anchor" || !got["agent-03"].Create {
 		t.Fatalf("plan = %+v", cs)
 	}
@@ -316,4 +337,63 @@ func index(a []string, s string) int {
 		}
 	}
 	return -1
+}
+
+func TestPlanSaysWhatChangedBeyondEnvWithoutValues(t *testing.T) {
+	f := writeFleet(t)
+	reasons := func(mod func(*container)) string {
+		d := current(f)
+		c := d.running["agent-01"]
+		mod(&c)
+		d.running["agent-01"] = c
+		var out []string
+		for _, ch := range plan(t, d, f) {
+			if ch.Service == "agent-01" {
+				out = ch.Reasons
+			}
+		}
+		return strings.Join(out, "; ")
+	}
+	if got := reasons(func(*container) {}); got != "" {
+		t.Fatalf("an unchanged container: %q (PATH is baked into the image, not removed)", got)
+	}
+	if got := reasons(func(c *container) { c.env = append(c.env, "OTEL_OLD_KEY=secret-value") }); got != "env removed: OTEL_OLD_KEY" {
+		t.Errorf("a key the render dropped: %q", got)
+	}
+	if got := reasons(func(c *container) { c.nanoCPUs = 1e9 }); got != "cpus limit changed" {
+		t.Errorf("cpus: %q", got)
+	}
+	if got := reasons(func(c *container) { c.memory = 2 << 30 }); got != "memory limit changed" {
+		t.Errorf("memory: %q", got)
+	}
+	if got := reasons(func(c *container) { c.mounts = []string{"/code"} }); got != "volumes changed" {
+		t.Errorf("volumes: %q", got)
+	}
+	if got := reasons(func(c *container) { c.hostname = "other" }); got != "hostname changed" {
+		t.Errorf("hostname: %q", got)
+	}
+}
+
+// Real label and hash pairs from PC2 (compose 2.40.3, docker 29.9.0), taken
+// right after an `up`: fleet-anchor's label equals `compose config --hash`;
+// the agents' labels did not — and every field the plan compares matched.
+func TestPlanWithRealShapedHashPairs(t *testing.T) {
+	f := writeFleet(t)
+	d := current(f)
+	d.hashes = "agent-01 7148b51e9a3549b88531f6074c245faef557021f3cf537b4a711667bc2e748c1\n" +
+		"fleet-anchor de763291cebfcf667d52bb6a14df7c1941ac0ab66732b7d1694eec98680fa575\n"
+	a := d.running["fleet-anchor"]
+	a.hash = "de763291cebfcf667d52bb6a14df7c1941ac0ab66732b7d1694eec98680fa575"
+	d.running["fleet-anchor"] = a
+	c := d.running["agent-01"]
+	c.hash = "efc43d39f8d437dd8dbdf5fb1d43ee341875e04a4976e30a6f5b87b71af7e8a2"
+	d.running["agent-01"] = c
+	cs := plan(t, d, f)
+	if len(cs) != 1 || cs[0].Service != "agent-01" {
+		t.Fatalf("plan = %+v: the anchor (equal pair) must say nothing", cs)
+	}
+	r := cs[0].Reasons[0]
+	if !strings.HasPrefix(r, "compose config hash differs") || !strings.Contains(r, "match the container") {
+		t.Errorf("reason = %q: it must say the hash differs while everything compared matches, not just 'changed'", r)
+	}
 }
