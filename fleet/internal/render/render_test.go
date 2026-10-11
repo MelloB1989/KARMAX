@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/MelloB1989/karmax/fleet/internal/config"
+	"github.com/MelloB1989/karmax/fleet/internal/console"
 )
 
 const fleetYAML = `home: /home/op
@@ -433,5 +434,115 @@ func TestBriefSaysReportToTheAssigner(t *testing.T) {
 	o, _ := OrchestratorBrief(c)
 	if !strings.Contains(o, "--from "+c.Orchestrator.Name) {
 		t.Errorf("orchestrator brief does not pass --from:\n%s", o)
+	}
+}
+
+const consoleYAML = `console:
+  host: pc2
+  fleetd_url: http://192.168.1.2:7879
+  token_env: FLEET_CONSOLE_TOKEN
+  repos: [~/code/KARMAX]
+  dir: ~/.config/fleet-console
+`
+
+func consoleCfg(t *testing.T) *config.Config {
+	t.Helper()
+	c, err := config.Parse([]byte(fleetYAML + consoleYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func withConsoleToken() map[string]string {
+	e := map[string]string{"FLEET_CONSOLE_TOKEN": "console-secret"}
+	for k, v := range env {
+		e[k] = v
+	}
+	return e
+}
+
+func TestRenderWritesConsoleConfigForItsHost(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "render")
+	if err := Render(consoleCfg(t), withConsoleToken(), dir); err != nil {
+		t.Fatal(err)
+	}
+	cc, err := console.LoadConfig(filepath.Join(dir, "pc2", "console", "console.yaml"))
+	if err != nil {
+		t.Fatalf("the console cannot load what render wrote: %v", err)
+	}
+	if cc.Host != "pc2" || cc.Listen != "127.0.0.1:7880" || cc.FleetdURL != "http://192.168.1.2:7879" {
+		t.Errorf("config = %+v", cc)
+	}
+	if len(cc.Agents) != 3 {
+		t.Fatalf("agents = %+v, want the whole roster", cc.Agents)
+	}
+	byName := map[string]console.AgentConf{}
+	for _, a := range cc.Agents {
+		byName[a.Name] = a
+	}
+	if a := byName["agent-04"]; !a.Live || !slices.Equal(a.Exec, []string{"docker"}) || a.Container == "" {
+		t.Errorf("agent-04 (on the console's host) = %+v, want live with [docker]", a)
+	}
+	for _, n := range []string{"agent-01", "agent-02"} {
+		if a := byName[n]; a.Live || a.Host != "kali" || len(a.Exec) != 0 {
+			t.Errorf("%s (another host) = %+v, want recorded-only", n, a)
+		}
+	}
+	home, _ := os.UserHomeDir()
+	if want := filepath.Join(home, ".config/fleet-console/fleetd.token"); cc.FleetdTokenFile != want {
+		t.Errorf("fleetd_token_file = %s, want %s", cc.FleetdTokenFile, want)
+	}
+	if filepath.Base(cc.ClientTokenFile) != "client.token" || filepath.Dir(cc.ClientTokenFile) != filepath.Dir(cc.FleetdTokenFile) {
+		t.Errorf("client_token_file = %s", cc.ClientTokenFile)
+	}
+	if !slices.Equal(cc.Repos, []string{filepath.Join(home, "code/KARMAX")}) {
+		t.Errorf("repos = %v", cc.Repos)
+	}
+}
+
+func TestRenderSkipsConsoleWhenNotConfigured(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "render")
+	if err := Render(cfg(t), env, dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"kali", "pc2"} {
+		if _, err := os.Stat(filepath.Join(dir, h, "console")); !os.IsNotExist(err) {
+			t.Errorf("%s/console exists without a console: section (%v)", h, err)
+		}
+	}
+	// And a console section without its token is refused, naming the variable.
+	err := Render(consoleCfg(t), env, filepath.Join(t.TempDir(), "r2"))
+	if err == nil || !strings.Contains(err.Error(), "FLEET_CONSOLE_TOKEN") {
+		t.Errorf("render without the console token: %v", err)
+	}
+}
+
+func TestConsoleTokenFileIsPrivate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "render")
+	if err := Render(consoleCfg(t), withConsoleToken(), dir); err != nil {
+		t.Fatal(err)
+	}
+	cdir := filepath.Join(dir, "pc2", "console")
+	st, err := os.Stat(filepath.Join(cdir, "fleetd.token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("fleetd.token mode %v, want 0600", st.Mode().Perm())
+	}
+	if b, _ := os.ReadFile(filepath.Join(cdir, "fleetd.token")); strings.TrimSpace(string(b)) != "console-secret" {
+		t.Error("fleetd.token does not hold the console token")
+	}
+	if b, _ := os.ReadFile(filepath.Join(cdir, "console.yaml")); strings.Contains(string(b), "console-secret") {
+		t.Error("the token is in console.yaml")
+	}
+	if st, _ := os.Stat(cdir); st.Mode().Perm()&0o077 != 0 {
+		t.Errorf("console dir mode %v is readable by others", st.Mode().Perm())
+	}
+	// A shared directory is refused, as for the env files.
+	_ = os.Chmod(cdir, 0o755)
+	if err := Render(consoleCfg(t), withConsoleToken(), dir); err == nil {
+		t.Error("re-render into a world-readable console dir succeeded")
 	}
 }

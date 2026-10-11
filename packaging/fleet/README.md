@@ -180,6 +180,19 @@ sends it somewhere, for example
 To verify, ask KARMAX on WhatsApp to fix something in a repo, and watch
 `fleetctl ls` and `fleetctl events`.
 
+## The fleet console (optional)
+
+A `console:` section in `fleet.yaml` (see `fleet.yaml.example`) makes `fleetctl render`
+also write the console host's config, next to the compose files:
+
+    <render dir>/<console.host>/console/console.yaml   # the roster; live = on the console's host
+    <render dir>/<console.host>/console/fleetd.token   # 0600: FLEET_CONSOLE_TOKEN's value
+
+Copy that directory's two files to `console.dir` on the console host (default
+`~/.config/fleet-console`); `client.token`, the token the panel's browser presents, is
+created there by the host install, not by render. With no `console:` section nothing
+is written, and the `token_env` variable is required only when the section exists.
+
 ## Agents' tools
 
 - **GitHub.** `github.token_env` in `fleet.yaml` names a token in the env
