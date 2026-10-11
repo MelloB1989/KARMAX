@@ -7,6 +7,7 @@
 #   CLAUDE_TOKEN_AGENT_01=…      … one per agent, each its own subscription
 #   FLEET_TOKEN=…                fleetd's full-scope API token (you, the orchestrator)   openssl rand -hex 32
 #   FLEET_RELAY_TOKEN=…          agents' token: tell + status only                      openssl rand -hex 32
+#   FLEET_CONSOLE_TOKEN=…        the console's token: reads, prompt, rotate (console.token_env)  openssl rand -hex 32
 #   FLEET_WEBHOOK_SECRET=…       HMAC secret shared with the karmax.yaml webhook route
 #   KARMAX_API_TOKEN=…           already there if KARMAX's API is on
 
@@ -89,3 +90,11 @@ thresholds:                 # every default shown
   quota_raw: 168h           # every sample for 7 days, hourly after
   relay_text: 720h
   host_samples: 168h
+
+# console:                   # the fleet console: a live panel on one host (docs/superpowers/specs/2026-10-11-fleet-console-design.md).
+#   host: pc2                # the host that runs fleet-console; its agents get live views, the rest recorded data only
+#   fleetd_url: http://192.168.1.10:7879   # fleetd's relay listener, as that host reaches it
+#   token_env: FLEET_CONSOLE_TOKEN         # its console-scope token for fleetd, in env_file
+#   repos: [~/code/KARMAX]   # git checkouts it watches, paths on its host
+#   # listen: 127.0.0.1:7880 # loopback only: anything else is refused
+#   # dir: ~/.config/fleet-console   # its config directory on its host

@@ -46,3 +46,33 @@ func TestDockerStreamUpdatesOnEachLine(t *testing.T) {
 		t.Fatal("running process is not stale")
 	}
 }
+
+func TestDockerStatsLinesWithANSIParse(t *testing.T) {
+	// Docker 29.9.0, exactly as streamed, and a Docker 28 plain line.
+	d29 := "\x1b[H" + `{"BlockIO":"24.8MB / 1.18GB","CPUPerc":"0.30%","Container":"abc","ID":"abc","MemPerc":"1.2%","MemUsage":"128.3MiB / 1.5GiB","Name":"agent-01","NetIO":"2.38MB / 1.78MB","PIDs":"31"}` + "\x1b[K"
+	d28 := `{"Name":"agent-02","CPUPerc":"1.31%","MemUsage":"64MiB / 1.5GiB","NetIO":"1MB / 2MB"}`
+	d29next := `{"Name":"agent-03","CPUPerc":"5.00%","MemUsage":"10MiB / 1.5GiB","NetIO":"1MB / 2MB"}` + "\x1b[K" // later line of the frame: no ESC[H
+
+	pr, pw := io.Pipe()
+	sp := func(context.Context, []string) (io.ReadCloser, error) { return pr, nil }
+	clock := time.Unix(1000, 0)
+	ch := make(chan struct{}, 16)
+	d := newDockerSrc()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.run(ctx, sp, []string{"docker"}, func() time.Time { return clock }, func() { ch <- struct{}{} })
+	<-ch
+	for _, l := range []string{d29, d28, d29next} {
+		pw.Write([]byte(l + "\n"))
+		<-ch
+	}
+	if c := d.container("agent-01", clock); c == nil || c.CPUPct != 0.3 || c.Mem == 0 || c.MemLimit != 1610612736 {
+		t.Fatalf("docker 29 line: %+v", c)
+	}
+	if c := d.container("agent-02", clock); c == nil || c.CPUPct != 1.31 {
+		t.Fatalf("docker 28 line: %+v", c)
+	}
+	if c := d.container("agent-03", clock); c == nil || c.CPUPct != 5 {
+		t.Fatalf("trailing-ESC line: %+v", c)
+	}
+}

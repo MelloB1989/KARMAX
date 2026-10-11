@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -32,6 +33,9 @@ func (f *fakeFleetd) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, body)
 }
 
+// hostYAML, when a test sets it, makes the next fleetctl() calls run on a fleet host.
+var hostYAML string
+
 // fleetctl runs one command against a fake fleetd and returns its stdout.
 func fleetctl(t *testing.T, f *fakeFleetd, args ...string) (string, error) {
 	t.Helper()
@@ -41,7 +45,11 @@ func fleetctl(t *testing.T, f *fakeFleetd, args ...string) (string, error) {
 	t.Setenv("FLEET_TOKEN", "tok")
 	t.Setenv("FLEET_NAME", "")
 	t.Setenv("FLEET_AGENT", "")
-	t.Setenv("FLEET_CONFIG", t.TempDir()+"/none.yaml") // not on a fleet host: everything goes through fleetd
+	cfg := hostYAML
+	if cfg == "" {
+		cfg = t.TempDir() + "/none.yaml" // not on a fleet host: everything goes through fleetd
+	}
+	t.Setenv("FLEET_CONFIG", cfg)
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
@@ -202,5 +210,51 @@ func TestRenderUpDownAskFleetdWhenThereIsNoFleetYAML(t *testing.T) {
 	}
 	if got := req(f, 0); got != `POST /v1/up {"hosts":["pc2"]}` {
 		t.Errorf("up sent %q", got)
+	}
+}
+
+func TestUpDryRunPrintsThePlanAndRecreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	state := dir + "/state"
+	if err := os.MkdirAll(state+"/render/agents", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	yml := "home: /home/op\nimage: img:2\nstate_dir: " + state + "\nhosts:\n  h1: {exec: [docker]}\n" +
+		"orchestrator: {host: h1, native: true}\nagents:\n  agent-01: {host: h1, token_env: T1}\n"
+	_ = os.WriteFile(dir+"/fleet.yaml", []byte(yml), 0o600)
+	_ = os.WriteFile(state+"/render/agents/agent-01.env", []byte("T=1\n"), 0o600)
+	_ = os.WriteFile(state+"/render/compose.h1.yaml", []byte("services:\n  agent-01:\n    image: img:2\n    container_name: agent-01\n    env_file: [agents/agent-01.env]\n    environment: {FLEET_CLAUDE_MD: NEW}\n"), 0o600)
+	hostYAML = dir + "/fleet.yaml"
+	t.Cleanup(func() { hostYAML = "" })
+
+	var mu sync.Mutex
+	var calls []string
+	old := runDocker
+	defer func() { runDocker = old }()
+	runDocker = func(_ context.Context, argv []string) ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, strings.Join(argv, " "))
+		switch {
+		case strings.Contains(strings.Join(argv, " "), "image inspect"):
+			return []byte("sha-2\n"), nil
+		case argv[1] == "inspect":
+			return []byte(`[{"Image":"sha-2","Config":{"Env":["T=1","FLEET_CLAUDE_MD=OLD"],"Labels":{}}}]`), nil
+		}
+		return nil, errors.New("not a read-only call")
+	}
+	for _, flag := range []string{"--dry-run", "--plan"} {
+		out, err := fleetctl(t, &fakeFleetd{}, "up", flag, "--when-idle")
+		if err != nil {
+			t.Fatalf("up %s: %v\n%s", flag, err, out)
+		}
+		if !strings.Contains(out, "agent-01 will be RECREATED — brief changed") || !strings.Contains(out, "dry run") {
+			t.Errorf("up %s printed:\n%s", flag, out)
+		}
+	}
+	for _, c := range calls {
+		if strings.Contains(c, " up") || strings.Contains(c, " down") {
+			t.Errorf("a dry run ran %q", c)
+		}
 	}
 }

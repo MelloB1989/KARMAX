@@ -32,6 +32,8 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/hostctl"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
+	"github.com/MelloB1989/karmax/fleet/internal/recreate"
+	"github.com/MelloB1989/karmax/fleet/internal/render"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
@@ -64,7 +66,8 @@ Work (fleetd):
   enable <agent>                      after fixing a disabled subscription
 
 Your keyboard:
-  attach <agent>                      the live session's TUI (host only; detach: Ctrl+])
+  attach <agent> [--direct]           the live session's TUI (host only), through the console when
+                                      the host runs one (one controller; give it back: Ctrl-])
   prompt <agent> <text…>              type into it, as you (fleetd)
   peek <agent> [-n 80]                its last lines (fleetd)
 
@@ -72,9 +75,19 @@ About fleetd:
   whoami                              which scope this token has
   api                                 every route and the scopes it allows
 
-Setup (on a fleet host directly, else through fleetd; --remote forces fleetd):
+The console (fleet-console on its host, reached over ssh; or FLEET_CONSOLE_URL + FLEET_CONSOLE_TOKEN):
+  console snapshot [--json]           agents, tools, load, and every source with its age
+  console watch [--json]              the snapshot, then patches, one JSON object per line
+  console term <agent>                an agent's terminal bytes, raw, to stdout
+  console health [--json]             the sources and their ages
+
+Setup (on a fleet host directly, else through fleetd; --remote forces fleetd; up --when-idle and
+the up plan are host-side):
   render [--out <dir>]                env files, compose files, briefs
-  up [<host>…] | down [<host>…]       docker compose, per host
+  up [--dry-run|--plan] [--when-idle [--timeout 2h]] [<host>…] | down [<host>…]
+                                      docker compose, per host. up first lists the containers it
+                                      will recreate and why (image, env, brief); --dry-run stops there; --when-idle
+                                      recreates each agent alone, once fleetd says it is not working
 `
 
 func main() {
@@ -637,8 +650,11 @@ func run(cmd string, args []string) error {
 		}
 		return post("/v1/restore", map[string]string{"archive": pos[0], "agent": onto})
 
+	case "console":
+		return consoleCmd(args)
+
 	case "attach":
-		return attach(args)
+		return keyboard(cmd, args)
 
 	case "peek":
 		var n int
@@ -666,8 +682,11 @@ func run(cmd string, args []string) error {
 		}
 		return post("/v1/prompt", map[string]string{"agent": args[0], "text": strings.Join(args[1:], " ")})
 
-	case "render", "up", "down":
+	case "render":
 		return hostCmd(cmd, args)
+
+	case "up", "down":
+		return hostUpDown(cmd, args)
 	}
 	return fmt.Errorf("unknown command %q (fleetctl help)", cmd)
 }
@@ -782,50 +801,87 @@ func jsonFlag(on bool) []string {
 	return nil
 }
 
-// hostCmd is render, up and down. On a fleet host (fleet.yaml present) it
-// runs hostctl directly; elsewhere, or with --remote, it asks fleetd to.
+// onFleetHost is whether this machine has a fleet.yaml, so it can run
+// render, up and down itself rather than ask fleetd to.
+func onFleetHost() bool {
+	_, err := os.Stat(configPath())
+	return err == nil
+}
+
+// hostCmd is render: directly on a fleet host, else (or with --remote)
+// through fleetd.
 func hostCmd(cmd string, args []string) error {
 	var out string
 	var remote bool
-	_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
+	_, _, err := flags(cmd, args, func(fs *flag.FlagSet) {
 		fs.StringVar(&out, "out", "", "")
 		fs.BoolVar(&remote, "remote", false, "")
 	})
 	if err != nil {
 		return err
 	}
-	if cfg, err := loadConfig(); err == nil && !remote {
-		switch cmd {
-		case "render":
-			return hostctl.Render(cfg, out, os.Stdout)
-		default:
-			return hostctl.Compose(context.Background(), cfg, cmd == "up", pos, os.Stdout, hostctl.ExecRunner)
+	if onFleetHost() && !remote {
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
 		}
+		return hostctl.Render(cfg, out, os.Stdout)
 	}
 	if out != "" {
 		return errors.New("--out writes on this host; run render here, where fleet.yaml is")
 	}
+	return askFleetd("render", nil)
+}
+
+// hostUpDown is up and down: on a fleet host, upDown (with its plan,
+// --dry-run and --when-idle); with --remote or off a fleet host, fleetd's
+// route, which brings hosts up or down without the plan.
+func hostUpDown(cmd string, args []string) error {
+	remote := false
+	var rest []string
+	for _, a := range args {
+		if a == "--remote" || a == "-remote" {
+			remote = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	if onFleetHost() && !remote {
+		return upDown(cmd, rest)
+	}
+	for _, a := range rest {
+		if strings.HasPrefix(a, "-") {
+			return fmt.Errorf("%s needs a fleet host (the plan and --when-idle run next to docker); here %s goes through fleetd, hosts only", a, cmd)
+		}
+	}
+	return askFleetd(cmd, rest)
+}
+
+func askFleetd(route string, hosts []string) error {
 	c, err := newClient()
 	if err != nil {
 		return err
 	}
 	var reply struct{ Output string }
-	if err := c.do("POST", "/v1/"+cmd, map[string]any{"hosts": pos}, &reply); err != nil {
+	if err := c.do("POST", "/v1/"+route, map[string]any{"hosts": hosts}, &reply); err != nil {
 		return err
 	}
 	fmt.Print(reply.Output)
 	return nil
 }
 
-// attach is your keyboard on an agent's tmux: straight to its container, so
-// it runs on a fleet host (fleet.yaml).
-func attach(args []string) error {
-	_, pos, err := flags("attach", args, func(*flag.FlagSet) {})
+// keyboard is attach: straight to the container, or through the console.
+func keyboard(cmd string, args []string) error {
+	var direct bool
+	_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.BoolVar(&direct, "direct", false, "") })
 	if err != nil {
 		return err
 	}
-	if err := need(pos, 1, "attach <agent>"); err != nil {
+	if err := need(pos, 1, "attach <agent> [--direct]"); err != nil {
 		return err
+	}
+	if !direct && os.Getenv("FLEET_CONSOLE_URL") != "" {
+		return attachViaConsole(pos[0])
 	}
 	cfg, err := loadConfig()
 	if err != nil {
@@ -835,11 +891,25 @@ func attach(args []string) error {
 	if !ok {
 		return fmt.Errorf("no agent %q", pos[0])
 	}
+	if !direct && consoleFor(a.Host) {
+		return attachViaConsole(pos[0])
+	}
 	ag := &agent.Agent{Name: pos[0], C: target.Container{Exec: cfg.Hosts[a.Host].Exec, Name: a.Container}}
 	argv := ag.AttachArgv()
 	c := exec.Command(argv[0], argv[1:]...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return c.Run()
+}
+
+// attachViaConsole: the console owns the one-controller rule, so attach
+// goes through it whenever the agent's host runs one. --direct bypasses it.
+func attachViaConsole(agentName string) error {
+	ctx := context.Background()
+	c, err := newConsole(ctx)
+	if err != nil {
+		return fmt.Errorf("%w (attach --direct goes to the container without the console's one-controller rule)", err)
+	}
+	return consoleAttach(ctx, c, agentName)
 }
 
 func table(rows []daemon.Row, orch *outbound.Quota) error {
@@ -900,4 +970,129 @@ func clip(s string, n int) string {
 		return string(r[:n]) + "…"
 	}
 	return s
+}
+
+// upDown is `fleetctl up|down [--when-idle [--timeout d]] [host…]`. Up first
+// says which containers it will recreate and why; with --when-idle it
+// recreates the agents among them one at a time, each once fleetd says it is
+// not working.
+func upDown(cmd string, args []string) error {
+	var whenIdle, dryRun, plan bool
+	var timeout time.Duration
+	_, hosts, err := flags(cmd, args, func(fs *flag.FlagSet) {
+		if cmd == "up" {
+			fs.BoolVar(&dryRun, "dry-run", false, "")
+			fs.BoolVar(&plan, "plan", false, "")
+			fs.BoolVar(&whenIdle, "when-idle", false, "")
+			fs.DurationVar(&timeout, "timeout", 2*time.Hour, "")
+		}
+	})
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	dryRun = dryRun || plan
+	explicit := len(hosts) > 0
+	if !explicit {
+		hosts = cfg.HostNames()
+	}
+	ctx := context.Background()
+	if whenIdle && timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	for _, h := range hosts {
+		hc, ok := cfg.Hosts[h]
+		if !ok {
+			return fmt.Errorf("no host %q", h)
+		}
+		if !render.Runs(cfg, h) {
+			if explicit {
+				return fmt.Errorf("%s has nothing to run", h)
+			}
+			continue
+		}
+		file := filepath.Join(hostctl.RenderDir(cfg), "compose."+h+".yaml")
+		var changes []recreate.Change
+		if cmd == "up" {
+			pl := recreate.Planner{Prefix: hc.Exec, File: file, Run: runDocker}
+			if changes, err = pl.Plan(ctx); err != nil {
+				return fmt.Errorf("%s: %w", h, err)
+			}
+			recreate.Describe(os.Stdout, h, changes)
+		}
+		if dryRun {
+			continue // the plan above is all a dry run does
+		}
+		if whenIdle {
+			agents := map[string]bool{}
+			for _, n := range cfg.AgentsOn(h) {
+				agents[n] = true
+			}
+			idle := recreate.Idler{Planner: recreate.Planner{Prefix: hc.Exec, File: file, Run: runDocker},
+				Agents: agents, State: fleetdStates, Sleep: sleepCtx, Every: 10 * time.Second, Out: os.Stdout}
+			if err := idle.Up(ctx, changes); err != nil {
+				return fmt.Errorf("%s: %w", h, err)
+			}
+			continue
+		}
+		argv, err := hostctl.Argv(cfg, h, cmd == "up")
+		if err != nil {
+			return err
+		}
+		fmt.Println("$", strings.Join(argv, " "))
+		c := exec.Command(argv[0], argv[1:]...)
+		c.Stdout, c.Stderr = os.Stdout, os.Stderr
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("%s: %w", h, err)
+		}
+	}
+	if dryRun {
+		fmt.Println("dry run: nothing was recreated")
+	}
+	return nil
+}
+
+// runDocker runs the docker CLI for the plan; tests replace it.
+var runDocker = realDocker
+
+// realDocker runs argv and returns its stdout; a failure carries stderr.
+func realDocker(ctx context.Context, argv []string) ([]byte, error) {
+	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
+	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+	}
+	return out, err
+}
+
+// fleetdStates is each agent's state, from fleetd's status.
+func fleetdStates(ctx context.Context) (map[string]string, error) {
+	c, err := newClient()
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Agents []daemon.Row `json:"agents"`
+	}
+	if err := c.do("GET", "/v1/status", nil, &out); err != nil {
+		return nil, err
+	}
+	m := map[string]string{}
+	for _, r := range out.Agents {
+		m[r.Agent] = r.State
+	}
+	return m, nil
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	select {
+	case <-time.After(d):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

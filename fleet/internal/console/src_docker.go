@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"regexp"
 	"sync"
 	"time"
 
@@ -19,6 +20,13 @@ func newDockerSrc() *dockerSrc {
 	return &dockerSrc{tr: newTracker(0, true), samples: map[string]Container{}}
 }
 
+// csi matches an ANSI control sequence: ESC [ parameters intermediates final.
+// Docker 29 streams `docker stats` lines wrapped in them (ESC[H before a
+// frame's first line, ESC[K after every line); Docker 28 prints them plain.
+var csi = regexp.MustCompile("\x1b\\[[0-?]*[ -/]*[@-~]")
+
+func stripANSI(b []byte) []byte { return csi.ReplaceAll(b, nil) }
+
 // dockerFreshness: a container missing from the frames for this long is not
 // running (docker stats lists running containers only).
 const dockerFreshness = 5 * time.Second
@@ -27,7 +35,7 @@ func (d *dockerSrc) run(ctx context.Context, sp spawner, prefix []string, now fu
 	argv := append(append([]string{}, prefix...), "stats", "--format", "{{json .}}")
 	streamLines(ctx, sp, argv, d.tr, now, func() { d.tr.success(now()); changed() }, func(line []byte) {
 		at := now()
-		got := outbound.ParseDockerStats(line, at)
+		got := outbound.ParseDockerStats(stripANSI(line), at)
 		if len(got) == 0 {
 			return
 		}

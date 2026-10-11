@@ -1,0 +1,5 @@
+# The panel build (npm run build in fleet/console) lands here and is embedded
+# into fleet-console; only this file and .keep are tracked.
+*
+!.gitignore
+!.keep
