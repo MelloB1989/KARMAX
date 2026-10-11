@@ -258,6 +258,8 @@ Plus the archives (transcripts and manifests) and fleetd's own log in journald.
 
 ## Prompting an agent directly
 
+The live panel, the 3D office and the keyboard handover (`Ctrl+]`) are described in [FLEET-CONSOLE.md](FLEET-CONSOLE.md); `attach` below goes through the console when the host runs one.
+
 | command | does | authority |
 |---|---|---|
 | `fleetctl attach agent-05` | `docker --context pc2 exec -it agent-05 tmux attach -t main` — the live session's full TUI. Detach with `Ctrl-b d`; it keeps running and keeps receiving messages. | you |
@@ -273,6 +275,8 @@ operator-authority prompts from WhatsApp, make it a fixed command KARMAX parses 
 model can reach for.
 
 ## Hosts
+
+The operator's panel on PC2 (virtual display, kiosk, RustDesk) and how to install, undo and troubleshoot it: [FLEET-CONSOLE.md](FLEET-CONSOLE.md).
 
 **Kali (orchestrator + 3 agents).** Docker from Kali's repos (`docker.io`, `docker-compose`),
 `nfs-kernel-server` exporting `~/code` to PC2's IP only (`rw,sync,no_subtree_check`, NFSv4), firewall
