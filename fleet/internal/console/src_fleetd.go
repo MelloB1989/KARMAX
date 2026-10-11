@@ -187,6 +187,7 @@ type fleetdSrc struct {
 	tasks    []Task
 	events   []Event // recorded, ascending by id, the most recent liveEventsCap
 	cursor   int64
+	primed   bool // the newest-N backfill has been read
 	activity map[string][]Bucket
 	today    Today
 	lastTask map[string]*LastTask
@@ -302,18 +303,40 @@ const (
 	eventsMaxPages = 20
 )
 
-// newEvents reads the stream events after the cursor, ascending by id. The
-// first call pages from the beginning and keeps the tail (the route is a
-// cursor, so the newest 200 are only known after reading to the end). The
-// cursor moves only when the caller keeps what this returns.
+// eventsBackfill is how far back the first read looks.
+const eventsBackfill = "24h"
+
+// newEvents reads the stream events newer than the cursor, ascending by id.
+// The first call asks for the newest liveEventsCap in one request (a page
+// walk from the start of the ledger is thousands of rows on a busy fleet);
+// every later one follows the cursor. The cursor moves only when the caller
+// keeps what this returns.
 func (f *fleetdSrc) newEvents(ctx context.Context) ([]Event, error) {
 	f.mu.Lock()
-	after := f.cursor
+	after, primed := f.cursor, f.primed
 	f.mu.Unlock()
 	var out []Event
+	if !primed {
+		var page []fleetdEvent
+		q := fmt.Sprintf("/v1/events?newest=%d&since=%s&kinds=%s", liveEventsCap, eventsBackfill, url.QueryEscape(kindsParam()))
+		if err := f.cl.get(ctx, q, &page); err != nil {
+			return nil, err
+		}
+		for _, e := range page {
+			out = append(out, Event{ID: e.ID, At: e.At, Agent: e.Agent, Kind: e.Kind, Session: e.Session, Detail: e.Detail})
+			after = max(after, e.ID)
+		}
+		f.mu.Lock()
+		f.cursor, f.primed = after, true
+		f.mu.Unlock()
+		return out, nil
+	}
 	for range eventsMaxPages {
 		var page []fleetdEvent
 		q := fmt.Sprintf("/v1/events?after=%d&kinds=%s&limit=%d", after, url.QueryEscape(kindsParam()), eventsPage)
+		if after == 0 { // nothing was in the backfill window: stay inside it
+			q += "&since=" + eventsBackfill
+		}
 		if err := f.cl.get(ctx, q, &page); err != nil {
 			return nil, err
 		}
