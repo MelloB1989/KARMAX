@@ -53,6 +53,8 @@ type Agent struct {
 const snapshotScript = `P="$HOME/.claude/projects"
 echo ==pane==
 tmux list-panes -t main -F '#{pane_pid}' 2>/dev/null | head -n1
+echo ==screen==
+tmux capture-pane -p -t main 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 40
 echo ==current==
 cat "${FLEET_WORK:-/work}/.fleet/current" 2>/dev/null; echo
 echo ==agents==
@@ -148,6 +150,7 @@ func parseSnapshot(name string, b []byte, now time.Time) (reconcile.Obs, error) 
 		copy(who[:], f[1:])
 		owners[pid] = who
 	}
+	o.Screen = sec["screen"]
 	o.CurrentSession = strings.TrimSpace(sec["current"])
 	if s := strings.TrimSpace(sec["agents"]); s != "" {
 		if strings.Contains(s, "!!FAILED") {

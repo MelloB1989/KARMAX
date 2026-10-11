@@ -35,6 +35,11 @@ git config --global --unset-all url.https://github.com/.insteadOf 2>/dev/null
 for a in ${FLEET_GITHUB_SSH_ALIASES:-}; do
   git config --global --add url.https://github.com/.insteadOf "git@$a:"
 done
+# (The bypass-mode warning is skipped by skipDangerousModePermissionPrompt in
+# settings.json, copied in above on every start: Claude Code moves
+# bypassPermissionsModeAccepted out of this file into the user settings once,
+# then never asks again only while that setting survives. A restart keeps
+# this file but the copy above restores the setting, so restart = recreate.)
 # Onboarding done, /work and the shared code trusted, bypass mode accepted,
 # the "make auto mode your default?" nudge seen (2.1.294 opens it on first
 # start, and the pane then sits on it, deaf to messages) — merged into

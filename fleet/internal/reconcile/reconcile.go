@@ -8,6 +8,7 @@ package reconcile
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/config"
@@ -78,6 +79,9 @@ type Obs struct {
 	// PanePID is the pid of the claude the pane runs, when known; it tells the
 	// agent's own session from a stray using the same name.
 	PanePID int
+	// Screen is the pane's visible text (its last lines), for dialogs that
+	// block a session before it has registered one.
+	Screen string
 	// CurrentSession is the session agent-run last started (/work/.fleet/current).
 	CurrentSession  string
 	Sessions        []observe.Agent // interactive sessions in the container
@@ -103,6 +107,23 @@ const (
 // paneGrace is how long a live pane may run without a registered session
 // before it is treated as wedged and restarted.
 const paneGrace = 2 * time.Minute
+
+// dialogs are the screens Claude Code stops on until a person answers, by a
+// line that is on screen only while they are open.
+var dialogs = []struct{ marker, name string }{
+	{"By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode", "the Bypass Permissions warning"},
+}
+
+// Dialog names the blocking dialog a pane's text shows, or "".
+func Dialog(screen string) string {
+	flat := strings.Join(strings.Fields(screen), " ") // a narrow pane wraps lines
+	for _, d := range dialogs {
+		if strings.Contains(flat, d.marker) {
+			return d.name
+		}
+	}
+	return ""
+}
 
 // stuckAfter is how long a session may wait on a dialog before you are told.
 const stuckAfter = 5 * time.Minute
@@ -220,6 +241,20 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		acts = append(acts, Action{Kind: ArchiveStray, Session: s.SessionID, PID: s.PID, Reason: ReasonStray})
 	}
 
+	if d := Dialog(o.Screen); mine == nil && o.PaneAlive && d != "" {
+		// A dialog is open and no session has registered behind it: it hears
+		// nothing, and restarting the pane would only open it again. Tell
+		// the operator, once, with the way in.
+		st.PaneOrphanSince = time.Time{}
+		if st.WaitingSince.IsZero() {
+			st.WaitingSince = o.Now
+		}
+		if o.Now.Sub(st.WaitingSince) >= stuckAfter && !st.Alerted["stuck"] {
+			push("stuck", fmt.Sprintf("%s is waiting on %q and hears no messages", st.Name, d))
+			alertOnce("stuck", fmt.Sprintf("%s is stuck on %q — fleetctl attach %s", st.Name, d, st.Name))
+		}
+		return st, acts
+	}
 	if mine == nil && o.PaneAlive {
 		// A live pane with no session yet is usually claude starting up.
 		if st.PaneOrphanSince.IsZero() {

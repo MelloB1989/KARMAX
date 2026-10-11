@@ -437,3 +437,63 @@ func TestAFailureInAnotherSessionDoesNotDisableTheAgent(t *testing.T) {
 		t.Fatalf("own session's failure: phase=%s", st.Phase)
 	}
 }
+
+const bypassDialog = `  WARNING: Claude Code running in Bypass Permissions mode
+
+  In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.
+
+  By proceeding, you accept all responsibility for actions taken while running in
+  Bypass Permissions mode.
+
+  ❯ 1. No, exit
+    2. Yes, I accept
+`
+
+// The bypass-mode warning opens before any session registers. The pane is
+// alive, so it must not be restarted (that opens the dialog again), and
+// after a few minutes the operator is told — once — with the way in.
+func TestAPaneOnTheBypassWarningIsStuckNotRestarted(t *testing.T) {
+	if Dialog(bypassDialog) == "" {
+		t.Fatal("the bypass warning is not recognised")
+	}
+	o := obs("")
+	o.Sessions = nil
+	o.Screen = bypassDialog
+	st := State{Name: "agent-03", SessionID: "s1"}
+	for _, minutes := range []int{0, 2, 4} {
+		o.Now = t0.Add(time.Duration(minutes) * time.Minute)
+		var acts []Action
+		if st, acts = Decide(th(), st, o); len(acts) != 0 {
+			t.Fatalf("at %d min: %v, want nothing yet", minutes, kinds(acts))
+		}
+	}
+	o.Now = t0.Add(6 * time.Minute) // past paneGrace too: a plain orphan would be restarted here
+	st, acts := Decide(th(), st, o)
+	p, a := has(acts, Push), has(acts, Alert)
+	if p == nil || p.Event != "fleet.agent.stuck" || a == nil || !strings.Contains(a.Text, "Bypass Permissions") ||
+		!strings.Contains(a.Text, "fleetctl attach agent-03") || has(acts, Restart) != nil {
+		t.Fatalf("acts = %v", acts)
+	}
+	o.Now = t0.Add(30 * time.Minute)
+	if _, acts = Decide(th(), st, o); len(acts) != 0 {
+		t.Fatalf("reported twice, or restarted: %v", kinds(acts))
+	}
+}
+
+func TestDialogSeesThroughWrappedLinesAndIgnoresRegisteredSessions(t *testing.T) {
+	wrapped := "By proceeding, you accept all responsibility for actions taken while running in\n  Bypass Permissions mode."
+	if Dialog(wrapped) == "" {
+		t.Error("a wrapped line was missed")
+	}
+	if Dialog("a perfectly normal prompt") != "" {
+		t.Error("an ordinary screen reads as a dialog")
+	}
+	// A working session whose transcript merely mentions it is not stuck.
+	o := obs("busy")
+	o.Screen = bypassDialog
+	st, acts := Decide(th(), State{Name: "agent-03", SessionID: "s1"}, o)
+	o.Now = t0.Add(10 * time.Minute)
+	if _, acts = Decide(th(), st, o); has(acts, Alert) != nil {
+		t.Fatalf("a registered session raised the dialog alert: %v", acts)
+	}
+}
