@@ -24,6 +24,7 @@ import (
 
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
+	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 // Webhook posts state changes to a KARMAX webhooks.routes entry, which turns
@@ -86,7 +87,7 @@ func (k Karmax) Notify(ctx context.Context, text string) error {
 	if k.run != nil {
 		return k.run(ctx, argv)
 	}
-	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput()
+	out, err := target.HardenCtx(exec.CommandContext(ctx, argv[0], argv[1:]...)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("karmax notify: %w: %s", err, strings.TrimSpace(string(out)))
 	}

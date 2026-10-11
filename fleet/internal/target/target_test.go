@@ -2,10 +2,15 @@ package target
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // fakeRunner records every command and answers from a script keyed by the
@@ -97,5 +102,60 @@ func TestANativeTargetRunsOnThisMachine(t *testing.T) {
 	}
 	if up, err := c.Running(context.Background()); err != nil || !up {
 		t.Fatalf("a native target is always running: %v %v", up, err)
+	}
+}
+
+func TestRunReturnsWhenAGrandchildHoldsThePipe(t *testing.T) {
+	// `docker --context pc2` is docker running ssh: killing docker leaves ssh
+	// holding stdout. Here sh forks a sleep that inherits the pipe.
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := Exec{}.Run(ctx, []string{"sh", "-c", "sleep 60 & sleep 60"}, nil)
+	if took := time.Since(start); took > WaitDelay+2*time.Second {
+		t.Fatalf("Run took %v to give up", took)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want a context error", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Logf("took %v: the group kill should make this quick", took)
+	}
+}
+
+func TestRunGivesUpOnAGrandchildInAnotherSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out WaitDelay")
+	}
+	// setsid puts the sleep beyond the group kill; only WaitDelay frees Wait.
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := Exec{}.Run(ctx, []string{"sh", "-c", "setsid sleep 7 & sleep 60"}, nil)
+	if took := time.Since(start); took > WaitDelay+2*time.Second {
+		t.Fatalf("Run took %v to give up", took)
+	}
+	if err == nil {
+		t.Fatal("want an error")
+	}
+}
+
+func TestKillGroupKillsChildren(t *testing.T) {
+	cmd := Harden(exec.Command("sh", "-c", "sleep 60 & echo $!; wait"))
+	out, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	fmt.Fscan(out, &pid)
+	if err := KillGroup(cmd); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+	for i := 0; i < 50 && syscall.Kill(pid, 0) == nil; i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if syscall.Kill(pid, 0) == nil {
+		t.Fatalf("grandchild %d survived KillGroup", pid)
 	}
 }

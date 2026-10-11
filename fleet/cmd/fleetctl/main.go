@@ -1111,7 +1111,7 @@ var runDocker = realDocker
 
 // realDocker runs argv and returns its stdout; a failure carries stderr.
 func realDocker(ctx context.Context, argv []string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
+	out, err := target.HardenCtx(exec.CommandContext(ctx, argv[0], argv[1:]...)).Output()
 	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(ee.Stderr) > 0 {
 		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
 	}
