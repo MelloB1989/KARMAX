@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -126,6 +127,12 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				code := http.StatusInternalServerError
 				if be, ok := err.(badRequest); ok {
 					code, err = http.StatusBadRequest, be.error
+				}
+				if errors.Is(err, daemon.ErrNoTask) {
+					err = notFound{err}
+				}
+				if ne, ok := err.(notFound); ok {
+					code, err = http.StatusNotFound, ne.error
 				}
 				if fe, ok := err.(forbidden); ok {
 					code, err = http.StatusForbidden, fe.error
@@ -458,6 +465,8 @@ func intParam(r *http.Request, name string) (int64, error) {
 type badRequest struct{ error }
 
 type forbidden struct{ error }
+
+type notFound struct{ error }
 
 func body(r *http.Request, v any) error {
 	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20)).Decode(v); err != nil {

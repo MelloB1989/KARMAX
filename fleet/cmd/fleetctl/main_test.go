@@ -373,3 +373,84 @@ func TestDoneKeepSessionIsSentToTheRoute(t *testing.T) {
 		t.Fatalf("plain done sent %s", f.reqs[0])
 	}
 }
+
+// flaky answers /v1/wait: the first n requests lose their connection (fleetd
+// restarting), then it replies with reply, or with an HTTP status if code != 0.
+type flaky struct {
+	mu    sync.Mutex
+	drops int
+	paths []string
+	code  int
+	reply string
+}
+
+func (f *flaky) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.paths = append(f.paths, r.URL.Path)
+	drop := r.URL.Path == "/v1/wait" && f.drops > 0
+	if drop {
+		f.drops--
+	}
+	f.mu.Unlock()
+	if drop {
+		c, _, _ := w.(http.Hijacker).Hijack()
+		c.Close()
+		return
+	}
+	if r.URL.Path == "/v1/inbox" {
+		_, _ = io.WriteString(w, `[{"ID":7}]`)
+		return
+	}
+	if f.code != 0 {
+		w.WriteHeader(f.code)
+	}
+	_, _ = io.WriteString(w, f.reply)
+}
+
+func waitWith(t *testing.T, f *flaky, task string, timeout time.Duration) (string, []time.Duration, error) {
+	t.Helper()
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	var errOut bytes.Buffer
+	var slept []time.Duration
+	_, err := waitFor(context.Background(), &client{base: srv.URL, token: "t"}, "agent-03", task, -1, timeout, &errOut,
+		func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil })
+	return errOut.String(), slept, err
+}
+
+func TestWaitRetriesWhenFleetdRestartsMidWait(t *testing.T) {
+	f := &flaky{drops: 3, reply: `{"Reason":"message","Message":{"ID":8,"From":"agent-03","Text":"ready"}}`}
+	msg, slept, err := waitWith(t, f, "", time.Hour)
+	// (net/http itself retries a dropped GET once, unseen: 3 drops are 1-2 retries.)
+	if err != nil || !strings.Contains(msg, "fleetd unreachable, retrying") {
+		t.Fatalf("err %v, stderr %q", err, msg)
+	}
+	if len(slept) < 1 || slept[0] != time.Second || (len(slept) > 1 && slept[1] != 2*time.Second) {
+		t.Errorf("backoff = %v", slept)
+	}
+}
+
+func TestWaitGivesUpAtItsTimeoutNotAtTheFirstFailure(t *testing.T) {
+	f := &flaky{drops: 1 << 20}
+	_, _, err := waitWith(t, f, "", 3*time.Second) // sleeps are fake: only the clock's headroom counts
+	if err != nil {
+		t.Fatalf("a wait that ran out of time is a timeout result, not an error: %v", err)
+	}
+}
+
+func TestWaitOnAMissingTaskFailsFastWithoutRetrying(t *testing.T) {
+	f := &flaky{code: 404, reply: `{"error":"no task T9"}`}
+	msg, _, err := waitWith(t, f, "T9", time.Hour)
+	if err == nil || err.Error() != "no task T9" || msg != "" {
+		t.Fatalf("err %v, stderr %q", err, msg)
+	}
+	n := 0
+	for _, p := range f.paths {
+		if p == "/v1/wait" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("asked %d times", n)
+	}
+}

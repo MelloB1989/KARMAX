@@ -80,6 +80,8 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"bad ssh alias":       "github: {ssh_aliases: ['gh; rm -rf /']}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console host":        "console: {host: nowhere, fleetd_url: 'http://f:7879', token_env: C}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console token":       "console: {host: kali, fleetd_url: 'http://f:7879', token_env: 'sk-abc'}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"console is full":     "console: {host: kali, fleetd_url: 'http://f:7879', token_env: FLEET_TOKEN}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"console is relay":    "console: {host: kali, fleetd_url: 'http://f:7879', token_env: FLEET_RELAY_TOKEN}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console url":         "console: {host: kali, fleetd_url: 'f:7879', token_env: C}\nagents: {agent-01: {host: kali, token_env: T}}",
 	}
 	for name, body := range cases {

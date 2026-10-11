@@ -35,7 +35,6 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
 	"github.com/MelloB1989/karmax/fleet/internal/recreate"
-	"github.com/MelloB1989/karmax/fleet/internal/render"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
@@ -231,6 +230,81 @@ func followInbox(ctx context.Context, c *client, after int64, asJSON bool, errOu
 		}
 		if err := sleep(ctx, poll); err != nil {
 			return nil
+		}
+	}
+}
+
+// retryable is a failed call another try may fix: fleetd not answering (it
+// restarting) or a proxy's 502/503/504. Anything fleetd answered — a refused
+// token, "no task T1" — stands.
+func retryable(err error) bool {
+	var se *statusError
+	if !errors.As(err, &se) {
+		return true
+	}
+	return se.Code == http.StatusBadGateway || se.Code == http.StatusServiceUnavailable || se.Code == http.StatusGatewayTimeout
+}
+
+// waitFor is `fleetctl wait`: from the inbox position after (-1: the end, now)
+// until the agent reports, its task closes or it stops. fleetd restarting
+// mid-wait is a line on errOut and a retry, 1 s doubling to 15 s, within the
+// one timeout; only an answer (refused token, no such task) ends it early.
+func waitFor(ctx context.Context, c *client, agent, task string, after int64, timeout time.Duration, errOut io.Writer, sleep func(context.Context, time.Duration) error) (daemon.WaitResult, error) {
+	const minBack, maxBack = time.Second, 15 * time.Second
+	deadline := time.Now().Add(timeout)
+	back := minBack
+	retry := func(err error) (bool, error) { // true: try again
+		if !retryable(err) {
+			return false, err
+		}
+		if !time.Now().Add(back).Before(deadline) {
+			return false, nil // no time left for another try: the wait timed out
+		}
+		fmt.Fprintln(errOut, "fleetd unreachable, retrying")
+		if err := sleep(ctx, back); err != nil {
+			return false, err
+		}
+		back = min(back*2, maxBack)
+		return true, nil
+	}
+	if after < 0 { // only what arrives from now on
+		for {
+			var msgs []ledger.Relay
+			err := c.do("GET", "/v1/inbox", nil, &msgs)
+			if err == nil {
+				after = 0
+				if len(msgs) > 0 {
+					after = msgs[len(msgs)-1].ID
+				}
+				break
+			}
+			if again, err := retry(err); !again {
+				if err != nil {
+					return daemon.WaitResult{}, err
+				}
+				return daemon.WaitResult{Reason: "timeout"}, nil
+			}
+		}
+	}
+	left := timeout
+	for first := true; ; first = false {
+		if !first { // a retry waits only for what is left of the one timeout
+			if left = time.Until(deadline); left <= 0 {
+				return daemon.WaitResult{Reason: "timeout"}, nil
+			}
+		}
+		c.timeout = left + 30*time.Second
+		q := url.Values{"agent": {agent}, "task": {task}, "after": {fmt.Sprint(after)}, "timeout": {left.Round(time.Millisecond).String()}}
+		var r daemon.WaitResult
+		err := c.do("GET", "/v1/wait?"+q.Encode(), nil, &r)
+		if err == nil {
+			return r, nil
+		}
+		if again, err := retry(err); !again {
+			if err != nil {
+				return daemon.WaitResult{}, err
+			}
+			return daemon.WaitResult{Reason: "timeout"}, nil
 		}
 	}
 }
@@ -474,20 +548,8 @@ func run(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if after < 0 { // only what arrives from now on
-			var msgs []ledger.Relay
-			if err := c.do("GET", "/v1/inbox", nil, &msgs); err != nil {
-				return err
-			}
-			after = 0
-			if len(msgs) > 0 {
-				after = msgs[len(msgs)-1].ID
-			}
-		}
-		c.timeout = timeout + 30*time.Second
-		q := url.Values{"agent": {pos[0]}, "task": {task}, "after": {fmt.Sprint(after)}, "timeout": {timeout.String()}}
-		var r daemon.WaitResult
-		if err := c.do("GET", "/v1/wait?"+q.Encode(), nil, &r); err != nil {
+		r, err := waitFor(context.Background(), c, pos[0], task, after, timeout, os.Stderr, sleepCtx)
+		if err != nil {
 			return err
 		}
 		if asJSON {
@@ -1043,80 +1105,20 @@ func upDown(cmd string, args []string) error {
 	if err != nil {
 		return err
 	}
-	dryRun = dryRun || plan
-	explicit := len(hosts) > 0
-	if !explicit {
-		hosts = cfg.HostNames()
-	}
 	ctx := context.Background()
 	if whenIdle && timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	for _, h := range hosts {
-		hc, ok := cfg.Hosts[h]
-		if !ok {
-			return fmt.Errorf("no host %q", h)
-		}
-		if !render.Runs(cfg, h) {
-			if explicit {
-				return fmt.Errorf("%s has nothing to run", h)
-			}
-			continue
-		}
-		file := filepath.Join(hostctl.RenderDir(cfg), "compose."+h+".yaml")
-		var changes []recreate.Change
-		if cmd == "up" {
-			pl := recreate.Planner{Prefix: hc.Exec, File: file, Run: runDocker}
-			if changes, err = pl.Plan(ctx); err != nil {
-				return fmt.Errorf("%s: %w", h, err)
-			}
-			recreate.Describe(os.Stdout, h, changes)
-		}
-		if dryRun {
-			continue // the plan above is all a dry run does
-		}
-		if whenIdle {
-			agents := map[string]bool{}
-			for _, n := range cfg.AgentsOn(h) {
-				agents[n] = true
-			}
-			idle := recreate.Idler{Planner: recreate.Planner{Prefix: hc.Exec, File: file, Run: runDocker},
-				Agents: agents, State: fleetdStates, Sleep: sleepCtx, Every: 10 * time.Second, Out: os.Stdout}
-			if err := idle.Up(ctx, changes); err != nil {
-				return fmt.Errorf("%s: %w", h, err)
-			}
-			continue
-		}
-		argv, err := hostctl.Argv(cfg, h, cmd == "up")
-		if err != nil {
-			return err
-		}
-		fmt.Println("$", strings.Join(argv, " "))
-		c := exec.Command(argv[0], argv[1:]...)
-		c.Stdout, c.Stderr = os.Stdout, os.Stderr
-		if err := c.Run(); err != nil {
-			return fmt.Errorf("%s: %w", h, err)
-		}
-	}
-	if dryRun {
-		fmt.Println("dry run: nothing was recreated")
-	}
-	return nil
+	return hostctl.Update(ctx, cfg, cmd == "up", hosts, hostctl.Options{
+		Run: hostctl.ExecRunner, Docker: runDocker, DryRun: dryRun || plan, WhenIdle: whenIdle,
+		States: fleetdStates, Sleep: sleepCtx, Every: 10 * time.Second,
+	}, os.Stdout)
 }
 
 // runDocker runs the docker CLI for the plan; tests replace it.
-var runDocker = realDocker
-
-// realDocker runs argv and returns its stdout; a failure carries stderr.
-func realDocker(ctx context.Context, argv []string) ([]byte, error) {
-	out, err := target.HardenCtx(exec.CommandContext(ctx, argv[0], argv[1:]...)).Output()
-	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(ee.Stderr) > 0 {
-		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
-	}
-	return out, err
-}
+var runDocker recreate.Runner = hostctl.RealDocker
 
 // fleetdStates is each agent's state, from fleetd's status.
 func fleetdStates(ctx context.Context) (map[string]string, error) {
