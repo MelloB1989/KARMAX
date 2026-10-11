@@ -156,7 +156,7 @@ func TestPromptTypesLiterallyThenEnter(t *testing.T) {
 	if err := newAgent(r).Prompt(context.Background(), "fix it; rm -rf $HOME"); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "main", "-l", "fix it; rm -rf $HOME"}) {
+	if !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "main", "-l", "--", "fix it; rm -rf $HOME"}) {
 		t.Fatalf("argv = %q", r.calls[0])
 	}
 	if !slices.Equal(r.calls[1][3:], []string{"tmux", "send-keys", "-t", "main", "Enter"}) {
@@ -275,5 +275,15 @@ func TestRelayFromTheOperator(t *testing.T) {
 	}
 	if in := r.stdins[0]; !strings.Contains(in, "relayed from the operator") || strings.Contains(in, "fleetctl tell operator") {
 		t.Fatalf("prompt = %q", in)
+	}
+}
+
+func TestPromptStartingWithDashIsText(t *testing.T) {
+	r := &fakeRunner{}
+	if err := newAgent(r).Prompt(context.Background(), "-1 is not a flag"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "main", "-l", "--", "-1 is not a flag"}) {
+		t.Fatalf("call = %v: text must follow --", r.calls[0])
 	}
 }
