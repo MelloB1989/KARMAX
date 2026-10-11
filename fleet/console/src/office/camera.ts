@@ -48,7 +48,7 @@ export function flyTarget(f: ScreenFrame, fovDeg: number, aspect: number): { pos
 export const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
 /** The desks' share of the frame width: wide enough that little bare floor shows below them. */
-export const HOME_FILL = 0.88;
+export const HOME_FILL = 0.78;
 export const HOME_ELEVATION = (25 * Math.PI) / 180;
 const DESK_W = 2.2;
 export const DESK_EYE = 0.9; // the camera sits relative to desk height
