@@ -29,6 +29,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
+	"github.com/MelloB1989/karmax/fleet/internal/recreate"
 	"github.com/MelloB1989/karmax/fleet/internal/render"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
@@ -69,7 +70,10 @@ About fleetd:
 
 Setup (host only):
   render [--out <dir>]                env files, compose files, briefs
-  up [<host>…] | down [<host>…]       docker compose, per host
+  up [--when-idle [--timeout 2h]] [<host>…] | down [<host>…]
+                                      docker compose, per host. up first lists the containers it
+                                      will recreate and why (image, env, brief); --when-idle
+                                      recreates each agent alone, once fleetd says it is not working
 `
 
 func main() {
@@ -557,40 +561,7 @@ func run(cmd string, args []string) error {
 		return nil
 
 	case "up", "down":
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		hosts := args
-		if len(hosts) == 0 {
-			hosts = cfg.HostNames()
-		}
-		for _, h := range hosts {
-			hc, ok := cfg.Hosts[h]
-			if !ok {
-				return fmt.Errorf("no host %q", h)
-			}
-			if !render.Runs(cfg, h) {
-				if len(args) > 0 {
-					return fmt.Errorf("%s has nothing to run", h)
-				}
-				continue
-			}
-			file := filepath.Join(cfg.StateDir, "render", "compose."+h+".yaml")
-			argv := append(append([]string{}, hc.Exec...), "compose", "-p", "fleet", "-f", file)
-			if cmd == "up" {
-				argv = append(argv, "up", "-d", "--remove-orphans")
-			} else {
-				argv = append(argv, "down")
-			}
-			fmt.Println("$", strings.Join(argv, " "))
-			c := exec.Command(argv[0], argv[1:]...)
-			c.Stdout, c.Stderr = os.Stdout, os.Stderr
-			if err := c.Run(); err != nil {
-				return fmt.Errorf("%s: %w", h, err)
-			}
-		}
-		return nil
+		return upDown(cmd, args)
 	}
 	return fmt.Errorf("unknown command %q (fleetctl help)", cmd)
 }
@@ -787,4 +758,120 @@ func clip(s string, n int) string {
 		return string(r[:n]) + "…"
 	}
 	return s
+}
+
+// upDown is `fleetctl up|down [--when-idle [--timeout d]] [host…]`. Up first
+// says which containers it will recreate and why; with --when-idle it
+// recreates the agents among them one at a time, each once fleetd says it is
+// not working.
+func upDown(cmd string, args []string) error {
+	var whenIdle bool
+	var timeout time.Duration
+	_, hosts, err := flags(cmd, args, func(fs *flag.FlagSet) {
+		if cmd == "up" {
+			fs.BoolVar(&whenIdle, "when-idle", false, "")
+			fs.DurationVar(&timeout, "timeout", 2*time.Hour, "")
+		}
+	})
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	explicit := len(hosts) > 0
+	if !explicit {
+		hosts = cfg.HostNames()
+	}
+	ctx := context.Background()
+	if whenIdle && timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	for _, h := range hosts {
+		hc, ok := cfg.Hosts[h]
+		if !ok {
+			return fmt.Errorf("no host %q", h)
+		}
+		if !render.Runs(cfg, h) {
+			if explicit {
+				return fmt.Errorf("%s has nothing to run", h)
+			}
+			continue
+		}
+		file := filepath.Join(cfg.StateDir, "render", "compose."+h+".yaml")
+		compose := func(more ...string) []string {
+			return append(append(append([]string{}, hc.Exec...), "compose", "-p", "fleet", "-f", file), more...)
+		}
+		var changes []recreate.Change
+		if cmd == "up" {
+			pl := recreate.Planner{Prefix: hc.Exec, File: file, Run: runDocker}
+			if changes, err = pl.Plan(ctx); err != nil {
+				return fmt.Errorf("%s: %w", h, err)
+			}
+			recreate.Describe(os.Stdout, h, changes)
+		}
+		if whenIdle {
+			agents := map[string]bool{}
+			for _, n := range cfg.AgentsOn(h) {
+				agents[n] = true
+			}
+			idle := recreate.Idler{Planner: recreate.Planner{Prefix: hc.Exec, File: file, Run: runDocker},
+				Agents: agents, State: fleetdStates, Sleep: sleepCtx, Every: 10 * time.Second, Out: os.Stdout}
+			if err := idle.Up(ctx, changes); err != nil {
+				return fmt.Errorf("%s: %w", h, err)
+			}
+			continue
+		}
+		argv := compose("down")
+		if cmd == "up" {
+			argv = compose("up", "-d", "--remove-orphans")
+		}
+		fmt.Println("$", strings.Join(argv, " "))
+		c := exec.Command(argv[0], argv[1:]...)
+		c.Stdout, c.Stderr = os.Stdout, os.Stderr
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("%s: %w", h, err)
+		}
+	}
+	return nil
+}
+
+// runDocker runs argv and returns its stdout; a failure carries stderr.
+func runDocker(ctx context.Context, argv []string) ([]byte, error) {
+	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
+	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+	}
+	return out, err
+}
+
+// fleetdStates is each agent's state, from fleetd's status.
+func fleetdStates(ctx context.Context) (map[string]string, error) {
+	c, err := newClient()
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Agents []daemon.Row `json:"agents"`
+	}
+	if err := c.do("GET", "/v1/status", nil, &out); err != nil {
+		return nil, err
+	}
+	m := map[string]string{}
+	for _, r := range out.Agents {
+		m[r.Agent] = r.State
+	}
+	return m, nil
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	select {
+	case <-time.After(d):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
