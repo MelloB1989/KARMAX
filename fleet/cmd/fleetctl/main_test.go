@@ -267,3 +267,21 @@ func TestInboxFollowBackoffCapsAt15sAndAnExpiredTokenEnds(t *testing.T) {
 		}
 	}
 }
+
+func TestDoneKeepSessionIsSentToTheRoute(t *testing.T) {
+	f := &fakeFleetd{}
+	if _, err := fleetctl(t, f, "done", "agent-03", "--task", "T1", "--outcome", "superseded", "--keep-session"); err != nil {
+		t.Fatal(err)
+	}
+	var in map[string]any
+	_ = json.Unmarshal([]byte(strings.SplitN(f.reqs[0], " ", 3)[2]), &in)
+	if in["keep_session"] != true || in["outcome"] != "superseded" || in["task"] != "T1" {
+		t.Fatalf("request = %s", f.reqs[0])
+	}
+	f = &fakeFleetd{}
+	_, _ = fleetctl(t, f, "done", "agent-03")
+	_ = json.Unmarshal([]byte(strings.SplitN(f.reqs[0], " ", 3)[2]), &in)
+	if in["keep_session"] != false {
+		t.Fatalf("plain done sent %s", f.reqs[0])
+	}
+}

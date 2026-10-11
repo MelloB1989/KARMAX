@@ -45,6 +45,10 @@ func (f *fake) Done(name, task, outcome, branch, pr string, _ time.Time) error {
 	f.calls = append(f.calls, "done "+name+" "+task+" "+outcome+" "+branch)
 	return nil
 }
+func (f *fake) Close(name, task, outcome, branch, pr string, _ time.Time) error {
+	f.calls = append(f.calls, "close "+name+" "+task+" "+outcome+" "+branch)
+	return nil
+}
 func (f *fake) Rotate(name string, _ time.Time) error {
 	f.calls = append(f.calls, "rotate "+name)
 	return nil
@@ -242,5 +246,19 @@ func TestHealthzNeedsNoToken(t *testing.T) {
 	rec := do(t, h, "GET", "/healthz", "", "")
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"version"`) {
 		t.Fatalf("healthz = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestDoneKeepSessionCallsCloseNotDone(t *testing.T) {
+	f, h := setup(t)
+	if w := do(t, h, "POST", "/v1/done", "full", `{"agent":"agent-03","task":"T1","outcome":"superseded","keep_session":true}`); w.Code != 200 {
+		t.Fatalf("done keep_session = %d %s", w.Code, w.Body)
+	}
+	if got := f.calls[len(f.calls)-1]; got != "close agent-03 T1 superseded " {
+		t.Fatalf("call = %q", got)
+	}
+	_ = do(t, h, "POST", "/v1/done", "full", `{"agent":"agent-03","task":"T1"}`)
+	if got := f.calls[len(f.calls)-1]; !strings.HasPrefix(got, "done agent-03 T1") {
+		t.Fatalf("without keep_session: %q", got)
 	}
 }

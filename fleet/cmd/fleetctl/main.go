@@ -55,7 +55,8 @@ Work (fleetd):
   wait <agent> [--task <id>] [--timeout 30m] [--json]
                                       until it reports, its task closes, or it stops
                                       (exit 0; 3 down/cooling/disabled; 4 timeout)
-  done <agent> [--task <id>] [--outcome done] [--branch b] [--pr url]
+  done <agent> [--task <id>] [--outcome done] [--branch b] [--pr url] [--keep-session]
+                                      --keep-session closes the task without archiving or rotating the session
   tell <name> <text…> [--from <name>] message a session on another host
   rotate <agent>                      archive its session, start fresh
   restore <archive-id> [--agent <name>]
@@ -527,7 +528,9 @@ func run(cmd string, args []string) error {
 
 	case "done":
 		var task, outcome, branch, pr string
+		var keep bool
 		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			fs.BoolVar(&keep, "keep-session", false, "")
 			fs.StringVar(&task, "task", "", "")
 			fs.StringVar(&outcome, "outcome", "done", "")
 			fs.StringVar(&branch, "branch", "", "")
@@ -536,10 +539,10 @@ func run(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := need(pos, 1, "done <agent> [--task <id>]"); err != nil {
+		if err := need(pos, 1, "done <agent> [--task <id>] [--keep-session]"); err != nil {
 			return err
 		}
-		return post("/v1/done", map[string]string{"agent": pos[0], "task": task, "outcome": outcome, "branch": branch, "pr": pr})
+		return post("/v1/done", map[string]any{"agent": pos[0], "task": task, "outcome": outcome, "branch": branch, "pr": pr, "keep_session": keep})
 
 	case "tell":
 		from := os.Getenv("FLEET_NAME") // set in every fleet container

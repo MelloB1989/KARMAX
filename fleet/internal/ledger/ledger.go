@@ -405,6 +405,33 @@ func (db *DB) CloseTask(id string, at time.Time, outcome, branch, pr string) err
 	return err
 }
 
+// SupersedeOpen closes every task of agent that is still open, except one,
+// as "superseded" — the agent was given new work — and returns their ids.
+func (db *DB) SupersedeOpen(agent, except string, at time.Time) ([]string, error) {
+	rows, err := db.sql.Query(`SELECT id FROM tasks WHERE agent=? AND closed IS NULL AND id<>? ORDER BY assigned, id`, agent, except)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if _, err := db.sql.Exec(`UPDATE tasks SET closed=?, outcome='superseded' WHERE id=? AND closed IS NULL`, at.Unix(), id); err != nil {
+			return ids, err
+		}
+	}
+	return ids, nil
+}
+
 // Task reads one task.
 func (db *DB) Task(id string) (*Task, error) {
 	var t Task
