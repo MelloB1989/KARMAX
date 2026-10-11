@@ -79,6 +79,10 @@ type Orchestrator struct {
 	// Native runs the orchestrator outside Docker on its host, which must be
 	// fleetd's own: no karmax-brain, no token, and relays to it run there.
 	Native bool `yaml:"native"`
+	// Report is how the orchestrator tells the operator what came of a task,
+	// e.g. a WhatsApp send command. A turn an agent's report starts has no
+	// caller, so its reply text reaches nobody unless it is sent somewhere.
+	Report string `yaml:"report"`
 	// KarmaxAgent is the KARMAX agent id whose harness session is the
 	// orchestrator (karmax.yaml agents[].id). When set, fleetctl render
 	// writes the fleet's paragraph into that session's .claude/CLAUDE.md.

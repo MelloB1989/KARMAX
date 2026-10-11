@@ -49,7 +49,12 @@ fleetd, and tell the operator what came of it if they asked for the work:
 
 That archives the agent's session and puts it back on standby, fresh. One
 task, one session.
-
+{{if .Report}}
+The agent's message started this turn, so nobody is waiting on your reply:
+text you write here reaches nobody. When the operator asked for the work,
+tell them what came of it yourself — the result, the branch, the PR, or what
+is blocked — in a few lines: {{.Report}}
+{{end}}
 ## What fleetd tells you
 
 State changes arrive as `fleet.agent.*` events: `cooling` (rate-limited until

@@ -38,6 +38,9 @@ orchestrator:
   karmax_agent: karmax-agent   # karmax.yaml agents[].id — render writes its fleet brief
   # name: karmax               # what agents call it; match harness.kinds.agent.name
   # container: karmax-brain
+  # report: 'send it to the operator on WhatsApp: karmax tool call comms.send target=<your number> content="<text>"'
+  #                          # how it tells you what came of a task (a turn an agent's report
+  #                          # starts has no caller, so its reply text reaches nobody)
   # native: true             # run it on this host outside Docker, under the host's own
   #                          # Claude login: no karmax-brain, no token_env (use it when
   #                          # no agent runs on this host)

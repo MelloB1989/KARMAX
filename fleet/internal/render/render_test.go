@@ -346,3 +346,23 @@ func TestBriefTellsAgentsAboutTheBuildHost(t *testing.T) {
 		t.Errorf("Heavy work section = %q", heavy)
 	}
 }
+
+// A turn an agent's report starts has no one to answer, so the orchestrator
+// is told how to reach the operator — when fleet.yaml says how.
+func TestOrchestratorBriefSaysHowToReportToTheOperator(t *testing.T) {
+	if b, _ := OrchestratorBrief(cfg(t)); strings.Contains(b, "reaches nobody") {
+		t.Errorf("report instruction without orchestrator.report")
+	}
+	c, err := config.Parse([]byte(strings.Replace(nativeYAML, "native: true}",
+		`native: true, report: 'send it on WhatsApp: karmax tool call comms.send target=91000 content="<text>"'}`, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := OrchestratorBrief(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := section(b, "When an agent reports back"); !strings.Contains(s, "comms.send target=91000") || !strings.Contains(s, "reaches nobody") {
+		t.Errorf("report section = %q", s)
+	}
+}
