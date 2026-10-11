@@ -2,7 +2,9 @@ package ledger
 
 import (
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,5 +219,98 @@ func TestInboxIsTheOperatorsMessagesAfterAnID(t *testing.T) {
 	}
 	if rest, _ := db.Inbox(all[0].ID); len(rest) != 1 || rest[0].Text != "c" {
 		t.Fatalf("after %d = %+v", all[0].ID, rest)
+	}
+}
+
+func TestEventsAfterIsACursorAndFiltersKinds(t *testing.T) {
+	db := open(t)
+	// two events in the same second, then one later: the cursor must not skip or repeat
+	for _, k := range []string{"Stop", "fleet.done", "fleet.rotate", "PreToolUse"} {
+		_ = db.AddEvent(Event{Agent: "agent-01", At: t0, Kind: k, Detail: `{"x":1}`})
+	}
+	p1, err := db.EventsWhere(EventQuery{Limit: 2})
+	if err != nil || len(p1) != 2 {
+		t.Fatalf("page 1 = %v, %v", p1, err)
+	}
+	p2, _ := db.EventsWhere(EventQuery{After: p1[1].ID, Limit: 2})
+	if len(p2) != 2 || p2[0].ID != p1[1].ID+1 {
+		t.Fatalf("page 2 = %+v after %d", p2, p1[1].ID)
+	}
+	if p3, _ := db.EventsWhere(EventQuery{After: p2[1].ID}); len(p3) != 0 {
+		t.Fatalf("page 3 = %+v, want none", p3)
+	}
+	got, _ := db.EventsWhere(EventQuery{Kinds: []string{"Stop", "fleet."}})
+	if len(got) != 3 {
+		t.Fatalf("kinds Stop + fleet.* = %d events, want 3", len(got))
+	}
+	if odd, _ := db.EventsWhere(EventQuery{Kinds: []string{"fleet_"}}); len(odd) != 0 {
+		t.Fatal("an underscore in a prefix must not be a wildcard")
+	}
+	newest, _ := db.EventsWhere(EventQuery{Limit: 2, Newest: true})
+	if len(newest) != 2 || newest[0].Kind != "fleet.rotate" || newest[1].Kind != "PreToolUse" {
+		t.Fatalf("newest 2 = %+v, want the last two, oldest first", newest)
+	}
+}
+
+func TestEventJSONCarriesIDAndRawDetail(t *testing.T) {
+	b, _ := json.Marshal(Event{ID: 5, Agent: "a", Kind: "Stop", Detail: `{"tool":"Bash"}`})
+	if !strings.Contains(string(b), `"id":5`) || !strings.Contains(string(b), `"detail":{"tool":"Bash"}`) {
+		t.Fatalf("event JSON = %s", b)
+	}
+	var back Event
+	if err := json.Unmarshal(b, &back); err != nil || back.Detail != `{"tool":"Bash"}` || back.ID != 5 {
+		t.Fatalf("round trip = %+v, %v", back, err)
+	}
+	b, _ = json.Marshal(Event{Kind: "x", Detail: "not json"})
+	if !strings.Contains(string(b), `"detail":"not json"`) {
+		t.Fatalf("non-JSON detail = %s", b)
+	}
+}
+
+func TestActivityCountsBuckets(t *testing.T) {
+	db := open(t)
+	for _, d := range []time.Duration{0, time.Minute, 16 * time.Minute, 31 * time.Minute, 32 * time.Minute, 33 * time.Minute} {
+		_ = db.AddEvent(Event{Agent: "agent-01", At: t0.Add(d), Kind: "Stop"})
+	}
+	_ = db.AddEvent(Event{Agent: "agent-02", At: t0, Kind: "Stop"})
+	got, err := db.Activity(t0.Add(-time.Hour), 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := got["agent-01"]
+	if len(a) != 3 || a[0].N != 2 || a[1].N != 1 || a[2].N != 3 || !a[0].T.Equal(t0) {
+		t.Fatalf("agent-01 buckets = %+v", a)
+	}
+	if len(got["agent-02"]) != 1 {
+		t.Fatalf("agent-02 = %+v", got["agent-02"])
+	}
+}
+
+func TestTasksOpenAndNewest(t *testing.T) {
+	db := open(t)
+	_ = db.OpenTask("T1", "agent-01", "operator", t0)
+	_ = db.OpenTask("T2", "agent-01", "mira", t0.Add(time.Hour))
+	_ = db.OpenTask("T3", "agent-02", "operator", t0.Add(2*time.Hour))
+	_ = db.CloseTask("T1", t0.Add(30*time.Minute), "done", "", "")
+	open, _ := db.Tasks(true, "", 0)
+	if len(open) != 2 || open[0].ID != "T3" || open[1].ID != "T2" {
+		t.Fatalf("open = %+v", open)
+	}
+	last, _ := db.Tasks(false, "agent-01", 1)
+	if len(last) != 1 || last[0].ID != "T2" {
+		t.Fatalf("newest of agent-01 = %+v", last)
+	}
+	tot, _ := db.Totals(t0)
+	if tot.TasksClosed != 1 {
+		t.Fatalf("totals = %+v", tot)
+	}
+}
+
+func TestSessionJSONIsSnakeCase(t *testing.T) {
+	b, _ := json.Marshal(Session{ID: "s", Agent: "a", Task: "T", CostUSD: 1.5, CacheRead: 3})
+	for _, want := range []string{`"task":"T"`, `"cost_usd":1.5`, `"cache_read":3`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("session JSON %s lacks %s", b, want)
+		}
 	}
 }
