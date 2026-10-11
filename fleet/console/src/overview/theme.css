@@ -128,3 +128,8 @@ span.btn { cursor: default; }
   .scanline, .ring-sweep { display: none; }
   .card.pulse .card-phase, .card.flash, .card .dot { animation: none !important; }
 }
+
+/* the terminal: no scrollbar, a dim note until bytes arrive */
+.xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; background-color: transparent !important; }
+.xterm-viewport::-webkit-scrollbar { display: none; }
+.term-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 14px; letter-spacing: 2px; z-index: 2; pointer-events: none; }
