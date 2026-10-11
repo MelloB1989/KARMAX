@@ -30,6 +30,7 @@ type Box interface {
 	Restart(ctx context.Context, sessionID string) error
 	Fresh(ctx context.Context) error
 	Prompt(ctx context.Context, text string) error
+	Peek(ctx context.Context, n int) (string, error)
 	StopPID(ctx context.Context, pid int) error
 	DeleteTranscript(ctx context.Context, sid string) error
 	RemoveWorktree(ctx context.Context, w agent.Worktree) error
@@ -412,12 +413,6 @@ func (f *Fleet) Done(name, task, outcome, branch, pr string, now time.Time) erro
 		outcome = "done"
 	}
 	return f.db.CloseTask(task, now, outcome, branch, pr)
-}
-
-// Rotate archives the agent's session and starts a fresh one on its next
-// idle tick, as if its task were done.
-func (f *Fleet) Rotate(name string, now time.Time) error {
-	return f.Done(name, "", "rotated", "", "", now)
 }
 
 // Enable clears a disabled agent, once you have fixed its subscription.

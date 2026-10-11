@@ -1,9 +1,11 @@
 // Command fleetctl is the agent fleet's CLI.
 //
-// On the host it reads fleet.yaml and talks to fleetd; inside a container it
-// needs only FLEETD_URL and FLEET_TOKEN (for tell and status). attach, prompt
-// and peek go straight to the container through its host's exec prefix —
-// they are your keyboard, and no model-callable tool ever wraps them.
+// Every command but attach is an HTTP client of fleetd: on a fleet host it
+// finds fleetd through fleet.yaml, anywhere else it needs FLEETD_URL and
+// FLEET_TOKEN. attach goes straight to the container through its host's exec
+// prefix — it is your keyboard, and no model-callable tool ever wraps it.
+// render, up and down run on a fleet host directly, and through fleetd from
+// anywhere else (or with --remote).
 package main
 
 import (
@@ -27,9 +29,9 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
+	"github.com/MelloB1989/karmax/fleet/internal/hostctl"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
-	"github.com/MelloB1989/karmax/fleet/internal/render"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
@@ -43,7 +45,10 @@ Roster and records (fleetd):
   events <agent> [--since 2h] [--json]
   usage [--by agent|model] [--since 7d] [--json]
   history <agent> [-n 20] [--json]
-  archive ls [--since 7d] [--json] | archive prune --older 180d
+  tasks [--open] [--agent <name>] [-n 50] [--json]
+  activity [--since 24h] [--bucket 15m] [--json]
+  today [--json]                      tasks closed and spend since local midnight
+  archive ls [--since 7d] [--json] | archive show <id> | archive prune --older 180d
 
 Work (fleetd):
   give <agent> --task <id> <brief…>   record a task and deliver its brief; the agent reports to you
@@ -54,20 +59,20 @@ Work (fleetd):
                                       (exit 0; 3 down/cooling/disabled; 4 timeout)
   done <agent> [--task <id>] [--outcome done] [--branch b] [--pr url]
   tell <name> <text…> [--from <name>] message a session on another host
-  rotate <agent>                      archive its session, start fresh
+  rotate <agent> [--dry-run]          archive its session, start fresh (--dry-run says what it would close)
   restore <archive-id> [--agent <name>]
   enable <agent>                      after fixing a disabled subscription
 
-Your keyboard (host only, no fleetd):
-  attach <agent>                      the live session's TUI (detach: Ctrl-b d)
-  prompt <agent> <text…>              type into it, as you
-  peek <agent> [-n 80]                its last lines
+Your keyboard:
+  attach <agent>                      the live session's TUI (host only; detach: Ctrl+])
+  prompt <agent> <text…>              type into it, as you (fleetd)
+  peek <agent> [-n 80]                its last lines (fleetd)
 
 About fleetd:
   whoami                              which scope this token has
   api                                 every route and the scopes it allows
 
-Setup (host only):
+Setup (on a fleet host directly, else through fleetd; --remote forces fleetd):
   render [--out <dir>]                env files, compose files, briefs
   up [<host>…] | down [<host>…]       docker compose, per host
 `
@@ -501,11 +506,125 @@ func run(cmd string, args []string) error {
 		}
 		return post("/v1/tell", map[string]string{"from": from, "to": pos[0], "text": strings.Join(pos[1:], " ")})
 
-	case "rotate", "enable":
+	case "enable":
 		if err := need(args, 1, cmd+" <agent>"); err != nil {
 			return err
 		}
 		return post("/v1/"+cmd, map[string]string{"agent": args[0]})
+
+	case "rotate":
+		var dry bool
+		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.BoolVar(&dry, "dry-run", false, "") })
+		if err != nil {
+			return err
+		}
+		if err := need(pos, 1, "rotate <agent> [--dry-run]"); err != nil {
+			return err
+		}
+		c, err := newClient()
+		if err != nil {
+			return err
+		}
+		var out struct {
+			Closes string `json:"closes"`
+			When   string `json:"when"`
+		}
+		if err := c.do("POST", "/v1/rotate", map[string]any{"agent": pos[0], "dry_run": dry}, &out); err != nil {
+			return err
+		}
+		verb := "rotating"
+		if dry {
+			verb = "would rotate (dry run, nothing changed)"
+		}
+		task := "no open task"
+		if out.Closes != "" {
+			task = "closes task " + out.Closes + " as rotated"
+		}
+		fmt.Printf("%s %s: %s; takes effect at %s\n", verb, pos[0], task, out.When)
+		return nil
+
+	case "tasks":
+		var open, asJSON bool
+		var agentName string
+		var n int
+		if _, _, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			fs.BoolVar(&open, "open", false, "")
+			fs.StringVar(&agentName, "agent", "", "")
+			fs.IntVar(&n, "n", 0, "")
+			fs.BoolVar(&asJSON, "json", false, "")
+		}); err != nil {
+			return err
+		}
+		q := url.Values{"agent": {agentName}, "n": {fmt.Sprint(n)}}
+		if open {
+			q.Set("open", "1")
+		}
+		return getAndPrint(jsonFlag(asJSON), "/v1/tasks?"+q.Encode(), func(raw json.RawMessage) error {
+			var ts []ledger.Task
+			if err := json.Unmarshal(raw, &ts); err != nil {
+				return err
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+			fmt.Fprintln(w, "TASK\tAGENT\tFROM\tASSIGNED\tCLOSED\tOUTCOME")
+			for _, t := range ts {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Agent, dash(t.Assigner), clock(t.Assigned), clock(t.Closed), dash(t.Outcome))
+			}
+			return w.Flush()
+		})
+
+	case "activity":
+		var since, bucket string
+		var asJSON bool
+		if _, _, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			fs.StringVar(&since, "since", "24h", "")
+			fs.StringVar(&bucket, "bucket", "15m", "")
+			fs.BoolVar(&asJSON, "json", false, "")
+		}); err != nil {
+			return err
+		}
+		q := url.Values{"since": {since}, "bucket": {bucket}}
+		return getAndPrint(jsonFlag(asJSON), "/v1/activity?"+q.Encode(), func(raw json.RawMessage) error {
+			var a struct {
+				BucketS int                        `json:"bucket_s"`
+				Agents  map[string][]ledger.Bucket `json:"agents"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return err
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+			fmt.Fprintf(w, "AGENT\tEVENTS\tBUSIEST BUCKET (%ds)\n", a.BucketS)
+			for name, bs := range a.Agents {
+				total, best := 0, ledger.Bucket{}
+				for _, b := range bs {
+					total += b.N
+					if b.N > best.N {
+						best = b
+					}
+				}
+				fmt.Fprintf(w, "%s\t%d\t%s (%d)\n", name, total, clock(best.T), best.N)
+			}
+			return w.Flush()
+		})
+
+	case "today":
+		var asJSON bool
+		if _, _, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.BoolVar(&asJSON, "json", false, "") }); err != nil {
+			return err
+		}
+		return getAndPrint(jsonFlag(asJSON), "/v1/today", func(raw json.RawMessage) error {
+			var t struct {
+				Since        time.Time `json:"since"`
+				TasksClosed  int       `json:"tasks_closed"`
+				SpendUSD     float64   `json:"spend_usd"`
+				OutputTokens int64     `json:"output_tokens"`
+			}
+			if err := json.Unmarshal(raw, &t); err != nil {
+				return err
+			}
+			fmt.Printf("since %s: %d tasks closed, $%.2f (list price), %d output tokens\n",
+				t.Since.Local().Format("Mon 15:04"), t.TasksClosed, t.SpendUSD, t.OutputTokens)
+			return nil
+		})
 
 	case "restore":
 		var onto string
@@ -518,79 +637,37 @@ func run(cmd string, args []string) error {
 		}
 		return post("/v1/restore", map[string]string{"archive": pos[0], "agent": onto})
 
-	case "attach", "prompt", "peek":
-		return keyboard(cmd, args)
+	case "attach":
+		return attach(args)
 
-	case "render":
-		var out string
-		if _, _, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.StringVar(&out, "out", "", "") }); err != nil {
-			return err
-		}
-		cfg, err := loadConfig()
+	case "peek":
+		var n int
+		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.IntVar(&n, "n", 80, "") })
 		if err != nil {
 			return err
 		}
-		if out == "" {
-			out = filepath.Join(cfg.StateDir, "render")
-		}
-		env, err := outbound.ReadEnv(cfg.EnvFile)
-		if err != nil {
-			return fmt.Errorf("env file: %w", err)
-		}
-		if err := render.Render(cfg, env, out); err != nil {
+		if err := need(pos, 1, "peek <agent> [-n 80]"); err != nil {
 			return err
 		}
-		fmt.Printf("rendered into %s:\n", out)
-		for _, h := range cfg.HostNames() {
-			if !render.Runs(cfg, h) {
-				fmt.Printf("  %s: nothing to run, no compose file\n", h)
-				continue
-			}
-			fmt.Printf("  compose.%s.yaml  (%s)\n", h, strings.Join(cfg.AgentsOn(h), ", "))
+		c, err := newClient()
+		if err != nil {
+			return err
 		}
-		fmt.Println("  agents/*.env      (0600, one token each)")
-		if p := render.OrchestratorBriefPath(cfg); p != "" {
-			fmt.Printf("orchestrator brief: %s\n", p)
-		} else {
-			fmt.Println("orchestrator brief: not written — set orchestrator.karmax_agent in fleet.yaml")
+		var out struct{ Text string }
+		if err := c.do("GET", fmt.Sprintf("/v1/peek?agent=%s&n=%d", url.QueryEscape(pos[0]), n), nil, &out); err != nil {
+			return err
 		}
+		fmt.Print(out.Text)
 		return nil
 
-	case "up", "down":
-		cfg, err := loadConfig()
-		if err != nil {
+	case "prompt":
+		if err := need(args, 2, `prompt <agent> "<text>"`); err != nil {
 			return err
 		}
-		hosts := args
-		if len(hosts) == 0 {
-			hosts = cfg.HostNames()
-		}
-		for _, h := range hosts {
-			hc, ok := cfg.Hosts[h]
-			if !ok {
-				return fmt.Errorf("no host %q", h)
-			}
-			if !render.Runs(cfg, h) {
-				if len(args) > 0 {
-					return fmt.Errorf("%s has nothing to run", h)
-				}
-				continue
-			}
-			file := filepath.Join(cfg.StateDir, "render", "compose."+h+".yaml")
-			argv := append(append([]string{}, hc.Exec...), "compose", "-p", "fleet", "-f", file)
-			if cmd == "up" {
-				argv = append(argv, "up", "-d", "--remove-orphans")
-			} else {
-				argv = append(argv, "down")
-			}
-			fmt.Println("$", strings.Join(argv, " "))
-			c := exec.Command(argv[0], argv[1:]...)
-			c.Stdout, c.Stderr = os.Stdout, os.Stderr
-			if err := c.Run(); err != nil {
-				return fmt.Errorf("%s: %w", h, err)
-			}
-		}
-		return nil
+		return post("/v1/prompt", map[string]string{"agent": args[0], "text": strings.Join(args[1:], " ")})
+
+	case "render", "up", "down":
+		return hostCmd(cmd, args)
 	}
 	return fmt.Errorf("unknown command %q (fleetctl help)", cmd)
 }
@@ -638,13 +715,8 @@ func getAndPrint(args []string, path string, human func(json.RawMessage) error) 
 
 func archiveCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: fleetctl archive ls|prune")
+		return errors.New("usage: fleetctl archive ls|show|prune")
 	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	root := filepath.Join(cfg.StateDir, "archive")
 	switch args[0] {
 	case "ls":
 		var since string
@@ -655,23 +727,32 @@ func archiveCmd(args []string) error {
 		}); err != nil {
 			return err
 		}
-		t, err := server.ParseSince(since, time.Now())
+		return getAndPrint(jsonFlag(asJSON), "/v1/archives?since="+url.QueryEscape(since), func(raw json.RawMessage) error {
+			var all []*archive.Manifest
+			if err := json.Unmarshal(raw, &all); err != nil {
+				return err
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+			fmt.Fprintln(w, "ARCHIVE\tTASK\tREASON\tTURNS\tKEPT WORKTREES\tLAST")
+			for _, m := range all {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n", m.ID, dash(m.Task), m.Reason, m.Turns, len(m.KeptWorktrees()), clip(m.LastAssistant, 60))
+			}
+			return w.Flush()
+		})
+	case "show":
+		if err := need(args, 2, "archive show <id>"); err != nil {
+			return err
+		}
+		c, err := newClient()
 		if err != nil {
 			return err
 		}
-		all, err := archive.List(root, t)
-		if err != nil {
+		var raw json.RawMessage
+		if err := c.do("GET", "/v1/archives/"+args[1], nil, &raw); err != nil {
 			return err
 		}
-		if asJSON {
-			return printJSON(all)
-		}
-		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(w, "ARCHIVE\tTASK\tREASON\tTURNS\tKEPT WORKTREES\tLAST")
-		for _, m := range all {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n", m.ID, dash(m.Task), m.Reason, m.Turns, len(m.KeptWorktrees()), clip(m.LastAssistant, 60))
-		}
-		return w.Flush()
+		_, err = os.Stdout.Write(append(raw, '\n'))
+		return err
 	case "prune":
 		var older string
 		if _, _, err := flags("archive prune", args[1:], func(fs *flag.FlagSet) { fs.StringVar(&older, "older", "", "") }); err != nil {
@@ -680,25 +761,70 @@ func archiveCmd(args []string) error {
 		if older == "" {
 			return errors.New("usage: fleetctl archive prune --older 180d (archives are otherwise kept forever)")
 		}
-		t, err := server.ParseSince(older, time.Now())
+		c, err := newClient()
 		if err != nil {
 			return err
 		}
-		n, err := archive.Prune(root, t)
-		fmt.Printf("pruned %d archives older than %s\n", n, older)
-		return err
+		var out struct{ Removed int }
+		if err := c.do("DELETE", "/v1/archives?older="+url.QueryEscape(older), nil, &out); err != nil {
+			return err
+		}
+		fmt.Printf("pruned %d archives older than %s\n", out.Removed, older)
+		return nil
 	}
 	return fmt.Errorf("unknown archive command %q", args[0])
 }
 
-// keyboard is attach, prompt and peek: straight to the container.
-func keyboard(cmd string, args []string) error {
-	var n int
-	_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.IntVar(&n, "n", 80, "") })
+func jsonFlag(on bool) []string {
+	if on {
+		return []string{"--json"}
+	}
+	return nil
+}
+
+// hostCmd is render, up and down. On a fleet host (fleet.yaml present) it
+// runs hostctl directly; elsewhere, or with --remote, it asks fleetd to.
+func hostCmd(cmd string, args []string) error {
+	var out string
+	var remote bool
+	_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
+		fs.StringVar(&out, "out", "", "")
+		fs.BoolVar(&remote, "remote", false, "")
+	})
 	if err != nil {
 		return err
 	}
-	if err := need(pos, 1, cmd+" <agent>"); err != nil {
+	if cfg, err := loadConfig(); err == nil && !remote {
+		switch cmd {
+		case "render":
+			return hostctl.Render(cfg, out, os.Stdout)
+		default:
+			return hostctl.Compose(context.Background(), cfg, cmd == "up", pos, os.Stdout, hostctl.ExecRunner)
+		}
+	}
+	if out != "" {
+		return errors.New("--out writes on this host; run render here, where fleet.yaml is")
+	}
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	var reply struct{ Output string }
+	if err := c.do("POST", "/v1/"+cmd, map[string]any{"hosts": pos}, &reply); err != nil {
+		return err
+	}
+	fmt.Print(reply.Output)
+	return nil
+}
+
+// attach is your keyboard on an agent's tmux: straight to its container, so
+// it runs on a fleet host (fleet.yaml).
+func attach(args []string) error {
+	_, pos, err := flags("attach", args, func(*flag.FlagSet) {})
+	if err != nil {
+		return err
+	}
+	if err := need(pos, 1, "attach <agent>"); err != nil {
 		return err
 	}
 	cfg, err := loadConfig()
@@ -710,23 +836,10 @@ func keyboard(cmd string, args []string) error {
 		return fmt.Errorf("no agent %q", pos[0])
 	}
 	ag := &agent.Agent{Name: pos[0], C: target.Container{Exec: cfg.Hosts[a.Host].Exec, Name: a.Container}}
-	ctx := context.Background()
-	switch cmd {
-	case "attach":
-		argv := ag.AttachArgv()
-		c := exec.Command(argv[0], argv[1:]...)
-		c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-		return c.Run()
-	case "prompt":
-		if err := need(pos, 2, `prompt <agent> "<text>"`); err != nil {
-			return err
-		}
-		return ag.Prompt(ctx, strings.Join(pos[1:], " "))
-	default:
-		out, err := ag.Peek(ctx, n)
-		fmt.Print(out)
-		return err
-	}
+	argv := ag.AttachArgv()
+	c := exec.Command(argv[0], argv[1:]...)
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
 }
 
 func table(rows []daemon.Row, orch *outbound.Quota) error {

@@ -54,6 +54,10 @@ func (b *box) Fresh(context.Context) error {
 	return nil
 }
 func (b *box) Prompt(_ context.Context, t string) error { b.log("prompt " + t); return nil }
+func (b *box) Peek(_ context.Context, n int) (string, error) {
+	b.log("peek " + itoa(n))
+	return "screen", nil
+}
 func (b *box) StopPID(_ context.Context, pid int) error { b.log("stop " + itoa(pid)); return nil }
 func (b *box) DeleteTranscript(_ context.Context, sid string) error {
 	b.log("delete " + sid)

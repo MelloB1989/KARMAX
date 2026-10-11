@@ -41,6 +41,7 @@ func fleetctl(t *testing.T, f *fakeFleetd, args ...string) (string, error) {
 	t.Setenv("FLEET_TOKEN", "tok")
 	t.Setenv("FLEET_NAME", "")
 	t.Setenv("FLEET_AGENT", "")
+	t.Setenv("FLEET_CONFIG", t.TempDir()+"/none.yaml") // not on a fleet host: everything goes through fleetd
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
@@ -122,5 +123,84 @@ func TestWhoamiAndApi(t *testing.T) {
 	}
 	if out, _ := fleetctl(t, f, "api"); !strings.Contains(out, "GET /v1/status") || !strings.Contains(out, "relay") {
 		t.Fatalf("api = %q", out)
+	}
+}
+
+func req(f *fakeFleetd, i int) string { return f.reqs[i] }
+
+func TestPeekPromptAndArchiveGoOverHTTP(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{
+		"/v1/peek":     `{"agent":"agent-03","text":"line1\nline2\n"}`,
+		"/v1/archives": `{"removed":3}`,
+	}}
+	if out, err := fleetctl(t, f, "peek", "agent-03", "-n", "5"); err != nil || out != "line1\nline2\n" {
+		t.Fatalf("peek = %q, %v", out, err)
+	}
+	if _, err := fleetctl(t, f, "prompt", "agent-03", "run", "the", "tests"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := fleetctl(t, f, "archive", "prune", "--older", "180d")
+	if err != nil || !strings.Contains(out, "pruned 3") {
+		t.Fatalf("prune = %q, %v", out, err)
+	}
+	want := []string{
+		"GET /v1/peek?agent=agent-03&n=5 ",
+		`POST /v1/prompt {"agent":"agent-03","text":"run the tests"}`,
+		"DELETE /v1/archives?older=180d ",
+	}
+	for i, w := range want {
+		if got := req(f, i); got != w {
+			t.Errorf("request %d = %q, want %q", i, got, w)
+		}
+	}
+}
+
+func TestTasksActivityAndTodayAreHTTPClients(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{
+		"/v1/tasks":    `[{"id":"T1","agent":"agent-03","assigner":"operator","assigned":"2026-10-11T10:00:00Z"}]`,
+		"/v1/activity": `{"bucket_s":900,"agents":{"agent-03":[{"t":"2026-10-11T10:00:00Z","n":4}]}}`,
+		"/v1/today":    `{"since":"2026-10-11T00:00:00Z","tasks_closed":2,"spend_usd":0.5,"output_tokens":10}`,
+	}}
+	if out, err := fleetctl(t, f, "tasks", "--open"); err != nil || !strings.Contains(out, "T1") || !strings.Contains(out, "operator") {
+		t.Fatalf("tasks = %q, %v", out, err)
+	}
+	if out, err := fleetctl(t, f, "activity"); err != nil || !strings.Contains(out, "agent-03") || !strings.Contains(out, "(4)") {
+		t.Fatalf("activity = %q, %v", out, err)
+	}
+	if out, err := fleetctl(t, f, "today"); err != nil || !strings.Contains(out, "2 tasks closed") || !strings.Contains(out, "$0.50") {
+		t.Fatalf("today = %q, %v", out, err)
+	}
+	if got := req(f, 0); !strings.Contains(got, "open=1") {
+		t.Errorf("tasks --open sent %q", got)
+	}
+	if got := req(f, 1); !strings.Contains(got, "since=24h") || !strings.Contains(got, "bucket=15m") {
+		t.Errorf("activity sent %q", got)
+	}
+}
+
+func TestRotateDryRunSendsTheFlagAndPrintsTheWarning(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{"/v1/rotate": `{"ok":true,"dry_run":true,"closes":"T1","when":"next idle tick"}`}}
+	out, err := fleetctl(t, f, "rotate", "agent-03", "--dry-run")
+	if err != nil || !strings.Contains(out, "closes task T1 as rotated") || !strings.Contains(out, "dry run") {
+		t.Fatalf("rotate --dry-run = %q, %v", out, err)
+	}
+	if got := req(f, 0); got != `POST /v1/rotate {"agent":"agent-03","dry_run":true}` {
+		t.Errorf("sent %q", got)
+	}
+}
+
+func TestRenderUpDownAskFleetdWhenThereIsNoFleetYAML(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{"/v1/up": `{"ok":true,"output":"$ docker compose up\n"}`, "/v1/render": `{"ok":true,"output":"rendered\n"}`}}
+	if out, err := fleetctl(t, f, "up", "pc2"); err != nil || out != "$ docker compose up\n" {
+		t.Fatalf("up = %q, %v", out, err)
+	}
+	if out, err := fleetctl(t, f, "render"); err != nil || out != "rendered\n" {
+		t.Fatalf("render = %q, %v", out, err)
+	}
+	if _, err := fleetctl(t, f, "render", "--out", "/x"); err == nil {
+		t.Fatal("--out must be refused when it cannot be honoured")
+	}
+	if got := req(f, 0); got != `POST /v1/up {"hosts":["pc2"]}` {
+		t.Errorf("up sent %q", got)
 	}
 }

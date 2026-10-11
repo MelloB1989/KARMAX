@@ -54,7 +54,7 @@ func fleetdServer(t *testing.T, fail *atomic.Int32) *httptest.Server {
 				w.Write([]byte(`[]`))
 			}
 		case "/v1/history":
-			w.Write([]byte(`[{"ID":"x","Agent":"agent-01","Task":"T0","CostUSD":1.25},{"ID":"y","Agent":"agent-01","Task":"T0","CostUSD":0.5},{"ID":"z","Task":"other","CostUSD":9}]`))
+			w.Write([]byte(`[{"id":"x","agent":"agent-01","task":"T0","cost_usd":1.25},{"id":"y","agent":"agent-01","task":"T0","cost_usd":0.5},{"id":"z","task":"other","cost_usd":9}]`))
 		case "/v1/events":
 			if r.URL.Query().Get("after") == "0" {
 				w.Write([]byte(eventsJSON))

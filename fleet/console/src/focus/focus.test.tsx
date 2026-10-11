@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { rotate } from "../api";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ControlBar } from "./ControlBar";
 import { controlReducer, type ControlState } from "./controlState";
@@ -46,5 +47,17 @@ describe("focus and control", () => {
       "closes task t-1 as rotated; takes effect at next idle tick",
     );
     expect(rotateText({ ok: true, closes: "", when: "next idle tick" })).toContain("no open task");
+  });
+
+  it("rotate previews with dry_run and sends it only when asked", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      bodies.push(init.body);
+      return { ok: true, json: async () => ({ ok: true, closes: "T1", when: "next idle tick" }) };
+    });
+    await rotate("agent-01", true);
+    await rotate("agent-01");
+    vi.unstubAllGlobals();
+    expect(bodies).toEqual([`{"agent":"agent-01","dry_run":true}`, `{"agent":"agent-01"}`]);
   });
 });

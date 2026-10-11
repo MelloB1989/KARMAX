@@ -156,27 +156,14 @@ type fleetdToday struct {
 	OutputTokens int64     `json:"output_tokens"`
 }
 
-// A session as /v1/history returns it: ledger.Session has no json tags, so
-// Go's field names; the snake_case spelling is accepted too.
+// A session as /v1/history returns it (ledger.Session's snake_case JSON).
 type fleetdSession struct {
-	Task    string  `json:"Task"`
-	CostUSD float64 `json:"CostUSD"`
-	Cost    float64 `json:"cost_usd"`
-	Task2   string  `json:"task"`
+	Task    string  `json:"task"`
+	CostUSD float64 `json:"cost_usd"`
 }
 
-func (s fleetdSession) task() string {
-	if s.Task != "" {
-		return s.Task
-	}
-	return s.Task2
-}
-func (s fleetdSession) cost() float64 {
-	if s.CostUSD != 0 {
-		return s.CostUSD
-	}
-	return s.Cost
-}
+func (s fleetdSession) task() string  { return s.Task }
+func (s fleetdSession) cost() float64 { return s.CostUSD }
 
 // kindsParam is the stream kinds, as fleetd's `kinds` filter takes them.
 func kindsParam() string {
