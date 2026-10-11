@@ -81,12 +81,14 @@ func (t *Terms) container(c AgentConf) target.Container {
 	return target.Container{Exec: c.Exec, Name: c.Container, Runner: t.Runner}
 }
 
-func (t *Terms) argv(c AgentConf, readonly bool) []string {
+// argv is the attach command, run with the stream marker id so the client
+// can be found, and detached, from inside the container.
+func (t *Terms) argv(c AgentConf, readonly bool, id string) []string {
 	cmd := []string{"tmux", "attach", "-t", "main"}
 	if readonly {
 		cmd = []string{"tmux", "attach", "-r", "-t", "main"}
 	}
-	return t.container(c).InteractiveArgv(cmd...)
+	return t.container(c).InteractiveArgv(withStreamEnv(id, cmd...)...)
 }
 
 // Holder is who controls agent now, or "".
@@ -132,6 +134,7 @@ type termWatch struct {
 	mu    sync.Mutex
 	subs  map[*sub]struct{}
 	cmd   *exec.Cmd
+	id    string // the stream marker of cmd's client
 	stop  chan struct{}
 	timer *time.Timer
 	dead  bool
@@ -192,13 +195,14 @@ func (t *Terms) join(conf AgentConf, s *sub) (*termWatch, error) {
 	w := t.watches[conf.Name]
 	if w == nil {
 		w = &termWatch{t: t, agent: conf.Name, conf: conf, subs: map[*sub]struct{}{}, stop: make(chan struct{})}
-		f, cmd, err := t.start(t.argv(conf, true))
+		id := newStreamID()
+		f, cmd, err := t.start(t.argv(conf, true, id))
 		if err != nil {
 			return nil, fmt.Errorf("watch %s: %w", conf.Name, err)
 		}
-		w.cmd = cmd
+		w.cmd, w.id = cmd, id
 		t.watches[conf.Name] = w
-		go w.run(f, cmd)
+		go w.run(f, cmd, id)
 	}
 	w.mu.Lock()
 	w.subs[s] = struct{}{}
@@ -236,12 +240,13 @@ func (w *termWatch) idleExpired() {
 	}
 	w.dead = true
 	close(w.stop)
-	cmd := w.cmd
+	cmd, id := w.cmd, w.id
 	delete(w.t.watches, w.agent)
 	w.mu.Unlock()
 	w.t.mu.Unlock()
 	if cmd != nil {
 		target.KillGroup(cmd)
+		go detachClients(w.t.container(w.conf), id) // the client may outlive its docker exec
 	}
 }
 
@@ -260,7 +265,7 @@ func (w *termWatch) broadcast(it item) {
 
 // run reads the shared client until it ends, then restarts it with backoff
 // while anyone is still watching.
-func (w *termWatch) run(f *os.File, cmd *exec.Cmd) {
+func (w *termWatch) run(f *os.File, cmd *exec.Cmd, id string) {
 	wait := w.t.backoff
 	for {
 		started := time.Now()
@@ -277,6 +282,7 @@ func (w *termWatch) run(f *os.File, cmd *exec.Cmd) {
 		}
 		f.Close()
 		cmd.Wait()
+		detachClients(w.t.container(w.conf), id)
 
 		w.mu.Lock()
 		if w.dead || len(w.subs) == 0 {
@@ -312,10 +318,11 @@ func (w *termWatch) run(f *os.File, cmd *exec.Cmd) {
 			}
 			wait = min(wait*2, backoffMax)
 			var err error
-			f, cmd, err = w.t.start(w.t.argv(w.conf, true))
+			id = newStreamID()
+			f, cmd, err = w.t.start(w.t.argv(w.conf, true, id))
 			if err == nil {
 				w.mu.Lock()
-				w.cmd = cmd
+				w.cmd, w.id = cmd, id
 				w.mu.Unlock()
 				break
 			}
@@ -388,7 +395,8 @@ func (t *Terms) Control(ctx context.Context, agent, who string, in <-chan []byte
 
 func (t *Terms) control(ctx context.Context, conf AgentConf, release func(), in <-chan []byte, out func([]byte), frame func(TermFrame)) error {
 	defer release()
-	f, cmd, err := t.start(t.argv(conf, false))
+	id := newStreamID()
+	f, cmd, err := t.start(t.argv(conf, false, id))
 	if err != nil {
 		return fmt.Errorf("control %s: %w", conf.Name, err)
 	}
@@ -398,6 +406,9 @@ func (t *Terms) control(ctx context.Context, conf AgentConf, release func(), in 
 			target.KillGroup(cmd)
 			f.Close()
 			cmd.Wait()
+			// Killing the host-side docker exec does not end the tmux client
+			// in the container: detach it, or it stays read-write.
+			detachClients(t.container(conf), id)
 		})
 	}
 	defer reap()

@@ -124,19 +124,28 @@ func execSpawn(ctx context.Context, argv []string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	// An open stdin, closed with the reader: a process in a container that
+	// outlives its killed `docker exec` (Docker 29) still sees its stdin
+	// end, and exits.
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &procReader{out: out, cmd: cmd}, nil
+	return &procReader{out: out, in: in, cmd: cmd}, nil
 }
 
 type procReader struct {
 	out io.ReadCloser
+	in  io.Closer
 	cmd *exec.Cmd
 }
 
 func (p *procReader) Read(b []byte) (int, error) { return p.out.Read(b) }
 func (p *procReader) Close() error {
+	_ = p.in.Close()
 	_ = target.KillGroup(p.cmd)
 	return p.cmd.Wait()
 }

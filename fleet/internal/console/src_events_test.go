@@ -82,7 +82,7 @@ func TestActivityBucketsAre15MinutesAndWindowed(t *testing.T) {
 func fakeDocker(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "docker")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n[ \"$1\" = exec ] || exit 2\nshift 2\nexec \"$@\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n[ \"$1\" = exec ] || exit 2\nshift\nwhile [ \"${1#-}\" != \"$1\" ]; do shift; done\nshift\nexec \"$@\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return p
