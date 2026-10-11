@@ -73,9 +73,13 @@ sudo rustdesk --password <a password you choose>
 ```
 
 `RUSTDESK_MODE=public` uses RustDesk's public rendezvous servers. `RUSTDESK_MODE=direct` sets
-`direct-server Y` and the direct access port, for direct IP access over the LAN or Tailscale; the
-install only sets the options, so check from the Mac that a direct connection works before
-relying on it.
+`direct-server Y` and the direct access port, and points `custom-rendezvous-server`, `relay-server`
+and `api-server` at 127.0.0.1 and turns off LAN discovery. `direct-server Y` alone would keep the
+public registration. RustDesk has no documented off switch, so this is the maintainers' workaround:
+exposed is TCP `RUSTDESK_DIRECT_PORT` (password-protected); not used are the public servers and
+connecting by ID. It was not verified against a live RustDesk 1.4.9, so after installing run
+`ss -tnp | grep rustdesk` while idle and confirm no connection to a public address, and check from
+the Mac that a direct connection works. If a public connection appears, do not rely on direct-only.
 
 ## Tests
 

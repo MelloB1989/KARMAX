@@ -234,8 +234,8 @@ units_preflight() {
 step_units() {
 	say "== units: Xorg, the console user service, the kiosk service"
 	units_preflight
-	put_root /etc/X11/Xwrapper.config 0644 <<'EOF'
-allowed_users=anybody
+	put_root /etc/X11/Xwrapper.config 0644 <<EOF
+allowed_users=$KIOSK_USER
 needs_root_rights=yes
 EOF
 	put_root /etc/X11/xorg.conf.d/20-fleet-display.conf 0644 <<EOF
@@ -274,9 +274,20 @@ EOF
 	as_root systemctl daemon-reload
 	as_root systemctl enable --now rustdesk.service
 	if [[ "$RUSTDESK_MODE" == direct ]]; then
-		say "RUSTDESK_MODE=direct: direct IP access only"
+		say "RUSTDESK_MODE=direct: direct IP access, with the rendezvous and relay servers pointed at 127.0.0.1"
 		as_root rustdesk --option direct-server Y
 		as_root rustdesk --option direct-access-port "$RUSTDESK_DIRECT_PORT"
+		# 'direct-server Y' alone keeps the public registration; RustDesk has no off switch, so
+		# the servers are set to a loopback address (the upstream maintainers' recommendation)
+		as_root rustdesk --option custom-rendezvous-server 127.0.0.1
+		as_root rustdesk --option relay-server 127.0.0.1
+		as_root rustdesk --option api-server http://127.0.0.1
+		as_root rustdesk --option enable-lan-discovery N
+		as_root systemctl restart rustdesk.service
+		say "EXPOSED: TCP $RUSTDESK_DIRECT_PORT on every interface of this host (password-protected; firewall it to the LAN or Tailscale)"
+		say "NOT USED: RustDesk's public rendezvous, relay and API servers, and LAN discovery"
+		say "NOT GUARANTEED: this is RustDesk's workaround, not a documented mode. Check it: 'ss -tnp | grep rustdesk' must show no connection to a public address while idle"
+		say "NOT AVAILABLE: connecting by RustDesk ID; use the IP and port"
 	fi
 	say "NEXT (operator, by hand): sudo rustdesk --password <a password you choose>"
 }
