@@ -2,6 +2,7 @@ import type { Snapshot } from "../model";
 import { ageOf, fmtAge } from "../state/derive";
 import { sourceStale } from "../state/cadence";
 import { Bar } from "./Bar";
+import { Num } from "../motion/tween";
 import { EventStream } from "./EventStream";
 
 export function RightRail({ snapshot: s, now }: { snapshot: Snapshot; now: number }) {
@@ -40,7 +41,7 @@ export function RightRail({ snapshot: s, now }: { snapshot: Snapshot; now: numbe
           <div className="dim">fleetd {fmtAge(ageOf(s.sources.fleetd?.at ?? "", now))} ago</div>
         ) : (
           <div>
-            {s.today.tasks_closed} tasks · ${s.today.spend_usd.toFixed(2)}
+            <Num value={s.today.tasks_closed} /> tasks · $<Num value={s.today.spend_usd} digits={2} />
           </div>
         )}
       </section>
