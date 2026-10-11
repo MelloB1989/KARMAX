@@ -1,4 +1,4 @@
-import type { Snapshot } from "../model";
+import type { Snapshot, Task } from "../model";
 import { ageOf, agoText, fmtAge } from "../state/derive";
 import { sourceNote, sourceStale } from "../state/cadence";
 import { Num } from "../motion/tween";
@@ -6,6 +6,26 @@ import { EventStream } from "./EventStream";
 import { Rings } from "./Rings";
 
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—");
+
+export const MAX_TASK_ROWS = 6;
+
+/** Open tasks as a short list, oldest assignments last: agent · task · age, and "+N more". */
+export function OpenTasks({ tasks, now }: { tasks: Task[]; now: number }) {
+  if (tasks.length === 0) return <span className="dim">no open assignments</span>;
+  const shown = tasks.slice(0, MAX_TASK_ROWS);
+  return (
+    <div className="orch-tasks">
+      {shown.map((t) => (
+        <div key={t.id} className="orch-task" title={`${t.agent} · ${t.id}`}>
+          <span className="cyan">{t.agent}</span>
+          <span className="dim">{t.id}</span>
+          <span className="dim">{fmtAge(ageOf(t.since, now))}</span>
+        </div>
+      ))}
+      {tasks.length > shown.length && <span className="dim">+{tasks.length - shown.length} more</span>}
+    </div>
+  );
+}
 
 export function RightRail({ snapshot: s, now }: { snapshot: Snapshot; now: number }) {
   const o = s.orchestrator;
@@ -36,11 +56,7 @@ export function RightRail({ snapshot: s, now }: { snapshot: Snapshot; now: numbe
                 <span>
                   <span className="cyan">7d</span> {o.seven_day_pct}% · resets {when(o.seven_day_resets)}
                 </span>
-                <span className="dim">
-                  {tasks.length === 0
-                    ? "no open assignments"
-                    : tasks.map((t) => `${t.agent} ${t.id} ${fmtAge(ageOf(t.since, now))}`).join(" · ")}
-                </span>
+                <OpenTasks tasks={tasks} now={now} />
               </div>
             </>
           )

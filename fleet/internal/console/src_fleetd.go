@@ -366,13 +366,22 @@ func (f *fleetdSrc) pollLastTasks(ctx context.Context) error {
 	last := map[string]*LastTask{}
 	for _, name := range f.agents {
 		var ts []fleetdTask
-		if err := f.cl.get(ctx, "/v1/tasks?agent="+url.QueryEscape(name)+"&n=1", &ts); err != nil {
+		if err := f.cl.get(ctx, "/v1/tasks?agent="+url.QueryEscape(name)+"&n=20", &ts); err != nil {
 			return err
 		}
-		if len(ts) == 0 || ts[0].Closed.IsZero() {
-			continue // never had a task, or its newest is still open
+		// The last task is the one that ended most recently. An agent that
+		// is on a task has an open one newest, so looking only at its newest
+		// would show "none yet" for every working agent.
+		var latest *fleetdTask
+		for i := range ts {
+			if !ts[i].Closed.IsZero() && (latest == nil || ts[i].Closed.After(latest.Closed)) {
+				latest = &ts[i]
+			}
 		}
-		lt := &LastTask{ID: ts[0].ID, Outcome: ts[0].Outcome, Ended: ts[0].Closed}
+		if latest == nil {
+			continue // never finished a task
+		}
+		lt := &LastTask{ID: latest.ID, Outcome: latest.Outcome, Ended: latest.Closed}
 		var ss []fleetdSession
 		if err := f.cl.get(ctx, "/v1/history?agent="+url.QueryEscape(name)+"&n=20", &ss); err == nil {
 			for _, s := range ss {

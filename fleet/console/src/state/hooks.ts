@@ -18,6 +18,19 @@ export function useNow(everyMs = 1000): number {
   return now;
 }
 
+/** "ANGLE (Intel, Mesa Intel(R) HD Graphics 530 (SKL GT2), OpenGL 4.6)" → "Intel HD Graphics 530". */
+export function gpuName(full: string): string {
+  const soft = /swiftshader|llvmpipe|softpipe/i.exec(full);
+  if (soft) return `${soft[0].replace(/^./, (c) => c.toUpperCase())} (software)`; // the one a person must notice
+  const m = /^ANGLE \((.*)\)$/.exec(full.trim());
+  const parts = (m ? m[1] : full).split(/,\s*/);
+  let r = parts.length > 1 ? parts[1] : parts[0];
+  r = r.replace(/\((R|TM)\)/gi, "").replace(/^Mesa\s+/i, "").replace(/\s+\(.*$/, "").replace(/\s+/g, " ").trim();
+  const vendor = (parts.length > 1 ? parts[0] : "").trim();
+  if (vendor && !r.toLowerCase().includes(vendor.toLowerCase())) r = `${vendor} ${r}`;
+  return r || full;
+}
+
 /** The browser's GPU, so a software renderer is visible at a glance. */
 export function gpuString(): string {
   try {

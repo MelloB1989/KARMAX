@@ -50,6 +50,9 @@ func fleetdServer(t *testing.T, fail *atomic.Int32) *httptest.Server {
 				w.Write([]byte(tasksOpen))
 			case r.URL.Query().Get("agent") == "agent-01":
 				w.Write([]byte(`[{"id":"T0","agent":"agent-01","assigner":"operator","assigned":"2026-10-11T10:00:00Z","closed":"2026-10-11T12:00:00Z","outcome":"done"}]`))
+			case r.URL.Query().Get("agent") == "agent-03":
+				// working: its newest task is open; the last one that ended is behind it
+				w.Write([]byte(`[{"id":"T9","agent":"agent-03","assigner":"operator","assigned":"2026-10-11T13:00:00Z"},{"id":"T7","agent":"agent-03","assigner":"operator","assigned":"2026-10-11T09:00:00Z","closed":"2026-10-11T09:30:00Z","outcome":"rotated"},{"id":"T8","agent":"agent-03","assigner":"operator","assigned":"2026-10-11T10:00:00Z","closed":"2026-10-11T11:00:00Z","outcome":"done"}]`))
 			default:
 				w.Write([]byte(`[]`))
 			}
@@ -75,7 +78,7 @@ func TestFleetdFillsRecordedFields(t *testing.T) {
 	srv := fleetdServer(t, nil)
 	defer srv.Close()
 	now := time.Date(2026, 10, 11, 14, 0, 5, 0, time.UTC)
-	f := newFleetdSrc(NewFleetdClient(srv.URL, writeToken(t)), func() time.Time { return now }, "karmax", []string{"agent-01", "agent-02"})
+	f := newFleetdSrc(NewFleetdClient(srv.URL, writeToken(t)), func() time.Time { return now }, "karmax", []string{"agent-01", "agent-02", "agent-03"})
 	ctx := context.Background()
 	if err := f.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -110,6 +113,9 @@ func TestFleetdFillsRecordedFields(t *testing.T) {
 	}
 	if lt := f.lastTask["agent-01"]; lt == nil || lt.Outcome != "done" || lt.CostUSD != 1.75 {
 		t.Fatalf("last task = %+v (cost is the sessions of that task only)", lt)
+	}
+	if lt := f.lastTask["agent-03"]; lt == nil || lt.ID != "T8" || lt.Outcome != "done" {
+		t.Fatalf("agent-03 is working (newest task open): last = %+v, want T8, the one that ended most recently", lt)
 	}
 	if f.lastTask["agent-02"] != nil || len(f.activity["agent-01"]) != 1 {
 		t.Fatalf("last %v activity %v", f.lastTask, f.activity)
