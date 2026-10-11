@@ -77,9 +77,9 @@ The console (fleet-console on its host, reached over ssh; or FLEET_CONSOLE_URL +
 
 Setup (host only):
   render [--out <dir>]                env files, compose files, briefs
-  up [--when-idle [--timeout 2h]] [<host>…] | down [<host>…]
+  up [--dry-run|--plan] [--when-idle [--timeout 2h]] [<host>…] | down [<host>…]
                                       docker compose, per host. up first lists the containers it
-                                      will recreate and why (image, env, brief); --when-idle
+                                      will recreate and why (image, env, brief); --dry-run stops there; --when-idle
                                       recreates each agent alone, once fleetd says it is not working
 `
 
@@ -796,10 +796,12 @@ func clip(s string, n int) string {
 // recreates the agents among them one at a time, each once fleetd says it is
 // not working.
 func upDown(cmd string, args []string) error {
-	var whenIdle bool
+	var whenIdle, dryRun, plan bool
 	var timeout time.Duration
 	_, hosts, err := flags(cmd, args, func(fs *flag.FlagSet) {
 		if cmd == "up" {
+			fs.BoolVar(&dryRun, "dry-run", false, "")
+			fs.BoolVar(&plan, "plan", false, "")
 			fs.BoolVar(&whenIdle, "when-idle", false, "")
 			fs.DurationVar(&timeout, "timeout", 2*time.Hour, "")
 		}
@@ -811,6 +813,7 @@ func upDown(cmd string, args []string) error {
 	if err != nil {
 		return err
 	}
+	dryRun = dryRun || plan
 	explicit := len(hosts) > 0
 	if !explicit {
 		hosts = cfg.HostNames()
@@ -844,6 +847,9 @@ func upDown(cmd string, args []string) error {
 			}
 			recreate.Describe(os.Stdout, h, changes)
 		}
+		if dryRun {
+			continue // the plan above is all a dry run does
+		}
 		if whenIdle {
 			agents := map[string]bool{}
 			for _, n := range cfg.AgentsOn(h) {
@@ -867,11 +873,17 @@ func upDown(cmd string, args []string) error {
 			return fmt.Errorf("%s: %w", h, err)
 		}
 	}
+	if dryRun {
+		fmt.Println("dry run: nothing was recreated")
+	}
 	return nil
 }
 
-// runDocker runs argv and returns its stdout; a failure carries stderr.
-func runDocker(ctx context.Context, argv []string) ([]byte, error) {
+// runDocker runs the docker CLI for the plan; tests replace it.
+var runDocker = realDocker
+
+// realDocker runs argv and returns its stdout; a failure carries stderr.
+func realDocker(ctx context.Context, argv []string) ([]byte, error) {
 	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
 	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(ee.Stderr) > 0 {
 		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
