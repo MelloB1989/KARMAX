@@ -46,7 +46,12 @@ Roster and records (fleetd):
   archive ls [--since 7d] [--json] | archive prune --older 180d
 
 Work (fleetd):
-  assign <agent> --task <id>          the orchestrator gave it work
+  give <agent> --task <id> <brief…>   record a task and deliver its brief; the agent reports to you
+  assign <agent> --task <id> [--brief <text>] [--from <name>]
+  inbox [--after <id>] [--follow] [--json]   what agents reported to the operator
+  wait <agent> [--task <id>] [--timeout 30m] [--json]
+                                      until it reports, its task closes, or it stops
+                                      (exit 0; 3 down/cooling/disabled; 4 timeout)
   done <agent> [--task <id>] [--outcome done] [--branch b] [--pr url]
   tell <name> <text…> [--from <name>] message a session on another host
   rotate <agent>                      archive its session, start fresh
@@ -57,6 +62,10 @@ Your keyboard (host only, no fleetd):
   attach <agent>                      the live session's TUI (detach: Ctrl-b d)
   prompt <agent> <text…>              type into it, as you
   peek <agent> [-n 80]                its last lines
+
+About fleetd:
+  whoami                              which scope this token has
+  api                                 every route and the scopes it allows
 
 Setup (host only):
   render [--out <dir>]                env files, compose files, briefs
@@ -69,10 +78,19 @@ func main() {
 		return
 	}
 	if err := run(os.Args[1], os.Args[2:]); err != nil {
+		var ec exitCode
+		if errors.As(err, &ec) {
+			os.Exit(ec.code)
+		}
 		fmt.Fprintln(os.Stderr, "fleetctl:", err)
 		os.Exit(1)
 	}
 }
+
+// exitCode ends fleetctl with a code that says why, with nothing printed.
+type exitCode struct{ code int }
+
+func (e exitCode) Error() string { return fmt.Sprintf("exit %d", e.code) }
 
 func configPath() string {
 	if p := os.Getenv("FLEET_CONFIG"); p != "" {
@@ -92,7 +110,10 @@ func loadConfig() (*config.Config, error) {
 
 // client finds fleetd: FLEETD_URL and FLEET_TOKEN from the environment, else
 // fleet.yaml's listen address and the env file's token.
-type client struct{ base, token string }
+type client struct {
+	base, token string
+	timeout     time.Duration // 0: six minutes
+}
 
 func newClient() (*client, error) {
 	c := &client{base: os.Getenv("FLEETD_URL"), token: os.Getenv("FLEET_TOKEN")}
@@ -125,7 +146,11 @@ func (c *client) do(method, path string, in, out any) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 6 * time.Minute}).Do(req)
+	timeout := c.timeout
+	if timeout == 0 {
+		timeout = 6 * time.Minute
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return fmt.Errorf("fleetd unreachable at %s: %w", c.base, err)
 	}
@@ -307,19 +332,141 @@ func run(cmd string, args []string) error {
 	case "archive":
 		return archiveCmd(args)
 
-	case "assign":
-		var task string
-		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.StringVar(&task, "task", "", "") })
+	case "assign", "give":
+		var task, brief, from string
+		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			fs.StringVar(&task, "task", "", "")
+			fs.StringVar(&brief, "brief", "", "")
+			fs.StringVar(&from, "from", "operator", "")
+		})
 		if err != nil {
 			return err
 		}
-		if err := need(pos, 1, "assign <agent> --task <id>"); err != nil {
+		use := "assign <agent> --task <id> [--brief <text>] [--from <name>]"
+		if cmd == "give" {
+			use = "give <agent> --task <id> <brief…>"
+			brief = strings.Join(pos[min(1, len(pos)):], " ")
+			if strings.TrimSpace(brief) == "" {
+				return errors.New("usage: fleetctl " + use)
+			}
+			brief = fmt.Sprintf("Task %s from %s. %s", task, from, brief)
+		}
+		if err := need(pos, 1, use); err != nil {
 			return err
 		}
 		if task == "" {
-			return errors.New("usage: fleetctl assign <agent> --task <id>")
+			return errors.New("usage: fleetctl " + use)
 		}
-		return post("/v1/assign", map[string]string{"agent": pos[0], "task": task})
+		return post("/v1/assign", map[string]string{"agent": pos[0], "task": task, "from": from, "brief": brief})
+
+	case "inbox":
+		var after int64
+		var follow, asJSON bool
+		if _, _, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			fs.Int64Var(&after, "after", 0, "")
+			fs.BoolVar(&follow, "follow", false, "")
+			fs.BoolVar(&asJSON, "json", false, "")
+		}); err != nil {
+			return err
+		}
+		c, err := newClient()
+		if err != nil {
+			return err
+		}
+		for {
+			var msgs []ledger.Relay
+			if err := c.do("GET", fmt.Sprintf("/v1/inbox?after=%d", after), nil, &msgs); err != nil {
+				return err
+			}
+			for _, m := range msgs {
+				printMessage(m, asJSON)
+				after = m.ID
+			}
+			if !follow {
+				return nil
+			}
+			time.Sleep(2 * time.Second)
+		}
+
+	case "wait":
+		var task string
+		var timeout time.Duration
+		var asJSON bool
+		after := int64(-1)
+		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			fs.StringVar(&task, "task", "", "")
+			fs.DurationVar(&timeout, "timeout", 30*time.Minute, "")
+			fs.Int64Var(&after, "after", -1, "")
+			fs.BoolVar(&asJSON, "json", false, "")
+		})
+		if err != nil {
+			return err
+		}
+		if err := need(pos, 1, "wait <agent> [--task <id>] [--timeout 30m]"); err != nil {
+			return err
+		}
+		c, err := newClient()
+		if err != nil {
+			return err
+		}
+		if after < 0 { // only what arrives from now on
+			var msgs []ledger.Relay
+			if err := c.do("GET", "/v1/inbox", nil, &msgs); err != nil {
+				return err
+			}
+			after = 0
+			if len(msgs) > 0 {
+				after = msgs[len(msgs)-1].ID
+			}
+		}
+		c.timeout = timeout + 30*time.Second
+		q := url.Values{"agent": {pos[0]}, "task": {task}, "after": {fmt.Sprint(after)}, "timeout": {timeout.String()}}
+		var r daemon.WaitResult
+		if err := c.do("GET", "/v1/wait?"+q.Encode(), nil, &r); err != nil {
+			return err
+		}
+		if asJSON {
+			_ = printJSON(r)
+		} else {
+			switch r.Reason {
+			case "message":
+				printMessage(*r.Message, false)
+			case "closed":
+				fmt.Printf("task %s closed: %s %s\n", r.Task.ID, r.Task.Outcome, r.Task.Branch)
+			case "phase":
+				fmt.Printf("%s is %s\n", pos[0], r.Phase)
+			case "timeout":
+				fmt.Printf("no word from %s in %s\n", pos[0], timeout)
+			}
+		}
+		switch r.Reason {
+		case "phase":
+			return exitCode{3}
+		case "timeout":
+			return exitCode{4}
+		}
+		return nil
+
+	case "whoami":
+		return getAndPrint(args, "/v1/whoami", func(raw json.RawMessage) error {
+			var w struct{ Scope, Name string }
+			_ = json.Unmarshal(raw, &w)
+			fmt.Printf("%s (scope %s)\n", w.Name, w.Scope)
+			return nil
+		})
+
+	case "api":
+		return getAndPrint(args, "/v1", func(raw json.RawMessage) error {
+			var idx []server.Route
+			if err := json.Unmarshal(raw, &idx); err != nil {
+				return err
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			for _, r := range idx {
+				fmt.Fprintf(w, "%s\t%s\n", r.Route, strings.Join(r.Scopes, ","))
+			}
+			return w.Flush()
+		})
 
 	case "done":
 		var task, outcome, branch, pr string
@@ -446,6 +593,15 @@ func run(cmd string, args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown command %q (fleetctl help)", cmd)
+}
+
+func printMessage(m ledger.Relay, asJSON bool) {
+	if asJSON {
+		b, _ := json.Marshal(m)
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Printf("#%d %s %s: %s\n", m.ID, m.At.Local().Format("15:04:05"), m.From, m.Text)
 }
 
 func post(path string, body any) error {

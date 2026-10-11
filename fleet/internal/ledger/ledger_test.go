@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ func TestQuotaKeepsTheLatestPerAccount(t *testing.T) {
 
 func TestSessionsAndTasks(t *testing.T) {
 	db := open(t)
-	if err := db.OpenTask("T1", "agent-03", t0); err != nil {
+	if err := db.OpenTask("T1", "agent-03", "operator", t0); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.CloseTask("T1", t0.Add(time.Hour), "done", "fleet/agent-03/fix", ""); err != nil {
@@ -168,4 +169,53 @@ func (db *DB) count(t *testing.T, q string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestTasksKeepTheirAssigner(t *testing.T) {
+	db := open(t)
+	if err := db.OpenTask("T9", "agent-03", "mira", t0); err != nil {
+		t.Fatal(err)
+	}
+	task, err := db.Task("T9")
+	if err != nil || task.Assigner != "mira" {
+		t.Fatalf("task = %+v, %v", task, err)
+	}
+}
+
+// A ledger made before tasks had an assigner gains the column on open.
+func TestOpenAddsTheAssignerColumnToAnOldLedger(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "old.db")
+	raw, err := sql.Open("sqlite", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE tasks (id TEXT PRIMARY KEY, agent TEXT, assigned INTEGER, closed INTEGER, outcome TEXT, branch TEXT, pr TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	db, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.OpenTask("T1", "agent-03", "operator", t0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInboxIsTheOperatorsMessagesAfterAnID(t *testing.T) {
+	db := open(t)
+	for _, r := range []Relay{{From: "agent-03", To: "operator", Text: "a"}, {From: "operator", To: "agent-03", Text: "b"}, {From: "agent-05", To: "operator", Text: "c"}} {
+		r.At, r.Delivered = t0, true
+		if err := db.AddRelay(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, _ := db.Inbox(0)
+	if len(all) != 2 || all[0].Text != "a" || all[1].Text != "c" {
+		t.Fatalf("inbox = %+v", all)
+	}
+	if rest, _ := db.Inbox(all[0].ID); len(rest) != 1 || rest[0].Text != "c" {
+		t.Fatalf("after %d = %+v", all[0].ID, rest)
+	}
 }

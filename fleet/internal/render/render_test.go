@@ -228,7 +228,7 @@ func TestOrchestratorBrief(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"agent-01", "agent-02", "agent-04", "sonnet, opus", "fleetctl status --json",
-		"fleetctl assign", "fleetctl done", "fleetctl tell agent-04", "SendMessage", "low", "reserved", "fleet.agent."} {
+		"fleetctl give", "fleetctl done", "fleetctl tell agent-04", "SendMessage", "low", "reserved", "fleet.agent."} {
 		if !strings.Contains(b, want) {
 			t.Errorf("orchestrator brief lacks %q", want)
 		}
@@ -261,7 +261,7 @@ func TestRenderWritesTheOrchestratorBriefOnlyWhenAsked(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(filepath.Dir(own), ".claude", "CLAUDE.md"))
-	if err != nil || !strings.Contains(string(b), "fleetctl assign") {
+	if err != nil || !strings.Contains(string(b), "fleetctl give") {
 		t.Fatalf("orchestrator brief: %v", err)
 	}
 	if mine, _ := os.ReadFile(own); string(mine) != "the session's own notes" {
@@ -416,5 +416,22 @@ func TestRenderPassesGitHubSSHAliasesToAgents(t *testing.T) {
 	env := loadCompose(t, filepath.Join(dir, "compose.pc2.yaml")).Services["agent-01"].Environment
 	if got := env["FLEET_GITHUB_SSH_ALIASES"]; got != "gh-work gh-personal" {
 		t.Errorf("FLEET_GITHUB_SSH_ALIASES = %q", got)
+	}
+}
+
+func TestBriefSaysReportToTheAssigner(t *testing.T) {
+	c := cfg(t)
+	b, err := Brief(c, c.AgentNames()[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"report to whoever assigned it", `fleetctl tell operator`, "`Task <id> from <name>.`"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("brief lacks %q", want)
+		}
+	}
+	o, _ := OrchestratorBrief(c)
+	if !strings.Contains(o, "--from "+c.Orchestrator.Name) {
+		t.Errorf("orchestrator brief does not pass --from:\n%s", o)
 	}
 }

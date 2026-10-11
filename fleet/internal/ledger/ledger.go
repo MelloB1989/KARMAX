@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS events_daily (
   PRIMARY KEY (agent, day, kind));
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, agent TEXT, assigned INTEGER, closed INTEGER, outcome TEXT,
-  branch TEXT, pr TEXT);
+  branch TEXT, pr TEXT, assigner TEXT);
 CREATE TABLE IF NOT EXISTS relays (
   id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, recipient TEXT, at INTEGER,
   size INTEGER, delivered INTEGER, text TEXT, error TEXT);
@@ -77,7 +77,30 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("ledger schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ledger migration: %w", err)
+	}
 	return &DB{sql: db}, nil
+}
+
+// migrate adds the columns a ledger made by an older fleetd lacks.
+func migrate(db *sql.DB) error {
+	adds := []struct{ table, column, decl string }{
+		{"tasks", "assigner", "TEXT"},
+	}
+	for _, a := range adds {
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, a.table, a.column).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE ` + a.table + ` ADD COLUMN ` + a.column + ` ` + a.decl); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Close closes the ledger.
@@ -357,17 +380,19 @@ func (db *DB) DailyEventCounts(agent string) ([]DailyCount, error) {
 	return out, rows.Err()
 }
 
-// Task is one KARMAX task handed to an agent.
+// Task is one task handed to an agent. Assigner is who gave it: the
+// operator, or the orchestrator by name; the agent reports there.
 type Task struct {
-	ID, Agent, Outcome, Branch, PR string
-	Assigned, Closed               time.Time
+	ID, Agent, Assigner, Outcome, Branch, PR string
+	Assigned, Closed                         time.Time
 }
 
 // OpenTask records an assignment.
-func (db *DB) OpenTask(id, agent string, at time.Time) error {
-	_, err := db.sql.Exec(`INSERT INTO tasks(id, agent, assigned) VALUES(?,?,?)
-		ON CONFLICT(id) DO UPDATE SET agent=excluded.agent, assigned=excluded.assigned, closed=NULL, outcome=NULL`,
-		id, agent, at.Unix())
+func (db *DB) OpenTask(id, agent, assigner string, at time.Time) error {
+	_, err := db.sql.Exec(`INSERT INTO tasks(id, agent, assigned, assigner) VALUES(?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET agent=excluded.agent, assigned=excluded.assigned,
+		assigner=excluded.assigner, closed=NULL, outcome=NULL`,
+		id, agent, at.Unix(), nullStr(assigner))
 	return err
 }
 
@@ -384,8 +409,9 @@ func (db *DB) CloseTask(id string, at time.Time, outcome, branch, pr string) err
 func (db *DB) Task(id string) (*Task, error) {
 	var t Task
 	var as, cl sql.NullInt64
-	err := db.sql.QueryRow(`SELECT id, COALESCE(agent,''), assigned, closed, COALESCE(outcome,''), COALESCE(branch,''), COALESCE(pr,'')
-		FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &as, &cl, &t.Outcome, &t.Branch, &t.PR)
+	err := db.sql.QueryRow(`SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
+		COALESCE(branch,''), COALESCE(pr,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
+		&t.Outcome, &t.Branch, &t.PR)
 	if err != nil {
 		return nil, err
 	}
@@ -393,11 +419,40 @@ func (db *DB) Task(id string) (*Task, error) {
 	return &t, nil
 }
 
-// Relay is one cross-host message.
+// Relay is one message between sessions. One to "operator" is stored for
+// the operator's inbox instead of being delivered anywhere.
 type Relay struct {
-	From, To, Text, Error string
-	At                    time.Time
-	Delivered             bool
+	ID        int64     `json:"id"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Text      string    `json:"text"`
+	Error     string    `json:"error,omitempty"`
+	At        time.Time `json:"at"`
+	Delivered bool      `json:"delivered"`
+}
+
+// Operator is the inbox name: messages to it wait for the operator.
+const Operator = "operator"
+
+// Inbox is the messages to the operator with an id above after, oldest first.
+func (db *DB) Inbox(after int64) ([]Relay, error) {
+	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), at, COALESCE(text,'') FROM relays
+		WHERE recipient=? AND id > ? ORDER BY id`, Operator, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Relay
+	for rows.Next() {
+		r := Relay{To: Operator, Delivered: true}
+		var at int64
+		if err := rows.Scan(&r.ID, &r.From, &at, &r.Text); err != nil {
+			return nil, err
+		}
+		r.At = time.Unix(at, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // AddRelay records a relayed message.

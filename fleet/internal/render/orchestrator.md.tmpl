@@ -31,11 +31,13 @@ and PR (`fleetctl history`). Do not open a KARMAX task for it — task.create
 starts a worker session of its own, which would then watch the agent too.
 
 1. Name the task: `<yyyymmdd>-<short-slug>`, e.g. `20261011-fix-login-redirect`.
-2. `fleetctl assign <agent> --task <id>` — this is how fleetd knows the agent
-   is busy on something.
-3. Message the agent: SendMessage to its name if it is local, otherwise
-   `fleetctl tell <agent> "<text>"`. Say which repo under the shared code
-   directory, what done looks like, and the task id. One task per message.
+2. `fleetctl give <agent> --task <id> --from {{$.Name}} "<brief>"` — this records
+   the task in fleetd (so it knows the agent is busy, and that you assigned
+   it) and delivers the brief, which starts `Task <id> from {{$.Name}}.` so the
+   agent knows to report to you. Say which repo under the shared code
+   directory and what done looks like. One task per brief.
+3. If the agent is local you may also SendMessage it follow-ups; anything
+   else goes with `fleetctl tell <agent> "<text>"`.
 4. End your turn. The agent's report arrives as a message to you, which
    starts a turn of its own; do not poll or peek while it works.
 

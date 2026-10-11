@@ -44,7 +44,7 @@ func OrchestratorBrief(c *config.Config) (string, error) {
 		rows = append(rows, row{Name: n, Host: a.Host, Models: strings.Join(a.Models, ", "), Local: a.Host == c.Orchestrator.Host})
 	}
 	var b strings.Builder
-	err := orchBrief.Execute(&b, map[string]any{"Agents": rows, "Report": c.Orchestrator.Report})
+	err := orchBrief.Execute(&b, map[string]any{"Agents": rows, "Report": c.Orchestrator.Report, "Name": c.Orchestrator.Name})
 	return b.String(), err
 }
 

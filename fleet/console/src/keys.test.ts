@@ -7,7 +7,7 @@ const key = (k: string, mods: Partial<KeyboardEventInit> = {}) =>
 beforeEach(resetKeysForTest);
 
 describe("keys", () => {
-  it("while control is held, panel keys do not fire", () => {
+  it("while control is held, 1, R, O, Esc, T reach the terminal handler and no panel handler fires", () => {
     const panel = vi.fn();
     for (const k of ["1", "r", "o", "escape", "t"]) bindForTest(k, panel);
     setControlHeld(true, () => {});
@@ -15,7 +15,7 @@ describe("keys", () => {
     expect(panel).not.toHaveBeenCalled();
   });
 
-  it("Ctrl+] releases once", () => {
+  it("Ctrl+] releases and calls onRelease once", () => {
     const release = vi.fn();
     setControlHeld(true, release);
     expect(dispatch(key("]", { ctrlKey: true }))).toBe(true);
@@ -23,10 +23,21 @@ describe("keys", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it("outside control, bound keys fire", () => {
-    const one = vi.fn();
-    bindForTest("1", one);
-    expect(dispatch(key("1"))).toBe(true);
-    expect(one).toHaveBeenCalledOnce();
+  it("outside control, 1-9 select, F focuses, Enter requests control", () => {
+    const h = { one: vi.fn(), nine: vi.fn(), f: vi.fn(), enter: vi.fn() };
+    bindForTest("1", h.one);
+    bindForTest("9", h.nine);
+    bindForTest("f", h.f);
+    bindForTest("enter", h.enter);
+    for (const k of ["1", "9", "f", "Enter"]) expect(dispatch(key(k))).toBe(true);
+    for (const fn of Object.values(h)) expect(fn).toHaveBeenCalledOnce();
+  });
+
+  it("keys typed into an input belong to the input", () => {
+    const f = vi.fn();
+    bindForTest("f", f);
+    const input = document.createElement("input");
+    expect(dispatch(Object.defineProperty(key("f"), "target", { value: input }))).toBe(false);
+    expect(f).not.toHaveBeenCalled();
   });
 });

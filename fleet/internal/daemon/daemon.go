@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +62,8 @@ type Fleet struct {
 	states map[string]reconcile.State
 
 	lastRetain time.Time
+	// waitEvery is how often Wait looks again.
+	waitEvery time.Duration
 	// HostStats, when set, samples container resource use per host.
 	HostStats func(ctx context.Context, host string) ([]ledger.HostSample, error)
 	// Log receives fleetd's own diagnostics.
@@ -74,7 +77,8 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 		return nil, err
 	}
 	f := &Fleet{cfg: cfg, db: db, box: box, push: push, notify: notify,
-		locks: map[string]*sync.Mutex{}, states: map[string]reconcile.State{}, Log: func(string, ...any) {}}
+		locks: map[string]*sync.Mutex{}, states: map[string]reconcile.State{}, Log: func(string, ...any) {},
+		waitEvery: 500 * time.Millisecond}
 	for _, name := range cfg.AgentNames() {
 		a := cfg.Agents[name]
 		st, ok := states[name]
@@ -351,10 +355,20 @@ func (f *Fleet) known(name string) error {
 
 // Assign records that an agent was given a task. The orchestrator calls this
 // (fleetctl assign) when it messages an agent with work.
-func (f *Fleet) Assign(name, task string, now time.Time) error {
+func (f *Fleet) Assign(ctx context.Context, name, task, from, brief string, now time.Time) error {
 	if err := f.known(name); err != nil {
 		return err
 	}
+	if err := f.assign(name, task, from, now); err != nil {
+		return err
+	}
+	if strings.TrimSpace(brief) == "" {
+		return nil
+	}
+	return f.Tell(ctx, from, name, brief, now)
+}
+
+func (f *Fleet) assign(name, task, from string, now time.Time) error {
 	f.locks[name].Lock()
 	defer f.locks[name].Unlock()
 	st := f.State(name)
@@ -363,8 +377,8 @@ func (f *Fleet) Assign(name, task string, now time.Time) error {
 	}
 	st.Task, st.Done, st.NudgedAt, st.LastBusy = task, false, time.Time{}, now
 	f.setState(st)
-	f.event(name, "fleet.assign", st.SessionID, map[string]string{"task": task})
-	return f.db.OpenTask(task, name, now)
+	f.event(name, "fleet.assign", st.SessionID, map[string]string{"task": task, "from": from})
+	return f.db.OpenTask(task, name, from, now)
 }
 
 // Done records a task's end; the agent's session is archived and replaced
@@ -424,10 +438,21 @@ func (f *Fleet) Enable(name string) error {
 func (f *Fleet) Tell(ctx context.Context, from, to, text string, now time.Time) error {
 	// The receiver is told who sent it and replies there, so the sender must
 	// be someone a reply can reach (or the operator, who reads the ledger).
-	if from != f.cfg.Orchestrator.Name && from != "operator" {
+	if from != f.cfg.Orchestrator.Name && from != ledger.Operator {
 		if err := f.known(from); err != nil {
 			return fmt.Errorf("unknown sender: %w", err)
 		}
+	}
+	// The operator's inbox: stored, read with Inbox and Wait.
+	if to == ledger.Operator {
+		if from == ledger.Operator {
+			return fmt.Errorf("the operator does not message the operator")
+		}
+		if err := f.db.AddRelay(ledger.Relay{From: from, To: to, Text: text, At: now, Delivered: true}); err != nil {
+			return err
+		}
+		f.event(from, "fleet.report", "", map[string]any{"to": to, "size": len(text)})
+		return nil
 	}
 	if to != f.cfg.Orchestrator.Name {
 		if err := f.known(to); err != nil {
@@ -442,6 +467,58 @@ func (f *Fleet) Tell(ctx context.Context, from, to, text string, now time.Time) 
 	_ = f.db.AddRelay(r)
 	f.event(to, "fleet.relay", "", map[string]any{"from": from, "delivered": err == nil, "size": len(text)})
 	return err
+}
+
+// Inbox is the messages agents and the orchestrator sent the operator,
+// after the given id.
+func (f *Fleet) Inbox(after int64) ([]ledger.Relay, error) { return f.db.Inbox(after) }
+
+// WaitResult is why a Wait returned: "message" (the agent wrote to the
+// operator), "closed" (its task closed), "phase" (it went down, cooling or
+// disabled) or "timeout" (the context ended).
+type WaitResult struct {
+	Reason  string        `json:"reason"`
+	Message *ledger.Relay `json:"message,omitempty"`
+	Phase   string        `json:"phase,omitempty"`
+	Task    *ledger.Task  `json:"task,omitempty"`
+}
+
+// Wait blocks until the agent messages the operator (after the inbox id
+// after), its task closes, or it can no longer work, whichever is first.
+func (f *Fleet) Wait(ctx context.Context, agent, task string, after int64) (WaitResult, error) {
+	if err := f.known(agent); err != nil {
+		return WaitResult{}, err
+	}
+	t := time.NewTicker(f.waitEvery)
+	defer t.Stop()
+	for {
+		msgs, err := f.db.Inbox(after)
+		if err != nil {
+			return WaitResult{}, err
+		}
+		for i := range msgs {
+			if msgs[i].From == agent {
+				return WaitResult{Reason: "message", Message: &msgs[i]}, nil
+			}
+		}
+		if len(msgs) > 0 {
+			after = msgs[len(msgs)-1].ID
+		}
+		if task != "" {
+			if tk, err := f.db.Task(task); err == nil && !tk.Closed.IsZero() {
+				return WaitResult{Reason: "closed", Task: tk}, nil
+			}
+		}
+		switch p := f.State(agent).Phase; p {
+		case reconcile.Down, reconcile.Cooling, reconcile.Disabled:
+			return WaitResult{Reason: "phase", Phase: string(p)}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return WaitResult{Reason: "timeout"}, nil
+		case <-t.C:
+		}
+	}
 }
 
 // Restore puts an archived session back on an agent (its own by default):
