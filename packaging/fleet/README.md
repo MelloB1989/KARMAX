@@ -70,7 +70,8 @@ What its output decides:
     cp packaging/fleet/fleet.yaml.example ~/.karmax/fleet/fleet.yaml   # edit it
     # add the tokens it names to ~/.karmax/.env (see the top of the example)
     fleetctl render          # 0600 env files, compose.<host>.yaml, briefs
-    fleetctl up              # docker compose up -d on every host
+    fleetctl up              # docker compose up -d on every host; lists what it recreates, and why
+    fleetctl up --when-idle  # …recreating each changed agent alone, only once it is not working
 
 Check: `fleetctl attach agent-01` shows the session (detach with `Ctrl-b d`).
 Two agents on one host can message each other. `docker restart agent-01`
