@@ -59,7 +59,7 @@ anything else that needs real CPU or memory go to the build host
 ({{.BuildHost}}), a much bigger machine, with `kbuild`:
 
     cd {{.Code}}/<repo>          # or a worktree under it — kbuild needs the shared code
-    kbuild go test ./...
+    kbuild go test -race ./...    # always -race: the lead's merge gate runs it
     kbuild "npm ci && npm run build"
 
 It runs the command there in this same image, as you, in the same directory,
