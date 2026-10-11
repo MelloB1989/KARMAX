@@ -190,7 +190,7 @@ and arrive with its 5 s poll. On start, the stream is backfilled from fleetd.
 - `relay` (agents): `status`, `tell` as themselves, `tell` to `operator`.
 - `console`: every read, plus `prompt` and `rotate`, speaking as `operator`.
 
-The 403 names what the token may do. The console token's env var is `console_token_env` in
+The 403 names what the token may do. The console token's env var is `console.token_env` in
 `fleet.yaml`. `fleetctl render` writes the token into the console host's `console.yaml`
 directory with mode 0600.
 
