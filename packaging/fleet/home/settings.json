@@ -10,11 +10,12 @@
   "statusLine": {
     "type": "command",
     "command": "/opt/fleet/status.sh",
-    "refreshInterval": 30
+    "refreshInterval": 5
   },
   "hooks": {
     "SessionStart": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
+    "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
     "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
     "Stop": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
     "StopFailure": [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],

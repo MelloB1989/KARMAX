@@ -45,6 +45,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Chromium's runtime libraries, so an agent building a panel can look at it:
+# `npx playwright install-deps chromium` lists these (its names are for
+# Ubuntu 20.04; these are trixie's, t64 renames included), minus the X/GTK
+# headed-mode extras. No browser is installed: `npx playwright install
+# chromium` fetches one into the user's cache.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      fonts-liberation fonts-noto-color-emoji libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 \
+      libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libfontconfig1 libfreetype6 libgbm1 \
+      libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 \
+      libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN set -eux; arch=$(dpkg --print-architecture); \
     case "$arch" in amd64) node=x64; bun=x64; dk=x86_64 ;; arm64) node=arm64; bun=aarch64; dk=aarch64 ;; *) echo "unsupported $arch"; exit 1 ;; esac; \
     curl -fsSL "https://download.docker.com/linux/static/stable/${dk}/docker-${DOCKER_VERSION}.tgz" | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
@@ -68,6 +80,7 @@ COPY packaging/fleet/agent-run /opt/fleet/agent-run
 COPY packaging/fleet/kbuild /usr/local/bin/kbuild
 COPY packaging/fleet/home/status.sh packaging/fleet/home/event.sh packaging/fleet/home/settings.json /opt/fleet/
 COPY packaging/fleet/home/gitconfig /etc/gitconfig
+COPY packaging/fleet/tmux.conf /etc/tmux.conf
 COPY --from=build /out/karmax /out/fleetctl /usr/local/bin/
 RUN chmod 755 /opt/fleet/agent-run /opt/fleet/*.sh /usr/local/bin/kbuild \
  && cp /opt/fleet/settings.json "$HOME_DIR/.claude/settings.json" && chown "$UID:$GID" "$HOME_DIR/.claude/settings.json"

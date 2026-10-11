@@ -36,3 +36,7 @@ prompts/backup/
 # Python bytecode from the skills scripts
 __pycache__/
 *.pyc
+
+# Core dumps from crashing tools under test.
+core
+core.[0-9]*

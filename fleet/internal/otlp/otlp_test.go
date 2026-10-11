@@ -137,3 +137,29 @@ func TestMetricsKeepTheActivityCounters(t *testing.T) {
 		t.Fatalf("events = %+v", s.events)
 	}
 }
+
+// Claude Code's exporter (OTel-OTLP-Exporter-JavaScript) sends the header
+// value undecoded: "Authorization: Bearer%20<token>". Captured on the wire.
+func TestOTLPAcceptsAPercentEncodedBearer(t *testing.T) {
+	s := &sink{}
+	h := Handler(s, "secret")
+	send := func(auth string) int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/logs", strings.NewReader(logs))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", auth)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := send("Bearer%20secret"); c != 200 || len(s.usage) != 1 {
+		t.Fatalf("encoded bearer: status %d, usage rows %d, want 200 and the api_request in usage", c, len(s.usage))
+	}
+	if c := send("Bearer secret"); c != 200 {
+		t.Fatalf("plain bearer: %d", c)
+	}
+	for _, bad := range []string{"Bearer%20wrong", "Bearer wrong", "Bearer%20", "secret", "Bearer%20secret%20x", ""} {
+		if c := send(bad); c != http.StatusUnauthorized {
+			t.Errorf("%q: status %d, want 401", bad, c)
+		}
+	}
+}

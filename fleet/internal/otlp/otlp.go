@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -60,8 +61,24 @@ func authorized(r *http.Request, token string) bool {
 	if token == "" {
 		return true
 	}
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+	h := r.Header.Get("Authorization")
+	// Claude Code's exporter sends OTEL_EXPORTER_OTLP_HEADERS undecoded, so
+	// the header arrives as "Bearer%20<token>"; spec-compliant SDKs decode it.
+	// Accept both, and a token that itself holds a '%' as written.
+	for _, v := range []string{h, unescape(h)} {
+		got := strings.TrimPrefix(v, "Bearer ")
+		if got != v && subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func unescape(s string) string {
+	if u, err := url.PathUnescape(s); err == nil {
+		return u
+	}
+	return s
 }
 
 func decode(w http.ResponseWriter, r *http.Request, token string, v any) bool {

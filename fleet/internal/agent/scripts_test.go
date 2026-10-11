@@ -265,3 +265,146 @@ func TestWorktreesScriptForReal(t *testing.T) {
 		t.Fatal("the clean, pushed worktree is still there")
 	}
 }
+
+func TestEventScriptRecordsPreToolUse(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed")
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(home+"/.claude/fleet", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(payload string) {
+		t.Helper()
+		cmd := exec.Command("sh", "../../../packaging/fleet/home/event.sh")
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		cmd.Stdin = strings.NewReader(payload)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("event.sh: %v %s", err, out)
+		}
+	}
+	run(`{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"secret"}}`)
+	run(`{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash","tool_response":{}}`)
+	b, err := os.ReadFile(home + "/.claude/fleet/events.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines = %q", lines)
+	}
+	pre, post := lines[0], lines[1]
+	for _, want := range []string{`"event":"PreToolUse"`, `"session":"s1"`, `"tool":"Bash"`} {
+		if !strings.Contains(pre, want) {
+			t.Errorf("pre %s lacks %s", pre, want)
+		}
+	}
+	if strings.Contains(pre, `"ok"`) || strings.Contains(pre, "secret") {
+		t.Errorf("pre %s must carry no ok and none of the tool's input", pre)
+	}
+	if !strings.Contains(post, `"ok":true`) {
+		t.Errorf("post %s lost its ok", post)
+	}
+}
+
+func TestTmuxConfPinsSizeAndHasNoPrefix(t *testing.T) {
+	for _, bin := range []string{"tmux", "script"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skip(bin + " not installed")
+		}
+	}
+	root := t.TempDir()
+	conf, _ := filepath.Abs("../../../packaging/fleet/tmux.conf")
+	sock := root + "/sock"
+	tm := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("tmux", append([]string{"-f", conf, "-S", sock}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("tmux %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "-S", sock, "kill-server").Run() })
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for i := 0; i < 100; i++ {
+			if ok() {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", what)
+	}
+	size := func() string { return tm("display-message", "-p", "-t", "main", "#{window_width}x#{window_height}") }
+
+	// The pane records every byte it is typed, visibly.
+	pane := root + "/pane.out"
+	tm("new-session", "-d", "-s", "main", "-x", "220", "-y", "50", "exec cat -v > "+pane)
+	if got := size(); got != "220x50" {
+		t.Fatalf("new session = %s, want 220x50", got)
+	}
+
+	// A 80x24 client attaches: the window must not follow it.
+	client := exec.Command("script", "-qec", "stty cols 80 rows 24; exec tmux -f "+conf+" -S "+sock+" attach -t main", "/dev/null")
+	in, err := client.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- client.Wait() }()
+	t.Cleanup(func() { _ = client.Process.Kill() })
+	waitFor("the client to attach", func() bool { return tm("list-clients") != "" })
+	if got := size(); got != "220x50" {
+		t.Errorf("with an 80x24 client attached the window is %s, want 220x50", got)
+	}
+	if got := tm("show-options", "-gv", "window-size"); got != "manual" {
+		t.Errorf("window-size = %q", got)
+	}
+
+	// C-b is not a prefix: it, and the key after it, reach the pane.
+	_, _ = in.Write([]byte("\x02x\n"))
+	waitFor("C-b to reach the pane", func() bool {
+		b, _ := os.ReadFile(pane)
+		return strings.Contains(string(b), "^Bx")
+	})
+	if tm("list-sessions") == "" {
+		t.Fatal("session gone")
+	}
+
+	// C-] detaches the client and leaves the session running.
+	_, _ = in.Write([]byte{0x1d})
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("C-] did not detach the client")
+	}
+	if got := tm("list-sessions"); !strings.HasPrefix(got, "main:") {
+		t.Errorf("after detach: %q", got)
+	}
+	// No key is bound but C-]. (tmux keeps its mouse defaults after
+	// unbind-key -a; they are inert while the mouse option is off.)
+	var bound []string
+	for _, l := range strings.Split(tm("list-keys"), "\n") {
+		if f := strings.Fields(l); len(f) > 3 && !isMouseKey(f[3]) {
+			bound = append(bound, f[3]+" "+f[4])
+		}
+	}
+	if len(bound) != 1 || bound[0] != "C-] detach-client" {
+		t.Errorf("bound keys = %q, want only C-] detach-client", bound)
+	}
+	if got := tm("show-options", "-gv", "mouse"); got != "off" {
+		t.Errorf("mouse = %q, want off", got)
+	}
+}
+
+func isMouseKey(k string) bool {
+	for _, m := range []string{"Mouse", "Wheel", "Click", "Drag"} {
+		if strings.Contains(k, m) {
+			return true
+		}
+	}
+	return false
+}
