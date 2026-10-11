@@ -322,3 +322,22 @@ func TestRenderPointsAgentsAtTheBuildHost(t *testing.T) {
 		t.Errorf("agent-01 environment = %v", env)
 	}
 }
+
+// An agent learns about kbuild only when there is a build host to send it to.
+func TestBriefTellsAgentsAboutTheBuildHost(t *testing.T) {
+	if b, _ := Brief(cfg(t), "agent-04"); strings.Contains(b, "kbuild") {
+		t.Errorf("brief mentions kbuild with no build host:\n%s", b)
+	}
+	c, err := config.Parse([]byte(nativeYAML + "build: {docker_host: \"ssh://fleetbuild@192.168.1.10\", key_env: FLEET_BUILD_KEY}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Brief(c, "agent-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	heavy := section(b, "Heavy work")
+	if !strings.Contains(heavy, "kbuild") || !strings.Contains(heavy, "192.168.1.10") || !strings.Contains(heavy, "/home/op/code") {
+		t.Errorf("Heavy work section = %q", heavy)
+	}
+}

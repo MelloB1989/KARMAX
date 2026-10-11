@@ -86,8 +86,21 @@ func Brief(c *config.Config, name string) (string, error) {
 	err := brief.Execute(&b, map[string]any{
 		"Agent": name, "Host": a.Host, "Code": c.Code, "Orchestrator": c.Orchestrator.Name,
 		"OrchestratorLocal": c.Orchestrator.Host == a.Host, "Local": local, "Remote": remote,
+		"BuildHost": buildHost(c.Build.DockerHost),
 	})
 	return b.String(), err
+}
+
+// buildHost is the machine in a DOCKER_HOST like ssh://user@host:port.
+func buildHost(dockerHost string) string {
+	h := strings.TrimPrefix(dockerHost, "ssh://")
+	if i := strings.LastIndex(h, "@"); i >= 0 {
+		h = h[i+1:]
+	}
+	if i := strings.Index(h, ":"); i >= 0 {
+		h = h[:i]
+	}
+	return h
 }
 
 // Render writes everything under dir.
