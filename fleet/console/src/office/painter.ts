@@ -74,26 +74,59 @@ export function createDeskScreen(agent: string, cols: number, rows: number): Des
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.textBaseline = "top";
+    let font = "";
+    const setFont = (bold: boolean) => {
+      const f = `${bold ? "bold " : ""}13px "IBM Plex Mono", monospace`;
+      if (f !== font) ctx.font = font = f;
+    };
     for (let y = 0; y < rows; y++) {
       const line = buf.getLine(buf.viewportY + y);
       if (!line) continue;
+      // a run is consecutive cells of one fg and weight, drawn with a single fillText
+      let run = "";
+      let runX = 0;
+      let runFg = "";
+      let runBold = false;
+      const flush = () => {
+        const text = run.trimEnd();
+        if (text) {
+          ctx.fillStyle = runFg;
+          setFont(runBold);
+          ctx.fillText(text, runX * CELL_W, y * CELL_H + 1);
+        }
+        run = "";
+      };
       for (let x = 0; x < cols; x++) {
         const c = line.getCell(x, cell);
         if (!c) continue;
+        const w = c.getWidth();
+        if (w === 0) continue; // the right half of a wide character
         let fg = fgOf(c);
         let bg = bgOf(c);
         if (c.isInverse()) [fg, bg] = [bg ?? BG, fg ?? FG];
         if (bg) {
           ctx.fillStyle = bg;
-          ctx.fillRect(x * CELL_W, y * CELL_H, CELL_W * Math.max(1, c.getWidth()), CELL_H);
+          ctx.fillRect(x * CELL_W, y * CELL_H, CELL_W * Math.max(1, w), CELL_H);
         }
         const ch = c.getChars();
-        if (ch && ch !== " " && !c.isInvisible()) {
-          ctx.fillStyle = fg ?? FG;
-          ctx.font = `${c.isBold() ? "bold " : ""}13px "IBM Plex Mono", monospace`;
-          ctx.fillText(ch, x * CELL_W, y * CELL_H + 1);
+        const visible = !!ch && ch !== " " && !c.isInvisible();
+        const style = fg ?? FG;
+        const bold = !!c.isBold();
+        if (!visible) {
+          // a gap keeps the run going; the next glyph decides whether it continues
+          if (run) run += " ";
+          continue;
         }
+        if (run && (style !== runFg || bold !== runBold || w > 1)) flush();
+        if (!run) {
+          runX = x;
+          runFg = style;
+          runBold = bold;
+        }
+        run += ch;
+        if (w > 1) flush();
       }
+      flush();
     }
     ctx.fillStyle = CURSOR;
     ctx.fillRect(buf.cursorX * CELL_W, buf.cursorY * CELL_H + CELL_H - 2, CELL_W, 2);
