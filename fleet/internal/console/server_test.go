@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,15 +143,57 @@ func TestPanelNotBuiltSaysSo(t *testing.T) {
 	}
 }
 
-func TestHealthzHasSourcesAndVersion(t *testing.T) {
-	srv, _ := testServer(t, nil, nil)
-	r, _ := http.Get(srv.URL + "/healthz")
+// downServer is a console whose git source is down with an error string.
+func downServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	h := newHub(func(s *Snapshot) {
+		*s = fixtureSnapshot()
+		s.Sources = map[string]Source{
+			SrcHost: {OK: true},
+			SrcGit:  {OK: false, Error: "git -C /srv/secret-repo: exit 128"},
+		}
+	}, 10*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go h.Run(ctx)
+	srv := httptest.NewServer(newHandler(h, &Terms{}, testToken, nil, fstest.MapFS{}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestHealthzWithTokenHasSourcesAndVersion(t *testing.T) {
+	srv := downServer(t)
+	req, _ := http.NewRequest("GET", srv.URL+"/healthz", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var m struct {
 		Sources map[string]Source
 		Version string
 	}
-	if json.NewDecoder(r.Body).Decode(&m) != nil || m.Version == "" || len(m.Sources) == 0 {
+	if json.NewDecoder(r.Body).Decode(&m) != nil || m.Version == "" || len(m.Sources) != 2 {
 		t.Fatalf("healthz = %+v", m)
+	}
+	if m.Sources[SrcGit].Error == "" {
+		t.Fatalf("with the token the error string is shown: %+v", m.Sources)
+	}
+}
+
+func TestHealthzWithoutTokenHasNoErrorStrings(t *testing.T) {
+	srv := downServer(t)
+	r, _ := http.Get(srv.URL + "/healthz")
+	b, _ := io.ReadAll(r.Body)
+	var m struct {
+		Sources map[string]bool
+		Version string
+	}
+	if r.StatusCode != 200 || json.Unmarshal(b, &m) != nil || m.Version == "" || !m.Sources[SrcHost] || m.Sources[SrcGit] {
+		t.Fatalf("healthz = %d %s", r.StatusCode, b)
+	}
+	if strings.Contains(string(b), "secret-repo") || strings.Contains(string(b), "error") {
+		t.Fatalf("error text leaked without the token: %s", b)
 	}
 }
 
@@ -299,17 +342,25 @@ func TestTermRouteControlHolderAndBytes(t *testing.T) {
 		t.Fatal("no hello frame")
 	}
 
+	// A second controller is upgraded, told who holds it, and closed.
+	c2, _, err := websocket.Dial(ctx, ws+"/v1/term/a1?control=1&who=bob", &websocket.DialOptions{HTTPHeader: hdr})
+	if err != nil {
+		t.Fatalf("second controller must upgrade: %v", err)
+	}
+	defer c2.CloseNow()
+	_, b2, err := c2.Read(ctx)
+	var ef TermFrame
+	if err != nil || json.Unmarshal(b2, &ef) != nil || ef.Type != "error" || ef.Holder != "alice" {
+		t.Fatalf("second controller got %q %v, want an error frame holding alice", b2, err)
+	}
+	if _, _, err := c2.Read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+		t.Fatalf("second controller close = %v, want policy violation", err)
+	}
+	if terms.Holder("a1") != "alice" {
+		t.Fatalf("the refused controller disturbed the holder: %q", terms.Holder("a1"))
+	}
 	req, _ := http.NewRequest("GET", srv.URL+"/v1/term/a1?control=1&who=bob", nil)
 	req.Header = hdr
-	r, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var body struct{ Holder string }
-	json.NewDecoder(r.Body).Decode(&body)
-	if r.StatusCode != 409 || body.Holder != "alice" {
-		t.Fatalf("second controller = %d %+v", r.StatusCode, body)
-	}
 	if req.URL.Path = "/v1/term/zzz"; true {
 		if r, _ := http.DefaultClient.Do(req); r.StatusCode != 404 {
 			t.Fatalf("unknown agent = %d", r.StatusCode)
@@ -318,4 +369,111 @@ func TestTermRouteControlHolderAndBytes(t *testing.T) {
 
 	c.CloseNow() // the socket drops
 	waitFor(t, 2*time.Second, "the lock to release", func() bool { return terms.Holder("a1") == "" })
+}
+
+// termFixture is a console whose terminals run cat under a PTY and whose
+// tmux queries are answered by a fake that records refresh-client.
+func termFixture(t *testing.T) (ws string, hdr http.Header, terms *Terms, refreshes func() int) {
+	t.Helper()
+	cfg := &Config{Term: TermSize{Cols: 80, Rows: 24}, Agents: []AgentConf{{Name: "a1", Live: true}}}
+	terms = NewTerms(cfg, func([]string) (*os.File, *exec.Cmd, error) {
+		cmd := exec.Command("cat")
+		f, err := pty.Start(cmd)
+		return f, cmd, err
+	})
+	fr := &fakeRunner{fn: func(argv []string) ([]byte, error) {
+		if slices.Contains(argv, "list-clients") {
+			return []byte("/dev/pts/9 1\n"), nil
+		}
+		return nil, nil
+	}}
+	terms.Runner = fr
+	var n atomic.Int64
+	h := newHub(countingFill(&n), 10*time.Millisecond, nil)
+	srv := httptest.NewServer(newHandler(h, terms, testToken, nil, fstest.MapFS{}))
+	t.Cleanup(srv.Close)
+	refreshes = func() int {
+		fr.mu.Lock()
+		defer fr.mu.Unlock()
+		k := 0
+		for _, a := range fr.seen {
+			if slices.Contains(a, "refresh-client") {
+				k++
+			}
+		}
+		return k
+	}
+	return "ws" + strings.TrimPrefix(srv.URL, "http"), http.Header{"Authorization": {"Bearer " + testToken}}, terms, refreshes
+}
+
+func TestTermWatchRedrawFrameRefreshesTheSharedClient(t *testing.T) {
+	ws, hdr, _, refreshes := termFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, ws+"/v1/term/a1", &websocket.DialOptions{HTTPHeader: hdr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	go func() { // drain
+		for {
+			if _, _, err := c.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
+	waitFor(t, 3*time.Second, "the join's own refresh", func() bool { return refreshes() == 1 })
+	time.Sleep(100 * time.Millisecond)
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"redraw"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 3*time.Second, "a refresh for the redraw frame", func() bool { return refreshes() == 2 })
+	c.Write(ctx, websocket.MessageText, []byte(`{"type":"nonsense"}`))
+	c.Write(ctx, websocket.MessageBinary, []byte("keys"))
+	time.Sleep(300 * time.Millisecond)
+	if n := refreshes(); n != 2 {
+		t.Fatalf("%d refreshes: only a redraw frame may cause one", n)
+	}
+}
+
+// A controller whose socket stops answering pings loses the keyboard.
+func TestTermControlDroppedWhenPingsGoUnanswered(t *testing.T) {
+	pingEvery, pingTimeout = 50*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { pingEvery, pingTimeout = 30*time.Second, 10*time.Second })
+	ws, hdr, terms, _ := termFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, ws+"/v1/term/a1?control=1&who=alice", &websocket.DialOptions{HTTPHeader: hdr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	waitFor(t, 2*time.Second, "alice to hold it", func() bool { return terms.Holder("a1") == "alice" })
+	// c is never read, so its pongs are never processed: a dead peer
+	waitFor(t, 5*time.Second, "the keyboard to be released", func() bool { return terms.Holder("a1") == "" })
+}
+
+// An answering client is kept.
+func TestTermControlKeptWhileItAnswersPings(t *testing.T) {
+	pingEvery, pingTimeout = 50*time.Millisecond, 500*time.Millisecond
+	t.Cleanup(func() { pingEvery, pingTimeout = 30*time.Second, 10*time.Second })
+	ws, hdr, terms, _ := termFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, ws+"/v1/term/a1?control=1&who=alice", &websocket.DialOptions{HTTPHeader: hdr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	go func() {
+		for {
+			if _, _, err := c.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(600 * time.Millisecond)
+	if terms.Holder("a1") != "alice" {
+		t.Fatal("a client that answers pings lost the keyboard")
+	}
 }

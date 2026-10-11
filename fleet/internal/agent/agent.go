@@ -236,7 +236,7 @@ func (a *Agent) Fresh(ctx context.Context) error {
 // Prompt types text into the pane and presses Enter: your keyboard, with your
 // authority. It is never a model-callable tool.
 func (a *Agent) Prompt(ctx context.Context, text string) error {
-	if _, err := a.C.Run(ctx, "tmux", "send-keys", "-t", Pane, "-l", text); err != nil {
+	if _, err := a.C.Run(ctx, "tmux", "send-keys", "-t", Pane, "-l", "--", text); err != nil {
 		return err
 	}
 	_, err := a.C.Run(ctx, "tmux", "send-keys", "-t", Pane, "Enter")

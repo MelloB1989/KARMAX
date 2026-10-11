@@ -119,6 +119,13 @@ func (s *Sources) Run(ctx context.Context, onChange func()) {
 		})
 	})
 	if cs := s.containers(); len(cs) > 0 {
+		// Before any stream starts: end what an earlier console left behind.
+		var sw sync.WaitGroup
+		for _, c := range cs {
+			sw.Add(1)
+			go func() { defer sw.Done(); sweepLeftovers(ctx, c) }()
+		}
+		sw.Wait()
 		go1(func() {
 			every(ctx, CadenceStatusline, func(ctx context.Context) {
 				s.status.poll(ctx, cs, s.now())

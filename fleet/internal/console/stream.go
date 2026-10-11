@@ -124,19 +124,28 @@ func execSpawn(ctx context.Context, argv []string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	// An open stdin, closed with the reader: a process in a container that
+	// outlives its killed `docker exec` (Docker 29) still sees its stdin
+	// end, and exits.
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &procReader{out: out, cmd: cmd}, nil
+	return &procReader{out: out, in: in, cmd: cmd}, nil
 }
 
 type procReader struct {
 	out io.ReadCloser
+	in  io.Closer
 	cmd *exec.Cmd
 }
 
 func (p *procReader) Read(b []byte) (int, error) { return p.out.Read(b) }
 func (p *procReader) Close() error {
+	_ = p.in.Close()
 	_ = target.KillGroup(p.cmd)
 	return p.cmd.Wait()
 }
@@ -187,9 +196,17 @@ func streamOnce(ctx context.Context, sp spawner, argv []string, tr *tracker, onS
 	return sc.Err()
 }
 
-// every runs fn now and then each period until ctx is done.
+// every runs fn now and then each period until ctx is done. Each call gets
+// its own context that ends after 2*period, so one hung command (a docker
+// exec to a dead host) cannot stall its source: the poll fails and the next
+// one starts.
 func every(ctx context.Context, period time.Duration, fn func(context.Context)) {
-	fn(ctx)
+	once := func() {
+		pctx, cancel := context.WithTimeout(ctx, 2*period)
+		defer cancel()
+		fn(pctx)
+	}
+	once()
 	t := time.NewTicker(period)
 	defer t.Stop()
 	for {
@@ -197,7 +214,7 @@ func every(ctx context.Context, period time.Duration, fn func(context.Context)) 
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			fn(ctx)
+			once()
 		}
 	}
 }

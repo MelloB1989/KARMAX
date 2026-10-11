@@ -15,6 +15,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
 	"github.com/MelloB1989/karmax/fleet/internal/render"
+	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 // Runner runs one command, writing its output to w.
@@ -22,7 +23,7 @@ type Runner func(ctx context.Context, argv []string, w io.Writer) error
 
 // ExecRunner runs the command for real.
 func ExecRunner(ctx context.Context, argv []string, w io.Writer) error {
-	c := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	c := target.HardenCtx(exec.CommandContext(ctx, argv[0], argv[1:]...))
 	c.Stdout, c.Stderr = w, w
 	return c.Run()
 }

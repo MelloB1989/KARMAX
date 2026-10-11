@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func fleetdServer(t *testing.T, fail *atomic.Int32) *httptest.Server {
 		case "/v1/history":
 			w.Write([]byte(`[{"id":"x","agent":"agent-01","task":"T0","cost_usd":1.25},{"id":"y","agent":"agent-01","task":"T0","cost_usd":0.5},{"id":"z","task":"other","cost_usd":9}]`))
 		case "/v1/events":
-			if r.URL.Query().Get("after") == "0" {
+			if r.URL.Query().Has("newest") {
 				w.Write([]byte(eventsJSON))
 			} else {
 				w.Write([]byte(`[]`))
@@ -206,5 +207,65 @@ func TestFleetdMissingRouteDoesNotBlankTheRoster(t *testing.T) {
 	// and the missing route's value is still the zero, not an error in the data
 	if len(f.tasks) != 0 {
 		t.Fatalf("tasks = %+v", f.tasks)
+	}
+}
+
+// The first read is one newest=N request, not a walk from the start of the
+// ledger; every later read follows the cursor.
+func TestFleetdEventsBackfillNewestThenCursor(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		mu.Unlock()
+		if r.URL.Query().Has("newest") {
+			w.Write([]byte(eventsJSON))
+			return
+		}
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	f := newFleetdSrc(NewFleetdClient(srv.URL, writeToken(t)), time.Now, "karmax", nil)
+	for range 2 {
+		if err := f.pollEvents(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) != 2 {
+		t.Fatalf("queries = %q, want one backfill and one cursor read", queries)
+	}
+	if !strings.Contains(queries[0], "newest=200") || strings.Contains(queries[0], "after=") {
+		t.Fatalf("backfill = %q, want newest=200 and no after", queries[0])
+	}
+	if !strings.Contains(queries[1], "after=8") || strings.Contains(queries[1], "newest") {
+		t.Fatalf("second read = %q, want after=8 (the cursor)", queries[1])
+	}
+	if len(f.events) != 2 || f.cursor != 8 {
+		t.Fatalf("events %d cursor %d", len(f.events), f.cursor)
+	}
+}
+
+// A quiet fleet (empty backfill) must not make the next read walk the whole
+// ledger from id 0.
+func TestFleetdEventsEmptyBackfillStaysInWindow(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		mu.Unlock()
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	f := newFleetdSrc(NewFleetdClient(srv.URL, writeToken(t)), time.Now, "karmax", nil)
+	f.pollEvents(context.Background())
+	f.pollEvents(context.Background())
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) != 2 || !strings.Contains(queries[1], "after=0") || !strings.Contains(queries[1], "since=24h") {
+		t.Fatalf("queries = %q", queries)
 	}
 }
