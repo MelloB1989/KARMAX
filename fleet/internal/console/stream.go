@@ -3,6 +3,7 @@ package console
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"sync"
@@ -16,6 +17,7 @@ const (
 	CadenceHost       = 2 * time.Second
 	CadenceGit        = 10 * time.Second
 	CadenceFleetd     = 5 * time.Second
+	CadenceDocker     = 5 * time.Second // docker stats prints a frame every second or two
 	cadenceActivity   = 60 * time.Second
 	cadenceToday      = 30 * time.Second
 )
@@ -33,7 +35,8 @@ type tracker struct {
 	cadence  time.Duration
 	streamed bool
 	running  bool
-	last     Source // OK/At of the last attempt's outcome; At is the last success
+	started  time.Time // when the streamed process last came up
+	last     Source    // OK/At of the last attempt's outcome; At is the last success
 }
 
 func newTracker(cadence time.Duration, streamed bool) *tracker {
@@ -53,6 +56,15 @@ func (t *tracker) failure(err error) {
 	t.mu.Unlock()
 }
 
+// start notes that a streamed process came up at `at`; it has produced
+// nothing yet.
+func (t *tracker) start(at time.Time) {
+	t.mu.Lock()
+	t.started = at
+	t.last.OK, t.last.Error = true, "" // up, and not yet silent for long
+	t.mu.Unlock()
+}
+
 func (t *tracker) setRunning(r bool) {
 	t.mu.Lock()
 	t.running = r
@@ -69,9 +81,19 @@ func (t *tracker) stale(now time.Time) bool {
 
 func (t *tracker) staleLocked(now time.Time) bool {
 	if t.streamed {
-		return !t.running
+		return !t.running || t.silentLocked(now) > 2*t.cadence && t.cadence > 0
 	}
 	return t.last.At.IsZero() || now.Sub(t.last.At) > 2*t.cadence
+}
+
+// silentLocked is how long a streamed source with a cadence has produced
+// nothing parsed: since its last success, or since its process came up.
+func (t *tracker) silentLocked(now time.Time) time.Duration {
+	ref := t.last.At
+	if t.started.After(ref) {
+		ref = t.started
+	}
+	return now.Sub(ref)
 }
 
 // source is what a snapshot says: not ok when the last attempt failed or the
@@ -82,6 +104,10 @@ func (t *tracker) source(now time.Time) Source {
 	s := t.last
 	if t.staleLocked(now) {
 		s.OK = false
+		if t.streamed && t.running && s.Error == "" {
+			// the process runs but says nothing we can read
+			s.Error = fmt.Sprintf("no stats parsed for %d s", int(t.silentLocked(now).Seconds()))
+		}
 	}
 	return s
 }

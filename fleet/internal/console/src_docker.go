@@ -17,7 +17,7 @@ type dockerSrc struct {
 }
 
 func newDockerSrc() *dockerSrc {
-	return &dockerSrc{tr: newTracker(0, true), samples: map[string]Container{}}
+	return &dockerSrc{tr: newTracker(CadenceDocker, true), samples: map[string]Container{}}
 }
 
 // csi matches an ANSI control sequence: ESC [ parameters intermediates final.
@@ -33,7 +33,7 @@ const dockerFreshness = 5 * time.Second
 
 func (d *dockerSrc) run(ctx context.Context, sp spawner, prefix []string, now func() time.Time, changed func()) {
 	argv := append(append([]string{}, prefix...), "stats", "--format", "{{json .}}")
-	streamLines(ctx, sp, argv, d.tr, now, func() { d.tr.success(now()); changed() }, func(line []byte) {
+	streamLines(ctx, sp, argv, d.tr, now, func() { d.tr.start(now()); changed() }, func(line []byte) {
 		at := now()
 		got := outbound.ParseDockerStats(stripANSI(line), at)
 		if len(got) == 0 {
