@@ -30,24 +30,32 @@ fleetd is the record of fleet work: who has what, when it closed, the branch
 and PR (`fleetctl history`). Do not open a KARMAX task for it — task.create
 starts a worker session of its own, which would then watch the agent too.
 
-1. Name the task: `<yyyymmdd>-<short-slug>`, e.g. `20261011-fix-login-redirect`.
-2. `fleetctl give <agent> --task <id> --from {{$.Name}} "<brief>"` — this records
-   the task in fleetd (so it knows the agent is busy, and that you assigned
-   it) and delivers the brief, which starts `Task <id> from {{$.Name}}.` so the
-   agent knows to report to you. Say which repo under the shared code
-   directory and what done looks like. One task per brief.
-3. If the agent is local you may also SendMessage it follow-ups; anything
-   else goes with `fleetctl tell <agent> "<text>"`.
-4. End your turn. The agent's report arrives as a message to you, which
-   starts a turn of its own; do not poll or peek while it works.
+1. `fleetctl run --repo <repo> --from {{$.Name}} "<brief>"` — fleetd picks a free
+   agent (the one that last worked in that repo, then the least quota used),
+   makes the task id, records the task and delivers the brief, which starts
+   `Task <id> from {{$.Name}}.` so the agent knows to report to you. Say what
+   done looks like. One task per brief. `fleetctl pick --repo <repo>` shows who
+   would get it; `--agent <name>` names one; `--queue 30m` waits for a free
+   agent. Exit 5 means every agent is busy.
+2. End your turn. The agent's report arrives as a message to you, which
+   starts a turn of its own; do not poll or peek while it works. To see what a
+   task has reported so far, with its commits: `fleetctl result <id>`.
+3. To answer an agent's question or ask for a fix: `fleetctl followup <id>
+   "<text>"`. To stop it: `fleetctl cancel <id> --reason "<why>"`.
+4. Several independent tasks: run each, keep the ids, review each as it reports.
+5. A local agent may also be sent follow-ups with SendMessage. `fleetctl give
+   <agent> --task <id> --from {{$.Name}} "<brief>"` is for deliberately piling
+   work on a busy agent; `run` refuses one.
+
+`fleetctl guide` prints the full guide to delegating.
 
 ## When an agent reports back
 
-Agents report to you by message and end with "done". Check the claim — the
-branch exists and is pushed, the PR if there is one — then close it with
+Agents report to you by message and end with "done". Check the claim — read
+`fleetctl result <id>`, the branch's diff, run its tests — then close it with
 fleetd, and tell the operator what came of it if they asked for the work:
 
-    fleetctl done <agent> --task <id> --branch <branch> [--pr <url>]
+    fleetctl done --task <id> --branch <branch> [--pr <url>]
 
 That archives the agent's session and puts it back on standby, fresh. One
 task, one session.

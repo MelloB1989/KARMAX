@@ -496,6 +496,19 @@ func TestWaitOnAnUnknownTaskIs404WithTheTaskNamed(t *testing.T) {
 	}
 }
 
+func TestGuideRouteScopes(t *testing.T) {
+	_, h := setup(t)
+	for tok, want := range map[string]int{"": 401, "relay": 403, "console": 200, "full": 200} {
+		if rec := do(t, h, "GET", "/v1/guide", tok, ""); rec.Code != want {
+			t.Errorf("guide as %q = %d, want %d", tok, rec.Code, want)
+		}
+	}
+	var out struct{ Text string }
+	if err := json.Unmarshal(do(t, h, "GET", "/v1/guide", "full", "").Body.Bytes(), &out); err != nil || !strings.Contains(out.Text, "fleetctl run") {
+		t.Fatalf("guide body = %q, %v", out.Text, err)
+	}
+}
+
 func TestFollowupAndCancelRoutes(t *testing.T) {
 	f, h := setup(t)
 	for _, tok := range []string{"relay", "console"} {

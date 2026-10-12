@@ -605,6 +605,12 @@ func run(cmd string, args []string) error {
 	case "result":
 		return result(args)
 
+	case "guide":
+		return guideCmd(args)
+
+	case "skill":
+		return skillCmd(args)
+
 	case "whoami":
 		return getAndPrint(args, "/v1/whoami", func(raw json.RawMessage) error {
 			var w struct{ Scope, Name string }

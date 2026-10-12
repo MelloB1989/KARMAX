@@ -186,6 +186,21 @@ sends it somewhere, for example
 To verify, ask KARMAX on WhatsApp to fix something in a repo, and watch
 `fleetctl ls` and `fleetctl events`.
 
+## Putting the fleet to work from any Claude session
+
+Any Claude Code session on the machine running `fleetctl` (and the orchestrator) can hand work to the
+fleet and read it back by task id, without knowing which agent is free:
+
+    fleetctl skill install        # writes ~/.claude/skills/fleet/SKILL.md; `fleetctl guide` prints the same text
+    fleetctl run --repo <repo> "<brief>"      # picks a free agent, prints the task id
+    fleetctl wait --task <id>                 # blocks until the agent reports
+    fleetctl result <id>                      # reports, branch commits, state
+    fleetctl followup <id> "<fix this>"       # or: fleetctl cancel <id>
+    fleetctl done --task <id>                 # after reviewing and merging
+
+The skill carries the whole loop (briefs, fan-out, review rules, exit codes), so a fresh session that
+sees a task it can delegate knows how.
+
 ## The fleet console (optional)
 
 A `console:` section in `fleet.yaml` (see `fleet.yaml.example`) makes `fleetctl render`

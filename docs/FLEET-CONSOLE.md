@@ -194,6 +194,7 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/restore` | full | `fleetctl restore` | restore an archived session |
 | `GET /v1/inbox` | full, console | `fleetctl inbox` | what agents reported to the operator (`after=<id>` cursor) |
 | `GET /v1/wait` | full, console | `fleetctl wait` | long poll: returns when the agent (or, with `task`, anyone filing under it) reports, its task closes, or it stops; `agent` optional when `task` is given |
+| `GET /v1/guide` | full, console | `fleetctl guide` | the guide to putting the fleet to work (`{"text": …}`), also installed as a skill by `fleetctl skill install` |
 | `GET /v1/events` | full, console | `fleetctl events` | an agent's recorded events |
 | `GET /v1/usage` | full, console | `fleetctl usage` | tokens and cost, by agent or model |
 | `GET /v1/history` | full, console | `fleetctl history` | an agent's past tasks |

@@ -546,3 +546,27 @@ func TestConsoleTokenFileIsPrivate(t *testing.T) {
 		t.Error("re-render into a world-readable console dir succeeded")
 	}
 }
+
+func TestOrchestratorBriefUsesTheJobCommands(t *testing.T) {
+	b, err := OrchestratorBrief(cfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"fleetctl run", "fleetctl result", "fleetctl followup", "fleetctl cancel", "fleetctl done --task", "fleetctl guide"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("orchestrator brief lacks %q", want)
+		}
+	}
+}
+
+func TestAgentBriefSaysReportsFileUnderTheTask(t *testing.T) {
+	b, err := Brief(cfg(t), "agent-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"filed under", "follow-up", "cancel"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("agent brief lacks %q", want)
+		}
+	}
+}

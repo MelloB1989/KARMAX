@@ -544,6 +544,68 @@ func TestWaitOnAMissingTaskFailsFastWithoutRetrying(t *testing.T) {
 	}
 }
 
+func TestGuidePrintsTheGuide(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{"/v1/guide": `{"text":"the guide\nline two"}`}}
+	out, err := fleetctl(t, f, "guide")
+	if err != nil || out != "the guide\nline two\n" {
+		t.Fatalf("out = %q, %v", out, err)
+	}
+}
+
+func TestSkillInstallWritesTheSkill(t *testing.T) {
+	dir := t.TempDir()
+	out, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--dir", dir)
+	p := dir + "/fleet/SKILL.md"
+	if err != nil || strings.TrimSpace(out) != p {
+		t.Fatalf("out = %q, %v", out, err)
+	}
+	b, _ := os.ReadFile(p)
+	st, _ := os.Stat(p)
+	if !strings.HasPrefix(string(b), "---\nname: fleet\n") || st.Mode().Perm() != 0o644 {
+		t.Fatalf("skill file %v starts %q", st.Mode(), b[:20])
+	}
+	if _, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--dir", dir); err != nil {
+		t.Fatalf("reinstall over our own skill: %v", err)
+	}
+}
+
+func TestSkillInstallRefusesAnUnrelatedFile(t *testing.T) {
+	dir := t.TempDir()
+	p := dir + "/fleet/SKILL.md"
+	_ = os.MkdirAll(dir+"/fleet", 0o755)
+	_ = os.WriteFile(p, []byte("my own notes\n"), 0o644)
+	if _, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--dir", dir); err == nil {
+		t.Fatal("overwrote a file that is not a skill")
+	}
+	if b, _ := os.ReadFile(p); string(b) != "my own notes\n" {
+		t.Fatalf("file changed: %q", b)
+	}
+	if _, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--dir", dir, "--force"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); !strings.HasPrefix(string(b), "---\n") {
+		t.Fatalf("--force did not write: %q", b)
+	}
+}
+
+func TestSkillInstallPrintAndDefaultDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	out, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--print")
+	if err != nil || !strings.HasPrefix(out, "---\nname: fleet\n") {
+		t.Fatalf("--print = %q, %v", out, err)
+	}
+	if _, err := os.Stat(home + "/.claude"); err == nil {
+		t.Fatal("--print wrote files")
+	}
+	if _, err := fleetctl(t, &fakeFleetd{}, "skill", "install"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(home + "/.claude/skills/fleet/SKILL.md"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func reqBody(t *testing.T, req string) map[string]any {
 	t.Helper()
 	var in map[string]any
