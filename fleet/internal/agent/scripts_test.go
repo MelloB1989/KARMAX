@@ -498,3 +498,19 @@ func TestAgentRunHoldsOffWhileHomeIsUnwritable(t *testing.T) {
 		t.Error("~/.claude.json written")
 	}
 }
+
+// Agents' commits carry the operator's trailer only: Claude Code's own
+// co-author line and PR footer are off.
+func TestShippedSettingsTurnClaudeAttributionOff(t *testing.T) {
+	raw, err := os.ReadFile("../../../packaging/fleet/home/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatal(err)
+	}
+	if string(s["attribution"]) != "false" {
+		t.Fatalf("settings.json attribution = %s, want false", s["attribution"])
+	}
+}

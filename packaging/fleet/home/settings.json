@@ -3,6 +3,7 @@
     "defaultMode": "bypassPermissions"
   },
   "skipDangerousModePermissionPrompt": true,
+  "attribution": false,
   "crossSessionInbound": "accept",
   "dialogExpiry": "never",
   "env": {
