@@ -99,13 +99,69 @@ func TestWaitStartsAfterTheNewestMessageAndPrintsTheReport(t *testing.T) {
 		"/v1/inbox": `[{"id":9,"from":"agent-05","text":"old"}]`,
 		"/v1/wait":  `{"reason":"message","message":{"id":10,"from":"agent-03","text":"ready"}}`,
 	}}
-	out, err := fleetctl(t, f, "wait", "agent-03", "--task", "T1", "--timeout", "10m")
+	out, err := fleetctl(t, f, "wait", "agent-03", "--timeout", "10m")
 	if err != nil || !strings.Contains(out, "ready") {
 		t.Fatalf("out = %q, %v", out, err)
 	}
 	if got := f.reqs[1]; !strings.HasPrefix(got, "GET /v1/wait?") || !strings.Contains(got, "after=9") ||
-		!strings.Contains(got, "task=T1") || !strings.Contains(got, "timeout=10m") {
+		!strings.Contains(got, "agent=agent-03") || !strings.Contains(got, "timeout=10m") {
 		t.Fatalf("request = %s", got)
+	}
+}
+
+// A task's reports are its own: a wait on one reads them from the start, so
+// a report that arrived before the wait began is not lost.
+func TestWaitByTaskWithoutAnAgentSendsNoAgentParam(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{
+		"/v1/wait": `{"reason":"message","message":{"id":10,"from":"agent-03","to":"karmax","text":"ready"}}`,
+	}}
+	out, err := fleetctl(t, f, "wait", "--task", "T1", "--timeout", "10m")
+	if err != nil || !strings.Contains(out, "ready") {
+		t.Fatalf("out = %q, %v", out, err)
+	}
+	if len(f.reqs) != 1 {
+		t.Fatalf("requests = %v", f.reqs)
+	}
+	got := f.reqs[0]
+	if !strings.HasPrefix(got, "GET /v1/wait?") || strings.Contains(got, "agent=") || !strings.Contains(got, "task=T1") ||
+		!strings.Contains(got, "after=0") {
+		t.Fatalf("request = %s", got)
+	}
+	if _, err := fleetctl(t, f, "wait", "--task", "T1", "--after", "10"); err != nil || !strings.Contains(f.reqs[1], "after=10") {
+		t.Fatalf("requests = %v, %v", f.reqs, err)
+	}
+}
+
+func TestWaitNeedsAnAgentOrATask(t *testing.T) {
+	if _, err := fleetctl(t, &fakeFleetd{}, "wait"); err == nil {
+		t.Fatal("wait with neither should fail")
+	}
+}
+
+func TestResultPrintsTheTaskReportsAndCommits(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{"/v1/tasks/T1": `{
+	  "task":{"id":"T1","agent":"agent-03","assigner":"karmax","outcome":"done","branch":"fleet/agent-03/x","repo":"app"},
+	  "state":"closed",
+	  "reports":[{"id":4,"from":"agent-03","to":"karmax","text":"all green","at":"2026-10-12T10:00:00Z"}],
+	  "commits":["abc1234 fix the thing"],"ahead":1}`}}
+	out, err := fleetctl(t, f, "result", "T1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"T1", "agent-03", "closed", "agent-03 → karmax:", "all green", "abc1234 fix the thing", "fleet/agent-03/x"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if f.reqs[0] != "GET /v1/tasks/T1 " {
+		t.Errorf("request = %q", f.reqs[0])
+	}
+	js, err := fleetctl(t, f, "result", "T1", "--json")
+	if err != nil || !strings.Contains(js, `"commits"`) {
+		t.Fatalf("json = %q, %v", js, err)
+	}
+	if _, err := fleetctl(t, f, "result"); err == nil {
+		t.Fatal("result needs a task")
 	}
 }
 

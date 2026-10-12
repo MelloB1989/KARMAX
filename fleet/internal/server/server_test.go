@@ -43,6 +43,13 @@ func (f *fake) Wait(ctx context.Context, agent, task string, after int64) (daemo
 	}
 	return daemon.WaitResult{Reason: "message", Message: &ledger.Relay{ID: after + 1, From: agent, Text: "ready"}}, nil
 }
+func (f *fake) Result(task string) (daemon.TaskResult, error) {
+	f.calls = append(f.calls, "result "+task)
+	if task == "T-missing" {
+		return daemon.TaskResult{}, fmt.Errorf("%w %s", daemon.ErrNoTask, task)
+	}
+	return daemon.TaskResult{Task: ledger.Task{ID: task, Agent: "agent-03"}, State: "open", Reports: []ledger.Relay{}}, nil
+}
 func (f *fake) Done(name, task, outcome, branch, pr string, _ time.Time) error {
 	f.calls = append(f.calls, "done "+name+" "+task+" "+outcome+" "+branch)
 	return nil
@@ -273,6 +280,41 @@ func TestWaitRouteGivesTheWaitADeadline(t *testing.T) {
 	}
 	if rec := do(t, h, "GET", "/v1/wait?agent=agent-03&timeout=soon", "full", ""); rec.Code != 400 {
 		t.Fatalf("bad timeout = %d", rec.Code)
+	}
+}
+
+func TestWaitRouteTakesATaskWithoutAnAgent(t *testing.T) {
+	f, h := setup(t)
+	if rec := do(t, h, "GET", "/v1/wait?task=T1&timeout=2m", "full", ""); rec.Code != 200 {
+		t.Fatalf("wait by task = %d %s", rec.Code, rec.Body)
+	}
+	if got := f.calls[len(f.calls)-1]; got != "wait  T1 0" {
+		t.Fatalf("call = %q", got)
+	}
+	if rec := do(t, h, "GET", "/v1/wait?timeout=2m", "full", ""); rec.Code != 400 {
+		t.Fatalf("wait with neither = %d", rec.Code)
+	}
+	if rec := do(t, h, "GET", "/v1/wait?task=T-missing", "full", ""); rec.Code != 404 {
+		t.Fatalf("wait on unknown task = %d", rec.Code)
+	}
+}
+
+func TestTaskResultRoute(t *testing.T) {
+	f, h := setup(t)
+	rec := do(t, h, "GET", "/v1/tasks/T1", "full", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"open"`) || !strings.Contains(rec.Body.String(), `"reports":[]`) {
+		t.Fatalf("result = %d %s", rec.Code, rec.Body)
+	}
+	if got := f.calls[len(f.calls)-1]; got != "result T1" {
+		t.Fatalf("call = %q", got)
+	}
+	if rec := do(t, h, "GET", "/v1/tasks/T-missing", "full", ""); rec.Code != 404 {
+		t.Fatalf("unknown task = %d", rec.Code)
+	}
+	for tok, want := range map[string]int{"console": 200, "relay": 403, "": 401} {
+		if rec := do(t, h, "GET", "/v1/tasks/T1", tok, ""); rec.Code != want {
+			t.Errorf("as %q: %d, want %d", tok, rec.Code, want)
+		}
 	}
 }
 

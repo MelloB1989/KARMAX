@@ -314,3 +314,80 @@ func TestSessionJSONIsSnakeCase(t *testing.T) {
 		}
 	}
 }
+
+// A ledger made before reports belonged to tasks gains relays.task on open.
+func TestOpenAddsTheRelayTaskColumnToAnOldLedger(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "old.db")
+	raw, err := sql.Open("sqlite", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE relays (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, recipient TEXT, at INTEGER, size INTEGER, delivered INTEGER, text TEXT, error TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	db, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.AddRelay(Relay{From: "agent-01", To: "operator", Task: "T1", Text: "x", At: t0}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskReportsAreThoseOfOneTaskAfterAnIDOldestFirst(t *testing.T) {
+	db := open(t)
+	for _, r := range []Relay{
+		{From: "agent-01", To: "operator", Task: "T1", Text: "a"},
+		{From: "agent-02", To: "operator", Task: "T2", Text: "other task"},
+		{From: "agent-01", To: "karmax", Task: "T1", Text: "b"},
+		{From: "agent-01", To: "operator", Text: "no task"},
+		{From: "agent-01", To: "operator", Task: "T1", Text: "c"},
+	} {
+		r.At, r.Delivered = t0, true
+		if err := db.AddRelay(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := db.TaskReports("T1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 || all[0].Text != "a" || all[1].Text != "b" || all[2].Text != "c" {
+		t.Fatalf("reports = %+v", all)
+	}
+	if all[1].To != "karmax" || all[1].Task != "T1" || all[1].From != "agent-01" {
+		t.Errorf("relay = %+v", all[1])
+	}
+	later, _ := db.TaskReports("T1", all[0].ID)
+	if len(later) != 2 || later[0].Text != "b" {
+		t.Fatalf("after = %+v", later)
+	}
+	if none, _ := db.TaskReports("T9", 0); len(none) != 0 {
+		t.Fatalf("T9 = %+v", none)
+	}
+}
+
+func TestInboxCarriesTheTask(t *testing.T) {
+	db := open(t)
+	_ = db.AddRelay(Relay{From: "agent-01", To: "operator", Task: "T1", Text: "a", At: t0})
+	got, _ := db.Inbox(0)
+	if len(got) != 1 || got[0].Task != "T1" {
+		t.Fatalf("inbox = %+v", got)
+	}
+}
+
+func TestTaskKeepsItsRepo(t *testing.T) {
+	db := open(t)
+	_ = db.OpenTask("T1", "agent-01", "operator", t0)
+	if err := db.SetTaskRepo("T1", "app"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.Task("T1"); got.Repo != "app" {
+		t.Fatalf("task = %+v", got)
+	}
+	if all, _ := db.Tasks(false, "", 0); len(all) != 1 || all[0].Repo != "app" {
+		t.Fatalf("tasks = %+v", all)
+	}
+}

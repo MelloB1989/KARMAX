@@ -37,6 +37,7 @@ type Ops interface {
 	Restore(ctx context.Context, id, onto string, now time.Time) error
 	Inbox(after int64) ([]ledger.Relay, error)
 	Wait(ctx context.Context, agent, task string, after int64) (daemon.WaitResult, error)
+	Result(task string) (daemon.TaskResult, error)
 
 	Events(q daemon.EventsQuery) ([]ledger.Event, error)
 	Usage(by string, since time.Time) ([]ledger.UsageRow, error)
@@ -277,12 +278,15 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				return nil, badRequest{fmt.Errorf("timeout %q: want e.g. 30m", s)}
 			}
 		}
-		if q.Get("agent") == "" {
-			return nil, badRequest{fmt.Errorf("wait needs agent")}
+		if q.Get("agent") == "" && q.Get("task") == "" {
+			return nil, badRequest{fmt.Errorf("wait needs agent or task")}
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 		return ops.Wait(ctx, q.Get("agent"), q.Get("task"), after)
+	}, readers...)
+	route("GET /v1/tasks/{id}", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return ops.Result(r.PathValue("id"))
 	}, readers...)
 	route("GET /v1/events", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		q := r.URL.Query()

@@ -90,6 +90,8 @@ func Open(path string) (*DB, error) {
 func migrate(db *sql.DB) error {
 	adds := []struct{ table, column, decl string }{
 		{"tasks", "assigner", "TEXT"},
+		{"tasks", "repo", "TEXT"},
+		{"relays", "task", "TEXT"},
 	}
 	for _, a := range adds {
 		var n int
@@ -520,6 +522,7 @@ type Task struct {
 	Outcome  string    `json:"outcome,omitempty"`
 	Branch   string    `json:"branch,omitempty"`
 	PR       string    `json:"pr,omitempty"`
+	Repo     string    `json:"repo,omitempty"`
 	Assigned time.Time `json:"assigned,omitzero"`
 	Closed   time.Time `json:"closed,omitzero"`
 }
@@ -530,6 +533,12 @@ func (db *DB) OpenTask(id, agent, assigner string, at time.Time) error {
 		ON CONFLICT(id) DO UPDATE SET agent=excluded.agent, assigned=excluded.assigned,
 		assigner=excluded.assigner, closed=NULL, outcome=NULL`,
 		id, agent, at.Unix(), nullStr(assigner))
+	return err
+}
+
+// SetTaskRepo records the repo a task works in.
+func (db *DB) SetTaskRepo(id, repo string) error {
+	_, err := db.sql.Exec(`UPDATE tasks SET repo=? WHERE id=?`, nullStr(repo), id)
 	return err
 }
 
@@ -574,8 +583,8 @@ func (db *DB) Task(id string) (*Task, error) {
 	var t Task
 	var as, cl sql.NullInt64
 	err := db.sql.QueryRow(`SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
-		&t.Outcome, &t.Branch, &t.PR)
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
+		&t.Outcome, &t.Branch, &t.PR, &t.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -587,7 +596,7 @@ func (db *DB) Task(id string) (*Task, error) {
 // closed; an agent of "" means every agent; limit <= 0 means all.
 func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
 	q := `SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)`
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)`
 	if open {
 		q += ` AND closed IS NULL`
 	}
@@ -606,7 +615,7 @@ func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
 	for rows.Next() {
 		var t Task
 		var as, cl sql.NullInt64
-		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR); err != nil {
+		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR, &t.Repo); err != nil {
 			return nil, err
 		}
 		t.Assigned, t.Closed = fromUnix(as), fromUnix(cl)
@@ -644,6 +653,8 @@ type Relay struct {
 	Error     string    `json:"error,omitempty"`
 	At        time.Time `json:"at"`
 	Delivered bool      `json:"delivered"`
+	// Task is the task its sender had when it wrote: a report belongs to it.
+	Task string `json:"task,omitempty"`
 }
 
 // Operator is the inbox name: messages to it wait for the operator.
@@ -651,7 +662,7 @@ const Operator = "operator"
 
 // Inbox is the messages to the operator with an id above after, oldest first.
 func (db *DB) Inbox(after int64) ([]Relay, error) {
-	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), at, COALESCE(text,'') FROM relays
+	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), at, COALESCE(text,''), COALESCE(task,'') FROM relays
 		WHERE recipient=? AND id > ? ORDER BY id`, Operator, after)
 	if err != nil {
 		return nil, err
@@ -661,7 +672,29 @@ func (db *DB) Inbox(after int64) ([]Relay, error) {
 	for rows.Next() {
 		r := Relay{To: Operator, Delivered: true}
 		var at int64
-		if err := rows.Scan(&r.ID, &r.From, &at, &r.Text); err != nil {
+		if err := rows.Scan(&r.ID, &r.From, &at, &r.Text, &r.Task); err != nil {
+			return nil, err
+		}
+		r.At = time.Unix(at, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// TaskReports is the messages filed under a task, whoever they went to, with
+// an id above after, oldest first.
+func (db *DB) TaskReports(task string, after int64) ([]Relay, error) {
+	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), COALESCE(recipient,''), at, COALESCE(text,''),
+		COALESCE(delivered,0), COALESCE(error,'') FROM relays WHERE task=? AND id > ? ORDER BY id`, task, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Relay
+	for rows.Next() {
+		r := Relay{Task: task}
+		var at int64
+		if err := rows.Scan(&r.ID, &r.From, &r.To, &at, &r.Text, &r.Delivered, &r.Error); err != nil {
 			return nil, err
 		}
 		r.At = time.Unix(at, 0)
@@ -672,8 +705,8 @@ func (db *DB) Inbox(after int64) ([]Relay, error) {
 
 // AddRelay records a relayed message.
 func (db *DB) AddRelay(r Relay) error {
-	_, err := db.sql.Exec(`INSERT INTO relays(sender, recipient, at, size, delivered, text, error) VALUES(?,?,?,?,?,?,?)`,
-		r.From, r.To, r.At.Unix(), len(r.Text), r.Delivered, r.Text, nullStr(r.Error))
+	_, err := db.sql.Exec(`INSERT INTO relays(sender, recipient, at, size, delivered, text, error, task) VALUES(?,?,?,?,?,?,?,?)`,
+		r.From, r.To, r.At.Unix(), len(r.Text), r.Delivered, r.Text, nullStr(r.Error), nullStr(r.Task))
 	return err
 }
 
