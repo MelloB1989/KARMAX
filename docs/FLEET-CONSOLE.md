@@ -192,11 +192,12 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/enable` | full | `fleetctl enable` | re-enable an agent disabled for a subscription problem |
 | `POST /v1/restore` | full | `fleetctl restore` | restore an archived session |
 | `GET /v1/inbox` | full, console | `fleetctl inbox` | what agents reported to the operator (`after=<id>` cursor) |
-| `GET /v1/wait` | full, console | `fleetctl wait` | long poll: returns when the agent reports, its task closes, or it stops |
+| `GET /v1/wait` | full, console | `fleetctl wait` | long poll: returns when the agent (or, with `task`, anyone filing under it) reports, its task closes, or it stops; `agent` optional when `task` is given |
 | `GET /v1/events` | full, console | `fleetctl events` | an agent's recorded events |
 | `GET /v1/usage` | full, console | `fleetctl usage` | tokens and cost, by agent or model |
 | `GET /v1/history` | full, console | `fleetctl history` | an agent's past tasks |
 | `GET /v1/quota` | full, console | `fleetctl quota` | each subscription's 5 h and 7 d windows |
+| `GET /v1/tasks/{id}` | full, console | `fleetctl result` | a task with its reports (filed under it, whoever they went to) and the commits on its branch; 404 unknown |
 | `GET /v1/tasks` | full, console | `fleetctl tasks` | tasks, open or all |
 | `GET /v1/activity` | full, console | `fleetctl activity` | event counts per agent in time buckets |
 | `GET /v1/today` | full, console | `fleetctl today` | tasks closed and spend since local midnight |
