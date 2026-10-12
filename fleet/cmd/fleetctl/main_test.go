@@ -543,3 +543,56 @@ func TestWaitOnAMissingTaskFailsFastWithoutRetrying(t *testing.T) {
 		t.Errorf("asked %d times", n)
 	}
 }
+
+func reqBody(t *testing.T, req string) map[string]any {
+	t.Helper()
+	var in map[string]any
+	if err := json.Unmarshal([]byte(strings.SplitN(req, " ", 3)[2]), &in); err != nil {
+		t.Fatalf("request %q: %v", req, err)
+	}
+	return in
+}
+
+func TestDoneByTaskSendsNoAgent(t *testing.T) {
+	f := &fakeFleetd{}
+	if _, err := fleetctl(t, f, "done", "--task", "T1"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(f.reqs[0], "POST /v1/done ") {
+		t.Fatalf("request = %s", f.reqs[0])
+	}
+	if in := reqBody(t, f.reqs[0]); in["agent"] != "" || in["task"] != "T1" {
+		t.Fatalf("request = %s", f.reqs[0])
+	}
+	if _, err := fleetctl(t, &fakeFleetd{}, "done"); err == nil {
+		t.Fatal("done with neither agent nor --task must fail")
+	}
+}
+
+func TestFollowupAndCancelCommands(t *testing.T) {
+	f := &fakeFleetd{}
+	if _, err := fleetctl(t, f, "followup", "T1", "also", "the empty case", "--from", "karmax"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(f.reqs[0], "POST /v1/tasks/T1/followup ") {
+		t.Fatalf("request = %s", f.reqs[0])
+	}
+	if in := reqBody(t, f.reqs[0]); in["text"] != "also the empty case" || in["from"] != "karmax" {
+		t.Fatalf("request = %s", f.reqs[0])
+	}
+	if _, err := fleetctl(t, f, "cancel", "T1", "--reason", "wrong repo"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(f.reqs[1], "POST /v1/tasks/T1/cancel ") {
+		t.Fatalf("request = %s", f.reqs[1])
+	}
+	if in := reqBody(t, f.reqs[1]); in["reason"] != "wrong repo" {
+		t.Fatalf("request = %s", f.reqs[1])
+	}
+	if _, err := fleetctl(t, f, "followup", "T1"); err == nil {
+		t.Fatal("followup without text must fail")
+	}
+	if _, err := fleetctl(t, f, "cancel"); err == nil {
+		t.Fatal("cancel without a task must fail")
+	}
+}

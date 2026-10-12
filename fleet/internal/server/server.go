@@ -30,6 +30,8 @@ type Ops interface {
 	Status(now time.Time) []daemon.Row
 	Tell(ctx context.Context, from, to, text string, now time.Time) error
 	Assign(ctx context.Context, name, task, from, brief string, now time.Time) error
+	Followup(ctx context.Context, task, from, text string, now time.Time) error
+	Cancel(ctx context.Context, task, from, reason string, now time.Time) error
 	Done(name, task, outcome, branch, pr string, now time.Time) error
 	Close(name, task, outcome, branch, pr string, now time.Time) error
 	Rotate(name string, dryRun bool, now time.Time) (daemon.RotatePlan, error)
@@ -132,6 +134,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				if errors.Is(err, daemon.ErrNoTask) {
 					err = notFound{err}
 				}
+				if errors.Is(err, daemon.ErrConflict) {
+					code = http.StatusConflict
+				}
 				if ne, ok := err.(notFound); ok {
 					code, err = http.StatusNotFound, ne.error
 				}
@@ -214,13 +219,40 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		if err := body(r, &in); err != nil {
 			return nil, err
 		}
-		if in.Agent == "" {
-			return nil, badRequest{fmt.Errorf("done needs agent")}
+		if in.Agent == "" && in.Task == "" {
+			return nil, badRequest{fmt.Errorf("done needs agent or task")}
 		}
 		if in.KeepSession {
 			return ok, ops.Close(in.Agent, in.Task, in.Outcome, in.Branch, in.PR, time.Now())
 		}
 		return ok, ops.Done(in.Agent, in.Task, in.Outcome, in.Branch, in.PR, time.Now())
+	}, fullOnly...)
+	route("POST /v1/tasks/{id}/followup", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct{ From, Text string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.Text) == "" {
+			return nil, badRequest{fmt.Errorf("followup needs text")}
+		}
+		if in.From == "" {
+			in.From = ledger.Operator
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		return ok, ops.Followup(ctx, r.PathValue("id"), in.From, in.Text, time.Now())
+	}, fullOnly...)
+	route("POST /v1/tasks/{id}/cancel", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct{ From, Reason string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if in.From == "" {
+			in.From = ledger.Operator
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		return ok, ops.Cancel(ctx, r.PathValue("id"), in.From, in.Reason, time.Now())
 	}, fullOnly...)
 	route("POST /v1/rotate", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct {
