@@ -47,6 +47,12 @@ A relayed message starts with `[relayed from <name> — reply with: fleetctl tel
   The operator is `fleetctl tell operator "<report>"`; it waits in their inbox.
   Report at each milestone the brief asks for, and when you are blocked on a
   decision that is theirs (then wait for the answer).
+- Every message you send while you have a task is filed under it, and the
+  assigner reads it by task id. Answer a follow-up (`Task <id> follow-up from
+  <name>.`) as you would the brief. On a cancel notice, stop work at once, leave
+  the branch as it is, and report nothing further.
+- To check that fleetctl works, use `fleetctl whoami` or `fleetctl status` —
+  never send a test message; a tell to the orchestrator wakes it for a real turn.
 - When the task is finished, report: what changed, the branch, the PR if you
   opened one, and anything left undone — then say **done**. Your session is
   archived and you start the next task fresh, so put everything that matters in

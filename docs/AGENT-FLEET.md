@@ -256,6 +256,21 @@ Plus the archives (transcripts and manifests) and fleetd's own log in journald.
 | **You, in the KARMAX app** | A **Fleet** dashboard, created once with KARMAX's existing `dashboard` tool. fleetd rewrites its `data/*.json` under `~/.karmax/dashboards/<id>/` every tick; the app renders straight off those files. No daemon code. |
 | **You, on your phone** | `karmax notify` for the few things worth a push: an agent disabled, all agents cooling, a crash loop, a 7-day window ≥ 90 %. |
 
+## Putting the fleet to work from any Claude session
+
+Any Claude Code session on the machine running `fleetctl` (and the orchestrator) can hand work to the
+fleet and read it back by task id, without knowing which agent is free:
+
+    fleetctl skill install        # writes ~/.claude/skills/fleet/SKILL.md; `fleetctl guide` prints the same text
+    fleetctl run --repo <repo> "<brief>"      # picks a free agent, prints the task id
+    fleetctl wait --task <id>                 # blocks until the agent reports
+    fleetctl result <id>                      # reports, branch commits, state
+    fleetctl followup <id> "<fix this>"       # or: fleetctl cancel <id>
+    fleetctl done --task <id>                 # after reviewing and merging
+
+The skill carries the whole loop (briefs, fan-out, review rules, exit codes), so a fresh session that
+sees a task it can delegate knows how.
+
 ## Prompting an agent directly
 
 The live panel, the 3D office and the keyboard handover (`Ctrl+]`) are described in [FLEET-CONSOLE.md](FLEET-CONSOLE.md); `attach` below goes through the console when the host runs one.

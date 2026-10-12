@@ -21,6 +21,7 @@ import (
 
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
+	"github.com/MelloB1989/karmax/fleet/internal/guide"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
 )
@@ -283,6 +284,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 		return ops.Wait(ctx, q.Get("agent"), q.Get("task"), after)
+	}, readers...)
+	route("GET /v1/guide", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return map[string]string{"text": guide.Text()}, nil
 	}, readers...)
 	route("GET /v1/events", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		q := r.URL.Query()
