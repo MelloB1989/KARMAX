@@ -1,0 +1,278 @@
+package daemon
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
+)
+
+// ErrConflict is an operation the fleet's current state forbids: no free
+// agent, the named agent busy, a task already closed. The server answers 409.
+var ErrConflict = errors.New("conflict")
+
+// ErrBadInput is a run the caller got wrong: no brief, a bad repo, an unknown
+// agent. The server answers 400.
+var ErrBadInput = errors.New("bad input")
+
+// Candidate is one agent as Pick weighed it.
+type Candidate struct {
+	Agent    string  `json:"agent"`
+	Eligible bool    `json:"eligible"`
+	Why      string  `json:"why"`
+	FiveHour float64 `json:"five_hour_pct"`
+	SevenDay float64 `json:"seven_day_pct"`
+	IdleS    int64   `json:"idle_s"`
+}
+
+// PickReply is Pick's answer: the chosen agent ("" when none is eligible)
+// and every agent with the reason it was or was not chosen, chosen first.
+type PickReply struct {
+	Agent      string      `json:"agent"`
+	Why        string      `json:"why"`
+	Candidates []Candidate `json:"candidates"`
+}
+
+// NoFreeAgent is a pick that found nobody. It carries what Pick saw.
+type NoFreeAgent struct{ Candidates []Candidate }
+
+func (e *NoFreeAgent) Error() string {
+	var why []string
+	for _, c := range e.Candidates {
+		why = append(why, c.Agent+": "+c.Why)
+	}
+	return "no free agent (" + strings.Join(why, "; ") + ")"
+}
+
+func (e *NoFreeAgent) Unwrap() error { return ErrConflict }
+
+// Pick chooses the agent a new task should go to. Eligible: not disabled,
+// down, cooling, working, holding an open task, low or reserved. Best first:
+// the agent whose last task was in the same repo, then the lowest 5 h quota
+// use, the lowest 7 d, the longest idle.
+func (f *Fleet) Pick(repo string, now time.Time) PickReply {
+	rows := f.Status(now)
+	type scored struct {
+		c        Candidate
+		affinity bool
+	}
+	var all []scored
+	for _, r := range rows {
+		c := Candidate{Agent: r.Agent, FiveHour: r.FiveHour, SevenDay: r.SevenDay, IdleS: r.IdleS}
+		c.Why = f.ineligible(r)
+		c.Eligible = c.Why == ""
+		s := scored{c: c}
+		if c.Eligible && repo != "" {
+			last, _ := f.db.LastRepo(r.Agent)
+			s.affinity = last == repo
+		}
+		all = append(all, s)
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		a, b := all[i], all[j]
+		switch {
+		case a.c.Eligible != b.c.Eligible:
+			return a.c.Eligible
+		case !a.c.Eligible:
+			return a.c.Agent < b.c.Agent
+		case a.affinity != b.affinity:
+			return a.affinity
+		case a.c.FiveHour != b.c.FiveHour:
+			return a.c.FiveHour < b.c.FiveHour
+		case a.c.SevenDay != b.c.SevenDay:
+			return a.c.SevenDay < b.c.SevenDay
+		case a.c.IdleS != b.c.IdleS:
+			return a.c.IdleS > b.c.IdleS
+		}
+		return a.c.Agent < b.c.Agent
+	})
+	reply := PickReply{Candidates: make([]Candidate, len(all))}
+	for i, s := range all {
+		reply.Candidates[i] = s.c
+	}
+	if len(all) == 0 || !all[0].c.Eligible {
+		return reply
+	}
+	top := all[0]
+	reply.Agent = top.c.Agent
+	why := fmt.Sprintf("5h %.0f%%, 7d %.0f%%, idle %s", top.c.FiveHour, top.c.SevenDay, Dur(time.Duration(top.c.IdleS)*time.Second))
+	if top.affinity {
+		why = "last task was in " + repo + "; " + why
+	}
+	reply.Why = why
+	reply.Candidates[0].Why = why
+	for i := 1; i < len(reply.Candidates); i++ {
+		if reply.Candidates[i].Eligible {
+			reply.Candidates[i].Why = "eligible, ranked below " + top.c.Agent
+		}
+	}
+	return reply
+}
+
+// ineligible is why an agent cannot take a task now, "" when it can. The
+// phase alone is not trusted: an agent can read standby between tool calls
+// of a task it still holds, so an open task — in its state or in the ledger —
+// excludes it too.
+func (f *Fleet) ineligible(r Row) string {
+	switch reconcile.Phase(r.State) {
+	case reconcile.Disabled:
+		return "disabled (" + r.Reason + ")"
+	case reconcile.Down:
+		return "down"
+	case reconcile.Cooling:
+		return "cooling"
+	case reconcile.Working:
+		if r.Task != "" {
+			return "working on " + r.Task
+		}
+		return "working"
+	}
+	if r.Task != "" {
+		return "holds open task " + r.Task
+	}
+	if open, err := f.db.Tasks(true, r.Agent, 1); err != nil {
+		return "ledger: " + err.Error()
+	} else if len(open) > 0 {
+		return "holds open task " + open[0].ID
+	}
+	if r.Low {
+		return "low on quota"
+	}
+	if r.Reserved {
+		return "quota reserved"
+	}
+	return ""
+}
+
+// RunRequest is a task to hand to the fleet. JSON: brief, repo, agent, from,
+// task, queue ("30m").
+type RunRequest struct {
+	Brief, Repo, Agent, From, Task string
+	Queue                          time.Duration
+}
+
+// RunReply is where a run went.
+type RunReply struct {
+	Task  string `json:"task"`
+	Agent string `json:"agent"`
+	Why   string `json:"why"`
+}
+
+// Run hands a brief to a free agent: pick (or check the named agent), make
+// the task id, record the task, deliver the brief. Pick and assign are one
+// critical section, so two runs never get the same agent.
+func (f *Fleet) Run(ctx context.Context, in RunRequest, now time.Time) (RunReply, error) {
+	if strings.TrimSpace(in.Brief) == "" {
+		return RunReply{}, fmt.Errorf("%w: run needs a brief", ErrBadInput)
+	}
+	if strings.Contains(in.Repo, "..") || strings.HasPrefix(in.Repo, "/") {
+		return RunReply{}, fmt.Errorf("%w: repo %q: want a name relative to the code directory", ErrBadInput, in.Repo)
+	}
+	if in.Agent != "" {
+		if err := f.known(in.Agent); err != nil {
+			return RunReply{}, fmt.Errorf("%w: %v", ErrBadInput, err)
+		}
+	}
+	if in.From == "" {
+		in.From = "operator"
+	}
+	start := time.Now()
+	deadline := start.Add(in.Queue)
+	for {
+		rep, err := f.place(in, now.Add(time.Since(start)))
+		if err == nil {
+			return f.deliver(ctx, in, rep, now)
+		}
+		if !errors.Is(err, ErrConflict) || !time.Now().Add(f.waitEvery).Before(deadline) {
+			return RunReply{}, err
+		}
+		select {
+		case <-ctx.Done():
+			return RunReply{}, ctx.Err()
+		case <-time.After(f.waitEvery):
+		}
+	}
+}
+
+// place picks and assigns under runMu.
+func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
+	f.runMu.Lock()
+	defer f.runMu.Unlock()
+	p := f.Pick(in.Repo, now)
+	rep := RunReply{Agent: p.Agent, Why: p.Why}
+	if in.Agent != "" {
+		rep = RunReply{Agent: in.Agent, Why: "named"}
+		for _, c := range p.Candidates {
+			if c.Agent == in.Agent && !c.Eligible {
+				return RunReply{}, fmt.Errorf("%w: %s is not free: %s", ErrConflict, c.Agent, c.Why)
+			}
+		}
+	} else if p.Agent == "" {
+		return RunReply{}, &NoFreeAgent{Candidates: p.Candidates}
+	}
+	rep.Task = in.Task
+	if rep.Task == "" {
+		rep.Task = taskID(in.Brief, now)
+	}
+	if err := f.assign(rep.Agent, rep.Task, in.From, now); err != nil {
+		return RunReply{}, err
+	}
+	if err := f.db.SetTaskRepo(rep.Task, in.Repo); err != nil {
+		return RunReply{}, err
+	}
+	return rep, nil
+}
+
+func (f *Fleet) deliver(ctx context.Context, in RunRequest, rep RunReply, now time.Time) (RunReply, error) {
+	text := "Task " + rep.Task + " from " + in.From + "."
+	if in.Repo != "" {
+		text += " Repo: " + in.Repo + "."
+	}
+	text += " " + in.Brief
+	if err := f.Tell(ctx, in.From, rep.Agent, text, now); err != nil {
+		if cerr := f.Close(rep.Agent, rep.Task, "undelivered", "", "", now); cerr != nil {
+			f.Log("run: close undelivered %s: %v", rep.Task, cerr)
+		}
+		return RunReply{}, err
+	}
+	return rep, nil
+}
+
+// taskID is YYYYMMDD-<slug>-<4 hex>: the slug is the brief's first four
+// words, lowercased to [a-z0-9] and joined by "-", at most 32 characters.
+func taskID(brief string, now time.Time) string {
+	var words []string
+	for _, w := range strings.Fields(brief) {
+		if len(words) == 4 {
+			break
+		}
+		w = strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+				return r
+			case r >= 'A' && r <= 'Z':
+				return r + 'a' - 'A'
+			}
+			return -1
+		}, w)
+		if w != "" {
+			words = append(words, w)
+		}
+	}
+	slug := strings.Join(words, "-")
+	if len(slug) > 32 {
+		slug = strings.TrimRight(slug[:32], "-")
+	}
+	if slug == "" {
+		slug = "task"
+	}
+	var b [2]byte
+	_, _ = rand.Read(b[:])
+	return now.Format("20060102") + "-" + slug + "-" + hex.EncodeToString(b[:])
+}

@@ -314,3 +314,59 @@ func TestSessionJSONIsSnakeCase(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskRepoAndLastRepo(t *testing.T) {
+	db := open(t)
+	if r, err := db.LastRepo("agent-01"); err != nil || r != "" {
+		t.Fatalf("LastRepo with no tasks = %q, %v", r, err)
+	}
+	for i, id := range []string{"T1", "T2"} {
+		if err := db.OpenTask(id, "agent-01", "operator", t0.Add(time.Duration(i)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.SetTaskRepo("T1", "KARMAX"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetTaskRepo("T2", "site"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := db.LastRepo("agent-01"); r != "site" {
+		t.Errorf("LastRepo = %q, want the newest task's repo", r)
+	}
+	if r, _ := db.LastRepo("agent-02"); r != "" {
+		t.Errorf("another agent's LastRepo = %q", r)
+	}
+	tk, err := db.Task("T1")
+	if err != nil || tk.Repo != "KARMAX" {
+		t.Fatalf("Task = %+v, %v", tk, err)
+	}
+	all, _ := db.Tasks(false, "agent-01", 0)
+	if len(all) != 2 || all[0].Repo != "site" || all[1].Repo != "KARMAX" {
+		t.Errorf("Tasks = %+v", all)
+	}
+}
+
+func TestMigrationAddsTasksRepo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE tasks (id TEXT PRIMARY KEY, agent TEXT, assigned INTEGER, closed INTEGER,
+		outcome TEXT, branch TEXT, pr TEXT, assigner TEXT); INSERT INTO tasks(id, agent, assigned) VALUES('T0','agent-01',1)`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetTaskRepo("T0", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if tk, _ := db.Task("T0"); tk.Repo != "r" {
+		t.Errorf("Task = %+v", tk)
+	}
+}

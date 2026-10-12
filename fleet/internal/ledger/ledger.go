@@ -9,6 +9,7 @@ package ledger
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,6 +91,7 @@ func Open(path string) (*DB, error) {
 func migrate(db *sql.DB) error {
 	adds := []struct{ table, column, decl string }{
 		{"tasks", "assigner", "TEXT"},
+		{"tasks", "repo", "TEXT"},
 	}
 	for _, a := range adds {
 		var n int
@@ -518,6 +520,7 @@ type Task struct {
 	Agent    string    `json:"agent"`
 	Assigner string    `json:"assigner"`
 	Outcome  string    `json:"outcome,omitempty"`
+	Repo     string    `json:"repo,omitempty"`
 	Branch   string    `json:"branch,omitempty"`
 	PR       string    `json:"pr,omitempty"`
 	Assigned time.Time `json:"assigned,omitzero"`
@@ -531,6 +534,22 @@ func (db *DB) OpenTask(id, agent, assigner string, at time.Time) error {
 		assigner=excluded.assigner, closed=NULL, outcome=NULL`,
 		id, agent, at.Unix(), nullStr(assigner))
 	return err
+}
+
+// SetTaskRepo records which repo a task works in.
+func (db *DB) SetTaskRepo(id, repo string) error {
+	_, err := db.sql.Exec(`UPDATE tasks SET repo=? WHERE id=?`, nullStr(repo), id)
+	return err
+}
+
+// LastRepo is the repo of the agent's most recent task, "" if it has none.
+func (db *DB) LastRepo(agent string) (string, error) {
+	var repo string
+	err := db.sql.QueryRow(`SELECT COALESCE(repo,'') FROM tasks WHERE agent=? ORDER BY assigned DESC, id DESC LIMIT 1`, agent).Scan(&repo)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return repo, err
 }
 
 // CloseTask records a task's end.
@@ -574,8 +593,8 @@ func (db *DB) Task(id string) (*Task, error) {
 	var t Task
 	var as, cl sql.NullInt64
 	err := db.sql.QueryRow(`SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
-		&t.Outcome, &t.Branch, &t.PR)
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
+		&t.Outcome, &t.Branch, &t.PR, &t.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -587,7 +606,7 @@ func (db *DB) Task(id string) (*Task, error) {
 // closed; an agent of "" means every agent; limit <= 0 means all.
 func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
 	q := `SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)`
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)`
 	if open {
 		q += ` AND closed IS NULL`
 	}
@@ -606,7 +625,7 @@ func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
 	for rows.Next() {
 		var t Task
 		var as, cl sql.NullInt64
-		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR); err != nil {
+		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR, &t.Repo); err != nil {
 			return nil, err
 		}
 		t.Assigned, t.Closed = fromUnix(as), fromUnix(cl)

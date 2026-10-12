@@ -61,6 +61,7 @@ type Fleet struct {
 	// reading the state and writing it back.
 	locks  map[string]*sync.Mutex
 	mu     sync.Mutex // guards states
+	runMu  sync.Mutex // Run: pick and assign are one critical section
 	states map[string]reconcile.State
 
 	lastRetain time.Time
