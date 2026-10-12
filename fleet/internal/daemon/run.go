@@ -13,10 +13,6 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
 )
 
-// ErrConflict is an operation the fleet's current state forbids: no free
-// agent, the named agent busy, a task already closed. The server answers 409.
-var ErrConflict = errors.New("conflict")
-
 // ErrBadInput is a run the caller got wrong: no brief, a bad repo, an unknown
 // agent. The server answers 400.
 var ErrBadInput = errors.New("bad input")
