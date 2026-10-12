@@ -27,3 +27,8 @@ export function trackMetrics(n: number): { rowH: number; height: number } {
   const rowH = n <= 4 ? 18 : n <= 8 ? 12 : 9;
   return { rowH, height: n <= 4 ? 132 : 50 + n * (rowH + 2) };
 }
+
+/** Height of the bottom grid row: the strip plus its 20 px top and bottom margins (172 px for 4 agents). */
+export function activityRowHeight(n: number): number {
+  return trackMetrics(n).height + 40;
+}

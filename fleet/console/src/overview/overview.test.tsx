@@ -7,7 +7,7 @@ import { Roster } from "./Roster";
 import { ActivityTrack } from "./ActivityTrack";
 import { OpenTasks } from "./RightRail";
 import { gpuName } from "../state/hooks";
-import { bucketFraction, densityFor, orderAgents, trackMetrics } from "./roster";
+import { bucketFraction, activityRowHeight, densityFor, orderAgents, trackMetrics } from "./roster";
 
 const base = fixture as unknown as Snapshot;
 const t0 = Date.parse("2026-10-11T13:57:33Z");
@@ -91,5 +91,14 @@ describe("agent count sizing", () => {
     expect(renderToStaticMarkup(<Roster snapshot={s12} now={t0} selected={null} onSelect={() => {}} />)).toContain("roster-dense");
     expect(renderToStaticMarkup(<ActivityTrack snapshot={s12} now={t0} />).match(/class="track-row"/g)).toHaveLength(12);
     expect(renderToStaticMarkup(<Roster snapshot={snap({}, many(4))} now={t0} selected={null} onSelect={() => {}} />)).toContain("roster-roomy");
+  });
+});
+
+describe("height budget at 1080", () => {
+  it("header 72 + main + activity row (strip + 2x20 margin) = 1080 for 4, 8 and 12 agents", () => {
+    const rows = [4, 8, 12].map((n) => activityRowHeight(n));
+    expect(rows).toEqual([172, 202, 222]);
+    // main = 1080 - 72 - activity row: 836, 806, 786 px, never negative
+    expect(rows.map((r) => 1080 - 72 - r)).toEqual([836, 806, 786]);
   });
 });
