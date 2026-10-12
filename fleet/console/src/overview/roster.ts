@@ -15,3 +15,20 @@ export function bucketFraction(b: Bucket, now: number, windowS = 24 * 3600): num
   const f = 1 - (now - Date.parse(b.t)) / 1000 / windowS;
   return Math.min(1, Math.max(0, f));
 }
+
+/** How tightly the roster and activity strip must pack for `n` agents: 4 or fewer keep the roomy layout. */
+export type Density = "roomy" | "compact" | "dense";
+export function densityFor(n: number): Density {
+  return n <= 4 ? "roomy" : n <= 8 ? "compact" : "dense";
+}
+
+/** Activity strip geometry (px) per agent count; 4 agents give the original 132 px strip. */
+export function trackMetrics(n: number): { rowH: number; height: number } {
+  const rowH = n <= 4 ? 18 : n <= 8 ? 12 : 9;
+  return { rowH, height: n <= 4 ? 132 : 50 + n * (rowH + 2) };
+}
+
+/** Height of the bottom grid row: the strip plus its 20 px top and bottom margins (172 px for 4 agents). */
+export function activityRowHeight(n: number): number {
+  return trackMetrics(n).height + 40;
+}

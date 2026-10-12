@@ -10,7 +10,7 @@ import { Roster } from "./Roster";
 import { CenterTerminal } from "./CenterTerminal";
 import { RightRail } from "./RightRail";
 import { ActivityTrack } from "./ActivityTrack";
-import { isRemote, orderAgents } from "./roster";
+import { activityRowHeight, isRemote, orderAgents } from "./roster";
 import { controlReducer, wantsControl } from "../focus/controlState";
 import { PromptBar } from "../focus/PromptBar";
 import { RotateRing } from "../focus/RotateRing";
@@ -33,10 +33,10 @@ function useFitScale(): number {
 }
 
 /** Side columns slide out in Focus (about 450 ms) and back on Esc. */
-function Collapse({ side, hidden, children }: { side: "left" | "right" | "bottom"; hidden: boolean; children: React.ReactNode }) {
+function Collapse({ side, hidden, size, children }: { side: "left" | "right" | "bottom"; hidden: boolean; size?: number; children: React.ReactNode }) {
   const reduce = useReducedMotion();
   const vertical = side === "bottom";
-  const full = vertical ? 172 : 464;
+  const full = size ?? (vertical ? 172 : 464);
   return (
     <motion.div
       className={`collapse collapse-${side}`}
@@ -127,7 +127,7 @@ export function Overview() {
             <Collapse side="right" hidden={focus}>
               <RightRail snapshot={snapshot} now={now} />
             </Collapse>
-            <Collapse side="bottom" hidden={focus}>
+            <Collapse side="bottom" hidden={focus} size={activityRowHeight(snapshot.agents?.length ?? 0)}>
               <ActivityTrack snapshot={snapshot} now={now} />
             </Collapse>
             {bar && (
