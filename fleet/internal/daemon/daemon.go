@@ -380,7 +380,7 @@ func (f *Fleet) Assign(ctx context.Context, name, task, from, brief string, now 
 	if strings.TrimSpace(brief) == "" {
 		return nil
 	}
-	return f.Tell(ctx, from, name, brief, now)
+	return f.tell(ctx, from, name, brief, task, now)
 }
 
 func (f *Fleet) assign(name, task, from string, now time.Time) error {
@@ -500,6 +500,31 @@ func (f *Fleet) Enable(name string) error {
 // Tell relays a message across hosts: a throwaway session in the receiver's
 // container delivers it with SendMessage, so it arrives as a peer message.
 func (f *Fleet) Tell(ctx context.Context, from, to, text string, now time.Time) error {
+	return f.tell(ctx, from, to, text, "", now)
+}
+
+// lateWindow is how long after a task closed its agent's messages still
+// belong to it.
+const lateWindow = 30 * time.Minute
+
+// reportTask is the task an agent's message is filed under: its current one,
+// or else its latest if that closed within lateWindow (a report after done or
+// close is still the answer to that task).
+func (f *Fleet) reportTask(agent string, now time.Time) string {
+	if t := f.State(agent).Task; t != "" {
+		return t
+	}
+	if t, err := f.db.LatestTask(agent); err == nil && t != nil &&
+		(t.Closed.IsZero() || now.Sub(t.Closed) < lateWindow) {
+		return t.ID
+	}
+	return ""
+}
+
+// tell is Tell with the task an instruction belongs to: a brief, follow-up or
+// cancel is filed under its task, like the agent's reports. With no task, an
+// agent's own message is filed under its task.
+func (f *Fleet) tell(ctx context.Context, from, to, text, task string, now time.Time) error {
 	// The receiver is told who sent it and replies there, so the sender must
 	// be someone a reply can reach (or the operator, who reads the ledger).
 	if from != f.cfg.Orchestrator.Name && from != ledger.Operator {
@@ -509,9 +534,8 @@ func (f *Fleet) Tell(ctx context.Context, from, to, text string, now time.Time) 
 	}
 	// What an agent writes while it has a task is filed under that task (done
 	// does not clear it: a late report still belongs). Nobody else's does.
-	var task string
-	if _, ok := f.cfg.Agents[from]; ok {
-		task = f.State(from).Task
+	if _, ok := f.cfg.Agents[from]; ok && task == "" {
+		task = f.reportTask(from, now)
 	}
 	// The operator's inbox: stored, read with Inbox and Wait.
 	if to == ledger.Operator {
@@ -574,6 +598,14 @@ func (f *Fleet) Wait(ctx context.Context, agent, task string, after int64) (Wait
 	}
 	if err := f.known(agent); err != nil {
 		return WaitResult{}, err
+	}
+	if task != "" && after == 0 {
+		// "The answer to my latest instruction": what the agent wrote before
+		// the last brief or follow-up answered something older.
+		var err error
+		if after, err = f.db.LastInstruction(task); err != nil {
+			return WaitResult{}, err
+		}
 	}
 	t := time.NewTicker(f.waitEvery)
 	defer t.Stop()

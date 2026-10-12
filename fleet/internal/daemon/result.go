@@ -24,7 +24,7 @@ func (f *Fleet) TaskAgent(task string) (*ledger.Task, error) {
 }
 
 // TaskResult is everything a caller reads back about a task: the row, whether
-// it is open, the messages filed under it and the commits on its branch.
+// it is open, the conversation filed under it (brief, reports, follow-ups) and the commits on its branch.
 type TaskResult struct {
 	Task         ledger.Task    `json:"task"`
 	State        string         `json:"state"` // open | closed
@@ -41,7 +41,7 @@ func (f *Fleet) Result(task string) (TaskResult, error) {
 	if err != nil {
 		return TaskResult{}, err
 	}
-	reports, err := f.db.TaskReports(task, 0)
+	reports, err := f.db.TaskThread(task)
 	if err != nil {
 		return TaskResult{}, err
 	}

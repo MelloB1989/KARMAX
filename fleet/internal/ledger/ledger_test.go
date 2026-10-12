@@ -338,6 +338,8 @@ func TestOpenAddsTheRelayTaskColumnToAnOldLedger(t *testing.T) {
 
 func TestTaskReportsAreThoseOfOneTaskAfterAnIDOldestFirst(t *testing.T) {
 	db := open(t)
+	_ = db.OpenTask("T1", "agent-01", "operator", t0)
+	_ = db.OpenTask("T2", "agent-02", "operator", t0)
 	for _, r := range []Relay{
 		{From: "agent-01", To: "operator", Task: "T1", Text: "a"},
 		{From: "agent-02", To: "operator", Task: "T2", Text: "other task"},
@@ -445,5 +447,51 @@ func TestMigrationAddsTasksRepo(t *testing.T) {
 	}
 	if tk, _ := db.Task("T0"); tk.Repo != "r" {
 		t.Errorf("Task = %+v", tk)
+	}
+}
+
+// A task's reports are what its agent wrote; the instructions filed under the
+// same task are the other side of the conversation.
+func TestTaskReportsAreOnlyTheAgentsAndTheThreadIsBoth(t *testing.T) {
+	db := open(t)
+	_ = db.OpenTask("T1", "agent-01", "karmax", t0)
+	for _, r := range []Relay{
+		{From: "karmax", To: "agent-01", Task: "T1", Text: "brief"},
+		{From: "agent-01", To: "karmax", Task: "T1", Text: "report 1"},
+		{From: "karmax", To: "agent-01", Task: "T1", Text: "followup"},
+		{From: "agent-01", To: "karmax", Task: "T1", Text: "report 2"},
+	} {
+		r.At, r.Delivered = t0, true
+		if err := db.AddRelay(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reps, _ := db.TaskReports("T1", 0)
+	if len(reps) != 2 || reps[0].Text != "report 1" || reps[1].Text != "report 2" {
+		t.Fatalf("reports = %+v", reps)
+	}
+	thread, err := db.TaskThread("T1")
+	if err != nil || len(thread) != 4 || thread[0].Text != "brief" || thread[2].Text != "followup" || thread[2].To != "agent-01" {
+		t.Fatalf("thread = %+v, %v", thread, err)
+	}
+	last, err := db.LastInstruction("T1")
+	if err != nil || last != thread[2].ID {
+		t.Fatalf("last instruction = %d, %v; want %d", last, err, thread[2].ID)
+	}
+	if none, err := db.LastInstruction("T9"); err != nil || none != 0 {
+		t.Fatalf("T9 = %d, %v", none, err)
+	}
+}
+
+func TestLatestTaskOfAnAgent(t *testing.T) {
+	db := open(t)
+	if got, err := db.LatestTask("agent-01"); err != nil || got != nil {
+		t.Fatalf("none = %+v, %v", got, err)
+	}
+	_ = db.OpenTask("T1", "agent-01", "operator", t0)
+	_ = db.OpenTask("T2", "agent-01", "operator", t0.Add(time.Hour))
+	_ = db.OpenTask("T3", "agent-02", "operator", t0.Add(2*time.Hour))
+	if got, _ := db.LatestTask("agent-01"); got == nil || got.ID != "T2" {
+		t.Fatalf("latest = %+v", got)
 	}
 }

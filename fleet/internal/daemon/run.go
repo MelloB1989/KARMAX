@@ -231,7 +231,7 @@ func (f *Fleet) deliver(ctx context.Context, in RunRequest, rep RunReply, now ti
 		text += " Repo: " + in.Repo + "."
 	}
 	text += " " + in.Brief
-	if err := f.Tell(ctx, in.From, rep.Agent, text, now); err != nil {
+	if err := f.tell(ctx, in.From, rep.Agent, text, rep.Task, now); err != nil {
 		if cerr := f.Close(rep.Agent, rep.Task, "undelivered", "", "", now); cerr != nil {
 			f.Log("run: close undelivered %s: %v", rep.Task, cerr)
 		}

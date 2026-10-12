@@ -349,3 +349,16 @@ func TestRunQueueWaitsForFree(t *testing.T) {
 		t.Error("a cancelled context should end the queue")
 	}
 }
+
+// The brief run delivers is the first message of the task's conversation, so
+// result shows it and wait --task waits for the answer to it.
+func TestRunFilesTheBriefUnderTheTask(t *testing.T) {
+	f, _ := newPool(t)
+	if _, err := f.Run(context.Background(), RunRequest{Brief: "do it", Agent: "agent-01", Task: "T9"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := f.db.TaskThread("T9")
+	if err != nil || len(thread) != 1 || thread[0].To != "agent-01" || !strings.HasSuffix(thread[0].Text, "do it") {
+		t.Fatalf("thread = %+v, %v", thread, err)
+	}
+}

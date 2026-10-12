@@ -692,11 +692,39 @@ func (db *DB) Inbox(after int64) ([]Relay, error) {
 	return out, rows.Err()
 }
 
-// TaskReports is the messages filed under a task, whoever they went to, with
-// an id above after, oldest first.
+// TaskReports is what a task's agent wrote under it, to whomever, with an id
+// above after, oldest first.
 func (db *DB) TaskReports(task string, after int64) ([]Relay, error) {
+	return db.taskRelays(`AND sender = (SELECT agent FROM tasks WHERE id=relays.task)`, task, after)
+}
+
+// TaskThread is the whole conversation filed under a task, both directions,
+// oldest first.
+func (db *DB) TaskThread(task string) ([]Relay, error) {
+	return db.taskRelays(``, task, 0)
+}
+
+// LastInstruction is the id of the newest message filed under a task that its
+// agent did not write (the brief, a follow-up, a cancel), 0 if none.
+func (db *DB) LastInstruction(task string) (int64, error) {
+	var id int64
+	err := db.sql.QueryRow(`SELECT COALESCE(MAX(id),0) FROM relays WHERE task=?
+		AND sender IS NOT (SELECT agent FROM tasks WHERE id=?)`, task, task).Scan(&id)
+	return id, err
+}
+
+// LatestTask is an agent's most recently assigned task, nil if it has had none.
+func (db *DB) LatestTask(agent string) (*Task, error) {
+	ts, err := db.Tasks(false, agent, 1)
+	if err != nil || len(ts) == 0 {
+		return nil, err
+	}
+	return &ts[0], nil
+}
+
+func (db *DB) taskRelays(extra, task string, after int64) ([]Relay, error) {
 	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), COALESCE(recipient,''), at, COALESCE(text,''),
-		COALESCE(delivered,0), COALESCE(error,'') FROM relays WHERE task=? AND id > ? ORDER BY id`, task, after)
+		COALESCE(delivered,0), COALESCE(error,'') FROM relays WHERE task=? AND id > ? `+extra+` ORDER BY id`, task, after)
 	if err != nil {
 		return nil, err
 	}

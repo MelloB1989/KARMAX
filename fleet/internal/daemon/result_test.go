@@ -229,3 +229,105 @@ func TestResultRejectsRepoTraversal(t *testing.T) {
 		}
 	}
 }
+
+// The answer to "my latest instruction": a report that came before the wait
+// began is still returned.
+func TestReportBeforeWaitStillReturned(t *testing.T) {
+	f, _, _ := newFleet(t)
+	f.waitEvery = 10 * time.Millisecond
+	ctx := context.Background()
+	_ = f.Assign(ctx, "agent-03", "T1", "karmax", "do the thing", t0)
+	_ = f.Tell(ctx, "agent-03", "karmax", "did it", t0)
+	r, err := f.Wait(ctx, "", "T1", 0)
+	if err != nil || r.Reason != "message" || r.Message.Text != "did it" {
+		t.Fatalf("wait = %+v, %v", r, err)
+	}
+}
+
+func TestSecondWaitAfterAFollowupBlocksUntilTheNewReport(t *testing.T) {
+	f, _, _ := newFleet(t)
+	f.waitEvery = 10 * time.Millisecond
+	bg := context.Background()
+	_ = f.Assign(bg, "agent-03", "T1", "karmax", "do the thing", t0)
+	_ = f.Tell(bg, "agent-03", "karmax", "first report", t0)
+	if err := f.Followup(bg, "T1", "karmax", "also fix the docs", t0); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(bg, 80*time.Millisecond)
+	defer cancel()
+	if r, err := f.Wait(ctx, "", "T1", 0); err != nil || r.Reason != "timeout" {
+		t.Fatalf("the old report answered the new instruction: %+v, %v", r, err)
+	}
+	done := waitAsync(f, bg, "", "T1", 0)
+	time.Sleep(30 * time.Millisecond)
+	_ = f.Tell(bg, "agent-03", "karmax", "second report", t0)
+	if r := await(t, done); r.Reason != "message" || r.Message.Text != "second report" {
+		t.Fatalf("wait = %+v", r)
+	}
+}
+
+func TestResultIsTheWholeConversationOldestFirst(t *testing.T) {
+	f, _, _ := newFleet(t)
+	bg := context.Background()
+	_ = f.Assign(bg, "agent-03", "T1", "karmax", "do the thing", t0)
+	_ = f.Tell(bg, "agent-03", "karmax", "first report", t0)
+	_ = f.Followup(bg, "T1", "karmax", "also the docs", t0)
+	_ = f.Tell(bg, "agent-03", "karmax", "second report", t0)
+	r, err := f.Result("T1")
+	if err != nil || len(r.Reports) != 4 {
+		t.Fatalf("result = %+v, %v", r, err)
+	}
+	want := []struct{ from, to, in string }{
+		{"karmax", "agent-03", "do the thing"}, {"agent-03", "karmax", "first report"},
+		{"karmax", "agent-03", "also the docs"}, {"agent-03", "karmax", "second report"},
+	}
+	for i, w := range want {
+		m := r.Reports[i]
+		if m.From != w.from || m.To != w.to || !strings.Contains(m.Text, w.in) {
+			t.Errorf("message %d = %+v, want %+v", i, m, w)
+		}
+	}
+}
+
+func TestCancelNoticeIsFiledUnderTheTask(t *testing.T) {
+	f, _, _ := newFleet(t)
+	bg := context.Background()
+	_ = f.Assign(bg, "agent-03", "T1", "karmax", "", t0)
+	_ = f.Cancel(bg, "T1", "karmax", "", t0)
+	th, _ := f.db.TaskThread("T1")
+	if len(th) != 1 || !strings.Contains(th[0].Text, "cancelled") {
+		t.Fatalf("thread = %+v", th)
+	}
+}
+
+func TestLateReportAttachesOnlyWithin30MinutesOfTheClose(t *testing.T) {
+	for _, c := range []struct {
+		after time.Duration
+		want  int
+	}{{29 * time.Minute, 1}, {30*time.Minute + time.Second, 0}} {
+		f, _, _ := newFleet(t)
+		bg := context.Background()
+		_ = f.Assign(bg, "agent-03", "T1", "karmax", "", t0)
+		_ = f.Close("agent-03", "T1", "done", "", "", t0) // Close clears the agent's task
+		_ = f.Tell(bg, "agent-03", "karmax", "one more thing", t0.Add(c.after))
+		if got, _ := f.db.TaskReports("T1", 0); len(got) != c.want {
+			t.Errorf("%v after the close: %d reports, want %d", c.after, len(got), c.want)
+		}
+	}
+}
+
+func TestLateReportGoesToTheMostRecentTaskOnly(t *testing.T) {
+	f, _, _ := newFleet(t)
+	bg := context.Background()
+	_ = f.Assign(bg, "agent-03", "T1", "karmax", "", t0)
+	_ = f.Close("agent-03", "T1", "done", "", "", t0)
+	_ = f.Assign(bg, "agent-03", "T2", "karmax", "", t0.Add(time.Minute))
+	_ = f.Close("agent-03", "T2", "done", "", "", t0.Add(2*time.Minute))
+	_ = f.Tell(bg, "agent-03", "karmax", "late", t0.Add(5*time.Minute))
+	if got, _ := f.db.TaskReports("T1", 0); len(got) != 0 {
+		t.Errorf("T1 = %+v", got)
+	}
+	if got, _ := f.db.TaskReports("T2", 0); len(got) != 1 {
+		t.Errorf("T2 = %+v", got)
+	}
+}
