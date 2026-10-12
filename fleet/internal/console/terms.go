@@ -47,7 +47,7 @@ type Terms struct {
 	idleClose time.Duration
 	// Set at construction, read-only after: the term route's ping cadence.
 	pingEvery, pingTimeout time.Duration
-	backoff   time.Duration
+	backoff                time.Duration
 
 	mu      sync.Mutex
 	watches map[string]*termWatch
