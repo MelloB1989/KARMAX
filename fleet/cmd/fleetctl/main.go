@@ -54,6 +54,11 @@ Roster and records (fleetd):
   archive ls [--since 7d] [--json] | archive show <id> | archive prune --older 180d
 
 Work (fleetd):
+  run <brief…|-> [--repo R] [--agent A] [--task ID] [--from NAME] [--queue 30m] [--wait] [--timeout 2h] [--json] [--brief-file F]
+                                      pick a free agent, record the task, deliver the brief; prints the
+                                      task id and agent. Brief "-" reads stdin. --wait then waits for the
+                                      report (exit 0; 3 down/cooling/disabled; 4 timeout); no free agent: exit 5
+  pick [--repo R] [--json]            who a run would pick and why the others were passed over (exit 5: none free)
   give <agent> --task <id> <brief…>   record a task and deliver its brief; the agent reports to you
   assign <agent> --task <id> [--brief <text>] [--from <name>]
   inbox [--after <id>] [--follow] [--json]   what agents reported to the operator
@@ -187,9 +192,9 @@ func (c *client) do(method, path string, in, out any) error {
 	if resp.StatusCode >= 300 {
 		var e struct{ Error string }
 		if json.Unmarshal(b, &e) == nil && e.Error != "" {
-			return &statusError{resp.StatusCode, e.Error}
+			return &statusError{Code: resp.StatusCode, msg: e.Error, Body: b}
 		}
-		return &statusError{resp.StatusCode, "fleetd: " + resp.Status}
+		return &statusError{Code: resp.StatusCode, msg: "fleetd: " + resp.Status, Body: b}
 	}
 	if out != nil {
 		return json.Unmarshal(b, out)
@@ -201,6 +206,7 @@ func (c *client) do(method, path string, in, out any) error {
 type statusError struct {
 	Code int
 	msg  string
+	Body []byte // the response, for callers that read more than the message
 }
 
 func (e *statusError) Error() string { return e.msg }
@@ -641,6 +647,10 @@ func run(cmd string, args []string) error {
 		}
 		return post("/v1/done", map[string]any{"agent": agent, "task": task, "outcome": outcome, "branch": branch, "pr": pr, "keep_session": keep})
 
+	case "run":
+		return runCmd(args)
+	case "pick":
+		return pickCmd(args)
 	case "followup", "cancel":
 		return followupCmd(cmd, args)
 

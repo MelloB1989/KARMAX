@@ -9,6 +9,7 @@ package ledger
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -520,9 +521,9 @@ type Task struct {
 	Agent    string    `json:"agent"`
 	Assigner string    `json:"assigner"`
 	Outcome  string    `json:"outcome,omitempty"`
+	Repo     string    `json:"repo,omitempty"`
 	Branch   string    `json:"branch,omitempty"`
 	PR       string    `json:"pr,omitempty"`
-	Repo     string    `json:"repo,omitempty"`
 	Assigned time.Time `json:"assigned,omitzero"`
 	Closed   time.Time `json:"closed,omitzero"`
 }
@@ -536,10 +537,20 @@ func (db *DB) OpenTask(id, agent, assigner string, at time.Time) error {
 	return err
 }
 
-// SetTaskRepo records the repo a task works in.
+// SetTaskRepo records which repo a task works in.
 func (db *DB) SetTaskRepo(id, repo string) error {
 	_, err := db.sql.Exec(`UPDATE tasks SET repo=? WHERE id=?`, nullStr(repo), id)
 	return err
+}
+
+// LastRepo is the repo of the agent's most recent task, "" if it has none.
+func (db *DB) LastRepo(agent string) (string, error) {
+	var repo string
+	err := db.sql.QueryRow(`SELECT COALESCE(repo,'') FROM tasks WHERE agent=? ORDER BY assigned DESC, id DESC LIMIT 1`, agent).Scan(&repo)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return repo, err
 }
 
 // CloseTask records a task's end.

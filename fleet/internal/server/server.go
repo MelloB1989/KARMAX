@@ -32,6 +32,8 @@ type Ops interface {
 	Assign(ctx context.Context, name, task, from, brief string, now time.Time) error
 	Followup(ctx context.Context, task, from, text string, now time.Time) error
 	Cancel(ctx context.Context, task, from, reason string, now time.Time) error
+	Pick(repo string, now time.Time) daemon.PickReply
+	Run(ctx context.Context, in daemon.RunRequest, now time.Time) (daemon.RunReply, error)
 	Done(name, task, outcome, branch, pr string, now time.Time) error
 	Close(name, task, outcome, branch, pr string, now time.Time) error
 	Rotate(name string, dryRun bool, now time.Time) (daemon.RotatePlan, error)
@@ -134,8 +136,18 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				if errors.Is(err, daemon.ErrNoTask) {
 					err = notFound{err}
 				}
+				if errors.Is(err, daemon.ErrBadInput) {
+					code = http.StatusBadRequest
+				}
 				if errors.Is(err, daemon.ErrConflict) {
 					code = http.StatusConflict
+					var nf *daemon.NoFreeAgent
+					if errors.As(err, &nf) { // say why each agent was passed over
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(code)
+						_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "candidates": nf.Candidates})
+						return
+					}
 				}
 				if ne, ok := err.(notFound); ok {
 					code, err = http.StatusNotFound, ne.error
@@ -211,6 +223,32 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		defer cancel()
 		return ok, ops.Assign(ctx, in.Agent, in.Task, in.From, in.Brief, time.Now())
 	}, fullOnly...)
+	route("POST /v1/run", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct {
+			Brief, Repo, Agent, From, Task, Queue string
+		}
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.Brief) == "" {
+			return nil, badRequest{fmt.Errorf("run needs a brief")}
+		}
+		var queue time.Duration
+		if in.Queue != "" {
+			var err error
+			if queue, err = time.ParseDuration(in.Queue); err != nil || queue < 0 {
+				return nil, badRequest{fmt.Errorf("queue %q: want a duration like 30m", in.Queue)}
+			}
+		}
+		// A queued run holds the request open for the queue time.
+		ctx, cancel := context.WithTimeout(r.Context(), queue+3*time.Minute)
+		defer cancel()
+		return ops.Run(ctx, daemon.RunRequest{Brief: in.Brief, Repo: in.Repo, Agent: in.Agent, From: in.From,
+			Task: in.Task, Queue: queue}, time.Now())
+	}, fullOnly...)
+	route("GET /v1/pick", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return ops.Pick(r.URL.Query().Get("repo"), time.Now()), nil
+	}, readers...)
 	route("POST /v1/done", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct {
 			Agent, Task, Outcome, Branch, PR string
