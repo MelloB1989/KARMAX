@@ -36,6 +36,8 @@ type Box interface {
 	DeleteTranscript(ctx context.Context, sid string) error
 	RemoveWorktree(ctx context.Context, w agent.Worktree) error
 	Relay(ctx context.Context, to, from, text string) error
+	// Interrupt presses Escape in the agent's pane, stopping what it is doing.
+	Interrupt(ctx context.Context) error
 }
 
 // Pusher tells the orchestrator about a state change.
@@ -404,6 +406,12 @@ func (f *Fleet) assign(name, task, from string, now time.Time) error {
 // Done records a task's end; the agent's session is archived and replaced
 // with a fresh one on the next idle tick. One task, one session.
 func (f *Fleet) Done(name, task, outcome, branch, pr string, now time.Time) error {
+	if name == "" {
+		var err error
+		if name, err = f.taskOwner(task); err != nil {
+			return err
+		}
+	}
 	if err := f.known(name); err != nil {
 		return err
 	}
@@ -436,6 +444,12 @@ func (f *Fleet) Done(name, task, outcome, branch, pr string, now time.Time) erro
 // one it should finish and keep its context after. Closing the agent's
 // current task leaves it with none.
 func (f *Fleet) Close(name, task, outcome, branch, pr string, now time.Time) error {
+	if name == "" {
+		var err error
+		if name, err = f.taskOwner(task); err != nil {
+			return err
+		}
+	}
 	if err := f.known(name); err != nil {
 		return err
 	}

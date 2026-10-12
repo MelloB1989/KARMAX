@@ -51,6 +51,23 @@ func (f *fake) Close(name, task, outcome, branch, pr string, _ time.Time) error 
 	f.calls = append(f.calls, "close "+name+" "+task+" "+outcome+" "+branch)
 	return nil
 }
+func (f *fake) Followup(_ context.Context, task, from, text string, _ time.Time) error {
+	f.calls = append(f.calls, "followup "+task+" "+from+" "+text)
+	if task == "T-closed" {
+		return fmt.Errorf("%w: task %s is closed", daemon.ErrConflict, task)
+	}
+	if task == "T-missing" {
+		return fmt.Errorf("%w %s", daemon.ErrNoTask, task)
+	}
+	return nil
+}
+func (f *fake) Cancel(_ context.Context, task, from, reason string, _ time.Time) error {
+	f.calls = append(f.calls, "cancel "+task+" "+from+" "+reason)
+	if task == "T-closed" {
+		return fmt.Errorf("%w: task %s is closed", daemon.ErrConflict, task)
+	}
+	return nil
+}
 func (f *fake) Rotate(name string, dry bool, _ time.Time) (daemon.RotatePlan, error) {
 	f.calls = append(f.calls, "rotate "+name+map[bool]string{true: " dry"}[dry])
 	return daemon.RotatePlan{Closes: "T9", When: "next idle tick"}, nil
@@ -434,5 +451,58 @@ func TestWaitOnAnUnknownTaskIs404WithTheTaskNamed(t *testing.T) {
 	rec := do(t, h, "GET", "/v1/wait?agent=agent-03&task=T-missing&timeout=1m", "full", "")
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no task T-missing") {
 		t.Fatalf("= %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestFollowupAndCancelRoutes(t *testing.T) {
+	f, h := setup(t)
+	for _, tok := range []string{"relay", "console"} {
+		if w := do(t, h, "POST", "/v1/tasks/T1/followup", tok, `{"text":"x"}`); w.Code != 403 {
+			t.Errorf("followup as %s = %d", tok, w.Code)
+		}
+		if w := do(t, h, "POST", "/v1/tasks/T1/cancel", tok, `{}`); w.Code != 403 {
+			t.Errorf("cancel as %s = %d", tok, w.Code)
+		}
+	}
+	if w := do(t, h, "POST", "/v1/tasks/T1/followup", "full", `{"from":"karmax","text":"fix it"}`); w.Code != 200 {
+		t.Fatalf("followup = %d %s", w.Code, w.Body)
+	}
+	if got := f.calls[len(f.calls)-1]; got != "followup T1 karmax fix it" {
+		t.Fatalf("call = %q", got)
+	}
+	do(t, h, "POST", "/v1/tasks/T1/followup", "full", `{"text":"hi"}`)
+	if got := f.calls[len(f.calls)-1]; got != "followup T1 operator hi" {
+		t.Fatalf("default sender: %q", got)
+	}
+	if w := do(t, h, "POST", "/v1/tasks/T1/followup", "full", `{"text":"  "}`); w.Code != 400 {
+		t.Fatalf("empty text = %d", w.Code)
+	}
+	if w := do(t, h, "POST", "/v1/tasks/T-closed/followup", "full", `{"text":"x"}`); w.Code != 409 {
+		t.Fatalf("closed followup = %d", w.Code)
+	}
+	if w := do(t, h, "POST", "/v1/tasks/T-missing/followup", "full", `{"text":"x"}`); w.Code != 404 {
+		t.Fatalf("unknown followup = %d", w.Code)
+	}
+	if w := do(t, h, "POST", "/v1/tasks/T1/cancel", "full", `{"from":"karmax","reason":"wrong repo"}`); w.Code != 200 {
+		t.Fatalf("cancel = %d %s", w.Code, w.Body)
+	}
+	if got := f.calls[len(f.calls)-1]; got != "cancel T1 karmax wrong repo" {
+		t.Fatalf("call = %q", got)
+	}
+	if w := do(t, h, "POST", "/v1/tasks/T-closed/cancel", "full", `{}`); w.Code != 409 {
+		t.Fatalf("closed cancel = %d", w.Code)
+	}
+}
+
+func TestDoneByTaskNeedsAgentOrTask(t *testing.T) {
+	f, h := setup(t)
+	if w := do(t, h, "POST", "/v1/done", "full", `{"task":"T1"}`); w.Code != 200 {
+		t.Fatalf("done by task = %d %s", w.Code, w.Body)
+	}
+	if got := f.calls[len(f.calls)-1]; !strings.HasPrefix(got, "done  T1") {
+		t.Fatalf("call = %q", got)
+	}
+	if w := do(t, h, "POST", "/v1/done", "full", `{}`); w.Code != 400 {
+		t.Fatalf("done with nothing = %d", w.Code)
 	}
 }
