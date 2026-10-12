@@ -44,7 +44,10 @@ Useful flags: `--repo R`, `--agent A` (a particular agent, if it is free), `--ta
 Then review. The agent's claim is not the work:
 
     git -C <code>/myrepo log -p main..<branch>      # read the whole diff
-    (cd <code>/myrepo && git checkout <branch> && go test ./...)   # run its tests yourself
+    git -C <code>/myrepo worktree add /tmp/review-<task> <branch> && (cd /tmp/review-<task> && go test ./...)
+    git -C <code>/myrepo worktree remove /tmp/review-<task>
+
+Never `git checkout` an agent's branch in the shared checkout itself: it is the operator's working tree.
 
 Good: merge, gating each step on the one before with `&&`, then close the task:
 
@@ -54,7 +57,10 @@ Good: merge, gating each step on the one before with `&&`, then close the task:
 Not good: tell the agent what to fix, then wait again:
 
     fleetctl followup 20261012-fix-the-redirect-after-3f2a "The redirect drops the query string; add a test."
-    fleetctl wait --task 20261012-fix-the-redirect-after-3f2a --after <last report id>
+    fleetctl wait --task 20261012-fix-the-redirect-after-3f2a     # waits for the answer to the follow-up
+
+`wait --task` always waits for a reply to your latest message on the task (the brief, or the last
+follow-up); a reply that came before you started waiting is returned at once.
 
 `done --task` archives the agent's session and puts it back on standby, fresh. One task, one session.
 
