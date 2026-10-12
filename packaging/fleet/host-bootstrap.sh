@@ -136,7 +136,13 @@ pc2)
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
+# fleetd and the console open one ssh connection per agent at once; the default
+# 10 unauthenticated connections drops some of eight agents' polls, and a
+# dropped source is penalised, so Kali is exempt.
+MaxStartups 100:30:200
+PerSourcePenaltyExemptList $kali_ip
 EOF
+  sshd -t || die "sshd rejected /etc/ssh/sshd_config.d/10-fleet.conf"
   systemctl reload ssh
 
   mkdir -p "$code"
