@@ -164,6 +164,16 @@ func TestPromptTypesLiterallyThenEnter(t *testing.T) {
 	}
 }
 
+func TestInterruptSendsEscapeToThePane(t *testing.T) {
+	r := &fakeRunner{}
+	if err := newAgent(r).Interrupt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.calls) != 1 || !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "main", "Escape"}) {
+		t.Fatalf("calls = %q", r.calls)
+	}
+}
+
 func tarOf(files map[string]string) string {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
