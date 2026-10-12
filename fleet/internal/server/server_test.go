@@ -464,6 +464,8 @@ func TestGuideRouteScopes(t *testing.T) {
 	var out struct{ Text string }
 	if err := json.Unmarshal(do(t, h, "GET", "/v1/guide", "full", "").Body.Bytes(), &out); err != nil || !strings.Contains(out.Text, "fleetctl run") {
 		t.Fatalf("guide body = %q, %v", out.Text, err)
+	}
+}
 
 func TestFollowupAndCancelRoutes(t *testing.T) {
 	f, h := setup(t)

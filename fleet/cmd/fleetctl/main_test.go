@@ -548,6 +548,7 @@ func TestSkillInstallPrintAndDefaultDir(t *testing.T) {
 	if _, err := os.Stat(home + "/.claude/skills/fleet/SKILL.md"); err != nil {
 		t.Fatal(err)
 	}
+}
 
 func reqBody(t *testing.T, req string) map[string]any {
 	t.Helper()
