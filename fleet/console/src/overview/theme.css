@@ -36,7 +36,7 @@ html, body { background: var(--ground); overflow: hidden; }
 .collapse { overflow: hidden; position: relative; z-index: 2; }
 .collapse-left { grid-area: roster; } .collapse-right { grid-area: rail; } .collapse-bottom { grid-area: activity; }
 .roster, .rail { width: 440px; box-sizing: border-box; height: 100%; display: flex; flex-direction: column; gap: 14px; padding-top: 20px; }
-.roster { margin-left: 24px; } .rail { margin-right: 24px; gap: 18px; }
+.roster { margin-left: 24px; min-height: 0; overflow-y: auto; scrollbar-width: none; } .roster::-webkit-scrollbar { display: none; } .rail { margin-right: 24px; gap: 18px; }
 .section-head h2 { margin: 0; font: 600 20px "Barlow Condensed", sans-serif; letter-spacing: 5px; color: var(--dim); }
 
 /* agent cards */
@@ -61,6 +61,19 @@ html, body { background: var(--ground); overflow: hidden; }
 .card-foot { display: flex; justify-content: space-between; font-size: 12px; gap: 8px; }
 .card-foot > span:last-child { white-space: nowrap; flex: none; }
 .card-foot > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* many agents: cards size from the count (roster-compact 5-8, roster-dense 9+); dense may scroll inside the roster */
+.roster-compact, .roster-dense { gap: 8px; }
+.roster-compact .card, .roster-dense .card { flex: 1 0 auto; gap: 4px; padding: 6px 14px; }
+.roster-compact .card-name, .roster-dense .card-name { font-size: 20px; line-height: 24px; }
+.roster-compact .card-foot, .roster-dense .card-foot { display: none; }
+.roster-compact .bar, .roster-dense .bar { gap: 3px; }
+.roster-dense { gap: 4px; }
+.roster-dense .card { padding: 4px 12px; gap: 2px; }
+.roster-dense .card-name { font-size: 18px; line-height: 20px; }
+.activity[data-count] .tick { top: 1px; bottom: 1px; }
+.activity[data-count] .track-name { font-size: 11px; line-height: var(--row-h); }
+.activity[data-count="4"] .track-name, .activity[data-count="3"] .track-name { font-size: 12px; }
 
 /* centre */
 .center { grid-area: center; position: relative; z-index: 2; margin: 20px 20px 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--line2); background: #03060a; box-shadow: 0 0 60px rgba(92,225,230,.08) inset; }
@@ -97,11 +110,11 @@ span.btn { cursor: default; }
 .events li span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* activity */
-.activity { box-sizing: border-box; height: 132px; margin: 20px 24px; border: 1px solid var(--line); background: var(--panel-a); display: flex; flex-direction: column; justify-content: space-between; padding: 12px 18px; }
+.activity { box-sizing: border-box; height: 132px; --row-h: 18px; margin: 20px 24px; border: 1px solid var(--line); background: var(--panel-a); display: flex; flex-direction: column; justify-content: space-between; padding: 12px 18px; }
 .activity-head { display: flex; justify-content: space-between; font-size: 11px; letter-spacing: 2px; color: var(--dim); }
-.track-row { display: flex; align-items: center; gap: 14px; height: 18px; }
+.track-row { display: flex; align-items: center; gap: 14px; height: var(--row-h); }
 .track-name { width: 80px; font-size: 12px; }
-.track { flex: 1; height: 18px; position: relative; background: linear-gradient(90deg, #0e1822 1px, transparent 1px); background-size: 25% 100%; }
+.track { flex: 1; height: var(--row-h); position: relative; background: linear-gradient(90deg, #0e1822 1px, transparent 1px); background-size: 25% 100%; }
 .tick { position: absolute; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; background: var(--cyan); }
 
 /* focus and control */

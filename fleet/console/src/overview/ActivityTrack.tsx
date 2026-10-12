@@ -1,16 +1,18 @@
 import { AnimatePresence, motion } from "motion/react";
 import type { Snapshot } from "../model";
-import { bucketFraction, orderAgents } from "./roster";
+import { bucketFraction, orderAgents, trackMetrics } from "./roster";
 
 export function ActivityTrack({ snapshot: s, now }: { snapshot: Snapshot; now: number }) {
   const max = Math.max(1, ...Object.values(s.activity ?? {}).flatMap((bs) => bs.map((b) => b.n)));
+  const agents = orderAgents(s.agents);
+  const { rowH, height } = trackMetrics(agents.length);
   return (
-    <footer className="activity">
+    <footer className="activity" data-count={agents.length} style={{ height, ["--row-h" as string]: `${rowH}px` }}>
       <div className="activity-head">
         <span>ACTIVITY · LAST 24 H · ONE TICK PER 15 MIN</span>
         <span>−24 H · −18 · −12 · −6 · NOW</span>
       </div>
-      {orderAgents(s.agents).map((a) => (
+      {agents.map((a) => (
         <div key={a.id} className="track-row">
           <span className="track-name cyan">{a.id}</span>
           <div className="track">

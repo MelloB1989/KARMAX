@@ -1,6 +1,6 @@
 import type { Snapshot } from "../model";
 import { AgentCard } from "./AgentCard";
-import { isRemote, orderAgents } from "./roster";
+import { densityFor, isRemote, orderAgents } from "./roster";
 
 export function Roster({
   snapshot,
@@ -15,8 +15,9 @@ export function Roster({
 }) {
   const agents = orderAgents(snapshot.agents);
   const up = agents.filter((a) => a.phase !== "down" && !isRemote(a, snapshot)).length;
+  const density = densityFor(agents.length);
   return (
-    <aside className="roster">
+    <aside className={`roster roster-${density}`} data-count={agents.length}>
       <div className="section-head">
         <h2>
           AGENTS · {up} / {agents.length} UP

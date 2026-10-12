@@ -4,9 +4,10 @@ import fixture from "../../dev/snapshot.json";
 import type { Agent, Snapshot } from "../model";
 import { AgentCard } from "./AgentCard";
 import { Roster } from "./Roster";
+import { ActivityTrack } from "./ActivityTrack";
 import { OpenTasks } from "./RightRail";
 import { gpuName } from "../state/hooks";
-import { bucketFraction, orderAgents } from "./roster";
+import { bucketFraction, densityFor, orderAgents, trackMetrics } from "./roster";
 
 const base = fixture as unknown as Snapshot;
 const t0 = Date.parse("2026-10-11T13:57:33Z");
@@ -61,5 +62,34 @@ describe("pc2 polish", () => {
     expect(gpuName("ANGLE (Intel, Mesa Intel(R) HD Graphics 530 (SKL GT2), OpenGL 4.6)")).toBe("Intel HD Graphics 530");
     expect(gpuName("ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)")).toBe("SwiftShader (software)");
     expect(gpuName("Mali-G78")).toBe("Mali-G78");
+  });
+});
+
+describe("agent count sizing", () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...working, id: `agent-${String(i + 1).padStart(2, "0")}` }));
+
+  it("8 agents render 8 compact cards and 8 activity rows", () => {
+    const s = snap({}, many(8));
+    const roster = renderToStaticMarkup(<Roster snapshot={s} now={t0} selected={null} onSelect={() => {}} />);
+    expect(roster).toContain("roster-compact");
+    expect(roster).toContain('data-count="8"');
+    expect(roster.match(/class="card[ "]/g)).toHaveLength(8);
+    expect(roster.match(/class="card-bars"/g)).toHaveLength(8);
+    const track = renderToStaticMarkup(<ActivityTrack snapshot={s} now={t0} />);
+    expect(track.match(/class="track-row"/g)).toHaveLength(8);
+    expect(track).toContain("agent-08");
+    expect(track).toContain(`height:${trackMetrics(8).height}px`);
+    expect(track).toContain("--row-h:12px");
+  });
+
+  it("density follows the count; 4 agents keep the original 132 px strip, 12 stay dense", () => {
+    expect(densityFor(4)).toBe("roomy");
+    expect(densityFor(8)).toBe("compact");
+    expect(densityFor(12)).toBe("dense");
+    expect(trackMetrics(4).height).toBe(132);
+    const s12 = snap({}, many(12));
+    expect(renderToStaticMarkup(<Roster snapshot={s12} now={t0} selected={null} onSelect={() => {}} />)).toContain("roster-dense");
+    expect(renderToStaticMarkup(<ActivityTrack snapshot={s12} now={t0} />).match(/class="track-row"/g)).toHaveLength(12);
+    expect(renderToStaticMarkup(<Roster snapshot={snap({}, many(4))} now={t0} selected={null} onSelect={() => {}} />)).toContain("roster-roomy");
   });
 });
