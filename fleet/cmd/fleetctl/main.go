@@ -58,9 +58,9 @@ Work (fleetd):
   assign <agent> --task <id> [--brief <text>] [--from <name>]
   inbox [--after <id>] [--follow] [--json]   what agents reported to the operator
   wait [<agent>] [--task <id>] [--after N] [--timeout 30m] [--json]
-                      with --task the agent is optional and the task's own reports count, to whomever
-                      they were sent; they are read from the first unless --after names a report id
-  result <task> [--json]   the task, its reports and the commits on its branch
+                      with --task the agent is optional; it returns the agent's first report after the
+                      task's latest instruction (brief, follow-up), to whomever it was sent
+  result <task> [--json]   the task's conversation (brief, reports, follow-ups) and its branch's commits
                                       until it reports, its task closes, or it stops
                                       (exit 0; 3 down/cooling/disabled; 4 timeout)
   done <agent> | --task <id> [--task <id>] [--outcome done] [--branch b] [--pr url] [--keep-session]
@@ -560,7 +560,7 @@ func run(cmd string, args []string) error {
 			return errors.New("usage: fleetctl wait [<agent>] [--task <id>] [--after N] [--timeout 30m]")
 		}
 		if task != "" && after < 0 {
-			after = 0 // a task's reports are its own: one that came before the wait began still counts
+			after = 0 // the server resolves it: the answer to the latest instruction
 		}
 		c, err := newClient()
 		if err != nil {

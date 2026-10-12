@@ -38,7 +38,7 @@ func (f *Fleet) Followup(ctx context.Context, task, from, text string, now time.
 	if err != nil {
 		return err
 	}
-	return f.Tell(ctx, from, t.Agent, fmt.Sprintf("Task %s follow-up from %s. %s", task, from, text), now)
+	return f.tell(ctx, from, t.Agent, fmt.Sprintf("Task %s follow-up from %s. %s", task, from, text), task, now)
 }
 
 // Cancel stops an agent's work on a task: it presses Escape in the agent's
@@ -58,7 +58,7 @@ func (f *Fleet) Cancel(ctx context.Context, task, from, reason string, now time.
 	if err := f.box(t.Agent).Interrupt(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("interrupt %s: %w", t.Agent, err))
 	}
-	if err := f.Tell(ctx, from, t.Agent, notice, now); err != nil {
+	if err := f.tell(ctx, from, t.Agent, notice, task, now); err != nil {
 		errs = append(errs, fmt.Errorf("notify %s: %w", t.Agent, err))
 	}
 	if err := f.Close(t.Agent, task, "cancelled", "", "", now); err != nil {
