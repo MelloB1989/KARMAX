@@ -243,6 +243,13 @@ func (a *Agent) Prompt(ctx context.Context, text string) error {
 	return err
 }
 
+// Interrupt presses Escape in the pane, as a person would to stop the agent's
+// current turn. It types nothing.
+func (a *Agent) Interrupt(ctx context.Context) error {
+	_, err := a.C.Run(ctx, "tmux", "send-keys", "-t", Pane, "Escape")
+	return err
+}
+
 // relayPrompt is all a relay session is asked to do. The message is quoted,
 // not obeyed: it came from another host.
 const relayPrompt = `You are a message relay for an agent fleet. Do exactly one thing: use the

@@ -35,6 +35,8 @@ type box struct {
 	// onStop runs when the session is stopped (Fresh): a message that
 	// landed between the archive and the kill.
 	onStop func(b *box)
+	// interruptErr is what Interrupt returns.
+	interruptErr error
 }
 
 func (b *box) log(s string) { b.mu.Lock(); b.calls = append(b.calls, s); b.mu.Unlock() }
@@ -94,6 +96,8 @@ func (b *box) Relay(_ context.Context, to, from, text string) error {
 	b.log("relay " + from + "→" + to + ": " + text)
 	return nil
 }
+
+func (b *box) Interrupt(context.Context) error { b.log("interrupt"); return b.interruptErr }
 
 func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
