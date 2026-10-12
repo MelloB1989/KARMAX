@@ -57,7 +57,10 @@ Work (fleetd):
   give <agent> --task <id> <brief…>   record a task and deliver its brief; the agent reports to you
   assign <agent> --task <id> [--brief <text>] [--from <name>]
   inbox [--after <id>] [--follow] [--json]   what agents reported to the operator
-  wait <agent> [--task <id>] [--timeout 30m] [--json]
+  wait [<agent>] [--task <id>] [--after N] [--timeout 30m] [--json]
+                      with --task the agent is optional and the task's own reports count, to whomever
+                      they were sent; they are read from the first unless --after names a report id
+  result <task> [--json]   the task, its reports and the commits on its branch
                                       until it reports, its task closes, or it stops
                                       (exit 0; 3 down/cooling/disabled; 4 timeout)
   done <agent> | --task <id> [--task <id>] [--outcome done] [--branch b] [--pr url] [--keep-session]
@@ -299,7 +302,10 @@ func waitFor(ctx context.Context, c *client, agent, task string, after int64, ti
 			}
 		}
 		c.timeout = left + 30*time.Second
-		q := url.Values{"agent": {agent}, "task": {task}, "after": {fmt.Sprint(after)}, "timeout": {left.Round(time.Millisecond).String()}}
+		q := url.Values{"task": {task}, "after": {fmt.Sprint(after)}, "timeout": {left.Round(time.Millisecond).String()}}
+		if agent != "" {
+			q.Set("agent", agent)
+		}
 		var r daemon.WaitResult
 		err := c.do("GET", "/v1/wait?"+q.Encode(), nil, &r)
 		if err == nil {
@@ -546,14 +552,25 @@ func run(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := need(pos, 1, "wait <agent> [--task <id>] [--timeout 30m]"); err != nil {
-			return err
+		agent := ""
+		if len(pos) > 0 {
+			agent = pos[0]
+		}
+		if agent == "" && task == "" {
+			return errors.New("usage: fleetctl wait [<agent>] [--task <id>] [--after N] [--timeout 30m]")
+		}
+		if task != "" && after < 0 {
+			after = 0 // a task's reports are its own: one that came before the wait began still counts
 		}
 		c, err := newClient()
 		if err != nil {
 			return err
 		}
-		r, err := waitFor(context.Background(), c, pos[0], task, after, timeout, os.Stderr, sleepCtx)
+		who := agent
+		if who == "" {
+			who = "task " + task
+		}
+		r, err := waitFor(context.Background(), c, agent, task, after, timeout, os.Stderr, sleepCtx)
 		if err != nil {
 			return err
 		}
@@ -566,9 +583,9 @@ func run(cmd string, args []string) error {
 			case "closed":
 				fmt.Printf("task %s closed: %s %s\n", r.Task.ID, r.Task.Outcome, r.Task.Branch)
 			case "phase":
-				fmt.Printf("%s is %s\n", pos[0], r.Phase)
+				fmt.Printf("%s is %s\n", who, r.Phase)
 			case "timeout":
-				fmt.Printf("no word from %s in %s\n", pos[0], timeout)
+				fmt.Printf("no word from %s in %s\n", who, timeout)
 			}
 		}
 		switch r.Reason {
@@ -578,6 +595,9 @@ func run(cmd string, args []string) error {
 			return exitCode{4}
 		}
 		return nil
+
+	case "result":
+		return result(args)
 
 	case "whoami":
 		return getAndPrint(args, "/v1/whoami", func(raw json.RawMessage) error {

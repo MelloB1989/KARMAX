@@ -6,7 +6,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,6 +67,8 @@ type Fleet struct {
 	lastRetain time.Time
 	// waitEvery is how often Wait looks again.
 	waitEvery time.Duration
+	// git runs git in a directory; tests replace it.
+	git func(ctx context.Context, dir string, args ...string) (string, error)
 	// HostStats, when set, samples container resource use per host.
 	HostStats func(ctx context.Context, host string) ([]ledger.HostSample, error)
 	// Log receives fleetd's own diagnostics.
@@ -82,7 +83,7 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 	}
 	f := &Fleet{cfg: cfg, db: db, box: box, push: push, notify: notify,
 		locks: map[string]*sync.Mutex{}, states: map[string]reconcile.State{}, Log: func(string, ...any) {},
-		waitEvery: 500 * time.Millisecond}
+		waitEvery: 500 * time.Millisecond, git: runGit}
 	for _, name := range cfg.AgentNames() {
 		a := cfg.Agents[name]
 		st, ok := states[name]
@@ -505,12 +506,18 @@ func (f *Fleet) Tell(ctx context.Context, from, to, text string, now time.Time) 
 			return fmt.Errorf("unknown sender: %w", err)
 		}
 	}
+	// What an agent writes while it has a task is filed under that task (done
+	// does not clear it: a late report still belongs). Nobody else's does.
+	var task string
+	if _, ok := f.cfg.Agents[from]; ok {
+		task = f.State(from).Task
+	}
 	// The operator's inbox: stored, read with Inbox and Wait.
 	if to == ledger.Operator {
 		if from == ledger.Operator {
 			return fmt.Errorf("the operator does not message the operator")
 		}
-		if err := f.db.AddRelay(ledger.Relay{From: from, To: to, Text: text, At: now, Delivered: true}); err != nil {
+		if err := f.db.AddRelay(ledger.Relay{From: from, To: to, Task: task, Text: text, At: now, Delivered: true}); err != nil {
 			return err
 		}
 		f.event(from, "fleet.report", "", map[string]any{"to": to, "size": len(text)})
@@ -522,7 +529,7 @@ func (f *Fleet) Tell(ctx context.Context, from, to, text string, now time.Time) 
 		}
 	}
 	err := f.box(to).Relay(ctx, to, from, text)
-	r := ledger.Relay{From: from, To: to, Text: text, At: now, Delivered: err == nil}
+	r := ledger.Relay{From: from, To: to, Task: task, Text: text, At: now, Delivered: err == nil}
 	if err != nil {
 		r.Error = err.Error()
 	}
@@ -547,25 +554,41 @@ type WaitResult struct {
 
 // Wait blocks until the agent messages the operator (after the inbox id
 // after), its task closes, or it can no longer work, whichever is first.
+// With a task named, the agent may be left out (it is the task's), and a
+// message is anything filed under the task after the relay id after, whoever
+// it was sent to.
 func (f *Fleet) Wait(ctx context.Context, agent, task string, after int64) (WaitResult, error) {
+	if agent == "" && task == "" {
+		return WaitResult{}, fmt.Errorf("wait needs an agent or a task")
+	}
+	if task != "" {
+		// A task nobody assigned would never close: say so now, not at the timeout.
+		tk, err := f.TaskAgent(task)
+		if err != nil {
+			return WaitResult{}, err
+		}
+		if agent == "" {
+			agent = tk.Agent
+		}
+	}
 	if err := f.known(agent); err != nil {
 		return WaitResult{}, err
-	}
-	// A task nobody assigned would never close: say so now, not at the timeout.
-	if task != "" {
-		if _, err := f.db.Task(task); errors.Is(err, sql.ErrNoRows) {
-			return WaitResult{}, fmt.Errorf("%w %s", ErrNoTask, task)
-		}
 	}
 	t := time.NewTicker(f.waitEvery)
 	defer t.Stop()
 	for {
-		msgs, err := f.db.Inbox(after)
+		var msgs []ledger.Relay
+		var err error
+		if task != "" {
+			msgs, err = f.db.TaskReports(task, after)
+		} else {
+			msgs, err = f.db.Inbox(after)
+		}
 		if err != nil {
 			return WaitResult{}, err
 		}
 		for i := range msgs {
-			if msgs[i].From == agent {
+			if task != "" || msgs[i].From == agent {
 				return WaitResult{Reason: "message", Message: &msgs[i]}, nil
 			}
 		}
