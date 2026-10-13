@@ -55,19 +55,23 @@ Then: "Let me show you four things it does, all live."
 - **Commands (in chat):** `index all`, then `What does payments-api depend on?`
 - **Audience sees:** `📚 Indexed N repositories into the knowledge store.` (each repo's README/CLAUDE.md distilled into a card by the model), then the answer: payments-api depends on **auth-service** (JWT validation), **Postgres** and **Stripe**.
 - **Say:** "Every repo's own docs become org memory — refreshed on merge, on creation, nightly. Ask in plain English across the whole org and the answer comes from the code's own words."
-- **If it stalls:** the script falls back to `index payments-api`, which posts the payments-api card (with its Dependencies bullets) into chat — say "here's the card the answer comes from". Re-running needs `demo/down.sh` (identical messages are refused).
+- **If it stalls (no model answer in 25 s):** the script falls back to `index payments-api`, which posts the payments-api card (with its Dependencies bullets) into chat — say "here's the card the answer comes from". Re-running needs `demo/down.sh` (identical messages are refused).
 
 ## Gotchas that matter on stage
 
 - **Approve code is exactly 5 characters** (`approve K7F2Q`). A typo → "Nothing is waiting under …".
 - **Identical messages are refused for 6 h** (chat de-dup). Running a scene twice produces silence the second time → always `demo/down.sh && demo/up.sh` between runs; it wipes `demo/data`.
 - **Model summary needs harness auth.** `~/.config/karmax-demo/env` (`CLAUDE_CODE_OAUTH_TOKEN`) must be loaded in the shell that runs `up.sh`. Without it reviews/cards still post (deterministic checks / raw docs) but without the model's wording.
-- **Free-form questions need an API-backed agent.** On the offline config, ordinary chat (anything that isn't a command like `approve`, `create repo`, `index`, `status`) goes to the orchestrator agent; see "Known issues" below.
+- **Free-form questions go to the orchestrator agent** (anything that isn't `approve`, `create repo`, `index`, `status`…); it needs the harness token and `run_on_start`.
 - Commands are plain words so they work in any chat; KARMAX uses Slack-style `*bold*` and posts no thread ids with the generic preset.
 
-## Known issues found while rehearsing (scene 3 / 4)
+## Rehearsal log (scenes 3 and 4, against the merged demo/karmax.yaml, fc05b2d)
 
-1. **demo/karmax.yaml has no `factory.bootstrap` / `protect_default_branch` / `rules_files`.** Scene 3 against it creates the repo but writes **no** standard files and **no** protection (only README, CI, main.go copied from the template; CODEOWNERS is missing even though `required_files` demands it). Needed in `org_ops`: `rules_files: [<ORG.md>]`, and under `factory`: `protect_default_branch: true`, `required_checks: ["ci"]`, `bootstrap: {"CODEOWNERS": "* {{owners}}\n", ".github/pull_request_template.md": "..."}`.
-2. **Free-form chat gets no answer.** With `ai.default_provider: claude-code` KARMAX logs
-   `harness: not routing this agent — it has no API session to fall back to {"agent": "demo-agent"}` and every non-command message dead-letters with `agent demo-agent is not running`. So "What does payments-api depend on?" is never answered by the orchestrator; scene4.sh shows the indexed card instead.
-3. **`~/KARMAX/bin/karmax` was built without cgo** (`go-sqlite3 requires cgo to work. This is a stub`) and the VM had no `gcc`. Fixed on the VM with `apt-get install gcc` and `CGO_ENABLED=1 go build`; `bin/karmax` must be rebuilt that way.
+- Scene 3: ~2 s, all of it as above — repo, CODEOWNERS, CLAUDE.md, PR template, CI, "Branch protection on main: 1 review + checks ci".
+- Scene 4: `index all` → "📚 Indexed 4 repositories"; the free-form question is answered by the model from the cards: *"auth-service (validates JWTs), Postgres (its database), Stripe (the external payment provider) … no queues mentioned."*
+  Run scene 4 **before** scene 2 (or on fresh state): if an incident is on file the model may add a remark about it.
+- Needs `agents[].triggers.run_on_start: true` in the config (without it the agent never starts and free-form chat dead-letters with `agent demo-agent is not running`) and the harness token loaded (`up.sh` does both).
+- Posting to `/comms/chat` by hand needs `Content-Type: application/json` (the scene scripts already send it).
+- `demo/scene2.sh --auto-approve` posts `approve <CODE>` for you.
+- The fake GitHub can't read back branch protection, so it is shown by KARMAX's chat line, not a lookup.
+- The VM's `bin/karmax` must be built with cgo (`CGO_ENABLED=1`, needs `gcc`); a non-cgo build dies with `go-sqlite3 requires cgo to work. This is a stub`.
