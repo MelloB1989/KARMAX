@@ -153,6 +153,8 @@ const verdictBadge=r=>!r.rv?'<span class="badge b-amber">Reviewing…</span>':
 const ciBadge=s=>s==="success"?'<span class="badge b-green">✓ passing</span>':s==="failure"?'<span class="badge b-red">✗ failing</span>':'<span class="badge b-dim">● pending</span>';
 
 /* ---- renderers ---- */
+const lastHTML={};
+function setHTML(id,html){if(lastHTML[id]===html)return;lastHTML[id]=html;$(id).innerHTML=html}
 let lastIncId=null;
 function renderProd(h,inc){
   const pts=h.points||[],last=pts[pts.length-1];
@@ -162,13 +164,16 @@ function renderProd(h,inc){
   const open=inc&&!inc.s.resolved?inc.id:null;
   const maxMs=Math.max(60,...pts.map(p=>p.ms));
   const bars=pts.map(p=>'<i class="'+(p.down?"d":p.ok?"":"f")+'" style="height:'+(p.ok?Math.max(18,Math.round(100*p.ms/maxMs)):100)+'%" title="'+hhmmss(p.t)+" · HTTP "+p.code+'"></i>').join("");
-  $("prodbody").innerHTML='<div class="state '+cls+'"><span class=dot></span><span class=big>'+txt+'</span></div>'+
-    '<div class=kv><span>HTTP <b>'+(last?(last.code||"—"):"—")+'</b></span><span>Error rate <b style="color:'+(rate?"var(--red)":"inherit")+'">'+rate+'%</b> <small>(2 min)</small></span><span>Latency <b>'+(last&&!last.down?last.ms.toFixed(1)+" ms":"—")+'</b></span>'+
-    (open?'<span>Incident <b class=inc>'+open+'</b></span>':"")+'</div><div class=strip>'+bars+'</div><div class=axis><span>2 min ago</span><span>now</span></div>';
+  if(!$("pstate")){$("prodbody").innerHTML='<div id=pstate></div><div class=kv id=pkv></div><div class=strip id=pstrip></div><div class=axis><span>2 min ago</span><span>now</span></div>'}
+  // the state header keeps its element (and its pulse animation); only changed parts are rewritten
+  const st=$("pstate");const want="state "+cls;if(st.className!==want||!st.firstChild){st.className=want;st.innerHTML='<span class=dot></span><span class=big></span>'}
+  if(st.lastChild.textContent!==txt)st.lastChild.textContent=txt;
+  setHTML("pkv",'<span>HTTP <b>'+(last?(last.code||"—"):"—")+'</b></span><span>Error rate <b style="color:'+(rate?"var(--red)":"inherit")+'">'+rate+'%</b> <small>(2 min)</small></span><span>Latency <b>'+(last&&!last.down?last.ms.toFixed(1)+" ms":"—")+'</b></span>'+(open?'<span>Incident <b class=inc>'+open+'</b></span>':""));
+  setHTML("pstrip",bars);
 }
 const STAGES=[["detected","Detected"],["alerted","Owner alerted"],["approved","Approved"],["fix","Fix PR"],["reviewed","Reviewed"],["merged","Merged"],["resolved","Resolved"]];
 function renderInc(inc){
-  if(!inc){$("incid").textContent="";$("incbody").innerHTML='<div class=empty>No incident on file — production is quiet.</div>';return}
+  if(!inc){$("incid").textContent="";setHTML("incbody",'<div class=empty>No incident on file — production is quiet.</div>');return}
   $("incid").textContent=inc.id+(inc.sev?" · "+inc.sev.toLowerCase():"");
   let waitIdx=STAGES.findIndex(([k])=>!inc.s[k]);
   const failAt=inc.failed==="fix"?3:inc.failed==="merge"?5:-1;
@@ -181,34 +186,34 @@ function renderInc(inc){
     if(!s&&cls==="wait")who=k==="approved"?"waiting for a human":"in progress";
     return '<div class="stage '+cls+'"><div class=n>'+(cls==="done"?"✓":cls==="fail"?"!":i+1)+'</div><div class=l>'+l+'</div><div class=w title="'+esc(who)+'">'+esc(who)+'</div></div>';
   }).join("");
-  $("incbody").innerHTML='<div class=incsum>'+esc(inc.title)+'</div><div class=track>'+html+'</div>';
+  setHTML("incbody",'<div class=incsum>'+esc(inc.title)+'</div><div class=track>'+html+'</div>');
 }
 const known={prs:new Set(),repos:null};
 function renderPRs(rows){
   $("prcount").textContent=rows.length?rows.length+" in "+(new Set(rows.map(r=>r.p.repo)).size)+" repo(s)":"";
-  if(!rows.length){$("prbody").innerHTML='<div class=empty>No pull requests yet.</div>';return}
+  if(!rows.length){setHTML("prbody",'<div class=empty>No pull requests yet.</div>');return}
   const first=known.prs.size===0&&!window.__prSeen;window.__prSeen=true;
-  $("prbody").innerHTML='<table><thead><tr><th>PR</th><th>Title</th><th>Author</th><th>Verdict</th><th>Risk</th><th>Findings</th><th>CI</th><th>Merged</th></tr></thead><tbody>'+
+  setHTML("prbody",'<table><thead><tr><th>PR</th><th>Title</th><th>Author</th><th>Verdict</th><th>Risk</th><th>Findings</th><th>CI</th><th>Merged</th></tr></thead><tbody>'+
   rows.map(r=>{
     const nw=!first&&!known.prs.has(r.key)?" new":"";
     const f=r.rv?((r.rv.comments||[]).length||r.blk!=null?((r.rv.comments||[]).length):"0"):"—";
     const rk=r.risk==null?"—":'<span class="mono" style="color:'+(r.risk>=.7?"var(--red)":r.risk>=.4?"var(--amber)":"var(--green)")+'">'+r.risk.toFixed(2)+'</span>';
     return '<tr class="row'+nw+'" data-repo="'+esc(r.p.repo)+'" data-n="'+r.p.number+'"><td class=num>#'+r.p.number+'</td><td class=ttl title="'+esc(r.p.title)+'">'+esc(r.p.title)+'</td><td>'+esc(r.p.author)+'</td><td>'+verdictBadge(r)+'</td><td>'+rk+'</td><td class=mono>'+f+(r.blk?' <span style="color:var(--red)">('+r.blk+' blocker)</span>':"")+'</td><td>'+ciBadge(r.ci)+'</td><td>'+(r.merges?'<span class="badge b-green">merged</span>':'<span class="badge b-dim">open</span>')+'</td></tr>';
-  }).join("")+"</tbody></table>";
+  }).join("")+"</tbody></table>");
   rows.forEach(r=>known.prs.add(r.key));
   document.querySelectorAll("#prbody tr.row").forEach(tr=>tr.onclick=()=>openPR(tr.dataset.repo,tr.dataset.n));
 }
 const CK=[["readme","README"],["codeowners","CODEOWNERS"],["claude","CLAUDE.md"],["ci","CI"],["protection","Protection"]];
 function renderRepos(repos,gh){
-  if(!gh.ok&&!repos.length){$("repobody").innerHTML='<div class=empty>GitHub unreachable</div>';return}
+  if(!gh.ok&&!repos.length){setHTML("repobody",'<div class=empty>GitHub unreachable</div>');return}
   const first=known.repos===null;if(first)known.repos=new Set();
-  $("repobody").innerHTML='<table class=rtable><thead><tr><th>Repository</th>'+CK.map(c=>"<th>"+c[1]+"</th>").join("")+"</tr></thead><tbody>"+
+  setHTML("repobody",'<table class=rtable><thead><tr><th>Repository</th>'+CK.map(c=>"<th>"+c[1]+"</th>").join("")+"</tr></thead><tbody>"+
   repos.map(r=>{
     const arrive=!first&&!known.repos.has(r.full)?" arrive":"";
     return '<tr class="'+arrive+'"><td><b>'+esc(r.name)+"</b>"+(r.created?'<span class=new-tag>NEW</span>':"")+"</td>"+CK.map(([k])=>{
       if(k==="protection"){const p=r.checks.protection;return p?'<td><span class="tick y">✓</span> <small class=mono style="color:var(--dim)">'+p.reviews+" review"+(p.checks.length?" · "+esc(p.checks.join(",")):"")+"</small></td>":'<td><span class="tick n">—</span></td>'}
       return '<td><span class="tick '+(r.checks[k]?"y":"n")+'">'+(r.checks[k]?"✓":"—")+"</span></td>"}).join("")+"</tr>";
-  }).join("")+"</tbody></table>";
+  }).join("")+"</tbody></table>");
   repos.forEach(r=>known.repos.add(r.full));
 }
 function renderKnow(msgs){
@@ -229,13 +234,13 @@ function renderKnow(msgs){
       break;
     }
   }
-  $("knowbody").innerHTML=(qa+(sum?'<div class=kq>'+esc(sum.text)+" · "+hhmm(sum.ts)+"</div>":"")+cards.join(""))||'<div class=empty>Nothing indexed yet — say <code>index all</code>.</div>';
+  setHTML("knowbody",(qa+(sum?'<div class=kq>'+esc(sum.text)+" · "+hhmm(sum.ts)+"</div>":"")+cards.join(""))||'<div class=empty>Nothing indexed yet — say <code>index all</code>.</div>');
 }
 let chipState={};
 function renderPolicy(p){
   const v=p.values||{},keys=Object.keys(v);
-  if(!keys.length&&p.error){$("chips").innerHTML='<span class=chip>'+esc(p.error)+"</span>";return}
-  $("chips").innerHTML=keys.map(k=>'<span class="chip '+esc(v[k])+(chipState[k]!==undefined&&chipState[k]!==v[k]?" flash":"")+'">'+esc(k)+": <b>"+esc(v[k])+"</b></span>").join("");
+  if(!keys.length&&p.error){setHTML("chips",'<span class=chip>'+esc(p.error)+"</span>");return}
+  setHTML("chips",keys.map(k=>'<span class="chip '+esc(v[k])+(chipState[k]!==undefined&&chipState[k]!==v[k]?" flash":"")+'">'+esc(k)+": <b>"+esc(v[k])+"</b></span>").join(""));
   chipState=Object.assign({},v);
 }
 
