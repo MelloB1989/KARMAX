@@ -36,6 +36,8 @@ fi
 start payments bin/payments -addr 127.0.0.1:9494
 wait_port "payments" 127.0.0.1:9494
 
+# Model auth for the harness (token lives outside the repo; never printed).
+[ -f ~/.config/karmax-demo/env ] && { set -a; . ~/.config/karmax-demo/env; set +a; }
 start karmax bin/karmax start -c demo/karmax.yaml
 wait_port "KARMAX webhooks" 127.0.0.1:9090
 
