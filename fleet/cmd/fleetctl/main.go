@@ -633,11 +633,12 @@ func run(cmd string, args []string) error {
 		})
 
 	case "done":
-		var task, outcome, branch, pr string
+		var tasks repeated
+		var outcome, branch, pr string
 		var keep bool
 		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
 			fs.BoolVar(&keep, "keep-session", false, "")
-			fs.StringVar(&task, "task", "", "")
+			fs.Var(&tasks, "task", "")
 			fs.StringVar(&outcome, "outcome", "done", "")
 			fs.StringVar(&branch, "branch", "", "")
 			fs.StringVar(&pr, "pr", "", "")
@@ -648,10 +649,29 @@ func run(cmd string, args []string) error {
 		agent := ""
 		if len(pos) > 0 {
 			agent = pos[0]
-		} else if task == "" {
-			return errors.New("usage: fleetctl done <agent> [--task <id>] [--keep-session] | done --task <id>")
+		} else if len(tasks) == 0 {
+			return errors.New("usage: fleetctl done <agent> [--task <id>] [--keep-session] | done --task <id> [--task <id>…]")
 		}
-		return post("/v1/done", map[string]any{"agent": agent, "task": task, "outcome": outcome, "branch": branch, "pr": pr, "keep_session": keep})
+		if len(tasks) <= 1 {
+			return post("/v1/done", map[string]any{"agent": agent, "task": tasks.first(), "outcome": outcome, "branch": branch, "pr": pr, "keep_session": keep})
+		}
+		// Several tasks: each is closed by its own id, so an agent, branch or PR would apply to all of them.
+		if agent != "" || branch != "" || pr != "" {
+			return errors.New("done with several --task closes each by its id alone: drop the agent, --branch and --pr, or close one task at a time")
+		}
+		c, err := newClient()
+		if err != nil {
+			return err
+		}
+		var failed []error
+		for _, id := range tasks {
+			if err := c.do("POST", "/v1/done", map[string]any{"task": id, "outcome": outcome, "agent": "", "branch": "", "pr": "", "keep_session": keep}, nil); err != nil {
+				failed = append(failed, fmt.Errorf("%s: %w", id, err))
+				continue
+			}
+			fmt.Println("ok " + id)
+		}
+		return errors.Join(failed...)
 
 	case "run":
 		return runCmd(args)
@@ -1243,4 +1263,17 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// repeated is a flag that may be given more than once (--task A --task B).
+type repeated []string
+
+func (r *repeated) String() string     { return strings.Join(*r, ",") }
+func (r *repeated) Set(v string) error { *r = append(*r, v); return nil }
+
+func (r repeated) first() string {
+	if len(r) == 0 {
+		return ""
+	}
+	return r[0]
 }

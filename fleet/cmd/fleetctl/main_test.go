@@ -631,6 +631,37 @@ func TestDoneByTaskSendsNoAgent(t *testing.T) {
 	}
 }
 
+// Repeated --task flags used to keep only the last one while printing "ok", so the
+// other tasks stayed open and held their agents.
+func TestDoneClosesEveryRepeatedTask(t *testing.T) {
+	f := &fakeFleetd{}
+	out, err := fleetctl(t, f, "done", "--task", "T1", "--task", "T2", "--task", "T3", "--outcome", "orphaned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.reqs) != 3 {
+		t.Fatalf("%d requests, want one per task: %q", len(f.reqs), f.reqs)
+	}
+	for i, id := range []string{"T1", "T2", "T3"} {
+		if in := reqBody(t, f.reqs[i]); in["task"] != id || in["agent"] != "" || in["outcome"] != "orphaned" {
+			t.Errorf("request %d = %s", i, f.reqs[i])
+		}
+		if !strings.Contains(out, "ok "+id) {
+			t.Errorf("output %q does not confirm %s", out, id)
+		}
+	}
+	for _, args := range [][]string{
+		{"done", "agent-03", "--task", "T1", "--task", "T2"},
+		{"done", "--task", "T1", "--task", "T2", "--branch", "b"},
+		{"done", "--task", "T1", "--task", "T2", "--pr", "u"},
+	} {
+		f := &fakeFleetd{}
+		if _, err := fleetctl(t, f, args...); err == nil || len(f.reqs) != 0 {
+			t.Errorf("%q: err = %v, %d requests; want a refusal before any request", args, err, len(f.reqs))
+		}
+	}
+}
+
 func TestFollowupAndCancelCommands(t *testing.T) {
 	f := &fakeFleetd{}
 	if _, err := fleetctl(t, f, "followup", "T1", "also", "the empty case", "--from", "karmax"); err != nil {
