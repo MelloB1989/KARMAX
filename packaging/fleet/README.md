@@ -218,11 +218,24 @@ is written, and the `token_env` variable is required only when the section exist
 
 - **GitHub.** `github.token_env` in `fleet.yaml` names a token in the env
   file (`gh auth token --user <account>`). Every agent gets it as `GH_TOKEN`:
-  `gh` uses it, and so does git, through gh's credential helper in the
-  image. Containers hold no SSH keys, so the image rewrites `git@github.com:`
-  remotes to HTTPS. If your clones use `~/.ssh/config` aliases for
-  github.com (`git@work-gh:…`), list them in `github.ssh_aliases` and they
-  are rewritten too.
+  `gh` uses it, and so does git, through the image's credential helper
+  (`git-credential-fleet`). Containers hold no SSH keys, so the image rewrites
+  `git@github.com:` remotes to HTTPS. If your clones use `~/.ssh/config`
+  aliases for github.com (`git@work-gh:…`), list them in `github.ssh_aliases`
+  and they are rewritten too.
+- **Another account for some owners.** An org the fleet's account cannot see
+  gets its own token: `github.owners: {acme-org: GH_TOKEN_ACME}`. Each agent
+  holds it as `GH_TOKEN_OWNER_ACME_ORG` (env file), and git and gh pick it by
+  the repository's owner: git from the URL's path, gh from `-R`, a github.com
+  URL or `repos/<owner>/…` path among its arguments, `GH_REPO`, or the
+  checkout's remotes (the `gh` in `/usr/local/bin` is a wrapper that sets
+  `GH_TOKEN` and runs `/usr/bin/gh`). Every other repository keeps
+  `token_env`'s account.
+- **GitHub Packages.** `github.packages_token_env` is handed to agents as
+  `GITHUB_TOKEN`, which is what an `.npmrc` for GitHub Packages reads
+  (`//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}`); `kbuild` passes it to
+  the build host. gh prefers `GH_TOKEN`, so this does not change gh's account.
+  `yarn` and `pnpm` are corepack's.
 - **Git identity.** `git.name` and `git.email`. Each agent commits as
   `<name> (agent-NN)`.
 - **Heavy work.** `build.docker_host` points every agent's Docker at a

@@ -1,0 +1,15 @@
+#!/bin/sh
+# fleet-gh-token [OWNER] — the GitHub token for OWNER's repositories: its own
+# (fleet.yaml github.owners, rendered as GH_TOKEN_OWNER_<OWNER> and listed in
+# FLEET_GITHUB_OWNERS), else the fleet's GH_TOKEN. GitHub names compare
+# case-insensitively. Used by git-credential-fleet and the gh wrapper; it
+# prints a secret, so never run it where the output is shown.
+want=$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')
+if [ -n "$want" ]; then
+  for o in ${FLEET_GITHUB_OWNERS:-}; do
+    [ "$(printf '%s' "$o" | tr 'A-Z' 'a-z')" = "$want" ] || continue
+    printenv "GH_TOKEN_OWNER_$(printf '%s' "$o" | tr 'a-z-' 'A-Z_')" && exit 0
+    break
+  done
+fi
+printf '%s\n' "${GH_TOKEN:-}"

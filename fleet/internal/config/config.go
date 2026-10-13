@@ -139,13 +139,37 @@ type Build struct {
 }
 
 // GitHub is how agents reach GitHub: one token for every agent, as GH_TOKEN
-// (gh, and git through gh's credential helper in the image).
+// (gh, and git through the image's credential helper).
 type GitHub struct {
 	TokenEnv string `yaml:"token_env"`
 	// SSHAliases are the operator's ~/.ssh/config Host names for github.com,
 	// so a remote cloned as git@<alias>:owner/repo is rewritten to HTTPS in
 	// the agents, which hold no SSH keys.
 	SSHAliases []string `yaml:"ssh_aliases"`
+	// Owners gives some owners' repositories their own account — an org the
+	// fleet's account cannot see — as owner → the env file key of its token
+	// (gh auth token --user <account>). git and gh in the image pick it by the
+	// repository's owner; every other repository keeps token_env.
+	Owners map[string]string `yaml:"owners"`
+	// PackagesTokenEnv is handed to agents as GITHUB_TOKEN, which an .npmrc for
+	// GitHub Packages reads (//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}).
+	PackagesTokenEnv string `yaml:"packages_token_env"`
+}
+
+// OwnerNames are the github.owners keys, sorted.
+func (g GitHub) OwnerNames() []string {
+	out := make([]string, 0, len(g.Owners))
+	for o := range g.Owners {
+		out = append(out, o)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// OwnerTokenVar is the agent env var holding an owner's token; the image's
+// fleet-gh-token derives the same name (upper case, '-' as '_').
+func OwnerTokenVar(owner string) string {
+	return "GH_TOKEN_OWNER_" + strings.ToUpper(strings.ReplaceAll(owner, "-", "_"))
 }
 
 // Git is the identity agents commit under; each agent's name is appended,
@@ -384,6 +408,23 @@ func (c *Config) validate() error {
 			return fmt.Errorf("github: ssh_aliases: %q is not a host name", a)
 		}
 	}
+	seenOwner := map[string]string{}
+	for _, o := range c.GitHub.OwnerNames() {
+		if !ghOwner.MatchString(o) {
+			return fmt.Errorf("github: owners: %q is not a GitHub user or org name", o)
+		}
+		// GitHub names are case-insensitive, and the env var is upper case.
+		if prev, dup := seenOwner[strings.ToLower(o)]; dup {
+			return fmt.Errorf("github: owners: %q and %q are the same owner", prev, o)
+		}
+		seenOwner[strings.ToLower(o)] = o
+		if err := checkTokenEnv("github: owners: "+o, c.GitHub.Owners[o]); err != nil {
+			return err
+		}
+	}
+	if c.GitHub.PackagesTokenEnv != "" && !envName.MatchString(c.GitHub.PackagesTokenEnv) {
+		return fmt.Errorf("github: packages_token_env must be an env var NAME, not a token")
+	}
 	if c.Build.DockerHost != "" {
 		if err := checkTokenEnv("build", c.Build.KeyEnv); err != nil {
 			return err
@@ -416,6 +457,9 @@ var envName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 
 // hostAlias is an ssh_config Host name; agent-run writes it into git config.
 var hostAlias = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ghOwner is a GitHub user or org name; it becomes part of an env var name.
+var ghOwner = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`)
 
 // checkTokenEnv refuses a missing name and, without echoing it, anything that
 // looks like a token pasted where its env var's name belongs.

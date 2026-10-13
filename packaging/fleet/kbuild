@@ -17,5 +17,8 @@ case "$PWD/" in
   *) echo "kbuild: $PWD is not under $code, so the build host cannot see it; work in the shared code directory" >&2; exit 2 ;;
 esac
 tty=; [ -t 0 ] && [ -t 1 ] && tty=-t
-exec docker run --rm -i $tty --init -u "$(id -u):$(id -g)" -e HOME="$HOME" \
+# GitHub Packages' token (fleet.yaml github.packages_token_env), for installs
+# such as `kbuild yarn install`; -e NAME takes the value from this env.
+pkg=; [ -n "${GITHUB_TOKEN:-}" ] && pkg="-e GITHUB_TOKEN"
+exec docker run --rm -i $tty --init -u "$(id -u):$(id -g)" -e HOME="$HOME" $pkg \
   -v "$code:$code" -w "$PWD" --entrypoint sh "${FLEET_BUILD_IMAGE:?FLEET_BUILD_IMAGE is not set}" -c "$*"

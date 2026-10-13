@@ -570,3 +570,52 @@ func TestAgentBriefSaysReportsFileUnderTheTask(t *testing.T) {
 		}
 	}
 }
+
+// github.owners: each owner's token goes to the env file under its own name,
+// the list of owners (no secret) to the compose file; packages_token_env is
+// GITHUB_TOKEN. Every named token must be in the env file.
+func TestRenderGivesAgentsOwnerTokens(t *testing.T) {
+	c, err := config.Parse([]byte(nativeYAML + "github: {token_env: GH_TOKEN_FLEET, owners: {acme-org: GH_TOKEN_ACME, beta: GH_TOKEN_BETA}, packages_token_env: GH_TOKEN_ACME}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "render")
+	e := map[string]string{"CLAUDE_TOKEN_AGENT_01": "sk-ant-oat01-A1", "FLEET_TOKEN": "full", "FLEET_RELAY_TOKEN": "relay",
+		"GH_TOKEN_FLEET": "gho_fleet", "GH_TOKEN_ACME": "gho_acme"}
+	if err := Render(c, e, dir); err == nil || !strings.Contains(err.Error(), "GH_TOKEN_BETA") {
+		t.Fatalf("render without an owner's token: %v", err)
+	}
+	e["GH_TOKEN_BETA"] = "gho_beta"
+	if err := Render(c, e, dir); err != nil {
+		t.Fatal(err)
+	}
+	got := readEnv(t, filepath.Join(dir, "agents", "agent-01.env"))
+	want := map[string]string{"GH_TOKEN": "gho_fleet", "GH_TOKEN_OWNER_ACME_ORG": "gho_acme", "GH_TOKEN_OWNER_BETA": "gho_beta", "GITHUB_TOKEN": "gho_acme"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("agent-01.env %s = %q, want %q", k, got[k], v)
+		}
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "compose.pc2.yaml"))
+	for _, secret := range []string{"gho_acme", "gho_beta"} {
+		if strings.Contains(string(b), secret) {
+			t.Fatalf("%s reached the compose file", secret)
+		}
+	}
+	env := loadCompose(t, filepath.Join(dir, "compose.pc2.yaml")).Services["agent-01"].Environment
+	if env["FLEET_GITHUB_OWNERS"] != "acme-org beta" {
+		t.Errorf("FLEET_GITHUB_OWNERS = %q", env["FLEET_GITHUB_OWNERS"])
+	}
+	brief, _ := Brief(c, "agent-01")
+	gh := section(brief, "## GitHub accounts")
+	if !strings.Contains(gh, "`acme-org`, `beta`") || !strings.Contains(gh, "GITHUB_TOKEN") {
+		t.Errorf("brief's GitHub section:\n%s", gh)
+	}
+}
+
+// Without owners or a packages token the brief says nothing about accounts.
+func TestBriefOmitsGitHubAccountsByDefault(t *testing.T) {
+	if b, _ := Brief(cfg(t), "agent-04"); strings.Contains(b, "GitHub accounts") {
+		t.Errorf("brief has a GitHub accounts section:\n%s", b)
+	}
+}

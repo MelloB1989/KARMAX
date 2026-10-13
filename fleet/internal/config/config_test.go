@@ -78,6 +78,11 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"no exec":             "hosts: {kali: {}}\norchestrator: {host: kali, token_env: O}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"low above reserved?": "thresholds: {low_5h: 120}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"bad ssh alias":       "github: {ssh_aliases: ['gh; rm -rf /']}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"bad owner":           "github: {owners: {'acme; rm': G}}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"owner twice":         "github: {owners: {acme-org: G, Acme-Org: H}}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"owner token inline":  "github: {owners: {acme-org: gho_abc}}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"owner no token":      "github: {owners: {acme-org: ''}}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"packages inline":     "github: {packages_token_env: gho_abc}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console host":        "console: {host: nowhere, fleetd_url: 'http://f:7879', token_env: C}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console token":       "console: {host: kali, fleetd_url: 'http://f:7879', token_env: 'sk-abc'}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console is full":     "console: {host: kali, fleetd_url: 'http://f:7879', token_env: FLEET_TOKEN}\nagents: {agent-01: {host: kali, token_env: T}}",
@@ -150,5 +155,21 @@ func TestNoConsoleSectionIsNil(t *testing.T) {
 	}
 	if c.Console != nil {
 		t.Fatalf("console = %+v, want nil", c.Console)
+	}
+}
+
+// An owner's token reaches agents under a name the image's fleet-gh-token
+// derives the same way (upper case, '-' as '_').
+func TestGitHubOwners(t *testing.T) {
+	c, err := Parse([]byte("home: /h\nhosts: {kali: {exec: [docker]}}\norchestrator: {host: kali, token_env: O}\n" +
+		"github: {token_env: G, owners: {zeta: Z, acme-org: A}, packages_token_env: A}\nagents: {agent-01: {host: kali, token_env: T}}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.GitHub.OwnerNames(), " "); got != "acme-org zeta" {
+		t.Errorf("OwnerNames = %q", got)
+	}
+	if got := OwnerTokenVar("acme-org"); got != "GH_TOKEN_OWNER_ACME_ORG" {
+		t.Errorf("OwnerTokenVar = %q", got)
 	}
 }

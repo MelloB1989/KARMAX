@@ -63,6 +63,8 @@ RUN set -eux; arch=$(dpkg --print-architecture); \
     unzip -q /tmp/bun.zip -d /tmp && mv /tmp/bun-linux-*/bun /usr/local/bin/bun && rm -rf /tmp/bun*; \
     npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}"; \
     npm cache clean --force
+# yarn and pnpm through corepack, which fetches the version a package.json pins.
+RUN corepack enable
 
 # You, inside: same uid, gid and HOME as on the host, so absolute paths under
 # HOME (the shared code, Claude Code's per-project keys) match everywhere.
@@ -75,15 +77,20 @@ RUN set -eux; \
 
 COPY packaging/fleet/agent-run /opt/fleet/agent-run
 COPY packaging/fleet/kbuild /usr/local/bin/kbuild
+# git and gh as the repository owner's account (fleet.yaml github.owners); the
+# gh wrapper comes before /usr/bin/gh on PATH.
+COPY packaging/fleet/gh packaging/fleet/git-credential-fleet packaging/fleet/fleet-gh-token /usr/local/bin/
 COPY packaging/fleet/home/status.sh packaging/fleet/home/event.sh packaging/fleet/home/settings.json /opt/fleet/
 COPY packaging/fleet/home/gitconfig /etc/gitconfig
 COPY packaging/fleet/tmux.conf /etc/tmux.conf
 COPY --from=build /out/karmax /out/fleetctl /usr/local/bin/
 RUN chmod 755 /opt/fleet/agent-run /opt/fleet/*.sh /usr/local/bin/kbuild \
+      /usr/local/bin/gh /usr/local/bin/git-credential-fleet /usr/local/bin/fleet-gh-token \
  && cp /opt/fleet/settings.json "$HOME_DIR/.claude/settings.json" && chown "$UID:$GID" "$HOME_DIR/.claude/settings.json"
 
 ENV HOME=${HOME_DIR} \
     DISABLE_AUTOUPDATER=1 \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     TERM=xterm-256color \
     LANG=C.UTF-8 \
     XDG_RUNTIME_DIR=/run/fleet \

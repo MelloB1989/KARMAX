@@ -86,7 +86,8 @@ func Brief(c *config.Config, name string) (string, error) {
 	err := brief.Execute(&b, map[string]any{
 		"Agent": name, "Host": a.Host, "Code": c.Code, "Orchestrator": c.Orchestrator.Name,
 		"OrchestratorLocal": c.Orchestrator.Host == a.Host, "Local": local, "Remote": remote,
-		"BuildHost": buildHost(c.Build.DockerHost),
+		"BuildHost": buildHost(c.Build.DockerHost), "GitHubOwners": c.GitHub.OwnerNames(),
+		"GitHubPackages": c.GitHub.PackagesTokenEnv != "",
 	})
 	return b.String(), err
 }
@@ -124,6 +125,12 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 	if c.GitHub.TokenEnv != "" {
 		need = append(need, c.GitHub.TokenEnv)
 	}
+	for _, o := range c.GitHub.OwnerNames() {
+		need = append(need, c.GitHub.Owners[o])
+	}
+	if c.GitHub.PackagesTokenEnv != "" {
+		need = append(need, c.GitHub.PackagesTokenEnv)
+	}
 	if c.Console != nil {
 		need = append(need, c.Console.TokenEnv)
 	}
@@ -153,6 +160,12 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 		}
 		if c.GitHub.TokenEnv != "" {
 			kv["GH_TOKEN"] = env[c.GitHub.TokenEnv]
+		}
+		for _, o := range c.GitHub.OwnerNames() {
+			kv[config.OwnerTokenVar(o)] = env[c.GitHub.Owners[o]]
+		}
+		if c.GitHub.PackagesTokenEnv != "" {
+			kv["GITHUB_TOKEN"] = env[c.GitHub.PackagesTokenEnv]
 		}
 		if err := writeEnv(filepath.Join(dir, "agents", n+".env"), kv); err != nil {
 			return err
@@ -334,6 +347,10 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 		}
 		if len(c.GitHub.SSHAliases) > 0 {
 			env["FLEET_GITHUB_SSH_ALIASES"] = strings.Join(c.GitHub.SSHAliases, " ")
+		}
+		// Which owners have their own token; the tokens are in the env file.
+		if len(c.GitHub.Owners) > 0 {
+			env["FLEET_GITHUB_OWNERS"] = strings.Join(c.GitHub.OwnerNames(), " ")
 		}
 		if c.Git.Name != "" {
 			who := c.Git.Name + " (" + name + ")"

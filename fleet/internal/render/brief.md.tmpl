@@ -78,6 +78,17 @@ worktree under the shared code instead:
 Plain `docker` here also talks to the build host. Quick checks (a single test,
 a lint) are fine to run locally.
 
+{{end}}{{if or .GitHubOwners .GitHubPackages}}## GitHub accounts
+
+{{if .GitHubOwners}}Repositories under {{range $i, $o := .GitHubOwners}}{{if $i}}, {{end}}`{{$o}}`{{end}} use their own
+account; every other repository uses the fleet's. git and gh pick the account
+from the repository (its remotes, or gh's `-R`), so fetch, push and open PRs as
+usual. Never set `GH_TOKEN` yourself and never print a token. A clone whose
+`origin` is someone else's copy cannot push to the owner's repository: add a
+remote for the owner's repository and push there.
+{{end}}{{if .GitHubPackages}}`GITHUB_TOKEN` is set for GitHub Packages (an `.npmrc` that reads
+`${GITHUB_TOKEN}`){{if .BuildHost}}, and `kbuild` passes it on: `kbuild yarn install`{{end}}.
+{{end}}
 {{end}}## Quota
 
 You share nothing with the other agents: your rate-limit windows are your own

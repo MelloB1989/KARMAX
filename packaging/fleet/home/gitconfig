@@ -5,12 +5,15 @@
 	defaultBranch = main
 [push]
 	autoSetupRemote = true
-# GitHub over HTTPS with the fleet's token (GH_TOKEN, fleet.yaml github:), via
-# gh. Containers hold no SSH keys, so SSH remotes are rewritten to HTTPS here;
-# the operator's ~/.ssh/config aliases (github.ssh_aliases) are added by agent-run.
+# GitHub over HTTPS with the fleet's token (GH_TOKEN, fleet.yaml github:), or
+# the repository owner's own (github.owners): git-credential-fleet picks it by
+# the path, which useHttpPath makes git send. Containers hold no SSH keys, so
+# SSH remotes are rewritten to HTTPS here; the operator's ~/.ssh/config aliases
+# (github.ssh_aliases) are added by agent-run.
 [credential "https://github.com"]
 	helper =
-	helper = !gh auth git-credential
+	helper = fleet
+	useHttpPath = true
 [url "https://github.com/"]
 	insteadOf = git@github.com:
 	insteadOf = ssh://git@github.com/

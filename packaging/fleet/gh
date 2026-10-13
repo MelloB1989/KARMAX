@@ -1,0 +1,64 @@
+#!/bin/sh
+# gh, as the account that may act on the repository at hand. fleet.yaml
+# github.owners gives some owners' repositories their own token (an org the
+# fleet's account cannot see); every other repository keeps GH_TOKEN. The
+# owner is read where gh itself finds the repository: -R/--repo; a github.com
+# URL, or a repos/ or orgs/ API path, as an argument; an owner/repo after
+# `gh repo …`; GH_REPO; else this checkout's remotes, in gh's order (the one
+# `gh repo set-default` chose, then upstream, github, origin).
+real=${FLEET_REAL_GH:-/usr/bin/gh}
+[ -n "${FLEET_GITHUB_OWNERS:-}" ] || exec "$real" "$@"
+
+# owner_of owner/repo | host/owner/repo | https://host/owner/repo/… | git@alias:owner/repo
+owner_of() {
+  s=${1#*://}
+  s=${s#*@}
+  case $s in *:*) s=${s#*:} ;; esac
+  o=${s%%/*}
+  case $o in *.*) s=${s#*/}; o=${s%%/*} ;; esac
+  printf '%s' "$o"
+}
+
+owner= prev=
+for a in "$@"; do
+  case $prev in -R|--repo) owner=$(owner_of "$a"); break ;; esac
+  case $a in
+    --repo=*) owner=$(owner_of "${a#--repo=}"); break ;;
+    -R?*) owner=$(owner_of "${a#-R}"); break ;;
+  esac
+  prev=$a
+done
+if [ -z "$owner" ]; then
+  for a in "$@"; do
+    case $a in
+      https://github.com/*/*|http://github.com/*/*|github.com/*/*) owner=$(owner_of "$a"); break ;;
+      repos/*/*|/repos/*/*|orgs/*|/orgs/*) a=${a#/}; a=${a#*/}; owner=${a%%[/?]*}; break ;;
+    esac
+  done
+fi
+# gh repo clone|view|create|fork… owner/repo
+repo_arg() {
+  shift
+  for a; do
+    case $a in -*|*/*/*) ;; [A-Za-z0-9]*/*) owner_of "$a"; return ;; esac
+  done
+}
+[ -n "$owner" ] || [ "${1:-}" != repo ] || owner=$(repo_arg "$@")
+# {owner} and :owner are gh's own placeholders for the current repository.
+case $owner in *'{'*|:*) owner= ;; esac
+[ -n "$owner" ] || [ -z "${GH_REPO:-}" ] || owner=$(owner_of "$GH_REPO")
+if [ -z "$owner" ]; then
+  base=$(git config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null | while read -r k v; do
+    [ "$v" = base ] && { k=${k#remote.}; printf '%s' "${k%.gh-resolved}"; break; }
+  done)
+  for r in $base upstream github origin; do
+    u=$(git remote get-url "$r" 2>/dev/null) || continue
+    owner=$(owner_of "$u")
+    break
+  done
+fi
+if [ -n "$owner" ]; then
+  t=$(fleet-gh-token "$owner")
+  [ -z "$t" ] || { GH_TOKEN=$t; export GH_TOKEN; }
+fi
+exec "$real" "$@"
