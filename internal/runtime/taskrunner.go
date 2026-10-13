@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"github.com/MelloB1989/karmax/internal/comms"
 	"regexp"
 	"strings"
 	"sync"
@@ -255,7 +256,7 @@ func (rt *KarmaxRuntime) sendTaskText(channelID, target, text string) error {
 	if rt.comms == nil {
 		return fmt.Errorf("no comms")
 	}
-	return rt.comms.Send(channelID, target, text)
+	return rt.comms.SendFrom(comms.ProducerLoop, channelID, target, text)
 }
 
 // taskHooks are the runner's seams: the Jev call and the channel send.

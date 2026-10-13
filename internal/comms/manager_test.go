@@ -194,3 +194,35 @@ func waitForEvent(t *testing.T, ch <-chan bus.Event, kind bus.EventKind) bus.Eve
 		}
 	}
 }
+
+// The producer of an outbound is persisted, so the agent can tell a loop post
+// from its own answer in the same chat.
+func TestSendRecordsItsProducer(t *testing.T) {
+	s, err := store.New(filepath.Join(t.TempDir(), "karmax.db"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.Close()
+	b := bus.NewLog(s, store.DefaultWorkspace, zap.NewNop())
+	mgr := NewManager(b, s, zap.NewNop())
+	if err := mgr.Register(newFakeChannel("c", "discord"), "agent-main"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := mgr.SendFrom(ProducerLoop, "c", "chat", "loop says one thing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Send("c", "chat", "agent says another"); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	rows, _ := s.ListChannelMessages("chat", 10)
+	for _, r := range rows {
+		got[r.Content] = r.SenderID
+	}
+	if got["loop says one thing"] != ProducerLoop || IsAnswerProducer(got["loop says one thing"]) {
+		t.Errorf("loop post recorded as %q", got["loop says one thing"])
+	}
+	if !IsAnswerProducer(got["agent says another"]) {
+		t.Errorf("agent send recorded as %q, must count as an answer", got["agent says another"])
+	}
+}
