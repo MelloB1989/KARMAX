@@ -19,7 +19,7 @@ start() { # name cmd...
 }
 
 [ -x bin/fakegithub ] || { echo "building fakegithub"; go build -o bin/fakegithub ./cmd/fakegithub; }
-[ -x bin/karmax ]     || { echo "building karmax";     go build -o bin/karmax ./cmd/karmax; }
+[ -x bin/karmax ]     || { echo "building karmax";     CGO_ENABLED=0 go build -tags modernc -o bin/karmax ./cmd/karmax; }
 [ -x bin/payments ]   || { echo "building payments";   go build -o bin/payments ./demo/payments; }
 chmod +x demo/*.sh
 
