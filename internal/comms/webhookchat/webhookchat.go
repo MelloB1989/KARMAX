@@ -129,9 +129,19 @@ func (c *Channel) Send(ctx context.Context, target, content string) error {
 }
 
 // PostThread keeps a case in one thread where the platform can (Google Chat
-// threadKey); elsewhere it posts plainly and returns no thread id.
+// threadKey, generic "thread"); elsewhere it posts plainly and returns no
+// thread id.
 func (c *Channel) PostThread(ctx context.Context, target, thread, text string) (string, error) {
-	return c.post(ctx, target, thread, text)
+	if thread == "" && c.preset == PresetGeneric {
+		// The generic payload carries the key, so a bridge can group by it and
+		// send it back as "thread" on a reply.
+		thread = newKey()
+	}
+	id, err := c.post(ctx, target, thread, text)
+	if err == nil && c.preset == PresetGeneric {
+		id = thread
+	}
+	return id, err
 }
 
 func (c *Channel) post(ctx context.Context, target, thread, content string) (string, error) {
@@ -233,12 +243,19 @@ func (c *Channel) HandleInbound(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	msg, ok := c.parse(raw, r.Header.Get("Content-Type"))
+	msg, ok, reason := c.parse(raw, r.Header.Get("Content-Type"))
 	w.Header().Set("Content-Type", "application/json")
 	if !ok {
 		// Platform pings (Google Chat ADDED_TO_SPACE, Slack url_verification) are not messages.
 		if ch := challenge(raw); ch != "" {
 			_ = json.NewEncoder(w).Encode(map[string]string{"challenge": ch})
+			return
+		}
+		if reason != "" {
+			// A post that should have been a message but was not usable must
+			// say so; a 200 would look delivered.
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": reason})
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
@@ -253,27 +270,34 @@ func (c *Channel) HandleInbound(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{}`))
 }
 
-func (c *Channel) parse(raw []byte, contentType string) (comms.Message, bool) {
-	msg := comms.Message{ChannelType: c.Type(), Direction: comms.Inbound, Timestamp: time.Now(), Metadata: map[string]any{}}
-	// Slack/Mattermost outgoing webhooks are form-encoded.
-	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
+// parse understands one inbound post. When it is not a message, reason is
+// empty for a deliberate non-message (a platform event, a bot's own echo) and
+// otherwise says why the post was unusable.
+func (c *Channel) parse(raw []byte, contentType string) (msg comms.Message, ok bool, reason string) {
+	msg = comms.Message{ChannelType: c.Type(), Direction: comms.Inbound, Timestamp: time.Now(), Metadata: map[string]any{}}
+	const noMessage = `no message: send {"text": "..."} as JSON, or a form-encoded text field`
+	var m map[string]any
+	jsonErr := json.Unmarshal(raw, &m)
+	// Slack/Mattermost outgoing webhooks are form-encoded. curl -d sends that
+	// content type even with a JSON body, so a body that is a JSON object wins.
+	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") && (jsonErr != nil || m == nil) {
 		v, err := url.ParseQuery(string(raw))
 		if err != nil || v.Get("text") == "" {
-			return msg, false
+			return msg, false, noMessage
 		}
 		msg.Content, msg.SenderName, msg.SenderID = v.Get("text"), v.Get("user_name"), v.Get("user_id")
 		msg.ChannelID = first(v.Get("channel_name"), v.Get("channel_id"))
+		msg.ReplyToID = first(v.Get("thread"), v.Get("thread_ts"))
 		msg.ID = first(v.Get("post_id"), v.Get("timestamp"), newKey())
-		return msg, true
+		return msg, true, ""
 	}
-	var m map[string]any
-	if json.Unmarshal(raw, &m) != nil {
-		return msg, false
+	if jsonErr != nil || m == nil {
+		return msg, false, "body is not a JSON object"
 	}
 	// Google Chat app event.
-	if gm, ok := m["message"].(map[string]any); ok {
+	if gm, isGC := m["message"].(map[string]any); isGC {
 		if t := s(m, "type"); t != "" && t != "MESSAGE" {
-			return msg, false
+			return msg, false, ""
 		}
 		sender, _ := gm["sender"].(map[string]any)
 		space, _ := gm["space"].(map[string]any)
@@ -287,9 +311,16 @@ func (c *Channel) parse(raw []byte, contentType string) (comms.Message, bool) {
 		msg.ReplyToID = s(thread, "name")
 		msg.ID = first(s(gm, "name"), newKey())
 		if s(sender, "type") == "BOT" {
-			return msg, false
+			return msg, false, ""
 		}
-		return msg, msg.Content != ""
+		if msg.Content == "" {
+			return msg, false, noMessage
+		}
+		return msg, true, ""
+	}
+	// A platform event that is not a message (Google Chat ADDED_TO_SPACE).
+	if t := s(m, "type"); t != "" && t != "MESSAGE" && m["text"] == nil && m["content"] == nil {
+		return msg, false, ""
 	}
 	// Generic, and Slack/Discord-shaped JSON relays.
 	msg.Content = strings.TrimSpace(first(s(m, "text"), s(m, "content"), s(m, "message")))
@@ -299,9 +330,12 @@ func (c *Channel) parse(raw []byte, contentType string) (comms.Message, bool) {
 	msg.ReplyToID = first(s(m, "thread"), s(m, "thread_ts"))
 	msg.ID = first(s(m, "id"), s(m, "message_id"), newKey())
 	if b, _ := m["bot"].(bool); b {
-		return msg, false
+		return msg, false, ""
 	}
-	return msg, msg.Content != ""
+	if msg.Content == "" {
+		return msg, false, noMessage
+	}
+	return msg, true, ""
 }
 
 func challenge(raw []byte) string {
