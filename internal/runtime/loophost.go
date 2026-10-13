@@ -162,7 +162,7 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 				if rt.tooStaleForLoops(evt) {
 					return nil
 				}
-				payload := map[string]any{"event_kind": string(evt.Kind)}
+				payload := map[string]any{"event_kind": string(evt.Kind), "event_id": evt.ID}
 				for pk, pv := range evt.Payload {
 					payload[pk] = pv
 				}

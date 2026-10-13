@@ -42,6 +42,9 @@ type Service struct {
 	// runCmd runs an external command (fleetctl); tests replace it.
 	runCmd func(ctx context.Context, stdin string, name string, args ...string) (string, error)
 
+	claimMu sync.Mutex
+	claims  map[string]claimDecision
+
 	rulesOnce sync.Once
 	orgRules  string
 }
