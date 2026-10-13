@@ -95,9 +95,10 @@ func (t *CommsSendTool) Manifest() tools.ToolManifest {
 			"properties": {
 				"channel_id": {"type": "string", "description": "Which channel to send THROUGH (e.g. 'whatsapp-main'). Optional: defaults to the primary channel. Never put this in 'target'."},
 				"target": {"type": "string", "description": "WHO to send to: a chat JID, a phone number, or a contact/group name. When replying, use the incoming event's 'channel_id' field."},
+				"to": {"type": "string", "description": "Alias for target."},
 				"content": {"type": "string", "description": "The message content to send"}
 			},
-			"required": ["target", "content"]
+			"required": ["content"]
 		}`),
 	}
 }

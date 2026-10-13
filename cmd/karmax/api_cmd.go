@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/config"
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/spf13/cobra"
 )
 
@@ -288,14 +289,35 @@ func newToolCmd() *cobra.Command {
 			for _, t := range toolsList {
 				fmt.Printf("• %-24s %s\n", asStr(t["name"]), oneLine(asStr(t["description"]), 110))
 			}
+			fmt.Println("\nSee a tool's parameters before calling it: karmax tool show <name>")
 			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "show <name>",
+		Short: "Show one tool's description and parameters (type, required, enum)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			out, err := apiGET("/api/tools")
+			if err != nil {
+				return err
+			}
+			for _, t := range asList(out["tools"]) {
+				if tools.CanonicalName(asStr(t["name"])) != tools.CanonicalName(args[0]) {
+					continue
+				}
+				raw, _ := json.Marshal(t["parameters"])
+				fmt.Print(formatToolShow(asStr(t["name"]), asStr(t["description"]), raw))
+				return nil
+			}
+			return fmt.Errorf("no tool named %q (karmax tool list shows them all)", args[0])
 		},
 	})
 
 	var jsonInput, asMember, turn string
 	call := &cobra.Command{
 		Use:   "call <name> [key=value ...]",
-		Short: "Invoke any harness tool (e.g. karmax tool call app.push title=Hi body=There)",
+		Short: "Invoke any harness tool (e.g. karmax tool call app.push title=Hi body=There); see karmax tool show <name> for its parameters",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			input := map[string]any{}
@@ -343,4 +365,38 @@ func newMCPCmd() *cobra.Command {
 		},
 	})
 	return cmd
+}
+
+// formatToolShow renders a tool's description and declared parameters.
+func formatToolShow(name, desc string, params json.RawMessage) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n%s\n\n", name, desc)
+	spec := tools.ParseParams(params)
+	if len(spec.Params) == 0 {
+		b.WriteString("parameters: none declared (any key=value is passed through)\n")
+		return b.String()
+	}
+	b.WriteString("parameters:\n")
+	for _, p := range spec.Params {
+		req := "optional"
+		if p.Required {
+			req = "required"
+		}
+		typ := p.Type
+		if typ == "" {
+			typ = "any"
+		}
+		fmt.Fprintf(&b, "  %s  %s, %s", p.Name, typ, req)
+		if len(p.Enum) > 0 {
+			fmt.Fprintf(&b, ", one of: %s", strings.Join(p.Enum, "|"))
+		}
+		if p.Description != "" {
+			fmt.Fprintf(&b, " — %s", p.Description)
+		}
+		b.WriteString("\n")
+	}
+	if spec.Extra {
+		b.WriteString("  (other keys are accepted)\n")
+	}
+	return b.String()
 }

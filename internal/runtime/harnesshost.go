@@ -291,12 +291,15 @@ session for a specific job — read the CLAUDE.md beside this one for what that 
 
 Everything KARMAX can do is a shell call away. There is no API to learn:
 
-    karmax tool list                     # every tool, with its arguments
+    karmax tool list                     # every tool, with a short description
+    karmax tool show <name>              # its parameters: name, type, required, enum
     karmax tool call <name> k=v k=v      # invoke one
     karmax tool call <name> --json '{…}' # when a value is not a simple string
 
 Run ` + "`karmax tool list`" + ` when you are unsure what exists. Guessing a tool name
-wastes a turn; the list is authoritative and cheap.
+wastes a turn; the list is authoritative and cheap. Before calling a tool you have
+not used, run ` + "`karmax tool show <name>`" + `: argument names are not guessable, and a
+call with an unknown or missing argument is rejected with the names the tool takes.
 
 ## Memory — query it, and keep it
 

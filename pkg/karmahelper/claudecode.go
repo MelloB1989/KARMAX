@@ -322,6 +322,9 @@ func CallTurnTool(ctx context.Context, token, name string, input map[string]any)
 	if actor := reg.actor(); actor != "" && connectorkit.ActorFrom(ctx) == "" {
 		ctx = connectorkit.WithActor(ctx, actor)
 	}
+	if verr := tools.ValidateInput(t.Manifest(), input); verr != nil {
+		return tools.ErrorResult(verr), nil
+	}
 	res, err := t.Execute(ctx, input)
 	rec := ToolCallRecord{Name: name, Input: input, Result: res, Error: err}
 	reg.mu.Lock()
