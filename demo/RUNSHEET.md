@@ -9,14 +9,47 @@ Then: "Let me show you four things it does, all live."
 
 ## Setup (before the audience arrives)
 
-1. From your laptop, tunnel to the demo VM (placeholders — use the real user/host from the operator, never commit them):
+1. Tunnel to the demo VM (placeholders — use the real user/host from the operator, never commit them):
    ```
    ssh -L 9393:127.0.0.1:9393 -L 8787:127.0.0.1:8787 <user>@<vm>
    ```
-2. On the VM, in the KARMAX checkout: `demo/up.sh` (starts fake GitHub, chat, payments, KARMAX; waits for each port).
-3. Open **http://127.0.0.1:9393** on the laptop — the chat page. Keep a second tab on
-   `http://127.0.0.1:8787/_fake/state` (what the "GitHub org" looks like).
-4. Fresh state matters: `demo/down.sh && demo/up.sh` before every full run (see gotchas).
+2. On the VM, in the KARMAX checkout: `demo/up.sh` — starts fake GitHub, chat, payments, KARMAX, then runs
+   `demo/act.sh seed`, which fills the org: **web-app**, **notifications**, **infra** next to payments-api,
+   auth-service and template-go-service. READMEs name their dependencies on each other; **notifications has no
+   CODEOWNERS** (the one red tick in the console).
+3. Open the **Org Office console** at **http://127.0.0.1:9393** on the laptop.
+4. Fresh state before every full run: press **Reset** (`demo/act.sh reset`, = `down.sh && up.sh`, ~30 s) or run it by hand.
+   Identical chat messages are refused for 6 h, so a second pass without a reset is silent.
+
+## Console flow (every button is one `demo/act.sh <action>`)
+
+Press in this order; each row is what the audience should see change.
+
+| # | Button (act.sh) | Audience sees | Say |
+|---|---|---|---|
+| 0 | (nothing) | six repos, payments healthy, one red ✗ on `notifications` (no CODEOWNERS) | "This is a small org: services, a template, one repo that slipped through." |
+| 1 | **Leak PR** (`leak-pr`) | PR *Add S3 receipt uploader* appears; within ~20 s a REQUEST_CHANGES review with an inline comment on the line `accessKey = "AKIA…"` (line 17); the chat post shows the key redacted | "A hard-coded key can never merge. Notice the comment sits on the exact line." |
+| 2 | **Clean PR** (`clean-pr`) then **CI green** (`ci <pr> success`) | PR *feat: add validated refund helper* approved; "will merge once CI is green"; after CI green it merges | "Same reviewer, same rules — clean change, approved and merged on green." |
+| 3 | **Break payments** (`break`) | health goes red (500); ~15 s later 🚨 incident, then 🟡 *Approval needed* with a code | "No pager. It noticed, and asks the owner once." |
+| 4 | **Approve** (`say "approve <CODE>"`) | fix PR *fix: guard nil customer in refund handler* (the diff patches the refund handler in `demo/payments/main.go`), reviewed, merged; incident → ✅ Resolved; health green | "Fixed, reviewed like any PR, loop closed. The code is five characters, typed by a person." |
+| 5 | **Create repo** (`say "create repo ledger-svc from go: double-entry ledger"`) | new repo appears with README, CODEOWNERS, CLAUDE.md, PR template, CI — and a green compliance tick | "Born compliant." |
+| 6 | **Index all** (`say "index all"`), then ask | 📚 *Indexed N repositories* | "Repo docs become org memory." |
+| 7 | Free-form (below) | the agent answers or opens an incident | "No commands to learn." |
+
+If a button's result does not show within 30 s, check the chat panel for the office's message, then use the fallback in the scene section below.
+Keep `demo/act.sh <action>` open in a spare terminal — the buttons call exactly that.
+
+## Free-form beat (the agent, not the office commands)
+
+The agent has `comms.send`, memory and all office tools and answers from the knowledge cards. Run **index all** first, and
+**wait until the feed stops moving** (an answer is swallowed if anything else posts during its turn). Then type as Maya:
+
+1. `What does payments-api depend on?` → auth-service (JWT), Postgres, Stripe, from the card.
+2. `which repos are missing CODEOWNERS?` → `notifications` (it calls `orgops_audit_repos`).
+3. `payments is throwing 500s since the last deploy` → it calls `orgops_report_incident`; an INC appears and the owner alert follows (run **Heal** first if the earlier break is still on, and note incidents on a service dedupe).
+
+**Say:** "Same agent, no buttons — a sentence in chat becomes an incident."
+**Fallback:** if the agent stays silent, `index payments-api` posts the card; the audit is `karmax tool call orgops_audit_repos` on the VM.
 
 ## Scene 1 — PR guardian  (`demo/scene1.sh`)
 
