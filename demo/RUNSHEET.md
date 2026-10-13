@@ -75,3 +75,31 @@ Then: "Let me show you four things it does, all live."
 - `demo/scene2.sh --auto-approve` posts `approve <CODE>` for you.
 - The fake GitHub can't read back branch protection, so it is shown by KARMAX's chat line, not a lookup.
 - The VM's `bin/karmax` must be built with cgo (`CGO_ENABLED=1`, needs `gcc`); a non-cgo build dies with `go-sqlite3 requires cgo to work. This is a stub`.
+
+## Final rehearsal (operator, main 371d854, fresh `down.sh && up.sh`, scenes in pitch order)
+
+Run twice end to end on the demo VM; both runs green.
+
+| scene | time | result |
+|---|---|---|
+| 1 | 16 s | #1 REQUEST_CHANGES (key shown as `AKIAIO••••`, never in full), #2 APPROVE → merged on green CI |
+| 2 | 44 s | 🚨 INC → 🟡 approval → `approve <CODE>` typed via the chat page → fix PR #3 reviewed, merged → ✅ Resolved, `/health` 200 |
+| 3 | 2 s | `acme/ledger-svc` created with README, CODEOWNERS, CLAUDE.md, PR template, CI; protection line in chat |
+| 4 | 24 s | `index all` → 4 repos; "What does payments-api depend on?" → auth-service (JWT), PostgreSQL, Stripe |
+
+`/_fake/state` after the run: merges `acme/payments-api#2`, `acme/payments-api#3`.
+
+### Known core issues visible on stage (not worked around in core)
+
+- **The orchestrator agent also answers office commands.** After `approve <CODE>` it posts "👀 on it…", and after
+  `index all` it can post "I can't run index all…" before the office's own "📚 Indexed …". Every chat message
+  reaches both the office and the agent. Say: "that's the general assistant chiming in; the office did the work."
+- **An agent's answer can be swallowed.** If anything else posts to the same chat target during the agent's turn,
+  KARMAX withholds the answer: `chat already answered this turn; withholding the final text`
+  (internal/agent/agent.go, `repliedDuringTurn`). scene4.sh waits for a quiet chat before asking. **Live, wait
+  until the feed stops moving before typing the question.** If nothing comes, `index payments-api` shows the card.
+- The agent's session reaches KARMAX through the `karmax` CLI and the API (`api:` on 127.0.0.1:9091 in
+  demo/karmax.yaml, `bin/` on PATH in up.sh). Without both, it answers "the KARMAX API is unreachable" and
+  "karmax: command not found".
+- Memory retrieval logs `proactive memory retrieval failed … api.anthropic.com` on each turn, because the
+  agent's API provider is a placeholder (the harness answers first). It's harmless for the demo.
