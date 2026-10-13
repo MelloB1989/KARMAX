@@ -18,9 +18,11 @@ start() { # name cmd...
   echo $! >"demo/run/$name.pid"
 }
 
-[ -x bin/fakegithub ] || { echo "building fakegithub"; go build -o bin/fakegithub ./cmd/fakegithub; }
-[ -x bin/karmax ]     || { echo "building karmax";     CGO_ENABLED=1 go build -o bin/karmax ./cmd/karmax; }
-[ -x bin/payments ]   || { echo "building payments";   go build -o bin/payments ./demo/payments; }
+# Always build: Go's cache makes it quick, and a `git pull` is then the whole deploy.
+echo "building (cached)…"
+go build -o bin/fakegithub ./cmd/fakegithub
+CGO_ENABLED=1 go build -o bin/karmax ./cmd/karmax   # SQLite needs cgo (and gcc)
+go build -o bin/payments ./demo/payments
 chmod +x demo/*.sh
 
 # Run copies under distinct names so another task's `pkill -x karmax` cannot hit this stack.
@@ -42,7 +44,6 @@ wait_port "payments" 127.0.0.1:9494
 # Model auth for the harness (token lives outside the repo; never printed).
 [ -f ~/.config/karmax-demo/env ] && { set -a; . ~/.config/karmax-demo/env; set +a; }
 export PATH="$PWD/bin:$PATH"   # the agent's session calls back into KARMAX with the `karmax` CLI
-export KARMAX_HARNESS_ENV_PASSTHROUGH=CLAUDE_CODE_OAUTH_TOKEN   # loop harness env is an allowlist (internal/safety/env.go)
 start karmax bin/a-karmax start -c demo/karmax.yaml
 wait_port "KARMAX webhooks" 127.0.0.1:9090
 

@@ -20,13 +20,10 @@ api:
   host: "127.0.0.1"
 
 ai:
-  # The agent needs an API-backed session to exist (the harness is routed on top of it and
-  # answers first; the placeholder key is never used while the harness is healthy).
-  default_provider: "anthropic"
-  default_model: "claude-sonnet-4.6"
-  providers:
-    anthropic:
-      api_key: "unused-harness-answers-first"
+  # Every model session (the agent, memory, summaries) runs on the Claude Code
+  # harness below, logged in with CLAUDE_CODE_OAUTH_TOKEN. No API key needed.
+  default_provider: "claude-code"
+  default_model: "sonnet"
 
 harness:
   enabled: true
@@ -93,8 +90,8 @@ agents:
     description: "Engineering office for the acme org"
     system_prompt: |
       You are KARMAX's org office for the acme GitHub organisation. Answer briefly.
-    model: "claude-sonnet-4.6"
-    provider: "anthropic"
+    model: "sonnet"
+    provider: "claude-code"
     temperature: 0.3
     max_tokens: 4096
     restart_policy: "always"
