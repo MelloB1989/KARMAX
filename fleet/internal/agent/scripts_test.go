@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -496,6 +497,51 @@ func TestAgentRunHoldsOffWhileHomeIsUnwritable(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(l.home, ".claude.json")); err == nil {
 		t.Error("~/.claude.json written")
+	}
+}
+
+// With the code directory empty (a bind of the NFS automount stub before the
+// share was mounted) agent-run must not start claude and must not loop — the
+// bind is fixed at container start — but log agent-run.code_missing and exit
+// non-zero, so Docker's restart policy re-binds the mount.
+func TestAgentRunExitsWhenTheCodeDirIsEmpty(t *testing.T) {
+	l := newLocal(t)
+	code := filepath.Join(t.TempDir(), "code")
+	if err := os.MkdirAll(code, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "../../../packaging/fleet/agent-run")
+	cmd.Env = append(os.Environ(), "FLEET_AGENT=agent-03", "FLEET_CODE="+code, "FLEET_CODE_RETRY=0")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() == 0 {
+			t.Fatalf("agent-run exited with %v, want non-zero", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("agent-run did not exit: it must not loop on an empty code dir")
+	}
+	if !strings.Contains(stderr.String(), code) {
+		t.Errorf("stderr = %q, want it to name %s", stderr.String(), code)
+	}
+	b, _ := os.ReadFile(filepath.Join(l.home, ".claude", "fleet", "events.jsonl"))
+	var e struct{ Event, Detail string }
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(b))), &e); err != nil || e.Event != "agent-run.code_missing" || e.Detail != code {
+		t.Fatalf("event = %s (%v)", b, err)
+	}
+	if exec.Command("tmux", "has-session", "-t", "main").Run() == nil {
+		t.Error("claude was started on an empty code dir")
+	}
+	if _, err := os.Stat(filepath.Join(l.home, ".claude.json")); err == nil {
+		t.Error("~/.claude.json written: agent-run went on past the check")
 	}
 }
 

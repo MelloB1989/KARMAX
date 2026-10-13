@@ -74,6 +74,8 @@ const (
 	PhaseCooling  = "cooling"
 	PhaseDisabled = "disabled"
 	PhaseDown     = "down"
+	// PhaseCodeMissing: the container's code mount was empty; it restarts.
+	PhaseCodeMissing = "code_missing"
 )
 
 type Agent struct {

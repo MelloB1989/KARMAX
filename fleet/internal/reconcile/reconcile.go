@@ -25,6 +25,9 @@ const (
 	Cooling  Phase = "cooling"  // rate-limited until its window resets
 	Disabled Phase = "disabled" // its subscription refused it; needs you
 	Down     Phase = "down"     // its container is not running
+	// CodeMissing: agent-run found the shared code directory empty and exits
+	// so Docker restarts the container onto the real mount.
+	CodeMissing Phase = "code_missing"
 )
 
 // State is what fleetd remembers about one agent between ticks.
@@ -189,6 +192,20 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		}
 	}
 
+	// agent-run exits, rather than start claude, when the shared code
+	// directory is empty (a bind of the NFS automount stub before the share
+	// was mounted); Docker's restart policy re-binds it. Until a session is
+	// up again the agent shows as code_missing, not waiting or down.
+	for _, e := range o.Events {
+		if e.Event == "agent-run.code_missing" {
+			if st.Phase != CodeMissing {
+				push("code_missing", st.Name+": the shared code directory is empty in its container; it is restarting until the mount is there")
+			}
+			alertOnce("code", fmt.Sprintf("%s: the shared code directory is empty in its container (NFS not mounted?) — it restarts until the share is there", st.Name))
+			st.Phase = CodeMissing
+		}
+	}
+
 	// A subscription that refused the agent is not fought with restarts.
 	if st.Phase == Disabled {
 		return st, nil
@@ -221,6 +238,9 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	}
 
 	if !o.ContainerUp {
+		if st.Phase == CodeMissing {
+			return st, acts // between restarts: still waiting on the mount
+		}
 		if st.Phase != Down {
 			push("down", st.Name+"'s container is not running")
 		}
@@ -285,9 +305,10 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	}
 	st.PaneOrphanSince = time.Time{}
 	st.SessionID = mine.SessionID
-	if st.Phase == Down {
+	if st.Phase == Down || st.Phase == CodeMissing {
 		st.Phase = Standby
 	}
+	delete(st.Alerted, "code") // a session is up: the code is mounted
 	delete(st.Alerted, "crashloop")
 	delete(st.Alerted, "home") // a session is up: HOME is writable now
 	// A dialog nobody answers leaves the session deaf to messages. Say so,

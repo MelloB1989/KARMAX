@@ -96,6 +96,19 @@ Volumes per agent:
 | `~/.claude` (rest: transcripts, settings) | `agent-NN-home` | private |
 | `/work` | `agent-NN-work` | private, survives rebuilds |
 
+**After a reboot: the code mount.** A container's bind mount is resolved when it *starts*. On PC2
+the NFS share is an `x-systemd.automount`, whose stub satisfies Docker's mount dependency, so after a
+power loss Docker can start the agents on the empty autofs point — and nothing inside can fix that,
+because the bind never changes. So `agent-run` checks first that `$FLEET_CODE` (the same absolute
+path, from the container env) has entries; if not it logs to stderr and `agent-run.code_missing` to
+the event log, sleeps `FLEET_CODE_RETRY` (20 s, so the restart policy does not spin) and **exits 1**
+— it never loops. The compose service has `restart: unless-stopped`, which restarts on any exit with
+a doubling backoff capped at a minute, and the restart re-binds the (by then mounted) share.
+fleetd shows such an agent as `code_missing` (not `waiting` or `down`), alerts once, and excludes it
+from task assignment; the first session to come up clears it. Does not cover a share that stays
+unmounted (friction #40: a changed DHCP address) — the agent then restarts every ~20 s, loudly, until
+the share is fixed.
+
 Every container on a host joins one `fleet-anchor` PID namespace. Not `--pid host`: that would also
 make your own Kali sessions messageable, but every agent runs in bypass mode as your UID and could
 then read `/proc/<pid>/environ` of KARMAX and your shell — their secrets. The anchor keeps agents
