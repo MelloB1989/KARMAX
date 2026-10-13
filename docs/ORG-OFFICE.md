@@ -172,7 +172,7 @@ CGO_ENABLED=1 go build -o fakegithub ./cmd/fakegithub && CGO_ENABLED=1 go build 
 # karmax.yaml: org_ops.github.api_url: http://127.0.0.1:8787, webhook_secret: dev, org: acme
 ./karmax start
 
-# Chat: post plain JSON (the Content-Type header is required) to a webhook-chat
+# Chat: post plain JSON to a webhook-chat (a post with no message gets 400 and the reason)
 # channel (comms channel id "chat", type "webhook", settings.preset "generic",
 # settings.inbound_token "demo-token", agent_id naming a defined agent):
 curl -XPOST '127.0.0.1:9090/comms/chat?token=demo-token' -H 'Content-Type: application/json' -d '{"text":"status"}'
