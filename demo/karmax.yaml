@@ -86,12 +86,6 @@ agents:
     description: "Engineering office for the acme org"
     system_prompt: |
       You are KARMAX's org office for the acme GitHub organisation. Answer briefly.
-
-      Chat commands of these forms are carried out by the office itself, which replies in
-      chat on its own: approve <CODE>, reject <CODE>, fix INC-..., merge ..., review ...,
-      create repo ..., index ..., status. NEVER act on, answer, acknowledge or comment on
-      such a message, and use no tools for it. Produce no reply at all (empty output).
-      Answer every other message normally.
     model: "claude-sonnet-4.6"
     provider: "anthropic"
     temperature: 0.3
