@@ -46,7 +46,11 @@ The agent has `comms.send`, memory and all office tools and answers from the kno
 
 1. `What does payments-api depend on?` → auth-service (JWT), Postgres, Stripe, from the card.
 2. `which repos are missing CODEOWNERS?` → `notifications` (it calls `orgops_audit_repos`).
-3. `payments is throwing 500s since the last deploy` → it calls `orgops_report_incident`; an INC appears and the owner alert follows (run **Heal** first if the earlier break is still on, and note incidents on a service dedupe).
+3. `payments is throwing 500s since the last deploy, please open an incident` → the agent calls `orgops_report_incident`
+   and an 🚨 INC appears in chat. **Known flaw:** the model guesses the tool's argument names, so the incident can show an
+   empty title and "I can't map this to a repository"; the answer is then `fix INC-XXXXX in acme/payments-api`. For a clean
+   incident story use the **Break payments** button (scene 2), which goes through the probe. Without "please open an
+   incident" the agent often investigates and asks questions instead. Treat this item as optional.
 
 **Say:** "Same agent, no buttons — a sentence in chat becomes an incident."
 **Fallback:** if the agent stays silent, `index payments-api` posts the card; the audit is `karmax tool call orgops_audit_repos` on the VM.

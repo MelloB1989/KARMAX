@@ -45,7 +45,7 @@ since=$(last_id)
 say "Maya → #eng:  $QUESTION"
 chat_send "$QUESTION"
 # an answer is any karmax message that is not one of the office's own status posts
-if ans=$(wait_msg "$since" '^[^🚨🟡📦📚🛠👍🛑ℹ❌✅🔔]' "$ASK_TIMEOUT"); then
+if ans=$(wait_msg "$since" '^[^🚨🟡📦📚🛠👍🛑ℹ❌✅🔔👀]' "$ASK_TIMEOUT"); then
   echo "$ans"
 else
   # No model auth: free-form questions go to the orchestrator agent, which needs one.
