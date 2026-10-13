@@ -1,0 +1,54 @@
+package payments
+
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+var (
+	ErrInvalidID      = errors.New("invalid charge id")
+	ErrInvalidAmount  = errors.New("amount must be positive minor units")
+	ErrOverRefund     = errors.New("amount exceeds refundable balance")
+	ErrChargeNotFound = errors.New("charge not found")
+)
+
+// Charge is the slice of a charge a refund needs. Amounts are integer minor units.
+type Charge struct {
+	ID       string
+	Amount   int64
+	Refunded int64
+}
+
+// ChargeStore loads charges. It returns ErrChargeNotFound (or a nil charge) when
+// the id is unknown; any other error is a backend failure.
+type ChargeStore interface {
+	Charge(ctx context.Context, id string) (*Charge, error)
+}
+
+// Refund validates a refund request against the charge's remaining balance and
+// returns the amount in minor units. It does not persist anything: the caller
+// must apply the refund atomically (conditional update or row lock) against the
+// same invariant, and is responsible for authorising access to the charge.
+func Refund(ctx context.Context, s ChargeStore, id string, amount int64) (int64, error) {
+	if id == "" {
+		return 0, ErrInvalidID
+	}
+	if amount <= 0 {
+		return 0, ErrInvalidAmount
+	}
+	c, err := s.Charge(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrChargeNotFound) {
+			return 0, err
+		}
+		return 0, fmt.Errorf("load charge: %w", err)
+	}
+	if c == nil {
+		return 0, ErrChargeNotFound
+	}
+	if amount > c.Amount-c.Refunded {
+		return 0, ErrOverRefund
+	}
+	return amount, nil
+}
