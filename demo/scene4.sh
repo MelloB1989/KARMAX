@@ -5,7 +5,7 @@ set -u
 FAKEGH=${FAKEGH:-${FAKE_GITHUB:-http://127.0.0.1:8787}}
 KARMAX_URL=${KARMAX_URL:-http://127.0.0.1:9090}
 CHAT_URL=${CHAT_URL:-http://127.0.0.1:9393}
-ORG=${ORG:-acme}; TIMEOUT=${TIMEOUT:-90}; ASK_TIMEOUT=${ASK_TIMEOUT:-25}
+ORG=${ORG:-acme}; TIMEOUT=${TIMEOUT:-90}; ASK_TIMEOUT=${ASK_TIMEOUT:-75}
 QUESTION=${QUESTION:-What does payments-api depend on?}
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 chat_send() {
