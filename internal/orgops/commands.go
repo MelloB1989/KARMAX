@@ -186,29 +186,30 @@ const claimTTL = 10 * time.Minute
 // with "approve" and must still reach it), every other verb only when it parsed
 // fully, and never on a channel the office does not listen on.
 func (s *Service) ClaimsMessage(eventID string, p map[string]any) bool {
-	if eventID != "" {
-		s.claimMu.Lock()
-		if c, ok := s.claims[eventID]; ok {
-			s.claimMu.Unlock()
-			return c.claimed
-		}
-		s.claimMu.Unlock()
+	if eventID == "" {
+		return s.claimsNow(p)
+	}
+	// Look up, decide and record under one lock. The router and the command loop
+	// get the same event at the same moment; decided outside the lock, the loop
+	// could claim and approve (deleting the pending row) between the router's
+	// lookup and its own decision, and the router would then record "not
+	// claimed" and hand the approve to the agent after all.
+	s.claimMu.Lock()
+	defer s.claimMu.Unlock()
+	if c, ok := s.claims[eventID]; ok {
+		return c.claimed
 	}
 	claimed := s.claimsNow(p)
-	if eventID != "" {
-		s.claimMu.Lock()
-		if s.claims == nil {
-			s.claims = map[string]claimDecision{}
-		}
-		now := s.now()
-		for id, c := range s.claims {
-			if now.Sub(c.at) > claimTTL {
-				delete(s.claims, id)
-			}
-		}
-		s.claims[eventID] = claimDecision{claimed: claimed, at: now}
-		s.claimMu.Unlock()
+	if s.claims == nil {
+		s.claims = map[string]claimDecision{}
 	}
+	now := s.now()
+	for id, c := range s.claims {
+		if now.Sub(c.at) > claimTTL {
+			delete(s.claims, id)
+		}
+	}
+	s.claims[eventID] = claimDecision{claimed: claimed, at: now}
 	return claimed
 }
 

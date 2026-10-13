@@ -59,7 +59,7 @@ Then: "Let me show you four things it does, all live."
 
 ## Gotchas that matter on stage
 
-- **Approve code is exactly 5 characters** (`approve K7F2Q`). A typo → "Nothing is waiting under …".
+- **Approve code is exactly 5 characters** (`approve K7F2Q`). The office only takes a code it has pending; a typo is not an office command, so it goes to the agent instead. Retype it.
 - **Identical messages are refused for 6 h** (chat de-dup). Running a scene twice produces silence the second time → always `demo/down.sh && demo/up.sh` between runs; it wipes `demo/data`.
 - **Model summary needs harness auth.** `~/.config/karmax-demo/env` (`CLAUDE_CODE_OAUTH_TOKEN`) must be loaded in the shell that runs `up.sh`. Without it reviews/cards still post (deterministic checks / raw docs) but without the model's wording.
 - **Free-form questions go to the orchestrator agent** (anything that isn't `approve`, `create repo`, `index`, `status`…); it needs the harness token and `run_on_start`.

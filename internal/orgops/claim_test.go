@@ -2,7 +2,9 @@ package orgops
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/MelloB1989/karmax/internal/orgops/fakegithub"
@@ -92,5 +94,36 @@ func TestClaimDecisionSurvivesTheApproveItCaused(t *testing.T) {
 	// A different event for the now-consumed code goes to the agent.
 	if h.svc.ClaimsMessage("evt-2", msg) {
 		t.Fatal("a code with nothing pending was claimed")
+	}
+}
+
+// The router and the command loop get the same event at the same moment. The
+// loop's approve consumes the pending row; whichever asks second must still get
+// the one decision already made, never a fresh "not claimed".
+func TestClaimDecisionIsMadeOnceUnderConcurrency(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		h := newHarness(t, nil)
+		code := pendingApproval(t, h)
+		msg := chatMsg("gchat", "gchat", "approve "+code)
+		id := fmt.Sprintf("evt-%d", i)
+
+		var wg sync.WaitGroup
+		var routerClaimed bool
+		wg.Add(2)
+		go func() { // the command loop
+			defer wg.Done()
+			if h.svc.ClaimsMessage(id, msg) {
+				cmd, _ := ParseCommand("approve " + code)
+				_ = h.svc.HandleCommand(context.Background(), h.kit, cmd, "gchat:spaces/eng", "Maya")
+			}
+		}()
+		go func() { // the agent router
+			defer wg.Done()
+			routerClaimed = h.svc.ClaimsMessage(id, msg)
+		}()
+		wg.Wait()
+		if !routerClaimed {
+			t.Fatalf("run %d: the router handed a claimed approve to the agent", i)
+		}
 	}
 }
