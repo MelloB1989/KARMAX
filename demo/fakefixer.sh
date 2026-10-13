@@ -20,49 +20,24 @@ case "$repo" in */*) ;; *) repo=acme/$repo ;; esac
 task=${task:-inc-demo}
 echo "fakefixer: brief received ($(printf %s "$brief" | wc -c) bytes) for $repo / $task" >&2
 
-fix_patch='@@ -41,6 +41,9 @@ func (h *Handler) Refund(w http.ResponseWriter, r *http.Request) {
- 	charge, err := h.store.Charge(r.Context(), chargeID)
- 	if err != nil {
- 		http.Error(w, "charge not found", http.StatusNotFound)
- 		return
- 	}
-+	if charge.Customer == nil {
-+		http.Error(w, "charge has no customer", http.StatusUnprocessableEntity)
-+		return
-+	}
--	name := charge.Customer.Name
-+	name := charge.Customer.Name // safe: guarded above'
-test_patch='@@ -0,0 +1,18 @@
-+package payments
-+
-+import (
-+	"net/http"
-+	"net/http/httptest"
-+	"testing"
-+)
-+
-+func TestRefundWithoutCustomerIsRejected(t *testing.T) {
-+	h := newTestHandler(t, Charge{ID: "ch_1003", Customer: nil})
-+	rec := httptest.NewRecorder()
-+	h.Refund(rec, httptest.NewRequest(http.MethodPost, "/charges/ch_1003/refund", nil))
-+	if rec.Code != http.StatusUnprocessableEntity {
-+		t.Fatalf("want 422, got %d", rec.Code)
-+	}
-+}'
+HERE=$(cd "$(dirname "$0")" && pwd)
+# The patch is a real diff of demo/payments/main.go: the nil-customer guard in the refund handler.
+fix_patch=$(cat "$HERE/prs/fix-refund-guard.patch")
+test_patch=$({ printf '@@ -0,0 +1,%d @@\n' "$(wc -l <"$HERE/prs/fix-refund-guard_test.go.txt")"; sed 's/^/+/' "$HERE/prs/fix-refund-guard_test.go.txt"; })
 body="Incident ${task}
 
-**Root cause:** the refund handler dereferenced \`charge.Customer\` without a nil check; charges created by guest checkout have no customer, so every refund of one panicked into a 500 and /health began failing.
+**Root cause:** the refund handler dereferenced \`charge.Customer\` without a nil check; charges created by guest checkout have no customer, so refunding one (POST /charges/{id}/refund) panicked into a 500 and /health began failing.
 
 **Fix:** guard the nil customer and answer 422 instead of crashing.
 
-**Tested:** added TestRefundWithoutCustomerIsRejected; go test ./... passes."
+**Tested:** added TestRefundGuestChargeIsRejected (fails before, passes after); go test ./... passes."
 
 payload=$(jq -n --arg repo "$repo" --arg head "karmax/fix-$task" --arg body "$body" \
   --arg fp "$fix_patch" --arg tp "$test_patch" '{
   repo:$repo, head:$head, author:"karmax-fixer",
   title:"fix: guard nil customer in refund handler", body:$body,
-  files:[{filename:"internal/payments/refund.go",patch:$fp},
-         {filename:"internal/payments/refund_test.go",status:"added",patch:$tp}]}')
+  files:[{filename:"main.go",patch:$fp},
+         {filename:"main_test.go",status:"added",patch:$tp}]}')
 sleep 3
 pr=$(curl -fsS -XPOST "$GH/_fake/pulls" -d "$payload")
 n=$(printf %s "$pr" | jq -r .number)
