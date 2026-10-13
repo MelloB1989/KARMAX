@@ -1569,6 +1569,11 @@ func (a *Agent) ExecuteTool(ctx context.Context, name string, input map[string]a
 	want := tools.CanonicalName(name)
 	for _, t := range toolset {
 		if tools.CanonicalName(t.Manifest().Name) == want {
+			// Every CLI/harness call lands here: reject arguments the tool does
+			// not declare, so a wrong name fails loudly instead of being ignored.
+			if err := tools.ValidateInput(t.Manifest(), input); err != nil {
+				return tools.ErrorResult(err), nil
+			}
 			a.bus.Publish(bus.NewEvent(bus.EventToolCalled, a.def.ID, map[string]any{
 				"tool":   t.Manifest().Name,
 				"input":  input,

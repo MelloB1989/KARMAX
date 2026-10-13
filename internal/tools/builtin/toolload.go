@@ -41,9 +41,9 @@ func (t *LoadToolTool) Manifest() tools.ToolManifest {
 					"type": "array",
 					"items": {"type": "string"},
 					"description": "Tool names from your index, e.g. [\"google\", \"whatsapp.read\"]."
-				}
-			},
-			"required": ["names"]
+				},
+				"name": {"type": "string", "description": "A single tool name; alias for names with one entry."}
+			}
 		}`),
 	}
 }
