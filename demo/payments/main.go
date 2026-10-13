@@ -1,5 +1,11 @@
 // Demo payments service: a tiny stdlib HTTP server with a fault switch, so the
 // org office's incident autopilot has something real to probe.
+//
+// Fault mode simulates a bad deploy: the refund handler ships without its
+// nil-customer guard, so refunding a guest-checkout charge (no customer)
+// dereferences nil and panics. The panic is recovered into a 500, and while the
+// fault is on /health and /charges report the failure too, which is what the
+// probe sees. The fix PR (demo/fakefixer.sh) adds the guard to this handler.
 package main
 
 import (
@@ -11,6 +17,55 @@ import (
 	"sync/atomic"
 )
 
+type Customer struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Charge.Customer is nil for guest checkouts.
+type Charge struct {
+	ID       string    `json:"id"`
+	Customer *Customer `json:"customer,omitempty"`
+	Amount   int64     `json:"amount"`
+	Currency string    `json:"currency"`
+	Status   string    `json:"status"`
+}
+
+var charges = []*Charge{
+	{ID: "ch_1001", Customer: &Customer{"cus_maya", "Maya"}, Amount: 4200, Currency: "usd", Status: "succeeded"},
+	{ID: "ch_1002", Customer: &Customer{"cus_raj", "Raj"}, Amount: 1850, Currency: "usd", Status: "succeeded"},
+	{ID: "ch_1003", Customer: &Customer{"cus_ana", "Ana"}, Amount: 990, Currency: "usd", Status: "refunded"},
+	{ID: "ch_1004", Customer: nil, Amount: 2500, Currency: "usd", Status: "succeeded"}, // guest checkout
+}
+
+func find(id string) *Charge {
+	for _, c := range charges {
+		if c.ID == id {
+			return c
+		}
+	}
+	return nil
+}
+
+func reply(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// recoverer turns a handler panic into a 500, as net/http would, but logs it.
+func recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic serving %s %s: %v", r.Method, r.URL.Path, rec)
+				reply(w, 500, map[string]string{"error": "internal error"})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:9494", "listen address")
 	flag.Parse()
@@ -18,12 +73,13 @@ func main() {
 	var fault atomic.Bool
 	fault.Store(os.Getenv("FAULT") == "1")
 
-	reply := func(w http.ResponseWriter, code int, v any) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(code)
-		_ = json.NewEncoder(w).Encode(v)
-	}
-	guard := func(ok func(w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
+	log.Printf("payments listening on %s (fault=%v)", *addr, fault.Load())
+	log.Fatal(http.ListenAndServe(*addr, newHandler(&fault)))
+}
+
+func newHandler(fault *atomic.Bool) http.Handler {
+	// While the bad deploy is live, every endpoint reports the outage.
+	healthy := func(ok http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if fault.Load() {
 				reply(w, 500, map[string]string{"error": "nil customer in refund handler"})
@@ -34,16 +90,25 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", guard(func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /health", healthy(func(w http.ResponseWriter, _ *http.Request) {
 		reply(w, 200, map[string]string{"status": "ok"})
 	}))
-	mux.HandleFunc("GET /charges", guard(func(w http.ResponseWriter, _ *http.Request) {
-		reply(w, 200, []map[string]any{
-			{"id": "ch_1001", "customer": "cus_maya", "amount": 4200, "currency": "usd", "status": "succeeded"},
-			{"id": "ch_1002", "customer": "cus_raj", "amount": 1850, "currency": "usd", "status": "succeeded"},
-			{"id": "ch_1003", "customer": "cus_ana", "amount": 990, "currency": "usd", "status": "refunded"},
-		})
+	mux.HandleFunc("GET /charges", healthy(func(w http.ResponseWriter, _ *http.Request) {
+		reply(w, 200, charges)
 	}))
+	mux.HandleFunc("POST /charges/{id}/refund", func(w http.ResponseWriter, r *http.Request) {
+		charge := find(r.PathValue("id"))
+		if charge == nil {
+			reply(w, 404, map[string]string{"error": "charge not found"})
+			return
+		}
+		if !fault.Load() && charge.Customer == nil { // the guard the bad deploy dropped
+			reply(w, 422, map[string]string{"error": "charge has no customer"})
+			return
+		}
+		name := charge.Customer.Name // nil dereference for guest charges when the guard is gone
+		reply(w, 200, map[string]any{"refunded": charge.Amount, "currency": charge.Currency, "receipt_to": name})
+	})
 	mux.HandleFunc("POST /fault/on", func(w http.ResponseWriter, _ *http.Request) {
 		fault.Store(true)
 		reply(w, 200, map[string]bool{"fault": true})
@@ -53,6 +118,5 @@ func main() {
 		reply(w, 200, map[string]bool{"fault": false})
 	})
 
-	log.Printf("payments listening on %s (fault=%v)", *addr, fault.Load())
-	log.Fatal(http.ListenAndServe(*addr, mux))
+	return recoverer(mux)
 }

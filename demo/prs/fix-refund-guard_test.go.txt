@@ -1,0 +1,28 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+)
+
+// A guest-checkout charge has no customer: refunding it must be rejected, not panic.
+func TestRefundGuestChargeIsRejected(t *testing.T) {
+	var fault atomic.Bool
+	fault.Store(true) // the bad deploy: the old code skipped the guard in this mode
+	rec := httptest.NewRecorder()
+	newHandler(&fault).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/charges/ch_1004/refund", nil))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", rec.Code)
+	}
+}
+
+func TestRefundNormalCharge(t *testing.T) {
+	var fault atomic.Bool
+	rec := httptest.NewRecorder()
+	newHandler(&fault).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/charges/ch_1001/refund", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+}
