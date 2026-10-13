@@ -140,3 +140,13 @@ tr.arrive{animation:rowin 3s}
 #banner{position:fixed;top:64px;left:0;right:0;background:#3a1517;color:#ffb4ae;text-align:center;padding:6px;font-size:.85em;z-index:15;border-bottom:1px solid #f0605a66}
 
 .rsum td,.rsum th{padding:5px 10px 5px 0;font-size:.9em;white-space:normal;vertical-align:top}.rsum summary{font-size:.9em}.rsum p{margin:0}
+
+.msg.clampable{max-height:calc(1.45em*4 + 2.6em);overflow:hidden;position:relative}
+.msg.clampable.open,.msg.clampable.fits{max-height:none}
+.msg.clampable:not(.open):not(.fits)::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2.2em;background:linear-gradient(transparent,var(--panel2));pointer-events:none}
+.msg.me.clampable:not(.open)::after{background:linear-gradient(transparent,#1b2a4a)}
+.msg .more{position:absolute;right:12px;bottom:4px;z-index:2;font-size:.82em;font-weight:600;cursor:pointer;background:var(--panel2);padding:0 6px;border-radius:6px}
+.msg.open .more{position:static;display:block;margin-top:4px;background:none;padding:0}
+.dl.blk{background:#f0605a40;box-shadow:inset 4px 0 0 var(--red);animation:blk 1.8s 2}
+@keyframes blk{50%{background:#f0605a80}}
+.gc{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);white-space:normal}.gf{font:.8em var(--mono);color:var(--dim)}

@@ -65,9 +65,9 @@ def health_loop():
                     code = r.status
             except urllib.error.HTTPError as e:
                 code = e.code
-            e = {"t": t0, "ok": 200 <= code < 300, "code": code, "ms": int((time.time() - t0) * 1000)}
+            e = {"t": t0, "ok": 200 <= code < 300, "code": code, "ms": round((time.time() - t0) * 1000, 1)}
         except Exception:
-            e = {"t": t0, "ok": False, "code": 0, "ms": int((time.time() - t0) * 1000), "down": True}
+            e = {"t": t0, "ok": False, "code": 0, "ms": round((time.time() - t0) * 1000, 1), "down": True}
         HEALTH.append(e)
         del HEALTH[:-HEALTH_MAX]
         time.sleep(max(0.2, 2 - (time.time() - t0)))

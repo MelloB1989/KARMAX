@@ -16,6 +16,12 @@ function md(s){
      .replace(/^&gt; ?(.*)$/gm,"<blockquote>$1</blockquote>").replace(/<\/blockquote>\n/g,"</blockquote>");
   return s.replace(/\u0000(\d+)\u0000/g,(_,i)=>keep[i]);
 }
+// PR links (the fake GitHub's URLs are not reachable from the audience's laptop) open the drawer instead
+document.addEventListener("click",e=>{
+  const a=e.target.closest&&e.target.closest("a[href]");if(!a)return;
+  const m=a.getAttribute("href").match(/^https?:\/\/[^/]+\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/?$/);
+  if(m){e.preventDefault();e.stopPropagation();openPR(m[1],m[2])}
+},true);
 
 /* ---- chat ---- */
 const cards=new Map(),seenMsg=new Set(),allMsgs=[];let replyTo="";
@@ -52,6 +58,16 @@ function addMsg(m){
   d.className="msg"+(me?" me":"");
   d.innerHTML='<span class=who>'+esc(me?m.from:"KARMAX")+'<span class=t>'+hhmm(m.ts)+"</span></span>"+md(m.text);
   c.body.appendChild(d);
+  if(!me&&!/^(🟡|🚨)/.test(m.text)){
+    d.classList.add("clampable");
+    requestAnimationFrame(()=>{
+      if(d.scrollHeight>d.clientHeight+4){
+        const b=document.createElement("a");b.className="more";b.textContent="more";
+        b.onclick=ev=>{ev.stopPropagation();const open=d.classList.toggle("open");b.textContent=open?"less":"more"};
+        d.appendChild(b);
+      }else d.classList.add("fits");
+    });
+  }
   feed.appendChild(c.el); // most recent activity at the bottom
   if(stick||me)feed.scrollTop=feed.scrollHeight;
 }
@@ -147,7 +163,7 @@ function renderProd(h,inc){
   const maxMs=Math.max(60,...pts.map(p=>p.ms));
   const bars=pts.map(p=>'<i class="'+(p.down?"d":p.ok?"":"f")+'" style="height:'+(p.ok?Math.max(18,Math.round(100*p.ms/maxMs)):100)+'%" title="'+hhmmss(p.t)+" · HTTP "+p.code+'"></i>').join("");
   $("prodbody").innerHTML='<div class="state '+cls+'"><span class=dot></span><span class=big>'+txt+'</span></div>'+
-    '<div class=kv><span>HTTP <b>'+(last?(last.code||"—"):"—")+'</b></span><span>Error rate <b style="color:'+(rate?"var(--red)":"inherit")+'">'+rate+'%</b> <small>(2 min)</small></span><span>Latency <b>'+(last?last.ms+" ms":"—")+'</b></span>'+
+    '<div class=kv><span>HTTP <b>'+(last?(last.code||"—"):"—")+'</b></span><span>Error rate <b style="color:'+(rate?"var(--red)":"inherit")+'">'+rate+'%</b> <small>(2 min)</small></span><span>Latency <b>'+(last&&!last.down?last.ms.toFixed(1)+" ms":"—")+'</b></span>'+
     (open?'<span>Incident <b class=inc>'+open+'</b></span>':"")+'</div><div class=strip>'+bars+'</div><div class=axis><span>2 min ago</span><span>now</span></div>';
 }
 const STAGES=[["detected","Detected"],["alerted","Owner alerted"],["approved","Approved"],["fix","Fix PR"],["reviewed","Reviewed"],["merged","Merged"],["resolved","Resolved"]];
@@ -247,12 +263,15 @@ async function openPR(repo,n){
   $("drawer").classList.add("open");$("drawer").setAttribute("aria-hidden","false");$("scrim").hidden=false;
   let j;try{j=await (await fetch("/api/pr?repo="+encodeURIComponent(repo)+"&n="+n)).json()}catch(e){$("dbody").innerHTML='<div class=empty>unreachable</div>';return}
   const rv=[...((state.github.state||{}).reviews||[])].reverse().find(r=>r.repo===repo&&r.number==n);
-  const comments=(rv&&rv.comments)||[];
+  const allc=(rv&&rv.comments)||[];
+  // the office anchors file/PR-level findings (no tests, title) at line 1: show those as general comments, not under line 1
+  const comments=allc.map(x=>x.line===1?null:x),general=allc.filter(x=>!x.line||x.line===1);
   const pr=j.pr||{};
   $("dtitle").innerHTML="PR #"+n+" · "+esc(pr.title||"")+"<small>"+esc(repo)+" · "+esc((pr.user||{}).login||"")+"</small>";
   let html="";
   if(rv)html+='<div class="rsum '+(rv.event==="REQUEST_CHANGES"?"bad":rv.event==="APPROVE"?"ok":"")+'"><b>'+(rv.event==="REQUEST_CHANGES"?"⛔ Changes requested":rv.event==="APPROVE"?"✅ Approved":"💬 Review")+"</b>"+"<div style=\"margin-top:6px;white-space:pre-line\">"+reviewBody(rv.body)+"</div></div>";
   else html+='<div class=rsum>No review yet.</div>';
+  if(general.length)html+='<div class=rsum><b>General comments</b>'+general.map(x=>'<div class="gc"><span class=gf>'+esc(x.path||"")+"</span> "+md(x.body||"")+"</div>").join("")+"</div>";
   const used=new Set();
   for(const f of j.files||[]){
     html+='<div class=file><div class=fname>'+esc(f.filename)+' <span style="color:var(--green)">+'+f.additions+'</span> <span style="color:var(--red)">−'+(f.deletions||0)+"</span></div>";
@@ -262,17 +281,19 @@ async function openPR(repo,n){
       if(h){o=+h[1];nn=+h[2];html+='<div class="dl hunk"><span class=ln></span><span class=tx>'+esc(line)+"</span></div>";continue}
       const c=line[0];let cls="",ln="",cm=[];
       if(c==="+"){cls="add";ln=nn;nn++}else if(c==="-"){cls="del";ln=o;o++}else{ln=nn;o++;nn++}
-      if(c!=="-")cm=comments.map((x,i)=>[x,i]).filter(([x,i])=>x.line==ln&&(x.path===f.filename||String(x.path||"").split("/").pop()===f.filename.split("/").pop())&&!used.has(i));
-      html+='<div class="dl '+cls+(cm.length?" hit":"")+'"><span class=ln>'+ln+'</span><span class=tx>'+esc(line)+"</span></div>";
+      if(c!=="-")cm=comments.map((x,i)=>[x,i]).filter(([x,i])=>x&&x.line==ln&&(x.path===f.filename||String(x.path||"").split("/").pop()===f.filename.split("/").pop())&&!used.has(i));
+      const blk=cm.some(([x])=>/blocker|🔒/i.test((x.severity||"")+" "+(x.body||"")));
+      html+='<div class="dl '+cls+(cm.length?" hit":"")+(blk?" blk":"")+'"><span class=ln>'+ln+'</span><span class=tx>'+esc(line)+"</span></div>";
       for(const [x,i] of cm){used.add(i);const sev=x.severity||(/blocker/i.test(x.body||"")?"blocker":"");
         html+='<div class="cm'+(sev==="warning"?" warn":"")+'"><div class=by>KARMAX'+(sev?' · <span>'+esc(sev)+'</span>':"")+" · "+esc(f.filename)+":"+esc(x.line)+"</div>"+md(x.body||"")+"</div>"}
     }
     html+="</div>";
   }
-  const orphan=comments.filter((_,i)=>!used.has(i));
+  const orphan=comments.filter((x,i)=>x&&!used.has(i));
   if(orphan.length)html+="<h4>Other comments</h4>"+orphan.map(x=>'<div class=cm><div class=by>KARMAX · '+esc(x.path||"")+(x.line?":"+esc(x.line):"")+"</div>"+md(x.body||"")+"</div>").join("");
   $("dbody").innerHTML=html;
-  const hit=document.querySelector("#dbody .dl.hit");if(hit)setTimeout(()=>hit.scrollIntoView({block:"center",behavior:"smooth"}),150);
+  const hit=document.querySelector("#dbody .dl.blk")||document.querySelector("#dbody .dl.hit");
+  if(hit){const body=$("dbody");body.scrollTop+=hit.getBoundingClientRect().top-body.getBoundingClientRect().top-body.clientHeight*0.3}
 }
 function closeDrawer(){$("drawer").classList.remove("open");$("drawer").setAttribute("aria-hidden","true");$("scrim").hidden=true}
 $("dclose").onclick=$("scrim").onclick=closeDrawer;
