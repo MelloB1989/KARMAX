@@ -473,7 +473,11 @@ func TestAgentRunHoldsOffWhileHomeIsUnwritable(t *testing.T) {
 	}
 	defer os.Chmod(l.home, 0o755)
 	cmd := exec.Command("sh", "../../../packaging/fleet/agent-run")
-	cmd.Env = append(os.Environ(), "FLEET_AGENT=agent-03", "FLEET_HOME_RETRY=1")
+	code := t.TempDir() // a code dir with something in it, so that check passes
+	if err := os.Mkdir(filepath.Join(code, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(os.Environ(), "FLEET_AGENT=agent-03", "FLEET_HOME_RETRY=1", "FLEET_CODE="+code)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
