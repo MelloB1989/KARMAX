@@ -3,6 +3,7 @@ package recipes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -54,15 +55,76 @@ func runSteps(ctx context.Context, r *Recipe, k loopkit.Kit, b Bindings, steps [
 			}
 		}
 
+		if s.OnError == OnErrorContinue {
+			// A failure already captured by an earlier attempt of this same
+			// run stays captured: the step is not run again, so a resumed run
+			// sees the same outcome the first attempt acted on.
+			if msg, ok, err := priorCapture(k, id); err != nil {
+				return fmt.Errorf("%s:%d: %s: %w", r.Path, s.Line, s.Verb, err)
+			} else if ok {
+				bindCaptured(b, s, msg)
+				continue
+			}
+		}
+
 		out, err := runStep(ctx, r, k, b, s, id)
 		if err != nil {
+			if s.OnError == OnErrorContinue && capturable(ctx, err) {
+				msg := err.Error()
+				if _, serr := k.Step(captureKey(id), func() (string, error) { return msg, nil }); serr != nil {
+					return fmt.Errorf("%s:%d: %s: %w", r.Path, s.Line, s.Verb, serr)
+				}
+				k.Logf("%s:%d: %s failed, continuing (on_error: continue): %s", r.Path, s.Line, s.Verb, msg)
+				bindCaptured(b, s, msg)
+				continue
+			}
 			return fmt.Errorf("%s:%d: %s: %w", r.Path, s.Line, s.Verb, err)
 		}
 		if s.As != "" {
 			b[s.As] = out
+			if s.OnError == OnErrorContinue {
+				b[s.As+"_error"] = ""
+			}
 		}
 	}
 	return nil
+}
+
+// errNotCaptured is what priorCapture's probe returns so that k.Step reports
+// "no checkpoint" without writing one.
+var errNotCaptured = errors.New("recipes: no captured error")
+
+func captureKey(id string) string { return id + "-onerror" }
+
+// priorCapture reports the error message an earlier attempt of this run
+// captured for the step, if any. The capture is a checkpoint of its own: the
+// step's normal checkpoint records only success, so without this a resumed run
+// would execute the failed step a second time.
+func priorCapture(k loopkit.Kit, id string) (string, bool, error) {
+	msg, err := k.Step(captureKey(id), func() (string, error) { return "", errNotCaptured })
+	if err == nil {
+		return msg, true, nil
+	}
+	if errors.Is(err, errNotCaptured) || strings.Contains(err.Error(), errNotCaptured.Error()) {
+		return "", false, nil
+	}
+	return "", false, err
+}
+
+// capturable is whether a failure may be swallowed by on_error: continue. A
+// parked run (await) and a run that is itself being cancelled or has run out
+// of time are not step failures.
+func capturable(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && !errors.Is(err, loopkit.ErrSuspended)
+}
+
+// bindCaptured sets the step's result to empty and <as>_error to the message.
+func bindCaptured(b Bindings, s Step, msg string) {
+	if s.As == "" {
+		return
+	}
+	b[s.As] = ""
+	b[s.As+"_error"] = msg
 }
 
 func runStep(ctx context.Context, r *Recipe, k loopkit.Kit, b Bindings, s Step, id string) (any, error) {
@@ -107,14 +169,18 @@ func runStep(ctx context.Context, r *Recipe, k loopkit.Kit, b Bindings, s Step, 
 		if err != nil {
 			return nil, err
 		}
-		if sessionID == "" && workingDir == "" {
+		maxTurns, err := countArg("max_turns", s.Args["max_turns"], b)
+		if err != nil {
+			return nil, err
+		}
+		if sessionID == "" && workingDir == "" && maxTurns == 0 {
 			// The common case, unchanged: nothing here writes session_id or
 			// working_dir, so every existing recipe keeps calling Harness.
 			return k.Step(id, func() (string, error) { return k.Harness(ctx, p) })
 		}
 		spec := loopkit.HarnessSpec{
 			Prompt: p, SessionID: sessionID, WorkingDir: workingDir,
-			Ephemeral: boolArg(ephemeralRaw, true),
+			Ephemeral: boolArg(ephemeralRaw, true), MaxTurns: maxTurns,
 		}
 		return k.Step(id, func() (string, error) {
 			res, err := k.HarnessWith(ctx, spec)
@@ -266,15 +332,12 @@ func runStep(ctx context.Context, r *Recipe, k loopkit.Kit, b Bindings, s Step, 
 				headers[h] = rendered
 			}
 		}
+		policy, err := retryPolicyFor(s, b)
+		if err != nil {
+			return nil, err
+		}
 		return k.Step(id, func() (string, error) {
-			out, status, err := k.HTTP(ctx, method, url, headers, body)
-			if err != nil {
-				return "", err
-			}
-			if status < 200 || status > 299 {
-				return "", fmt.Errorf("%s %s answered %d", method, url, status)
-			}
-			return out, nil
+			return doHTTP(ctx, k, policy, method, url, headers, body)
 		})
 
 	case VerbTool:
@@ -467,6 +530,13 @@ func runForeach(ctx context.Context, r *Recipe, k loopkit.Kit, b Bindings, s Ste
 	items, err := foreachItems(s, b)
 	if err != nil {
 		return err
+	}
+	limit, err := countArg("limit", s.Args["limit"], b)
+	if err != nil {
+		return err
+	}
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
 	}
 	name := s.Args["as"]
 	for i, item := range items {
@@ -701,4 +771,22 @@ func boolArg(s string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+// countArg renders an optional positive-integer field. Empty is 0, which every
+// caller reads as "not set"; anything else must be a whole number >= 1.
+func countArg(field, raw string, b Bindings) (int, error) {
+	rendered, err := render(raw, b)
+	if err != nil {
+		return 0, err
+	}
+	rendered = strings.TrimSpace(rendered)
+	if rendered == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(rendered)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("%q must be a positive whole number, not %q", field, rendered)
+	}
+	return n, nil
 }

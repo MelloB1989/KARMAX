@@ -648,7 +648,8 @@ func (k *loopKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (lo
 		// The run's own deadline is the limit, not a CLI turn's ten-minute
 		// default: a loop exists to do one job, and cutting its harness off
 		// with minutes of the run left only buys a retry of the same work.
-		Timeout: harnessBudget(ctx)}
+		Timeout:  harnessBudget(ctx),
+		MaxTurns: spec.MaxTurns}
 	res, err := tool.Execute(ctx, map[string]any{
 		"prompt": spec.Prompt, "session_id": spec.SessionID,
 		"working_dir": spec.WorkingDir, "ephemeral": spec.Ephemeral,
@@ -807,34 +808,41 @@ func (k *loopKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (str
 }
 
 func (k *loopKit) HTTP(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, error) {
+	out, status, _, err := k.HTTPWithHeaders(ctx, method, url, headers, body)
+	return out, status, err
+}
+
+// HTTPWithHeaders is HTTP that also returns the response headers, so a recipe's
+// http retry can honour Retry-After.
+func (k *loopKit) HTTPWithHeaders(ctx context.Context, method, url string, headers map[string]string, body string) (string, int, http.Header, error) {
 	// Two gates, and they answer different questions. safety.CheckURL asks
 	// whether ANY loop should reach that address; the broker asks whether THIS
 	// loop was granted that host.
 	if err := safety.CheckURL(url); err != nil {
 		k.rt.log.Warn("loop HTTP request refused",
 			zap.String("loop", k.loopName), zap.String("url", url), zap.Error(err))
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	if err := k.grants().HTTP(hostOf(url)); err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	if method == "" {
 		method = http.MethodGet
 	}
 	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), url, strings.NewReader(body))
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	for hk, hv := range headers {
 		req.Header.Set(hk, hv)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // 8MB safety cap
-	return string(b), resp.StatusCode, nil
+	return string(b), resp.StatusCode, resp.Header, nil
 }
 
 func (k *loopKit) HostTool(name string) string {

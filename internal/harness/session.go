@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/MelloB1989/karmax/internal/proctrack"
 )
 
 // Session is one live conversation with a harness process.
@@ -170,10 +172,15 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 		return fmt.Errorf("harness stdout: %w", err)
 	}
 	cmd.Stderr = nil
+	// Its own process group, so closing the session reaches the CLI's
+	// subprocesses too, and a pidfile entry so a later engine can reap the
+	// group if this one is killed outright.
+	proctrack.SetGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start harness: %w", err)
 	}
+	proctrack.Register(cmd)
 
 	s.cmd = cmd
 	s.pipe = stdin
@@ -188,6 +195,9 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 		// would race the reads, and never waiting leaves a zombie per session.
 		defer func() {
 			_ = cmd.Wait()
+			// The leader is gone; whatever it left in its group goes with it.
+			proctrack.KillGroup(cmd.Process.Pid)
+			proctrack.Unregister(cmd)
 			close(s.exited)
 		}()
 		defer s.endBackground()
@@ -644,6 +654,7 @@ func (s *Session) Close() {
 		case <-s.exited:
 		case <-time.After(3 * time.Second):
 			_ = s.cmd.Process.Kill()
+			proctrack.KillGroup(s.cmd.Process.Pid)
 		}
 	})
 }

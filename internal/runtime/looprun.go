@@ -82,7 +82,7 @@ func (rt *KarmaxRuntime) runLoopDurable(parent context.Context, l loopkit.Loop, 
 // would replay the other ticket's checkpoints.
 func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigger loopkit.Trigger, attempt int, execution string) {
 	runID := uuid.New().String()
-	owner := runID
+	owner := leaseOwnerFor(runID)
 
 	// Single-flight. A loop that is already running is not run again: the old
 	// behaviour let a 4-minute run on a 2-minute schedule pile up, which is how
@@ -113,6 +113,31 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 		// After the lease is gone, so a queued event can take it.
 		rt.drainPending(parent, l)
 	}()
+
+	// A failed run with a retry scheduled owns the execution pointer: its
+	// checkpoints are what the retry resumes from. A fresh cron tick starting
+	// now would mint a new execution, overwrite the pointer, and on finishing
+	// clear it — so the retry would start from scratch and repeat work already
+	// done. The tick is skipped instead; the retry does the same job, a
+	// moment later and from where the last run stopped. (Event and webhook
+	// triggers are not skipped: dropping one would lose the event, where a
+	// skipped tick merely waits for the next.)
+	if trigger.Kind == loopkit.TriggerSchedule && execution == "" {
+		if pending, err := rt.store.LoopRetryPending(l.Name); err != nil {
+			rt.log.Warn("could not check for a pending loop retry", zap.String("loop", l.Name), zap.Error(err))
+		} else if pending && rt.retryDispatchable(l.Name) {
+			rt.log.Info("loop has a retry pending; skipping this tick so the retry resumes from its checkpoints",
+				zap.String("loop", l.Name))
+			return
+		}
+	}
+	// Taken only once the lease is held, so nothing can slip a fresh run in
+	// between a retry being claimed and it starting.
+	if trigger.Kind == "retry" {
+		if err := rt.store.ClearLoopRetry(l.Name); err != nil {
+			rt.log.Warn("could not clear loop retry", zap.String("loop", l.Name), zap.Error(err))
+		}
+	}
 
 	executionID := execution
 	if executionID == "" {
@@ -302,7 +327,30 @@ func (rt *KarmaxRuntime) executeLoop(parent context.Context, l loopkit.Loop, tri
 // resumeInterruptedRuns reschedules work the daemon was killed in the middle
 // of, which used to be marked dead and left there.
 func (rt *KarmaxRuntime) resumeInterruptedRuns() {
-	runs, err := rt.store.ReapStaleLoopRuns(time.Now().Add(-leaseTTL))
+	// Leases first: a process that died holding one leaves "loop already
+	// running" in force for the whole TTL, and its runs "running" forever.
+	// Both are cleared now unless a live process (this one, or a concurrent
+	// one sharing the database) still holds the lease.
+	if freed, err := rt.store.ClearDeadLoopLeases(leaseHolderAlive); err != nil {
+		rt.log.Warn("could not clear stale loop leases", zap.Error(err))
+	} else if len(freed) > 0 {
+		rt.log.Warn("cleared loop leases left by a process that is gone", zap.Strings("loops", freed))
+	}
+	keep := map[string]bool{}
+	if held, err := rt.store.HeldLoopLeases(); err == nil {
+		for _, owner := range held {
+			if _, _, _, runID, ok := leaseOwnerParts(owner); ok {
+				keep[runID] = true
+			}
+		}
+	}
+	// Anything older than this process that no live lease covers was killed
+	// mid-run, however recently. Runs begun by this process are never reaped.
+	cutoff := rt.startedAt
+	if cutoff.IsZero() {
+		cutoff = time.Now()
+	}
+	runs, err := rt.store.ReapLoopRunsExcept(cutoff, keep)
 	if err != nil {
 		rt.log.Warn("could not check for interrupted loop runs", zap.Error(err))
 		return
@@ -402,17 +450,21 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			for _, st := range due {
 				l, ok := rt.loopkitLoops[st.Loop]
 				if !ok {
-					// The loop was uninstalled between the failure and the
-					// retry; clear it rather than retrying forever.
+					// Either the loop was uninstalled between the failure and
+					// the retry, or it is a recipe, which this worker does not
+					// dispatch (a recipe's next scheduled run is its retry).
+					// Clear it rather than keep it pending forever, but say so:
+					// a silent clear made a failure look like it had a retry.
+					rt.log.Warn("clearing a due retry for a loop the retry worker does not dispatch",
+						zap.String("loop", st.Loop), zap.Int("attempt", st.RetryAttempt+1),
+						zap.Bool("recipe", rt.isRecipeLoop(st.Loop)))
 					_ = rt.store.ClearLoopRetry(st.Loop)
 					continue
 				}
-				// Cleared before dispatch so the next tick does not dispatch
-				// the same retry again while this one is still running.
-				if err := rt.store.ClearLoopRetry(st.Loop); err != nil {
-					rt.log.Warn("could not clear loop retry", zap.String("loop", st.Loop), zap.Error(err))
-					continue
-				}
+				// Not cleared here: runLoopOn clears it once it holds the
+				// lease, so a retry that could not start (lease busy) is
+				// still pending on the next tick instead of being lost, and
+				// a cron tick can never slip in between.
 				rt.log.Info("retrying failed loop",
 					zap.String("loop", st.Loop), zap.Int("attempt", st.RetryAttempt+1))
 				go rt.runLoopDurable(ctx, l,
@@ -568,3 +620,19 @@ func (p *partialWorkFailure) Error() string {
 	return fmt.Sprintf("%v (after %d outbound send(s))", p.err, p.sends)
 }
 func (p *partialWorkFailure) Unwrap() error { return p.err }
+
+// retryDispatchable says whether retryWorker can actually re-run this loop.
+// It looks only in loopkitLoops, so a recipe never is: its retry is cleared
+// unrun, and honouring that pending flag would only make the cron tick skip
+// for nothing, delaying recovery by a tick or two.
+func (rt *KarmaxRuntime) retryDispatchable(name string) bool {
+	_, ok := rt.loopkitLoops[name]
+	return ok
+}
+
+func (rt *KarmaxRuntime) isRecipeLoop(name string) bool {
+	rt.recipeMu.RLock()
+	defer rt.recipeMu.RUnlock()
+	_, ok := rt.recipeLoops[strings.TrimPrefix(name, "recipe:")]
+	return ok
+}

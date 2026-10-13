@@ -41,9 +41,9 @@ func recipeVerbs() []string {
 var verbDocs = map[string]string{
 	recipes.VerbAsk:      `- ask: "<prompt>" — the operator's agent, full tools and judgement. Binds with 'as'.`,
 	recipes.VerbObserve:  `- observe: "<prompt>" — same as ask (all tools, sending included). Binds with 'as'.`,
-	recipes.VerbHarness:  `- harness: "<prompt>" — a coding harness: shell, files, web research. Binds with 'as'.`,
+	recipes.VerbHarness:  `- harness: "<prompt>" — a coding harness: shell, files, web research. Object form {text: ..., max_turns: N} caps the agent's turns. Binds with 'as'.`,
 	recipes.VerbGateway:  `- gateway: "<prompt>" — the main model directly, no agent loop. Cheapest; try this first. Binds with 'as'.`,
-	recipes.VerbHTTP:     `- http: { url: ..., method: GET, body: ..., header.X: ... } — headers are flat fields prefixed "header.". Binds with 'as'.`,
+	recipes.VerbHTTP:     `- http: { url: ..., method: GET, body: ..., header.X: ... , retry: { attempts: 3, backoff: 2s } } — headers are flat fields prefixed "header.". Optional retry repeats the request on network errors, 429 and 5xx only (exponential backoff from 'backoff', each wait capped at 60s, Retry-After honoured; 'attempts' counts the first try, max 10) — only for endpoints that tolerate the same request twice. Binds with 'as'.`,
 	recipes.VerbTool:     `- tool: { name: <tool-name>, ...other fields become its input } — binds with 'as'.`,
 	recipes.VerbRecall:   `- recall: "<query>" — reads long-term memory. Binds with 'as'.`,
 	recipes.VerbRemember: `- remember: { fact: ... } — WRITES to long-term memory.`,
@@ -59,7 +59,7 @@ var verbDocs = map[string]string{
 	recipes.VerbCaseState: `- case.state: { case: <case id>, state: ... } — moves the case's state along (both fields required).`,
 	recipes.VerbCaseLog:   `- case.log: { case: <case id>, kind: ..., payload: ... } — appends to the case's history (all three required).`,
 	recipes.VerbAwait:     `- await: { event: ..., case: <case id>, timeout: ..., match: { field: value, ... } } — parks the run, durably (survives a restart), until a matching event arrives (event required; match optional but near-always wanted). Binds with 'as' — the matched event's own payload, which is EXTERNAL data.`,
-	recipes.VerbForeach:   `- foreach: { in: "{{ .list }}", as: <item binding>, steps: [ ...steps... ] } — runs its nested steps once per item (all three required). No top-level 'as' — foreach itself returns nothing.`,
+	recipes.VerbForeach:   `- foreach: { in: "{{ .list }}", as: <item binding>, steps: [ ...steps... ] } — runs its nested steps once per item (all three required; optional limit: N iterates only the first N items). No top-level 'as' — foreach itself returns nothing.`,
 	recipes.VerbSandbox:   `- sandbox: { repo: ..., branch: ..., task: ..., case: <case id>, timeout: ... } — hands a coding task to a container (repo, branch, task required; case optional but ties the run to one). Binds with 'as' (fields: run_id, status, exit_code, log_tail).`,
 }
 
@@ -157,6 +157,17 @@ const workedExamples = `Worked examples.
           to: "#eng"
           thread: "{{ .c.thread_ts }}"
           text: "Build finished for {{ .ticket }}: {{ .build.status }}"
+
+Any step may add 'on_error: continue'. When that step fails the run does not:
+its 'as' binding becomes empty and '<as>_error' holds the error message, so a
+later 'when: "{{ .x_error }}"' can react. A resumed run does not repeat a step
+whose failure was already captured. await cannot use it.
+
+    - http: { url: "https://example.com/ping", retry: { attempts: 3, backoff: 2s } }
+      as: pong
+      on_error: continue
+    - log: "ping failed: {{ .pong_error }}"
+      when: "{{ .pong_error }}"
 
 foreach is the one verb whose value nests OTHER steps, for repeating a body
 once per item:

@@ -63,6 +63,9 @@ type HarnessSpec struct {
 	// deleted the moment this call returns, and nothing is kept to resume.
 	// Only a caller that wants a session to outlive one call sets it false.
 	Ephemeral bool
+	// MaxTurns, when positive, caps the agent's turns for this call
+	// (claude --max-turns). Zero means no cap beyond the run's deadline.
+	MaxTurns int
 }
 
 // HarnessResult is what a HarnessWith call produced.

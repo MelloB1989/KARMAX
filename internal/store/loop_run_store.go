@@ -318,12 +318,20 @@ func (s *Store) PruneLoopRuns(before time.Time) (int64, error) {
 // that it stopped. Without this a killed daemon leaves rows that look like work
 // still in progress forever.
 func (s *Store) ReapStaleLoopRuns(olderThan time.Time) ([]LoopRun, error) {
+	return s.ReapLoopRunsExcept(olderThan, nil)
+}
+
+// ReapLoopRunsExcept is ReapStaleLoopRuns that spares the runs in keep, however
+// old they are. It is how a starting engine reaps what a dead process left
+// behind at once, instead of waiting out the lease TTL, without touching a run
+// a live concurrent process still holds the lease for.
+func (s *Store) ReapLoopRunsExcept(startedBefore time.Time, keep map[string]bool) ([]LoopRun, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rows, err := s.query(`
 SELECT id, loop, trigger_kind, attempt, started_at FROM loop_runs
-WHERE status = 'running' AND started_at < ?`, olderThan)
+WHERE status = 'running' AND started_at < ?`, startedBefore)
 	if err != nil {
 		return nil, err
 	}
@@ -335,6 +343,9 @@ WHERE status = 'running' AND started_at < ?`, olderThan)
 			rows.Close()
 			return nil, err
 		}
+		if keep[r.ID] {
+			continue
+		}
 		r.Trigger, r.Status = trigger.String, "interrupted"
 		out = append(out, r)
 	}
@@ -342,13 +353,81 @@ WHERE status = 'running' AND started_at < ?`, olderThan)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(out) == 0 {
-		return nil, nil
-	}
-
-	_, err = s.exec(`
+	now := time.Now()
+	for _, r := range out {
+		if _, err := s.exec(`
 UPDATE loop_runs SET status = 'interrupted', finished_at = ?,
   error = 'interrupted: the daemon stopped while this run was in progress'
-WHERE status = 'running' AND started_at < ?`, time.Now(), olderThan)
-	return out, err
+WHERE id = ? AND status = 'running'`, now, r.ID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// HeldLoopLeases returns the owner of every lease that has not yet expired.
+func (s *Store) HeldLoopLeases() (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.query(`
+SELECT loop, lease_owner FROM loop_state
+WHERE lease_owner IS NOT NULL AND lease_owner != '' AND lease_until IS NOT NULL AND lease_until > ?`, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var loop, owner string
+		if err := rows.Scan(&loop, &owner); err != nil {
+			return nil, err
+		}
+		out[loop] = owner
+	}
+	return out, rows.Err()
+}
+
+// ClearDeadLoopLeases releases every unexpired lease whose holder the caller
+// says is gone, and returns the loops freed. It is the crash recovery for
+// single-flight: without it a killed process leaves "loop already running" in
+// place for the whole lease TTL.
+//
+// The release is a compare-and-set on the owner it saw, so a lease re-taken by
+// a live run between the read and the write is left alone.
+func (s *Store) ClearDeadLoopLeases(alive func(owner string) bool) ([]string, error) {
+	held, err := s.HeldLoopLeases()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var freed []string
+	for loop, owner := range held {
+		if alive(owner) {
+			continue
+		}
+		res, err := s.exec(
+			`UPDATE loop_state SET lease_until = NULL, lease_owner = '' WHERE loop = ? AND lease_owner = ?`,
+			loop, owner)
+		if err != nil {
+			return freed, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			freed = append(freed, loop)
+		}
+	}
+	return freed, nil
+}
+
+// LoopRetryPending reports whether a failed run of the loop has a retry
+// scheduled (due or not).
+func (s *Store) LoopRetryPending(loop string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.query(`SELECT 1 FROM loop_state WHERE loop = ? AND next_retry_at IS NOT NULL`, loop)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	return rows.Next(), rows.Err()
 }

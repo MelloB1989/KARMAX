@@ -216,3 +216,72 @@ func TestInterruptedRunsAreReturnedForResuming(t *testing.T) {
 		t.Errorf("a run in progress was reaped: %+v", live)
 	}
 }
+
+func TestDeadLeasesAreClearedAndLiveOnesKept(t *testing.T) {
+	s := newTestStore(t)
+	for _, l := range []string{"dead-loop", "live-loop"} {
+		owner := "dead|1|h|r1"
+		if l == "live-loop" {
+			owner = "live|2|h|r2"
+		}
+		if got, err := s.AcquireLoopLease(l, owner, time.Hour); err != nil || !got {
+			t.Fatalf("acquire %s: %v %v", l, got, err)
+		}
+	}
+	freed, err := s.ClearDeadLoopLeases(func(owner string) bool { return owner == "live|2|h|r2" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(freed) != 1 || freed[0] != "dead-loop" {
+		t.Fatalf("freed = %v, want only dead-loop", freed)
+	}
+	// The dead loop can run again at once; the live one still cannot.
+	if got, _ := s.AcquireLoopLease("dead-loop", "next", time.Minute); !got {
+		t.Error("a cleared lease must be takeable immediately")
+	}
+	if got, _ := s.AcquireLoopLease("live-loop", "thief", time.Minute); got {
+		t.Error("a live holder's lease was stolen")
+	}
+}
+
+func TestReapSparesRunsWhoseLeaseIsHeld(t *testing.T) {
+	s := newTestStore(t)
+	old := time.Now().Add(-2 * time.Minute) // far younger than any lease TTL
+	for _, id := range []string{"orphan", "held"} {
+		if err := s.StartLoopRun(LoopRun{ID: id, Loop: "l-" + id, Attempt: 1, StartedAt: old}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.ReapLoopRunsExcept(time.Now(), map[string]bool{"held": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "orphan" {
+		t.Fatalf("reaped %+v, want only the orphan regardless of age", got)
+	}
+	runs, _ := s.RecentLoopRuns("l-held", 5)
+	if len(runs) != 1 || runs[0].Status != "running" {
+		t.Errorf("held run was touched: %+v", runs)
+	}
+}
+
+func TestLoopRetryPending(t *testing.T) {
+	s := newTestStore(t)
+	if p, _ := s.LoopRetryPending("l"); p {
+		t.Fatal("nothing pending yet")
+	}
+	next := time.Now().Add(time.Minute)
+	if err := s.StartLoopRun(LoopRun{ID: "r", Loop: "l", Attempt: 1, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishLoopRun("r", "l", "failed", "x", 1, &next); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.LoopRetryPending("l"); !p {
+		t.Fatal("retry should be pending")
+	}
+	_ = s.ClearLoopRetry("l")
+	if p, _ := s.LoopRetryPending("l"); p {
+		t.Fatal("retry should be cleared")
+	}
+}
