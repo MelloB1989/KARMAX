@@ -47,11 +47,11 @@ button{font:inherit;font-weight:600;background:var(--acc);color:#0b1020;border:0
 button:hover{filter:brightness(1.1)}
 #target{font-size:.82em;color:var(--dim);margin-bottom:6px}#target:empty{display:none}#target a{cursor:pointer}
 #err{color:var(--red);font-size:.82em}#err:empty{display:none}
-#live{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));grid-template-rows:auto minmax(0,1fr) auto;gap:14px;padding:14px;overflow:hidden}
+#live{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));grid-template-rows:auto auto minmax(0,1fr);gap:14px;padding:14px;overflow:hidden}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden}
 #prod{grid-column:span 2}#inc{grid-column:span 3}#prs{grid-column:1/6}#repos{grid-column:span 3}#know{grid-column:span 2}
 .rtable td:first-child{white-space:nowrap}.rtable th{white-space:nowrap}
-#repos,#know{height:clamp(190px,26vh,300px)}
+#prs{max-height:30vh}
 .scroll{overflow:auto;padding:0 20px 14px;min-height:0;flex:1}
 #prodbody,#incbody{padding:0 20px 18px}
 .empty{color:var(--faint);padding:10px 0}
@@ -81,6 +81,7 @@ button:hover{filter:brightness(1.1)}
 .stage.fail .n{background:var(--red);border-color:var(--red);color:#fff}
 @keyframes pulseA{0%{box-shadow:0 0 0 0 #e8b44a99}70%{box-shadow:0 0 0 10px #e8b44a00}}
 .stage .l{font-size:.78em;font-weight:600;line-height:1.2;color:var(--dim)}.stage.done .l{color:var(--fg)}.stage.wait .l{color:var(--amber)}
+.stage .l{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stage .w{font-size:.7em;color:var(--faint);font-family:var(--mono);margin-top:3px;min-height:1.3em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .incsum{font-size:.88em;color:var(--dim);margin-bottom:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* PRs */
@@ -150,3 +151,19 @@ tr.arrive{animation:rowin 3s}
 .dl.blk{background:#f0605a40;box-shadow:inset 4px 0 0 var(--red);animation:blk 1.8s 2}
 @keyframes blk{50%{background:#f0605a80}}
 .gc{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);white-space:normal}.gf{font:.8em var(--mono);color:var(--dim)}
+
+/* compact repositories */
+.rtable td{padding:4px 12px 4px 0}.rtable th{padding:2px 12px 4px 0}
+.rtable tr.bad td{background:#f0605a12}.rtable tr.bad td:first-child{box-shadow:inset 3px 0 0 var(--red);padding-left:8px}
+.rtable .pmini{color:var(--dim);font-size:.78em;margin-left:4px;white-space:nowrap}
+
+@media(max-width:1700px){
+  #prs{max-height:27vh}
+  .ttl{max-width:240px}
+  .kv{gap:6px 16px}
+  .rtable{font-size:.92em}.rtable td{padding:2px 8px 2px 0}.rtable th{padding-right:8px}
+  .rtable .pmini{display:none}
+  td,th{padding-right:8px}
+  td{padding-top:6px;padding-bottom:6px}
+  .stage .w{font-size:.66em}
+}

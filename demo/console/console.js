@@ -171,7 +171,7 @@ function renderProd(h,inc){
   setHTML("pkv",'<span>HTTP <b>'+(last?(last.code||"—"):"—")+'</b></span><span>Error rate <b style="color:'+(rate?"var(--red)":"inherit")+'">'+rate+'%</b> <small>(2 min)</small></span><span>Latency <b>'+(last&&!last.down?last.ms.toFixed(1)+" ms":"—")+'</b></span>'+(open?'<span>Incident <b class=inc>'+open+'</b></span>':""));
   setHTML("pstrip",bars);
 }
-const STAGES=[["detected","Detected"],["alerted","Owner alerted"],["approved","Approved"],["fix","Fix PR"],["reviewed","Reviewed"],["merged","Merged"],["resolved","Resolved"]];
+const STAGES=[["detected","Detected"],["alerted","Alerted"],["approved","Approved"],["fix","Fix PR"],["reviewed","Reviewed"],["merged","Merged"],["resolved","Resolved"]];
 function renderInc(inc){
   if(!inc){$("incid").textContent="";setHTML("incbody",'<div class=empty>No incident on file — production is quiet.</div>');return}
   $("incid").textContent=inc.id+(inc.sev?" · "+inc.sev.toLowerCase():"");
@@ -184,7 +184,9 @@ function renderInc(inc){
     if(s&&s.who)who=(k==="alerted"?"":s.who)+(k==="alerted"?"":" · ")+hhmmss(s.ts);
     if(k==="alerted"&&s&&s.who==="waiting for approval"&&inc.s.approved)who=hhmmss(s.ts);
     if(!s&&cls==="wait")who=k==="approved"?"waiting for a human":"in progress";
-    return '<div class="stage '+cls+'"><div class=n>'+(cls==="done"?"✓":cls==="fail"?"!":i+1)+'</div><div class=l>'+l+'</div><div class=w title="'+esc(who)+'">'+esc(who)+'</div></div>';
+    const tm=s?new Date(s.ts*1000).toLocaleTimeString([],{hour12:false}):(cls==="wait"?(k==="approved"?"waiting":"in progress"):"");
+    const tip=who&&who!==tm?l+" — "+who:l;
+    return '<div class="stage '+cls+'" title="'+esc(tip)+'"><div class=n>'+(cls==="done"?"✓":cls==="fail"?"!":i+1)+'</div><div class=l>'+l+'</div><div class=w>'+esc(tm)+'</div></div>';
   }).join("");
   setHTML("incbody",'<div class=incsum>'+esc(inc.title)+'</div><div class=track>'+html+'</div>');
 }
@@ -204,14 +206,15 @@ function renderPRs(rows){
   document.querySelectorAll("#prbody tr.row").forEach(tr=>tr.onclick=()=>openPR(tr.dataset.repo,tr.dataset.n));
 }
 const CK=[["readme","README"],["codeowners","CODEOWNERS"],["claude","CLAUDE.md"],["ci","CI"],["protection","Protection"]];
+const bad=r=>Object.values(r.checks).some(v=>!v)?1:0;
 function renderRepos(repos,gh){
   if(!gh.ok&&!repos.length){setHTML("repobody",'<div class=empty>GitHub unreachable</div>');return}
   const first=known.repos===null;if(first)known.repos=new Set();
   setHTML("repobody",'<table class=rtable><thead><tr><th>Repository</th>'+CK.map(c=>"<th>"+c[1]+"</th>").join("")+"</tr></thead><tbody>"+
-  repos.map(r=>{
+  [...repos].sort((a,b)=>bad(b)-bad(a)||(b.created?1:0)-(a.created?1:0)||a.name.localeCompare(b.name)).map(r=>{
     const arrive=!first&&!known.repos.has(r.full)?" arrive":"";
-    return '<tr class="'+arrive+'"><td><b>'+esc(r.name)+"</b>"+(r.created?'<span class=new-tag>NEW</span>':"")+"</td>"+CK.map(([k])=>{
-      if(k==="protection"){const p=r.checks.protection;return p?'<td><span class="tick y">✓</span> <small class=mono style="color:var(--dim)">'+p.reviews+" review"+(p.checks.length?" · "+esc(p.checks.join(",")):"")+"</small></td>":'<td><span class="tick n">—</span></td>'}
+    return '<tr class="'+arrive+(bad(r)?" bad":"")+'"><td><b>'+esc(r.name)+"</b>"+(r.created?'<span class=new-tag>NEW</span>':"")+"</td>"+CK.map(([k])=>{
+      if(k==="protection"){const p=r.checks.protection;return p?'<td title="branch protection: '+p.reviews+' review(s)'+(p.checks.length?", required checks: "+esc(p.checks.join(", ")):"")+'"><span class="tick y">✓</span><span class="pmini mono">'+p.reviews+" review"+(p.checks.length?" · "+esc(p.checks.join(",")):"")+"</span></td>":'<td><span class="tick n">—</span></td>'}
       return '<td><span class="tick '+(r.checks[k]?"y":"n")+'">'+(r.checks[k]?"✓":"—")+"</span></td>"}).join("")+"</tr>";
   }).join("")+"</tbody></table>");
   repos.forEach(r=>known.repos.add(r.full));
