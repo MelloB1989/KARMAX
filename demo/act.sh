@@ -63,7 +63,7 @@ say)
   text=${1:-}; user=${2:-Maya}
   [ -n "$text" ] || fail 'usage: act.sh say "<text>" [user]'
   r=$(curl -sS -m 10 -XPOST -H 'Content-Type: application/json' "$CHAT/send" -d "$(jq -nc --arg t "$text" --arg u "$user" '{text:$t,user:$u,channel:"eng"}')" 2>&1)
-  [ "$(printf %s "$r" | jq -r '.ok // false' 2>/dev/null)" = true ] || fail "chat send failed: $(printf %s "$r" | jq -r '.error // .' 2>/dev/null | head -c 300)"
+  [ "$(printf %s "$r" | jq -r '.ok // false' 2>/dev/null)" = true ] || fail "chat send failed: $(e=$(printf %s "$r" | jq -r '.error' 2>/dev/null); printf %s "${e:-$r}" | head -c 300)"
   out '{user:$u,text:$t}' --arg u "$user" --arg t "$text" ;;
 
 seed)
