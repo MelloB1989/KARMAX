@@ -23,7 +23,10 @@ start() { # name cmd...
 [ -x bin/payments ]   || { echo "building payments";   go build -o bin/payments ./demo/payments; }
 chmod +x demo/*.sh
 
-start fakegithub bin/fakegithub -addr 127.0.0.1:8787 -webhook http://127.0.0.1:9090/orgops/github -secret dev -seed acme
+# Run copies under distinct names so another task's `pkill -x karmax` cannot hit this stack.
+cp -f bin/fakegithub bin/a-fakegithub; cp -f bin/karmax bin/a-karmax
+
+start fakegithub bin/a-fakegithub -addr 127.0.0.1:8787 -webhook http://127.0.0.1:9090/orgops/github -secret dev -seed acme
 wait_port "fake GitHub" 127.0.0.1:8787
 
 if [ -f demo/chat/server.py ]; then
@@ -38,7 +41,7 @@ wait_port "payments" 127.0.0.1:9494
 
 # Model auth for the harness (token lives outside the repo; never printed).
 [ -f ~/.config/karmax-demo/env ] && { set -a; . ~/.config/karmax-demo/env; set +a; }
-start karmax bin/karmax start -c demo/karmax.yaml
+start karmax bin/a-karmax start -c demo/karmax.yaml
 wait_port "KARMAX webhooks" 127.0.0.1:9090
 
 cat <<EOT

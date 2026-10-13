@@ -9,7 +9,7 @@ BAD=$(open_pr '{"repo":"acme/payments-api","title":"added aws uploader","body":"
   "files":[{"filename":"uploader.go","patch":"@@ -0,0 +1,4 @@\n+package main\n+\n+const awsKey = \"AKIAIOSFODNN7EXAMPLE\"\n+const awsSecret = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\""}]}')
 echo "opened PR #$BAD"
 for _ in $(seq 1 60); do
-  [ "$(pr_field "[.reviews[]|select(.number==$BAD)]|length")" -gt 0 ] && break; sleep 1
+  [ "$(pr_field "[(.reviews//[])[]|select(.number==$BAD)]|length")" -gt 0 ] && break; sleep 1
 done
 say "KARMAX review of #$BAD"
 pr_field ".reviews[]|select(.number==$BAD)|{event, body, inline_comments:(.comments|length)}"
@@ -20,7 +20,7 @@ GOOD=$(open_pr '{"repo":"acme/payments-api","title":"feat: add refunds endpoint"
            {"filename":"refunds_test.go","patch":"@@ -0,0 +1,5 @@\n+package payments\n+\n+import \"testing\"\n+\n+func TestRefund(t *testing.T) { _ = Refund(\"ch_1\") }"}]}')
 echo "opened PR #$GOOD"
 for _ in $(seq 1 60); do
-  [ "$(pr_field "[.reviews[]|select(.number==$GOOD)]|length")" -gt 0 ] && break; sleep 1
+  [ "$(pr_field "[(.reviews//[])[]|select(.number==$GOOD)]|length")" -gt 0 ] && break; sleep 1
 done
 say "CI goes green on #$GOOD"
 set_ci "$GOOD" success

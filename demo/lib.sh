@@ -25,5 +25,5 @@ open_pr() { curl -fsS -XPOST "$GH/_fake/pulls" -d "$1" | jq -r .number; }
 set_ci() { curl -fsS -XPOST "$GH/_fake/ci" -d "{\"repo\":\"$REPO\",\"number\":$1,\"state\":\"$2\"}" >/dev/null; }
 summary() {
   curl -fsS "$GH/_fake/state" | jq '{prs:[.prs[]|{number,title,state,merged}],
-    reviews:[.reviews[]|{number,event,inline_comments:(.comments|length)}], merges:.merges}'
+    reviews:[(.reviews//[])[]|{number,event,inline_comments:(.comments|length)}], merges:.merges}'
 }
