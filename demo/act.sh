@@ -78,8 +78,11 @@ seed)
     "CODEOWNERS":"* @frontend-team\n",
     ".github/workflows/ci.yml":"name: ci\non: [pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci && npm test\n"}')"
   add notifications "Email and push notifications for orders and incidents" "$(jq -nc '{
-    "README.md":"# notifications\n\nSends order confirmation emails and push notifications from queue events. Python 3.12, Celery, Redis, SES.\n\n## Dependencies\n\n- **payments-api** — consumes `charge.succeeded` and `charge.refunded` webhooks.\n- **auth-service** — looks up the user'"'"'s verified email address.\n- Redis (task queue) and AWS SES (delivery).\n\nNote: the repository was imported from the old monolith and has no CODEOWNERS yet.\n"}')"
+    "README.md":"# notifications\n\nSends order confirmation emails and push notifications from queue events. Python 3.12, Celery, Redis, SES.\n\n## Dependencies\n\n- **payments-api** — consumes `charge.succeeded` and `charge.refunded` webhooks.\n- **auth-service** — looks up the user'"'"'s verified email address.\n- Redis (task queue) and AWS SES (delivery).\n\nNote: the repository was imported from the old monolith and has no CODEOWNERS yet.\n",
+    "CLAUDE.md":"# Rules for notifications\n\n- Never put customer data in logs.\n- Retries must be idempotent.\n",
+    ".github/workflows/ci.yml":"name: ci\non: [pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: pytest\n"}')"
   add infra "Terraform for the acme cloud: networks, databases, clusters" "$(jq -nc '{
+    "CLAUDE.md":"# Rules for infra\n\n- Apply only through CI.\n- No credentials in Terraform files; use the secret manager.\n",
     "README.md":"# infra\n\nTerraform modules for the acme cloud: VPC, Postgres (RDS), Redis, the Kubernetes cluster that runs every service.\n\n## Dependencies\n\n- Terraform 1.8, AWS provider.\n- Provides the Postgres used by **payments-api** and **auth-service**, and the Redis used by **auth-service** and **notifications**.\n\nApply only through CI: `terraform plan` runs on every PR.\n",
     "CODEOWNERS":"* @platform-team\n",
     ".github/workflows/ci.yml":"name: ci\non: [pull_request]\njobs:\n  plan:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: terraform init && terraform validate && terraform plan\n"}')"
@@ -87,9 +90,27 @@ seed)
   add template-go-service "Go service template" "$(jq -nc '{
     "README.md":"# Go service template\n\nHTTP service skeleton with health checks, structured logging and CI.\n",
     "CODEOWNERS":"* @platform-team\n",
+    "CLAUDE.md":"# Rules for services built from this template\n\n- Expose /health and structured logs.\n- No secrets in code.\n- Every change ships with tests.\n",
     "main.go":"package main\n\nfunc main() {}\n",
     ".github/workflows/ci.yml":"name: ci\non: [pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: go test ./...\n"}')"
-  # payments-api and auth-service come from fakegithub -seed; web-app names them, so "who depends on payments?" has answers.
+  # Every repo gets README + CLAUDE.md + CODEOWNERS + CI and branch protection, except ONE deliberate
+  # offender (notifications: no CODEOWNERS, no protection) — so the audit finds exactly it.
+  ci_go='name: ci\non: [pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: go test ./...\n'
+  add payments-api "Payments API: charges, refunds and payouts" "$(jq -nc --arg ci "$(printf "$ci_go")" '{
+    "README.md":"# payments-api\n\nCharges, refunds and payouts over REST. Go 1.22, Postgres, Stripe.\n\nRun: `go run .` · Test: `go test ./...`\n\nDepends on auth-service for JWT validation.\n",
+    "CLAUDE.md":"# Rules for payments-api\n\n- Money is integer minor units, never float.\n- Every handler validates input and returns typed errors.\n- No secrets in code; read them from the environment.\n",
+    "CODEOWNERS":"* @payments-team\n",
+    ".github/workflows/ci.yml":$ci}')"
+  add auth-service "Auth service: login, sessions and JWT issuing" "$(jq -nc '{
+    "README.md":"# auth-service\n\nIssues and validates JWTs (RS256). Node 20 + Redis sessions.\n\nAPIs: POST /login, POST /refresh, GET /.well-known/jwks.json\n",
+    "CLAUDE.md":"# Rules for auth-service\n\n- Never log tokens or passwords.\n- Keys rotate through the secret manager, never the repo.\n- Every endpoint is rate limited.\n",
+    "CODEOWNERS":"* @identity-team\n",
+    ".github/workflows/ci.yml":"name: ci\non: [pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci && npm test\n"}')"
+  for r in payments-api auth-service web-app infra template-go-service; do
+    curl -fsS -m 5 -XPUT "$GH/repos/$ORG/$r/branches/main/protection" -H 'Content-Type: application/json' \
+      -d '{"required_status_checks":{"strict":true,"contexts":["ci"]},"enforce_admins":true,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null}' >/dev/null \
+      || fail "could not protect $r"
+  done
   n=$(curl -fsS "$GH/_fake/state" | jq '.repos|length')
   out '{repos:($n|tonumber),noncompliant:["notifications"]}' --arg n "$n" ;;
 

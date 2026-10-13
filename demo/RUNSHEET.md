@@ -16,7 +16,7 @@ Then: "Let me show you four things it does, all live."
 2. On the VM, in the KARMAX checkout: `demo/up.sh` — starts fake GitHub, chat, payments, KARMAX, then runs
    `demo/act.sh seed`, which fills the org: **web-app**, **notifications**, **infra** next to payments-api,
    auth-service and template-go-service. READMEs name their dependencies on each other; **notifications has no
-   CODEOWNERS** (the one red tick in the console).
+   CODEOWNERS and no branch protection** (the one red row in the console); every other repo has README, CLAUDE.md, CODEOWNERS, CI and protection.
 3. Open the **Org Office console** at **http://127.0.0.1:9393** on the laptop.
 4. Fresh state before every full run: press **Reset** (`demo/act.sh reset`, = `down.sh && up.sh`, ~30 s) or run it by hand.
    Identical chat messages are refused for 6 h, so a second pass without a reset is silent.

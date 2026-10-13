@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"flag"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"sync/atomic"
+	"time"
 )
 
 type Customer struct {
@@ -62,6 +64,19 @@ func recoverer(next http.Handler) http.Handler {
 				reply(w, 500, map[string]string{"error": "internal error"})
 			}
 		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// latency makes the service feel real on a dashboard: 20-60 ms normally, with a
+// slow tail (about 1 in 25 requests takes 800-1200 ms). The fault path pays it too.
+func latency(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d := 20 + rand.Intn(41)
+		if rand.Intn(25) == 0 {
+			d = 800 + rand.Intn(401)
+		}
+		time.Sleep(time.Duration(d) * time.Millisecond)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -118,5 +133,5 @@ func newHandler(fault *atomic.Bool) http.Handler {
 		reply(w, 200, map[string]bool{"fault": false})
 	})
 
-	return recoverer(mux)
+	return recoverer(latency(mux))
 }
