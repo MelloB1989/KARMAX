@@ -202,6 +202,11 @@ type Options struct {
 	// MCPConfig grants the tools in this JSON --mcp-config blob, such as the
 	// operator's browser. Empty grants none.
 	MCPConfig string
+	// SystemPrompt is appended to the CLI's system prompt for this session
+	// (--append-system-prompt). Unlike Instructions it is maintained, not
+	// seeded: it is read from the config on every open, and a live session
+	// whose prompt differs is respawned (transcript kept) before the turn.
+	SystemPrompt string
 }
 
 // Send is the whole caller-facing surface: give it a key and a message.
@@ -297,8 +302,8 @@ func (s *Supervisor) background(key, kind string, t Turn) {
 // breaker degrades or restores a tier, and a warm session is deliberately kept
 // through that (see open) — so a turn naming no model changes nothing, unless
 // an earlier turn pinned the session to one, which "no model" now undoes.
-func needsRespawn(sess *Session, model, effort string) bool {
-	if effort != sess.Effort {
+func needsRespawn(sess *Session, model, effort, systemPrompt string) bool {
+	if effort != sess.Effort || systemPrompt != sess.SystemPrompt {
 		return true
 	}
 	if model != "" {
@@ -339,7 +344,7 @@ func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Polic
 	// session mid-turn is never closed for this; its next turn switches.
 	s.mu.Lock()
 	if sess, ok := s.live[key]; ok && sess.Alive() {
-		if sess.Busy() || !needsRespawn(sess, requested, wantEffort) {
+		if sess.Busy() || !needsRespawn(sess, requested, wantEffort, opt.SystemPrompt) {
 			// Claimed here, under the same lock CloseIfIdle checks Busy() under —
 			// not left for Send to set once it starts. The caller unlocks and
 			// returns this pointer to whoever asked, who then calls Send in its
@@ -394,7 +399,7 @@ func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Polic
 		workdir = filepath.Join(s.cfg.WorkdirRoot, sanitize(key))
 	}
 	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
-		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig,
+		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig, SystemPrompt: opt.SystemPrompt,
 		Name: pol.Name, Launch: pol.Launch}
 	sess.onBackground = func(t Turn) { s.background(key, kind, t) }
 
