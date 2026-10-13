@@ -634,7 +634,7 @@ func (f *Fleet) Wait(ctx context.Context, agent, task string, after int64) (Wait
 			}
 		}
 		switch p := f.State(agent).Phase; p {
-		case reconcile.Down, reconcile.Cooling, reconcile.Disabled:
+		case reconcile.Down, reconcile.CodeMissing, reconcile.Cooling, reconcile.Disabled:
 			return WaitResult{Reason: "phase", Phase: string(p)}, nil
 		}
 		select {

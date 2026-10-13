@@ -22,6 +22,20 @@ event() { # a line in the hook log, so fleetd records what this loop did
     '{t: (now|floor), event: $e, session: $s} + (if $d != "" then {detail: $d} else {} end)' >> "$d/events.jsonl" 2>/dev/null
 }
 
+# The shared code directory must really be there. A container's bind mount is
+# fixed when it starts: after a reboot Docker can start us on the empty
+# autofs stub of the NFS share (the automount satisfies its mount dependency),
+# and no loop in here would ever see the real mount appear. So say so, wait a
+# moment (so the restart policy does not spin), and EXIT non-zero: Docker
+# restarts the container, which re-binds the mount. fleetd alerts on the event.
+code="${FLEET_CODE:-$HOME/code}"
+if [ -z "$(ls -A "$code" 2>/dev/null | head -n 1)" ]; then
+  echo "agent-run: the code directory $code is missing or empty (the share is not mounted yet?); exiting so the container restarts and re-binds it." >&2
+  event "agent-run.code_missing" "" "$code"
+  sleep "${FLEET_CODE_RETRY:-20}"
+  exit 1
+fi
+
 # HOME must be writable: Claude Code keeps ~/.claude.json there, and a start
 # without it opens the first-run wizard, which hears no messages. That is an
 # image built with a home that is not fleet.yaml's (`fleetctl image build`

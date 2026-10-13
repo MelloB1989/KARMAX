@@ -523,3 +523,38 @@ func TestAnUnwritableHomeIsAlertedOncePerEpisode(t *testing.T) {
 		t.Fatal("episode not cleared once a session is up")
 	}
 }
+
+// agent-run exits when the shared code directory is empty and Docker restarts
+// the container: the agent shows as code_missing (not waiting or down) across
+// the restarts, you are told once, and a session coming up clears it.
+func TestAnEmptyCodeDirShowsAsCodeMissingAndAlertsOnce(t *testing.T) {
+	o := obs("")
+	o.Sessions, o.PaneAlive = nil, false
+	o.Events = []observe.Event{{T: t0.Unix(), Event: "agent-run.code_missing"}}
+	st, acts := Decide(th(), State{Name: "agent-03", Phase: Waiting, Task: "t1"}, o)
+	if st.Phase != CodeMissing {
+		t.Fatalf("phase = %s, want code_missing", st.Phase)
+	}
+	if a := has(acts, Alert); a == nil || !strings.Contains(a.Text, "code directory") {
+		t.Fatalf("acts = %v", acts)
+	}
+	if p := has(acts, Push); p == nil || p.Event != "fleet.agent.code_missing" {
+		t.Errorf("orchestrator not told: %v", kinds(acts))
+	}
+	// Between restarts the container is down: still code_missing, no new alert.
+	o.Now, o.Events, o.ContainerUp = t0.Add(time.Minute), nil, false
+	st, acts = Decide(th(), st, o)
+	if st.Phase != CodeMissing || has(acts, Alert) != nil {
+		t.Fatalf("phase = %s acts = %v", st.Phase, kinds(acts))
+	}
+	// Another event: still one alert.
+	o.Events, o.ContainerUp = []observe.Event{{T: t0.Unix(), Event: "agent-run.code_missing"}}, true
+	if st, acts = Decide(th(), st, o); has(acts, Alert) != nil {
+		t.Fatalf("alerted twice: %v", kinds(acts))
+	}
+	up := obs("idle")
+	up.Now = t0.Add(2 * time.Minute)
+	if st, _ = Decide(th(), st, up); st.Phase == CodeMissing || st.Alerted["code"] {
+		t.Fatalf("not cleared once a session is up: %s %v", st.Phase, st.Alerted)
+	}
+}

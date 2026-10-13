@@ -121,6 +121,8 @@ func (f *Fleet) ineligible(r Row) string {
 		return "disabled (" + r.Reason + ")"
 	case reconcile.Down:
 		return "down"
+	case reconcile.CodeMissing:
+		return "code directory missing"
 	case reconcile.Cooling:
 		return "cooling"
 	case reconcile.Working:
