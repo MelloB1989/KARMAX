@@ -15,9 +15,12 @@ say "KARMAX review of #$BAD"
 pr_field ".reviews[]|select(.number==$BAD)|{event, body, inline_comments:(.comments|length)}"
 
 say "PR #B: clean, conventional, with tests"
-GOOD=$(open_pr '{"repo":"acme/payments-api","title":"feat: add refunds endpoint","body":"Adds POST /charges/{id}/refund with validation. Tested with refunds_test.go.","author":"dev2",
-  "files":[{"filename":"refunds.go","patch":"@@ -0,0 +1,3 @@\n+package payments\n+\n+func Refund(id string) error { return nil }"},
-           {"filename":"refunds_test.go","patch":"@@ -0,0 +1,5 @@\n+package payments\n+\n+import \"testing\"\n+\n+func TestRefund(t *testing.T) { _ = Refund(\"ch_1\") }"}]}')
+patch_of() { { printf '@@ -0,0 +1,%d @@\n' "$(wc -l <"$1")"; sed 's/^/+/' "$1"; }; }
+GOOD=$(jq -n --rawfile a <(patch_of demo/prs/refunds.go.txt) --rawfile t <(patch_of demo/prs/refunds_test.go.txt) '{
+  repo:"acme/payments-api", title:"feat: add validated refund helper", author:"dev2",
+  body:"Adds Refund(ctx, store, id, amount): validates the id and amount (integer minor units), rejects over-refunds with typed errors. Table-driven tests cover each error.",
+  files:[{filename:"refunds.go",status:"added",patch:$a},{filename:"refunds_test.go",status:"added",patch:$t}]}' \
+  | curl -fsS -XPOST "$GH/_fake/pulls" -d @- | jq -r .number)
 echo "opened PR #$GOOD"
 for _ in $(seq 1 60); do
   [ "$(pr_field "[(.reviews//[])[]|select(.number==$GOOD)]|length")" -gt 0 ] && break; sleep 1

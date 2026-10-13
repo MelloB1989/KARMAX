@@ -48,6 +48,7 @@ org_ops:
     incident_fix: approve
     incident_merge: auto
     repo_create: auto
+  rules_files: ["demo/ORG.md"]
   repos:
     - match: "payments-api"
       service: "payments"
@@ -58,6 +59,11 @@ org_ops:
   factory:
     templates: { go: "template-go-service" }
     default_template: "go"
+    protect_default_branch: true
+    required_checks: ["ci"]
+    bootstrap:
+      "CODEOWNERS": "* {{owners}}\n"
+      ".github/pull_request_template.md": "## What\n\n## Why\n\n## How it was tested\n"
   probes:
     - name: "payments"
       url: "http://127.0.0.1:9494/health"
