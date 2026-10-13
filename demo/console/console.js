@@ -296,3 +296,7 @@ async function poll(){
 }
 setInterval(poll,1200);poll();
 setInterval(()=>$("clock").textContent=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"}),500);
+/* deep links, handy for screenshots: #pr=acme/payments-api/1 opens the drawer, #controls shows the presenter panel */
+(function(){const h=decodeURIComponent(location.hash.slice(1));
+  let x=h.match(/pr=([\w.-]+\/[\w.-]+)\/(\d+)/);if(x)setTimeout(()=>openPR(x[1],x[2]),1500);
+  if(/controls/.test(h))$("ctl").hidden=false;})();
