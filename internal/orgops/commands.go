@@ -24,9 +24,10 @@ type Command struct {
 }
 
 var (
-	cmdPrefix  = regexp.MustCompile(`(?i)^\s*(?:[@/]?karmax[:,]?\s+)?`)
-	cmdApprove = regexp.MustCompile(`(?i)^(approve|approved|yes|lgtm|go|ship it)\s+([A-Z0-9]{5})\b`)
-	cmdReject  = regexp.MustCompile(`(?i)^(reject|deny|no|drop|cancel)\s+([A-Z0-9]{5})\b`)
+	cmdPrefix = regexp.MustCompile(`(?i)^\s*(?:[@/]?karmax[:,]?\s+)?`)
+	// Codes always carry a digit, so "approve lunch" stays conversation.
+	cmdApprove = regexp.MustCompile(`(?i)^(approve|approved|lgtm)\s+([A-Z]*[0-9][A-Z0-9]*)\b`)
+	cmdReject  = regexp.MustCompile(`(?i)^(reject|deny|cancel)\s+([A-Z]*[0-9][A-Z0-9]*)\b`)
 	cmdFix     = regexp.MustCompile(`(?i)^fix\s+(INC-[A-Z0-9]{5})(?:\s+in\s+([\w.-]+(?:/[\w.-]+)?))?`)
 	cmdPRRef   = regexp.MustCompile(`(?i)^(merge|review)\s+(?:pr\s+)?([\w.-]+(?:/[\w.-]+)?)#(\d+)`)
 	cmdCreate  = regexp.MustCompile(`(?i)^(?:create|new|make)\s+(?:a\s+)?(?:new\s+)?repo(?:sitory)?\s+([\w.-]+)(?:\s+from\s+([\w./-]+))?(?:\s*[:\-–]\s*(.+))?$`)
@@ -41,10 +42,10 @@ func ParseCommand(text string) (Command, bool) {
 	if t == "" {
 		return Command{}, false
 	}
-	if m := cmdApprove.FindStringSubmatch(t); m != nil {
+	if m := cmdApprove.FindStringSubmatch(t); m != nil && len(m[2]) == 5 {
 		return Command{Verb: "approve", Code: strings.ToUpper(m[2])}, true
 	}
-	if m := cmdReject.FindStringSubmatch(t); m != nil {
+	if m := cmdReject.FindStringSubmatch(t); m != nil && len(m[2]) == 5 {
 		return Command{Verb: "reject", Code: strings.ToUpper(m[2])}, true
 	}
 	if m := cmdFix.FindStringSubmatch(t); m != nil {

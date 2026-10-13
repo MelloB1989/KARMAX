@@ -168,6 +168,10 @@ flowchart LR
   exchange work, with a hop limit so a chain cannot run away.
 - **Voice** (`internal/voice`) — the interface a voice integration plugs into; WhatsApp calls
   are answered and spoken through it.
+- **Org office** (`internal/orgops`) — an engineering agent for a whole GitHub org: PR review
+  against the org's written rules, security scan, merge on green CI, repo factory, knowledge
+  store and an incident autopilot that alerts, fixes and ships. Autonomy is per action and per
+  repo; any chat works. See [docs/ORG-OFFICE.md](docs/ORG-OFFICE.md).
 - **vorg** (`internal/vorg`) — instantiates a virtual organisation of agents from a
   declarative spec.
 - **API** (`internal/api`) — bearer-auth HTTP API plus mDNS discovery for the app.

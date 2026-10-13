@@ -65,6 +65,10 @@ type Config struct {
 	// ?token= query parameter. AlertTokenEnv names an env var to read it from.
 	AlertToken    string `yaml:"alert_token"`
 	AlertTokenEnv string `yaml:"alert_token_env"`
+	// MergeWithoutCI lets a queued merge go through on a repository where no
+	// CI reports at all. Off by default: "no checks yet" and "no checks ever"
+	// look the same, and only the org can say which it means.
+	MergeWithoutCI bool `yaml:"merge_without_ci"`
 	// ListenChannels are the KARMAX channel ids whose messages are read for
 	// office commands ("approve K7F2Q", "fix INC-…", "status"). Empty means
 	// every channel except WhatsApp; "*" means every channel.

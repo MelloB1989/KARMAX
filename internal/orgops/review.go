@@ -60,6 +60,15 @@ func (s *Service) ReviewPR(ctx context.Context, k loopkit.Kit, repo string, n in
 	if pr.State != "" && pr.State != "open" {
 		return res, nil
 	}
+	// One review per commit: a webhook redelivery, or the incident flow and
+	// the PR loop both reaching the same fix PR, must not review it twice.
+	seenKey := fmt.Sprintf("%s#%d@%s", repo, n, pr.Head.SHA)
+	if _, seen, _ := s.kv.KVGet(groupReviews+":seen", seenKey); seen && pr.Head.SHA != "" {
+		var prev ReviewResult
+		_, _ = s.getJSON(groupReviews, fmt.Sprintf("%s#%d", repo, n), &prev)
+		return prev, nil
+	}
+	_ = s.kv.KVSet(groupReviews+":seen", seenKey, "1", 30*24*time.Hour)
 	files, err := s.gh.ListPRFiles(ctx, repo, n)
 	if err != nil {
 		return res, fmt.Errorf("read PR files: %w", err)
@@ -157,7 +166,8 @@ func (s *Service) ReviewPR(ctx context.Context, k loopkit.Kit, repo string, n in
 		_ = k.Notify("Security finding in "+repo, fmt.Sprintf("%d issue(s) in PR #%d", len(threats), n))
 	}
 
-	if !blocked && res.Verdict == "approve" && !pr.Draft {
+	// A fix branch's merge belongs to its incident, which has its own policy.
+	if !blocked && res.Verdict == "approve" && !pr.Draft && !strings.HasPrefix(pr.Head.Ref, FixBranchPrefix) {
 		res.Merge = pol.Decide(ActMerge, res.Risk)
 		s.queueMerge(ctx, k, Automerge{Repo: repo, Number: n, Action: ActMerge, CaseID: caseID, Channel: channel}, res.Merge, pr.Head.SHA,
 			fmt.Sprintf("Review passed with risk %.2f.", res.Risk))
@@ -227,9 +237,7 @@ func (s *Service) queueMerge(ctx context.Context, k loopkit.Kit, am Automerge, m
 	case ModeAuto:
 		_ = s.putJSON(groupAutomerge, label, am, 7*24*time.Hour)
 		s.say(ctx, k, am.CaseID, am.Channel, fmt.Sprintf("🤖 %s will merge automatically once CI is green.", label))
-		if sha != "" {
-			s.TryMerge(ctx, k, am, sha)
-		}
+		s.TryMerge(ctx, k, am, sha)
 	case ModeApprove:
 		_, _ = s.ask(ctx, k, Pending{Action: am.Action, Title: "merge " + label, Repo: am.Repo, Number: am.Number,
 			CaseID: am.CaseID, Channel: am.Channel, Args: map[string]any{"incident": am.Incident}}, why)
@@ -270,8 +278,11 @@ func (s *Service) TryMerge(ctx context.Context, k loopkit.Kit, am Automerge, sha
 		}
 		return
 	}
-	// "success", or "none" when the repository has no CI at all — the org
-	// chose to merge, and a repo with no checks has nothing to wait for.
+	// "none" is a repo with no CI, or CI that has not reported yet — the two
+	// look the same, so only an org that said so merges without checks.
+	if state == "none" && !s.cfg.MergeWithoutCI {
+		return
+	}
 	if err := s.gh.Merge(ctx, am.Repo, am.Number, "squash", ""); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == 405 {

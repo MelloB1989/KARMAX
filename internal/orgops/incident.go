@@ -173,6 +173,9 @@ func (s *Service) ownersForIncident(in Incident) []string {
 	return s.cfg.OwnersFor(in.Repo)
 }
 
+// FixBranchPrefix marks branches the office's own fixes are pushed to.
+const FixBranchPrefix = "karmax/fix-"
+
 // FixResult is what a dispatched agent reports back.
 type FixResult struct {
 	PRURL     string `json:"pr_url"`
@@ -205,14 +208,18 @@ func (s *Service) FixIncident(ctx context.Context, k loopkit.Kit, id, repoOverri
 	if in.CaseID != "" {
 		_ = k.CaseSetState(in.CaseID, "building")
 	}
-	branch := "karmax/fix-" + strings.ToLower(in.ID)
+	branch := FixBranchPrefix + strings.ToLower(in.ID)
 	brief := s.fixBrief(ctx, in, branch)
 
 	out, err := s.dispatch(ctx, k, in, branch, brief)
 	if err != nil {
 		s.updateIncident(in.ID, func(x *Incident) { x.State = "fix-failed" })
-		s.say(ctx, k, in.CaseID, in.Channel, fmt.Sprintf("❌ The fix attempt for %s failed: %s", in.ID, truncate(err.Error(), 300)))
-		return err
+		s.say(ctx, k, in.CaseID, in.Channel, fmt.Sprintf("❌ The fix attempt for %s failed: %s\nReply `fix %s` to try again.",
+			in.ID, truncate(err.Error(), 300), in.ID))
+		// Reported, and a retry is a person's call: a loop retry would post
+		// the same failure again and spend another agent run.
+		k.Logf("orgops: fix %s: %v", in.ID, err)
+		return nil
 	}
 	var fr FixResult
 	if m := resultLine.FindStringSubmatch(out); m != nil {
