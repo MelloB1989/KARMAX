@@ -1,0 +1,96 @@
+# KARMAX Org Office demo — everything local, against the bundled fake GitHub.
+# Start from the repo root (up.sh does): data_dir is relative to the working directory.
+karmax:
+  version: "2"
+  data_dir: "demo/data"
+  log_level: "info"
+  log_format: "pretty"
+
+webhooks:
+  enabled: true
+  port: 9090
+  host: "127.0.0.1"
+  routes: []
+
+ai:
+  # The agent needs an API-backed session to exist (the harness is routed on top of it and
+  # answers first; the placeholder key is never used while the harness is healthy).
+  default_provider: "anthropic"
+  default_model: "claude-sonnet-4.6"
+  providers:
+    anthropic:
+      api_key: "unused-harness-answers-first"
+
+harness:
+  enabled: true
+  binary: "claude"
+  cheap_model: "haiku"
+  fallback_model: "haiku"
+
+comms:
+  channels:
+    - id: "chat"
+      type: "webhook"
+      agent_id: "demo-agent"
+      settings:
+        preset: "generic"
+        url: "http://127.0.0.1:9393/in"
+        inbound_token: "demo-token"
+
+org_ops:
+  enabled: true
+  org: "acme"
+  github:
+    api_url: "http://127.0.0.1:8787"
+    webhook_secret: "dev"
+    bot_login: "karmax-bot"
+  channels:
+    default: "chat:eng"
+  policy:
+    review: auto
+    approve_pr: auto
+    merge: auto
+    incident_fix: approve
+    incident_merge: auto
+    repo_create: auto
+  rules_files: ["demo/ORG.md"]
+  repos:
+    - match: "payments-api"
+      service: "payments"
+      owners: ["maya"]
+  standards:
+    title_pattern: '^(feat|fix|chore|docs|refactor|test|perf)(\(.+\))?: '
+    required_files: ["README.md", "CODEOWNERS"]
+  factory:
+    templates: { go: "template-go-service" }
+    default_template: "go"
+    protect_default_branch: true
+    required_checks: ["ci"]
+    bootstrap:
+      "CODEOWNERS": "* {{owners}}\n"
+      ".github/pull_request_template.md": "## What\n\n## Why\n\n## How it was tested\n"
+  probes:
+    - name: "payments"
+      url: "http://127.0.0.1:9494/health"
+      repo: "payments-api"
+      window: 4
+  probe_every: "5s"
+  fixer:
+    dispatcher: "fleet"
+    # up.sh rewrites nothing: this is resolved against the repo root (KARMAX starts there).
+    fleetctl_path: "demo/fakefixer.sh"
+
+agents:
+  - id: "demo-agent"
+    name: "KARMAX Org Office"
+    description: "Engineering office for the acme org"
+    system_prompt: |
+      You are KARMAX's org office for the acme GitHub organisation. Answer briefly.
+    model: "claude-sonnet-4.6"
+    provider: "anthropic"
+    temperature: 0.3
+    max_tokens: 4096
+    restart_policy: "always"
+    max_restarts: 10
+    triggers:
+      run_on_start: true   # without this the agent never starts: no API session, so chat commands dead-letter
