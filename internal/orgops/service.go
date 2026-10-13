@@ -152,6 +152,8 @@ func newCode() string {
 	for i := range b {
 		b[i] = alphabet[int(b[i])%len(alphabet)]
 	}
+	// Always one digit, which is what tells a code from a five-letter word.
+	b[int(b[0])%len(b)] = "23456789"[int(b[1])%8]
 	return string(b)
 }
 

@@ -69,6 +69,71 @@ comms:
         wacli_path: "/path/to/wacli"          # Path to wacli binary
         target_chat: "YOUR_PHONE_NUMBER"       # Target WhatsApp number (e.g., "9198XXXXXXXX")
 
+# Org office — KARMAX as an engineering agent for a GitHub organisation:
+# PR review against your rules, security scan, merge on green CI, repo factory,
+# knowledge store and incident autopilot. See docs/ORG-OFFICE.md.
+# org_ops:
+#   enabled: true
+#   org: "acme"
+#   github:
+#     api_url: "https://api.github.com"   # GHE, or http://127.0.0.1:8787 for cmd/fakegithub
+#     token_env: "GITHUB_TOKEN"           # repo + admin:org scope for repo creation/protection
+#     webhook_secret_env: "ORGOPS_WEBHOOK_SECRET"   # org webhook -> <public>/orgops/github
+#     bot_login: "acme-karmax"
+#   rules_files: ["~/.karmax/ORG.md"]     # org-wide rules, Markdown
+#   channels:                             # "<comms channel id>:<target>"
+#     default: "gchat:spaces/AAAA"
+#     incidents: "slack:#incidents"
+#     security: "slack:#security"
+#   policy:                               # off | notify | approve | auto, per action
+#     review: auto
+#     approve_pr: notify
+#     merge: approve
+#     repo_create: approve
+#     incident_fix: auto
+#     incident_merge: approve
+#     max_auto_risk: 0.5
+#   repos:
+#     - match: "payments-api"
+#       service: "payments"               # alerts naming this service map here
+#       owners: ["maya", "raj"]
+#       channel: "slack:#payments"
+#       policy: { merge: approve }
+#     - match: "acme/internal-*"
+#       policy: { merge: auto, incident_merge: auto }
+#   standards:
+#     title_pattern: '^(feat|fix|chore|docs|refactor|test|perf)(\(.+\))?: '
+#     max_changed_lines: 800
+#     require_description: true
+#     require_tests: true
+#     required_files: ["README.md", "CODEOWNERS"]
+#     protected_paths: [".github/workflows/**", "infra/**", "*.tf"]
+#   threats:
+#     allow: ["_test\\.go$", "fixtures/"]
+#   probes:
+#     - name: "payments"
+#       url: "https://payments.acme.dev/health"
+#       repo: "payments-api"
+#       window: 10
+#       max_error_rate: 0.3
+#       max_latency: "800ms"
+#   probe_every: "30s"
+#   alert_token_env: "ORGOPS_ALERT_TOKEN" # monitoring tools -> <public>/orgops/alert
+#   factory:
+#     templates: { go: "template-go-service", node: "template-node-service" }
+#     default_template: "go"
+#     protect_default_branch: true
+#     required_checks: ["ci"]
+#     bootstrap:
+#       ".github/pull_request_template.md": "## What\n\n## Why\n\n## How it was tested\n"
+#   knowledge:
+#     every: "24h"
+#   fixer:
+#     dispatcher: "harness"               # harness | fleet | sandbox
+#     timeout: "45m"
+#   merge_without_ci: false
+#   listen_channels: []                   # empty = every channel except WhatsApp
+
 # Agent definitions
 agents:
   - id: "karmax-agent"
