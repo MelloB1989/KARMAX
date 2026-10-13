@@ -24,6 +24,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/comms/discord"
 	"github.com/MelloB1989/karmax/internal/comms/slack"
 	"github.com/MelloB1989/karmax/internal/comms/telegram"
+	"github.com/MelloB1989/karmax/internal/comms/webhookchat"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/connectors"
@@ -46,6 +47,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/mesh"
+	"github.com/MelloB1989/karmax/internal/orgops"
 	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/review"
@@ -447,6 +449,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		return fallback
 	}
 
+	var webhookChannels []*webhookchat.Channel
 	for _, chCfg := range cfg.Comms.Channels {
 		switch chCfg.Type {
 		case "discord":
@@ -527,6 +530,22 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 					zap.Error(err),
 				)
 			}
+		case "webhook":
+			// Any chat that speaks webhooks — Google Chat, Teams, Mattermost, a
+			// Slack or Discord incoming webhook, or a custom bridge — by preset.
+			ch := webhookchat.New(chCfg.ID, chCfg.Settings, log)
+			if !ch.Configured() {
+				log.Warn("webhook channel has no url; it can receive but not send", zap.String("id", chCfg.ID))
+			}
+			webhookChannels = append(webhookChannels, ch)
+			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
+				DND: dndEnabled(chCfg.Settings),
+			}); err != nil {
+				log.Error("failed to register comms channel",
+					zap.String("id", chCfg.ID),
+					zap.Error(err),
+				)
+			}
 		default:
 			log.Warn("unknown comms channel type", zap.String("type", chCfg.Type))
 		}
@@ -596,6 +615,8 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&taskCreateTool{ref: harnessRT, agentID: agentIDOf(cfg)})
 	toolReg.Register(&taskListTool{ref: harnessRT})
 	toolReg.Register(&taskUpdateTool{ref: harnessRT})
+
+	orgOffice := setupOrgOps(cfg, b, s, toolReg, log)
 
 	// apiBrowserToken/apiBaseURL are minted here — before either
 	// ClaudeCodeTool registration in this function needs them — and threaded
@@ -1031,6 +1052,13 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// Mount the WhatsApp event endpoint that wacli pushes message events to.
 	if waChannel != nil {
 		wh.AddHandler("/comms/whatsapp", waChannel.HandleWebhook)
+	}
+	for _, ch := range webhookChannels {
+		wh.AddHandler(ch.InboundPath(), ch.HandleInbound)
+	}
+	if orgOffice != nil {
+		wh.AddHandler(orgOffice.Config().AlertPath, orgOffice.AlertHandler())
+		wh.AddHandler(orgops.WebhookPath, orgOffice.GitHubWebhookHandler())
 	}
 
 	// Issue trackers and code hosts are event sources, not conversations: each

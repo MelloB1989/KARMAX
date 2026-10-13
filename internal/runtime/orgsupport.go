@@ -26,25 +26,44 @@ func (rt *KarmaxRuntime) sendToChannel(ctx context.Context, channel, thread, con
 	if strings.TrimSpace(channel) == "" {
 		return fmt.Errorf("no channel to send to")
 	}
-	target := channel
+	id, target, err := rt.routeChannel(channel)
+	if err != nil {
+		return err
+	}
 	if thread != "" {
-		target = channel + ":" + thread
+		target = target + ":" + thread
+	}
+	return rt.comms.Send(id, target, content)
+}
+
+// routeChannel splits "<channel-id>:<target>" into a registered channel and the
+// target within it, so a workflow can address any connected chat — Slack,
+// Google Chat, Discord, a webhook bridge — by naming it. A destination whose
+// prefix is not a registered channel goes to the default channel unchanged,
+// which keeps every existing "#eng" and phone-number caller working.
+func (rt *KarmaxRuntime) routeChannel(channel string) (string, string, error) {
+	channel = strings.TrimSpace(channel)
+	if rt.comms.HasChannel(channel) {
+		return channel, "", nil
+	}
+	if i := strings.Index(channel, ":"); i > 0 && rt.comms.HasChannel(channel[:i]) {
+		return channel[:i], channel[i+1:], nil
 	}
 	id, ok := rt.comms.DefaultChannelID()
 	if !ok {
-		return fmt.Errorf("no comms channel is connected")
+		return "", "", fmt.Errorf("no comms channel is connected")
 	}
-	return rt.comms.Send(id, target, content)
+	return id, channel, nil
 }
 
 // postToCase posts into a channel, threading when the case already has one, and
 // returns the message id so the first message can become the thread.
 func (rt *KarmaxRuntime) postToCase(ctx context.Context, channel, thread, text string) (string, error) {
-	id, ok := rt.comms.DefaultChannelID()
-	if !ok {
-		return "", fmt.Errorf("no comms channel is connected")
+	id, target, err := rt.routeChannel(channel)
+	if err != nil {
+		return "", err
 	}
-	return rt.comms.PostThread(ctx, id, channel, thread, text)
+	return rt.comms.PostThread(ctx, id, target, thread, text)
 }
 
 // askRole puts one proposal in front of everyone holding a role.
