@@ -138,6 +138,10 @@ func decodePullRequestDelivery(body []byte) ([]map[string]any, error) {
 	switch {
 	case d.Action == "opened":
 		out["kind"] = "github.pr.opened"
+	case d.Action == "synchronize" || d.Action == "ready_for_review":
+		out["kind"] = "github.pr.updated"
+	case d.Action == "reopened":
+		out["kind"] = "github.pr.reopened"
 	case d.Action == "closed" && pr.Merged:
 		out["kind"] = "github.pr.merged"
 		out["merged_by"] = pr.MergedBy.Login
@@ -238,4 +242,11 @@ func decodeCheckSuiteDelivery(body []byte) ([]map[string]any, error) {
 		"title": title, "actor": d.Sender.Login, "author": d.Sender.Login,
 		"state": d.CheckSuite.Conclusion, "url": d.CheckSuite.URL, "sha": d.CheckSuite.HeadSHA,
 	}}, nil
+}
+
+// DecodeDelivery turns one GitHub webhook delivery into normalised events, each
+// carrying its own "kind". Exported so a consumer that receives GitHub webhooks
+// on its own path (the org office does) decodes them exactly as this connector does.
+func DecodeDelivery(headers map[string]string, body []byte) ([]map[string]any, error) {
+	return decodeDelivery(headers, body)
 }
