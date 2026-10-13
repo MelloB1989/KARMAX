@@ -31,6 +31,16 @@ say "Maya → #eng:  index all"
 chat_send "index all" || { echo "could not post to chat" >&2; exit 1; }
 wait_msg "$since" 'Indexed [0-9]+ repositories' "$TIMEOUT" || { echo "indexing did not report in ${TIMEOUT}s — see demo/logs/karmax.log" >&2; exit 2; }
 
+# Let the chat go quiet before asking. The orchestrator agent also answers "index all"
+# itself, and KARMAX withholds an agent's answer when anything else reached the same
+# chat target during its turn ("chat already answered this turn; withholding the final
+# text", internal/agent/agent.go repliedDuringTurn) — so a stray post mid-turn would
+# swallow the answer to the question.
+quiet() { local n=0 prev cur; prev=$(last_id)
+  for _ in $(seq 1 "${QUIET_MAX:-45}"); do sleep 1; cur=$(last_id)
+    if [ "$cur" = "$prev" ]; then n=$((n+1)); [ $n -ge "${QUIET:-8}" ] && return 0; else n=0; prev=$cur; fi
+  done; }
+quiet
 since=$(last_id)
 say "Maya → #eng:  $QUESTION"
 chat_send "$QUESTION"
@@ -39,7 +49,7 @@ if ans=$(wait_msg "$since" '^[^🚨🟡📦📚🛠👍🛑ℹ❌✅🔔]' "$ASK
   echo "$ans"
 else
   # No model auth: free-form questions go to the orchestrator agent, which needs one.
-  echo "(no model answer in ${ASK_TIMEOUT}s — harness not authenticated?)" >&2
+  echo "(no model answer in ${ASK_TIMEOUT}s — harness not authenticated, or the answer was withheld: grep 'withholding' demo/logs/karmax.log)" >&2
   say "Fallback: read the card straight from the store"
   since=$(last_id); chat_send "index payments-api"
   wait_msg "$since" 'Indexed' 30 || { echo "no card either — see demo/logs/karmax.log" >&2; exit 2; }

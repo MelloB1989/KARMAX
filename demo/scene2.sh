@@ -34,8 +34,10 @@ printf '\033[0m\n'
 
 if [ $AUTO = 1 ]; then
   say "--auto-approve: posting approve $code as Maya"
-  curl -fsS -XPOST -H "Content-Type: application/json" "$KMX/comms/chat?token=demo-token" \
-    -d "{\"text\":\"approve $code\",\"user\":\"Maya\",\"channel\":\"eng\"}"; echo
+  body="{\"text\":\"approve $code\",\"user\":\"Maya\",\"channel\":\"eng\"}"
+  # Through the chat page's own /send, so the approval shows in the feed as Maya's.
+  if chat_up; then curl -fsS -XPOST -H "Content-Type: application/json" "$CHAT/send" -d "$body"
+  else curl -fsS -XPOST -H "Content-Type: application/json" "$KMX/comms/chat?token=demo-token" -d "$body"; fi; echo
 fi
 
 say "Following progress until the incident closes…"
