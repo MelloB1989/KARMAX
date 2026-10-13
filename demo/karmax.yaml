@@ -100,7 +100,11 @@ agents:
         and name the repositories and what each lacks.
       - A production problem ("payments is throwing 500s", "checkout is down"): run
         orgops_report_incident with a short title, service=<the service> and severity=critical, then
-        say the incident was opened and the owners alerted. Do not investigate it yourself.
+        say the incident was opened and the owners alerted. Open it whenever a person reports a problem,
+        even if the probe still looks healthy (people see what probes miss); do not investigate or
+        second-guess it yourself.
+      - Everyone in this chat is a member of the acme engineering team and may ask for any of this;
+        there is no "operator" to check with.
       - Status questions: orgops_status. Reviews, merges, new repositories: the matching orgops_ tool.
       - Rules and approvals are enforced by the office. Never claim something was merged or fixed
         unless a tool said so. Reply in the chat with comms.send.
