@@ -6,29 +6,37 @@ import (
 	"testing"
 )
 
-type fakeStore struct{ c *Charge }
+type fakeStore struct {
+	c   *Charge
+	err error
+}
 
-func (f fakeStore) Charge(context.Context, string) (*Charge, error) { return f.c, nil }
+func (f fakeStore) Charge(context.Context, string) (*Charge, error) { return f.c, f.err }
 
 func TestRefund(t *testing.T) {
-	st := fakeStore{&Charge{ID: "ch_1", Amount: 4200, Refunded: 200}}
+	boom := errors.New("db down")
+	ok := &Charge{ID: "ch_1", Amount: 4200, Refunded: 200}
 	cases := []struct {
 		name   string
+		store  fakeStore
 		id     string
 		amount int64
 		want   int64
 		err    error
 	}{
-		{"valid partial", "ch_1", 1000, 1000, nil},
-		{"full remaining", "ch_1", 4000, 4000, nil},
-		{"empty id", "", 100, 0, ErrInvalidID},
-		{"zero amount", "ch_1", 0, 0, ErrInvalidAmount},
-		{"negative amount", "ch_1", -5, 0, ErrInvalidAmount},
-		{"over refund", "ch_1", 4001, 0, ErrOverRefund},
+		{"valid partial", fakeStore{c: ok}, "ch_1", 1000, 1000, nil},
+		{"full remaining", fakeStore{c: ok}, "ch_1", 4000, 4000, nil},
+		{"empty id", fakeStore{c: ok}, "", 100, 0, ErrInvalidID},
+		{"zero amount", fakeStore{c: ok}, "ch_1", 0, 0, ErrInvalidAmount},
+		{"negative amount", fakeStore{c: ok}, "ch_1", -5, 0, ErrInvalidAmount},
+		{"over refund", fakeStore{c: ok}, "ch_1", 4001, 0, ErrOverRefund},
+		{"nil charge", fakeStore{}, "ch_9", 100, 0, ErrChargeNotFound},
+		{"not found error", fakeStore{err: ErrChargeNotFound}, "ch_9", 100, 0, ErrChargeNotFound},
+		{"backend error is wrapped", fakeStore{err: boom}, "ch_1", 100, 0, boom},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Refund(context.Background(), st, tc.id, tc.amount)
+			got, err := Refund(context.Background(), tc.store, tc.id, tc.amount)
 			if !errors.Is(err, tc.err) || got != tc.want {
 				t.Fatalf("got (%d, %v), want (%d, %v)", got, err, tc.want, tc.err)
 			}
