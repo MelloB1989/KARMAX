@@ -49,6 +49,7 @@ function md(s){
 function key(m){
   if(m.thread)return m.thread;
   let x;
+  if(x=m.text.match(/\bINC-[A-Z0-9]{5}\b/))return "incident "+x[0]; // "Fix for INC-AB2CD is up" too
   if(x=m.text.match(/incident\s+([A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)/i))return "incident "+x[1];
   if(x=m.text.match(/\bPR\s*#?(\d+)|pull request\s*#?(\d+)|#(\d+)/i))return "PR #"+(x[1]||x[2]||x[3]);
   if(x=m.text.match(/\b(?:approve|reject)\s+([A-Z0-9]{5})\b/i)){
