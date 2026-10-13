@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -102,7 +103,7 @@ func callToolField(name, field string, input map[string]any, timeout time.Durati
 		return err
 	}
 	if ok, _ := out["ok"].(bool); !ok {
-		return fmt.Errorf("%s: %s", name, asStr(out["error"]))
+		return toolError(name, asStr(out["error"]))
 	}
 	body, _ := out["output"].(map[string]any)
 	if body == nil {
@@ -146,7 +147,7 @@ func callToolIn(member, turn, name string, input map[string]any, timeout time.Du
 		return err
 	}
 	if ok, _ := out["ok"].(bool); !ok {
-		return fmt.Errorf("%s: %s", name, asStr(out["error"]))
+		return toolError(name, asStr(out["error"]))
 	}
 	printToolOutput(out["output"])
 	return nil
@@ -186,4 +187,13 @@ func parseKVArgs(args []string) (map[string]any, error) {
 		}
 	}
 	return input, nil
+}
+
+// toolError names the tool in a failed call's error, unless the message already
+// does (the argument check writes "<tool>: unknown argument …" itself).
+func toolError(name, msg string) error {
+	if strings.HasPrefix(msg, name+":") {
+		return errors.New(msg)
+	}
+	return fmt.Errorf("%s: %s", name, msg)
 }
