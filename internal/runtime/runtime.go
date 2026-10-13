@@ -869,7 +869,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		waChannelID, _ := commsMgr.FindChannelIDByType("whatsapp")
 		reviewer := review.New(review.Config{
 			Namespace: ns, AgentID: waAgentID, Provider: provider, Model: model, Fallbacks: fbs,
-			WAChannelID: waChannelID, WATarget: waTarget, SendFunc: commsMgr.Send,
+			WAChannelID: waChannelID, WATarget: waTarget, SendFunc: func(c, t, m string) error { return commsMgr.SendFrom(comms.ProducerLoop, c, t, m) },
 			// Answered by a warm session when one is available; the metered
 			// path stays as the fallback and is used whenever it is not.
 			Ask: func(ctx context.Context, key, prompt string) (string, bool) {
@@ -959,14 +959,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 					msg := fmt.Sprintf("⚠️ KARMAX brain is DOWN (harness: %.140s). Your messages won't be answered until it recovers.", reason)
 					builtin.PushAppNotification(s, waAgentID, "alert", "⚠️ KARMAX brain is down", msg)
 					if waChannelID2 != "" && waTarget != "" {
-						_ = commsMgr.Send(waChannelID2, waTarget, msg)
+						_ = commsMgr.SendFrom(comms.ProducerSystem, waChannelID2, waTarget, msg)
 					}
 					k.Logf("brain-monitor: DOWN (%s)", reason)
 				case brainMonitorAlertRecovered:
 					msg := "✅ KARMAX brain is back online. Resend anything I missed."
 					builtin.PushAppNotification(s, waAgentID, "update", "✅ KARMAX brain recovered", msg)
 					if waChannelID2 != "" && waTarget != "" {
-						_ = commsMgr.Send(waChannelID2, waTarget, msg)
+						_ = commsMgr.SendFrom(comms.ProducerSystem, waChannelID2, waTarget, msg)
 					}
 					k.Logf("brain-monitor: recovered")
 				}
@@ -1208,7 +1208,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			if chID == "" || waTarget == "" {
 				return nil
 			}
-			return func(text string) error { return commsMgr.Send(chID, waTarget, text) }
+			return func(text string) error { return commsMgr.SendFrom(comms.ProducerLoop, chID, waTarget, text) }
 		}(),
 		voice:        voiceReg,
 		routedKinds:  routedKinds,

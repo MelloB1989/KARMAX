@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -30,6 +31,8 @@ type HarnessTurn struct {
 type HarnessToolCall struct {
 	Name  string
 	Input json.RawMessage
+	// Failed: the call's result came back as an error.
+	Failed bool
 }
 
 // harnessBrain runs an agent's turns inside a long-lived harness session.
@@ -102,10 +105,15 @@ func (h *harnessBrain) ProcessMessageWithheld(ctx context.Context, userMessage s
 		if len(tc.Input) > 0 {
 			_ = json.Unmarshal(tc.Input, &input)
 		}
-		records = append(records, karmahelper.ToolCallRecord{
+		rec := karmahelper.ToolCallRecord{
 			Name:  tc.Name,
 			Input: input,
-		})
+		}
+		if tc.Failed {
+			rec.Result = tools.ToolResult{IsError: true}
+			rec.Error = errors.New("tool call failed")
+		}
+		records = append(records, rec)
 	}
 	return turn.Text, records, nil
 }

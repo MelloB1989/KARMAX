@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MelloB1989/karmax/internal/comms"
 	"io"
 	"net/http"
 	"net/url"
@@ -783,7 +784,7 @@ func (k *loopKit) SendWhatsApp(_ context.Context, target, content string) error 
 	if !ok {
 		return fmt.Errorf("no whatsapp channel registered")
 	}
-	return k.rt.comms.Send(channelID, target, content)
+	return k.rt.comms.SendFrom(comms.ProducerLoop, channelID, target, content)
 }
 
 func (k *loopKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error) {

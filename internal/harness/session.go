@@ -454,10 +454,22 @@ func (t *Turn) absorb(ev event) {
 		for _, c := range ev.Message.Content {
 			if c.Type == "tool_use" {
 				t.ToolCalls = append(t.ToolCalls, ToolCall{
+					ID:      c.ID,
 					Name:    c.Name,
 					Input:   c.Input,
 					Command: shellCommand(c.Name, c.Input),
 				})
+			}
+		}
+	case "user":
+		for _, c := range ev.Message.Content {
+			if c.Type != "tool_result" || !c.IsError {
+				continue
+			}
+			for i := range t.ToolCalls {
+				if t.ToolCalls[i].ID == c.ToolUseID {
+					t.ToolCalls[i].Failed = true
+				}
 			}
 		}
 	case "result":

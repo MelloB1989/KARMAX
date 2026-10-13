@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"strings"
 	"sync"
@@ -1361,6 +1362,12 @@ func (a *Agent) repliedDuringTurn(target string, since time.Time) bool {
 		if strings.TrimSpace(r.Content) == ackMessage {
 			continue
 		}
+		// A loop post or a daemon alert landing in the same chat mid-turn is
+		// not the answer; swallowing the reply because of it left the operator
+		// with nothing. Untagged sends are the agent's own, tool or shell.
+		if !comms.IsAnswerProducer(r.SenderID) {
+			continue
+		}
 		return true
 	}
 	return false
@@ -1369,7 +1376,14 @@ func (a *Agent) repliedDuringTurn(target string, since time.Time) bool {
 // commsSendShellCall reports whether a tool record is a harness shell call that
 // invoked comms.send — `karmax tool call comms.send …`, in any of the spellings
 // the CLI accepts.
+//
+// A call that failed does not count: "unknown tool: comms.send" delivered
+// nothing, and treating it as a send skipped the fallback and left the chat
+// with no answer.
 func commsSendShellCall(tc karmahelper.ToolCallRecord) bool {
+	if tc.Error != nil || tc.Result.IsError {
+		return false
+	}
 	if !strings.EqualFold(tc.Name, "Bash") && !strings.EqualFold(tc.Name, "Shell") {
 		return false
 	}

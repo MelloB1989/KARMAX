@@ -579,7 +579,7 @@ func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (age
 	}
 	calls := make([]agent.HarnessToolCall, 0, len(turn.ToolCalls))
 	for _, tc := range turn.ToolCalls {
-		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input})
+		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input, Failed: tc.Failed})
 	}
 	return agent.HarnessTurn{Available: true, Text: turn.Text, ToolCalls: calls}, nil
 }

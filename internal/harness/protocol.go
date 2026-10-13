@@ -124,8 +124,14 @@ func (r *RateLimit) Worst() (name string, w Window) {
 
 // ToolCall is one tool the harness invoked during a turn.
 type ToolCall struct {
+	// ID pairs the call with its tool_result.
+	ID    string
 	Name  string
 	Input json.RawMessage
+	// Failed is set when the tool_result came back flagged as an error — a
+	// shell command that exited non-zero, an unknown tool. A call whose result
+	// never arrived is not Failed.
+	Failed bool
 	// Command is the first token of a shell invocation, for the audit record.
 	// Empty for anything that is not a shell tool.
 	Command string

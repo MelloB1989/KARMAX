@@ -360,7 +360,29 @@ func (m *Manager) StopAll() {
 // is someone OTHER than the operator, it fires the proactive notifier so the
 // operator sees every outbound message KARMAX sends on their behalf.
 func (m *Manager) Send(channelID, target, content string) error {
-	err := m.send(context.Background(), channelID, target, content, true)
+	return m.SendFrom("", channelID, target, content)
+}
+
+// Producers an outbound can be tagged with. An untagged send (the agent's own
+// comms.send tool, a harness shell call, a delegated session) is the only kind
+// that can be a turn's answer; these two never are.
+const (
+	// ProducerLoop marks a post made by a loop (the org office, a recipe).
+	ProducerLoop = "loop"
+	// ProducerSystem marks an alert, escalation or notice from the daemon.
+	ProducerSystem = "system"
+)
+
+// IsAnswerProducer reports whether an outbound recorded with this producer
+// could be an agent's reply to the operator, as opposed to a loop or system post.
+func IsAnswerProducer(producer string) bool {
+	return producer != ProducerLoop && producer != ProducerSystem
+}
+
+// SendFrom is Send with the producer recorded on the stored outbound, so the
+// agent can tell its own answer from a loop post landing in the same chat.
+func (m *Manager) SendFrom(producer, channelID, target, content string) error {
+	err := m.send(context.Background(), producer, channelID, target, content, true)
 	if err != nil {
 		return err
 	}
@@ -394,7 +416,7 @@ func (m *Manager) PostThread(ctx context.Context, channelID, target, thread, con
 	if t, canThread := entry.channel.(Threader); canThread {
 		return t.PostThread(ctx, target, thread, content)
 	}
-	return "", m.Send(channelID, target, content)
+	return "", m.SendFrom(ProducerLoop, channelID, target, content)
 }
 
 // HasChannel reports whether id names a registered channel, so callers can
@@ -480,7 +502,7 @@ func (m *Manager) RequestEscalation(agentID, primaryChannelID, content string) e
 
 	if primaryChannelID != "" {
 		target := m.lastTargetFor(agentID, primaryChannelID)
-		if err := m.send(context.Background(), primaryChannelID, target, content, false); err == nil {
+		if err := m.send(context.Background(), ProducerSystem, primaryChannelID, target, content, false); err == nil {
 			return nil
 		}
 	}
@@ -513,7 +535,7 @@ func (m *Manager) AlertAlternative(agentID, primaryChannelID, content string) er
 			// self-route (WhatsApp falls back to its configured target_chat).
 			continue
 		}
-		if err := m.send(context.Background(), id, target, content, false); err != nil {
+		if err := m.send(context.Background(), ProducerSystem, id, target, content, false); err != nil {
 			lastErr = err
 			continue
 		}
@@ -526,7 +548,7 @@ func (m *Manager) AlertAlternative(agentID, primaryChannelID, content string) er
 	return fmt.Errorf("no alternative channel available for agent %s", agentID)
 }
 
-func (m *Manager) send(ctx context.Context, channelID, target, content string, alertOnFailure bool) error {
+func (m *Manager) send(ctx context.Context, producer, channelID, target, content string, alertOnFailure bool) error {
 	content = karmahelper.CleanContent(content)
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("refusing to send empty message")
@@ -592,6 +614,7 @@ func (m *Manager) send(ctx context.Context, channelID, target, content string, a
 		ID:          msgID,
 		ChannelID:   target,
 		ChannelType: entry.channel.Type(),
+		SenderID:    producer,
 		Direction:   string(Outbound),
 		Content:     content,
 		Metadata:    string(metaJSON),
