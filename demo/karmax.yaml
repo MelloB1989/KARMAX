@@ -12,6 +12,13 @@ webhooks:
   host: "127.0.0.1"
   routes: []
 
+# The agent's Claude Code session reaches KARMAX (memory, tools, the office) through the
+# `karmax` CLI, which calls this API. Without it the agent answers "KARMAX API unreachable".
+api:
+  enabled: true
+  port: 9091
+  host: "127.0.0.1"
+
 ai:
   # The agent needs an API-backed session to exist (the harness is routed on top of it and
   # answers first; the placeholder key is never used while the harness is healthy).

@@ -41,6 +41,7 @@ wait_port "payments" 127.0.0.1:9494
 
 # Model auth for the harness (token lives outside the repo; never printed).
 [ -f ~/.config/karmax-demo/env ] && { set -a; . ~/.config/karmax-demo/env; set +a; }
+export PATH="$PWD/bin:$PATH"   # the agent's session calls back into KARMAX with the `karmax` CLI
 export KARMAX_HARNESS_ENV_PASSTHROUGH=CLAUDE_CODE_OAUTH_TOKEN   # loop harness env is an allowlist (internal/safety/env.go)
 start karmax bin/a-karmax start -c demo/karmax.yaml
 wait_port "KARMAX webhooks" 127.0.0.1:9090
