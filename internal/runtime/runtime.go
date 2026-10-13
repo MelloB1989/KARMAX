@@ -113,6 +113,9 @@ type KarmaxRuntime struct {
 	// routedKinds are the event kinds that reach agent inboxes, computed at
 	// construction and consumed once the runtime starts.
 	routedKinds []bus.EventKind
+	// officeClaims reports whether the org office handles a chat message itself.
+	// Nil when org_ops is off.
+	officeClaims func(eventID string, payload map[string]any) bool
 
 	// recipeLoops are the YAML recipes currently loaded from disk.
 	recipeMu sync.RWMutex
@@ -1209,6 +1212,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}(),
 		voice:        voiceReg,
 		routedKinds:  routedKinds,
+		officeClaims: officeClaimFn(orgOffice),
 		mesh:         meshNode,
 		pending:      newPendingTriggers(),
 		startedAt:    startedAt,
@@ -1645,38 +1649,47 @@ func short(id string) string {
 // it and nothing redelivers it. The row is what a restart finds and retries.
 func (rt *KarmaxRuntime) startAgentRouter(ctx context.Context) {
 	rt.bus.Consume(ctx, bus.SubAgentRouter, rt.routedKinds,
-		func(_ context.Context, evt bus.Event) error {
-			if evt.AgentID == "" {
-				return nil
-			}
-			if age, stale := staleEvent(evt); stale {
-				// Dropped rather than retried: a subscriber that falls behind
-				// would otherwise replay weeks of conversation as if it had all
-				// just arrived, and each replay costs a model turn it can never
-				// catch up on. Answering a seven-week-old message is worse than
-				// not answering it.
-				rt.log.Warn("skipped an event too old to act on",
-					zap.String("kind", string(evt.Kind)), zap.String("event", evt.ID),
-					zap.Duration("age", age.Round(time.Minute)))
-				return nil
-			}
-			a, ok := rt.agents.Get(evt.AgentID)
-			if !ok {
-				return nil
-			}
-			if !rt.openTurn(evt) {
-				// Already in flight — a redelivery of something still running.
-				return nil
-			}
-			if err := a.Send(evt); err != nil {
-				// It never reached the agent, so nothing will ever finish this
-				// row. Close it here or the next restart would "resume" a turn
-				// that never started.
-				_ = rt.store.FinishAgentTurn(evt.ID, store.TurnFailed, err.Error())
-				return err
-			}
-			return nil
-		})
+		func(_ context.Context, evt bus.Event) error { return rt.routeToAgent(evt) })
+}
+
+// routeToAgent is the router's handler for one event.
+func (rt *KarmaxRuntime) routeToAgent(evt bus.Event) error {
+	if evt.AgentID == "" {
+		return nil
+	}
+	if age, stale := staleEvent(evt); stale {
+		// Dropped rather than retried: a subscriber that falls behind
+		// would otherwise replay weeks of conversation as if it had all
+		// just arrived, and each replay costs a model turn it can never
+		// catch up on. Answering a seven-week-old message is worse than
+		// not answering it.
+		rt.log.Warn("skipped an event too old to act on",
+			zap.String("kind", string(evt.Kind)), zap.String("event", evt.ID),
+			zap.Duration("age", age.Round(time.Minute)))
+		return nil
+	}
+	// A chat message the org office will act on is the office's alone.
+	// Decided here, before the agent sees it, so the two never race to
+	// answer the same "approve".
+	if evt.Kind == bus.EventCommsMessage && rt.officeClaims != nil && rt.officeClaims(evt.ID, evt.Payload) {
+		return nil
+	}
+	a, ok := rt.agents.Get(evt.AgentID)
+	if !ok {
+		return nil
+	}
+	if !rt.openTurn(evt) {
+		// Already in flight — a redelivery of something still running.
+		return nil
+	}
+	if err := a.Send(evt); err != nil {
+		// It never reached the agent, so nothing will ever finish this
+		// row. Close it here or the next restart would "resume" a turn
+		// that never started.
+		_ = rt.store.FinishAgentTurn(evt.ID, store.TurnFailed, err.Error())
+		return err
+	}
+	return nil
 }
 
 // Freshness windows for routed events.

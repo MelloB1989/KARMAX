@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 )
@@ -166,4 +167,68 @@ func (s *Service) approve(ctx context.Context, k loopkit.Kit, code, replyTo, req
 		return s.publish(EventFix, map[string]any{"incident": str(p.Args, "incident")})
 	}
 	return nil
+}
+
+// claimTTL bounds how long a claim decision is remembered. The router and the
+// command loop both consult it for the same event, a moment apart.
+const claimTTL = 10 * time.Minute
+
+// ClaimsMessage says whether the office will act on a chat message, so the
+// agent the channel routes to should not also answer it.
+//
+// It is decided once per event and remembered. The router asks before the agent
+// gets the event and the command loop asks when it runs; without the memory the
+// loop's own "approve" deletes the pending row and the router, arriving second,
+// would see an unknown code and hand the message to the agent after all.
+//
+// Only what the office will really do is claimed: approve/reject only for a code
+// that is pending here (the agent's own permission escalations are also answered
+// with "approve" and must still reach it), every other verb only when it parsed
+// fully, and never on a channel the office does not listen on.
+func (s *Service) ClaimsMessage(eventID string, p map[string]any) bool {
+	if eventID != "" {
+		s.claimMu.Lock()
+		if c, ok := s.claims[eventID]; ok {
+			s.claimMu.Unlock()
+			return c.claimed
+		}
+		s.claimMu.Unlock()
+	}
+	claimed := s.claimsNow(p)
+	if eventID != "" {
+		s.claimMu.Lock()
+		if s.claims == nil {
+			s.claims = map[string]claimDecision{}
+		}
+		now := s.now()
+		for id, c := range s.claims {
+			if now.Sub(c.at) > claimTTL {
+				delete(s.claims, id)
+			}
+		}
+		s.claims[eventID] = claimDecision{claimed: claimed, at: now}
+		s.claimMu.Unlock()
+	}
+	return claimed
+}
+
+type claimDecision struct {
+	claimed bool
+	at      time.Time
+}
+
+func (s *Service) claimsNow(p map[string]any) bool {
+	if str(p, "direction") == "outbound" || !s.listensOn(str(p, "karmax_channel_id"), str(p, "channel_type")) {
+		return false
+	}
+	cmd, ok := ParseCommand(str(p, "content"))
+	if !ok {
+		return false
+	}
+	if cmd.Verb == "approve" || cmd.Verb == "reject" {
+		var pend Pending
+		found, _ := s.getJSON(groupPending, cmd.Code, &pend)
+		return found
+	}
+	return true
 }

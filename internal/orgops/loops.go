@@ -65,13 +65,10 @@ func (s *Service) Loops() []loopkit.Loop {
 			Run: func(ctx context.Context, k loopkit.Kit) error {
 				p := k.Trigger().Payload
 				if str(p, "event_kind") == "comms.message" {
-					if str(p, "direction") == "outbound" || !s.listensOn(str(p, "karmax_channel_id"), str(p, "channel_type")) {
+					if !s.ClaimsMessage(str(p, "event_id"), p) {
 						return nil
 					}
-					cmd, ok := ParseCommand(str(p, "content"))
-					if !ok {
-						return nil
-					}
+					cmd, _ := ParseCommand(str(p, "content"))
 					replyTo := str(p, "karmax_channel_id") + ":" + str(p, "channel_id")
 					return s.HandleCommand(ctx, k, cmd, replyTo, str(p, "sender_name"))
 				}

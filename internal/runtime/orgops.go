@@ -38,3 +38,12 @@ func setupOrgOps(cfg *config.KarmaxConfig, b *bus.Log, s *store.Store, toolReg *
 		zap.Int("probes", len(oc.Probes)), zap.String("fixer", oc.Fixer.Dispatcher))
 	return svc
 }
+
+// officeClaimFn is the router's hook into the office; nil when org_ops is off,
+// which leaves every chat message going to the agent as before.
+func officeClaimFn(svc *orgops.Service) func(string, map[string]any) bool {
+	if svc == nil {
+		return nil
+	}
+	return svc.ClaimsMessage
+}
