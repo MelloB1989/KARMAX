@@ -2,7 +2,7 @@
 # Scene 4 — org knowledge: index every repo, then ask a cross-repo question.
 # Env overrides: FAKEGH KARMAX_URL CHAT_URL ORG TIMEOUT ASK_TIMEOUT.
 set -u
-FAKEGH=${FAKEGH:-http://127.0.0.1:8787}
+FAKEGH=${FAKEGH:-${FAKE_GITHUB:-http://127.0.0.1:8787}}
 KARMAX_URL=${KARMAX_URL:-http://127.0.0.1:9090}
 CHAT_URL=${CHAT_URL:-http://127.0.0.1:9393}
 ORG=${ORG:-acme}; TIMEOUT=${TIMEOUT:-90}; ASK_TIMEOUT=${ASK_TIMEOUT:-25}

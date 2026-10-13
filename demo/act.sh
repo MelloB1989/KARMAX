@@ -83,6 +83,12 @@ seed)
     "README.md":"# infra\n\nTerraform modules for the acme cloud: VPC, Postgres (RDS), Redis, the Kubernetes cluster that runs every service.\n\n## Dependencies\n\n- Terraform 1.8, AWS provider.\n- Provides the Postgres used by **payments-api** and **auth-service**, and the Redis used by **auth-service** and **notifications**.\n\nApply only through CI: `terraform plan` runs on every PR.\n",
     "CODEOWNERS":"* @platform-team\n",
     ".github/workflows/ci.yml":"name: ci\non: [pull_request]\njobs:\n  plan:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: terraform init && terraform validate && terraform plan\n"}')"
+  # The template ships the standard files too, so only "notifications" is out of standard.
+  add template-go-service "Go service template" "$(jq -nc '{
+    "README.md":"# Go service template\n\nHTTP service skeleton with health checks, structured logging and CI.\n",
+    "CODEOWNERS":"* @platform-team\n",
+    "main.go":"package main\n\nfunc main() {}\n",
+    ".github/workflows/ci.yml":"name: ci\non: [pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: go test ./...\n"}')"
   # payments-api and auth-service come from fakegithub -seed; web-app names them, so "who depends on payments?" has answers.
   n=$(curl -fsS "$GH/_fake/state" | jq '.repos|length')
   out '{repos:($n|tonumber),noncompliant:["notifications"]}' --arg n "$n" ;;

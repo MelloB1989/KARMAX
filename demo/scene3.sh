@@ -3,7 +3,7 @@
 # Env overrides: FAKEGH KARMAX_URL CHAT_URL ORG REPO TIMEOUT.  Flag: --auto-approve
 # (answers an "approve <CODE>" prompt for you if repo_create policy is `approve`).
 set -u
-FAKEGH=${FAKEGH:-http://127.0.0.1:8787}
+FAKEGH=${FAKEGH:-${FAKE_GITHUB:-http://127.0.0.1:8787}}
 KARMAX_URL=${KARMAX_URL:-http://127.0.0.1:9090}
 CHAT_URL=${CHAT_URL:-http://127.0.0.1:9393}
 ORG=${ORG:-acme}; REPO=${REPO:-ledger-svc}; TIMEOUT=${TIMEOUT:-60}

@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 AUTO=0; [ "${1:-}" = "--auto-approve" ] && AUTO=1
 
 say "Breaking payments (fault on)"
-curl -fsS -XPOST "$PAY/fault/on"; echo
+demo/act.sh break
 echo "health now: $(curl -s -o /dev/null -w '%{http_code}' "$PAY/health")"
 
 say "Waiting for KARMAX to notice (probe every 5s, window 4)…"
@@ -34,10 +34,7 @@ printf '\033[0m\n'
 
 if [ $AUTO = 1 ]; then
   say "--auto-approve: posting approve $code as Maya"
-  body="{\"text\":\"approve $code\",\"user\":\"Maya\",\"channel\":\"eng\"}"
-  # Through the chat page's own /send, so the approval shows in the feed as Maya's.
-  if chat_up; then curl -fsS -XPOST -H "Content-Type: application/json" "$CHAT/send" -d "$body"
-  else curl -fsS -XPOST -H "Content-Type: application/json" "$KMX/comms/chat?token=demo-token" -d "$body"; fi; echo
+  demo/act.sh say "approve $code" Maya   # through the chat page's /send, so it shows in the feed as Maya's
 fi
 
 say "Following progress until the incident closes…"
