@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 )
@@ -53,5 +54,21 @@ func TestSpawnArgsPlaceExtrasAfterPartialMessages(t *testing.T) {
 	}
 	if mcp < partial {
 		t.Errorf("--mcp-config must come after --include-partial-messages, got %v", args)
+	}
+}
+
+func TestAToolResultFlaggedAsErrorMarksItsCallFailed(t *testing.T) {
+	var turn Turn
+	mk := func(s string) event {
+		var ev event
+		if err := json.Unmarshal([]byte(s), &ev); err != nil {
+			t.Fatal(err)
+		}
+		return ev
+	}
+	turn.absorb(mk(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"b","name":"Bash","input":{"command":"karmax tool call comms.send"}}]}}`))
+	turn.absorb(mk(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","is_error":true,"content":"Exit code 1"},{"type":"tool_result","tool_use_id":"a","content":"ok"}]}}`))
+	if turn.ToolCalls[0].Failed || !turn.ToolCalls[1].Failed {
+		t.Fatalf("Failed flags wrong: %+v", turn.ToolCalls)
 	}
 }

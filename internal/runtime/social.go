@@ -271,7 +271,7 @@ func socialPreview(mgr *comms.Manager, target string, log *zap.Logger) func(stri
 		}
 		body += "\n\n(dry run — nothing was published. `karmax social dry-run off` to go live.)"
 
-		if err := mgr.Send(channel, target, body); err != nil {
+		if err := mgr.SendFrom(comms.ProducerLoop, channel, target, body); err != nil {
 			return err
 		}
 		log.Info("sent a social draft to the operator",

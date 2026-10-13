@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"github.com/MelloB1989/karmax/internal/comms"
 	"os"
 	"strings"
 	"sync"
@@ -33,7 +34,7 @@ func (rt *KarmaxRuntime) sendToChannel(ctx context.Context, channel, thread, con
 	if thread != "" {
 		target = target + ":" + thread
 	}
-	return rt.comms.Send(id, target, content)
+	return rt.comms.SendFrom(comms.ProducerLoop, id, target, content)
 }
 
 // routeChannel splits "<channel-id>:<target>" into a registered channel and the
