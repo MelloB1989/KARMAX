@@ -117,7 +117,7 @@ function prInfo(st,msgs){
     const msg=[...msgs].reverse().find(m=>m.from==="karmax"&&/PR review\*?/.test(m.text)&&m.text.includes(p.repo+"#"+p.number+" "));
     let risk=null,blk=null,warn=null;
     if(msg){let x=msg.text.match(/risk ([\d.]+)/);if(x)risk=+x[1];x=msg.text.match(/(\d+) blocker \/ (\d+) warning/);if(x){blk=+x[1];warn=+x[2]}}
-    out.push({key,p,rv,risk,blk,warn,ci:st.ci[key]||"pending",merges:(st.state.merges||[]).includes(key)||p.merged});
+    out.push({key,p,rv,risk,blk,warn,ci:st.ci[key]||((st.state.merges||[]).includes(key)?"success":"pending"),merges:(st.state.merges||[]).includes(key)||p.merged});
   }
   return out.reverse();
 }
@@ -172,7 +172,7 @@ function renderPRs(rows){
   rows.forEach(r=>known.prs.add(r.key));
   document.querySelectorAll("#prbody tr.row").forEach(tr=>tr.onclick=()=>openPR(tr.dataset.repo,tr.dataset.n));
 }
-const CK=[["readme","README"],["codeowners","CODEOWNERS"],["claude","CLAUDE.md"],["ci","CI workflow"],["protection","Branch protection"]];
+const CK=[["readme","README"],["codeowners","CODEOWNERS"],["claude","CLAUDE.md"],["ci","CI"],["protection","Protection"]];
 function renderRepos(repos,gh){
   if(!gh.ok&&!repos.length){$("repobody").innerHTML='<div class=empty>GitHub unreachable</div>';return}
   const first=known.repos===null;if(first)known.repos=new Set();

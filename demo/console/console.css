@@ -47,9 +47,10 @@ button{font:inherit;font-weight:600;background:var(--acc);color:#0b1020;border:0
 button:hover{filter:brightness(1.1)}
 #target{font-size:.82em;color:var(--dim);margin-bottom:6px}#target:empty{display:none}#target a{cursor:pointer}
 #err{color:var(--red);font-size:.82em}#err:empty{display:none}
-#live{display:grid;grid-template-columns:2fr 3fr;grid-template-rows:auto minmax(0,1fr) auto;gap:14px;padding:14px;overflow:hidden}
+#live{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));grid-template-rows:auto minmax(0,1fr) auto;gap:14px;padding:14px;overflow:hidden}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden}
-#prs{grid-column:1/3}
+#prod{grid-column:span 2}#inc{grid-column:span 3}#prs{grid-column:1/6}#repos{grid-column:span 3}#know{grid-column:span 2}
+.rtable td:first-child{white-space:nowrap}.rtable th{white-space:nowrap}
 #repos,#know{height:clamp(190px,26vh,300px)}
 .scroll{overflow:auto;padding:0 20px 14px;min-height:0;flex:1}
 #prodbody,#incbody{padding:0 20px 18px}
