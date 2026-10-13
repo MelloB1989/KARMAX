@@ -563,11 +563,14 @@ func (c *browserMCPCache) invalidate() {
 type harnessSenderFor struct {
 	sup     *harness.Supervisor
 	browser browserConfigger
+	// prompts maps a session key to the agent brief it is spawned with.
+	prompts map[string]string
 }
 
 func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (agent.HarnessTurn, error) {
 	turn, err := h.sup.SendWith(ctx, key, kind, text, harness.Options{
-		MCPConfig: browserMCPConfig(ctx, h.browser, kind),
+		MCPConfig:    browserMCPConfig(ctx, h.browser, kind),
+		SystemPrompt: h.prompts[key],
 	})
 	if err != nil {
 		var open harness.ErrBreakerOpen
@@ -594,7 +597,7 @@ func (rt *KarmaxRuntime) wireHarnessBrains() {
 	if rt.harness == nil {
 		return
 	}
-	sender := harnessSenderFor{sup: rt.harness, browser: rt.browserMCPCache}
+	sender := harnessSenderFor{sup: rt.harness, browser: rt.browserMCPCache, prompts: map[string]string{}}
 	for _, a := range rt.agents.List() {
 		// No fallback means a declined turn has nowhere to go, and the agent
 		// answers nothing at all. The metered path is worse than the harness;
@@ -605,11 +608,46 @@ func (rt *KarmaxRuntime) wireHarnessBrains() {
 				zap.String("agent", a.Def().ID))
 			continue
 		}
-		a.SetHarnessBrain(agent.NewHarnessBrain(sender, "agent:"+a.Def().ID, harnessKindOf(a.Def()), fallback))
+		key := "agent:" + a.Def().ID
+		sender.prompts[key] = harnessAgentPrompt(a.Def())
+		a.SetHarnessBrain(agent.NewHarnessBrain(sender, key, harnessKindOf(a.Def()), fallback))
 		rt.log.Info("harness: agent thinking routed to a session",
 			zap.String("agent", a.Def().ID))
 	}
 }
+
+// harnessAgentPrompt is the agent's configured system_prompt as a harness
+// session receives it: appended to the CLI's system prompt (the same rank the
+// prompt has on the API path, above the CLAUDE.md files), under a preamble
+// that settles the two things that differ here. Empty when the agent has no
+// system_prompt, so such an agent's session is spawned exactly as before.
+//
+// Passed as a flag rather than a CLAUDE.md in the session's workdir because a
+// CLAUDE.md is seeded once and then belongs to the session, and the flag is
+// re-read from the config at every spawn, resumes included.
+func harnessAgentPrompt(def agent.AgentDef) string {
+	p := strings.TrimSpace(def.SystemPrompt)
+	if p == "" {
+		return ""
+	}
+	return agentPromptPreamble + p + "\n"
+}
+
+const agentPromptPreamble = `# Your role (configured by the operator for this agent)
+
+This is your system prompt. Where it conflicts with the KARMAX CLAUDE.md
+framing you "an operator's personal assistant" — whose chat it is, who may be
+trusted, what you may do for the people writing to you — THIS section wins; the
+CLAUDE.md still applies for everything it does not contradict.
+
+KARMAX tools named below (for example memory.retrieve or orgops_status) are
+KARMAX tools, not native ones: call them as
+` + "`karmax tool call <name> k=v`" + ` (` + "`karmax tool list`" + ` shows what exists). Where
+the text below says "use the X tool", read it that way.
+
+---
+
+`
 
 // harnessKindOf is the harness kind an agent thinks in: its own, or "agent".
 func harnessKindOf(def agent.AgentDef) string {

@@ -40,6 +40,10 @@ type Session struct {
 	// MCPConfig is threaded from Options the same way Model and Thinking are,
 	// taking effect on the next spawn.
 	MCPConfig string
+	// SystemPrompt is passed as --append-system-prompt, fixed at spawn like
+	// the rest. It is part of the process, so a changed value needs a respawn
+	// (needsRespawn); --resume keeps the transcript, not the old prompt.
+	SystemPrompt string
 	// Name and Launch come from the kind's policy, fixed at spawn.
 	Name   string
 	Launch []string
@@ -97,6 +101,9 @@ func extraArgs(opt Options) []string {
 	if opt.MCPConfig != "" {
 		args = append(args, "--mcp-config", opt.MCPConfig)
 	}
+	if opt.SystemPrompt != "" {
+		args = append(args, "--append-system-prompt", opt.SystemPrompt)
+	}
 	return args
 }
 
@@ -136,7 +143,7 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 		args = append(args, "--fallback-model", fallbackModel)
 	}
 	// No positional prompt here to collide with; still appended last, and tested.
-	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig})...)
+	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig, SystemPrompt: s.SystemPrompt})...)
 }
 
 // spawn starts a harness process for this session.
