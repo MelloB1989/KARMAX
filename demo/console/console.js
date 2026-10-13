@@ -106,6 +106,16 @@ function incidentFrom(msgs){
       if(/🔴 CI failed/.test(t)&&re.test(t))inc.failed="merge";
     }
   }
+  // the fix PR is reviewed (and merged) around the time the office announces it, so look at all later messages
+  if(inc.pr){
+    const re=new RegExp("#"+inc.pr.n+"\\b");
+    for(const m of rest){
+      if(!mine(m)||!re.test(m.text))continue;
+      if(/PR review\*?/.test(m.text)&&!inc.s.reviewed)inc.s.reviewed={ts:m.ts,who:(m.text.match(/verdict \*([^*]+)\*/)||[])[1]};
+      if(/✅ Merged/.test(m.text)&&!inc.s.merged)inc.s.merged={ts:m.ts};
+      if(/🔴 CI failed/.test(m.text))inc.failed="merge";
+    }
+  }
   if(!inc.s.alerted&&inc.s.approved&&inc.s.approved.who==="policy: auto")inc.s.alerted={ts:head.ts,who:"policy: auto"};
   return inc;
 }
@@ -197,7 +207,7 @@ function renderKnow(msgs){
   let qa="";
   for(let i=msgs.length-1;i>0;i--){
     const m=msgs[i];
-    if(m.from==="karmax"&&!/^[🚨🟡👍🛠️🔧✅⛔💬🤖🔴⚠️📦📚🛑ℹ️🔒❌]/u.test(m.text)){
+    if(m.from==="karmax"&&!/^[🚨🟡👍👀🛠️🔧✅⛔💬🤖🔴⚠️📦📚🛑ℹ️🔒❌🟡👍]/u.test(m.text)){
       const q=[...msgs.slice(0,i)].reverse().find(o=>o.from!=="karmax"&&/\?\s*$/.test(o.text));
       if(q){qa='<div class=kcard><h5>Answer from the org\'s knowledge</h5><div class=kq>'+esc(q.from)+": "+esc(q.text)+'</div><div class=body>'+md(m.text)+"</div></div>"}
       break;
