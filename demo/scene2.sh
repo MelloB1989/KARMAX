@@ -34,7 +34,7 @@ printf '\033[0m\n'
 
 if [ $AUTO = 1 ]; then
   say "--auto-approve: posting approve $code as Maya"
-  curl -fsS -XPOST "$KMX/comms/chat?token=demo-token" \
+  curl -fsS -XPOST -H "Content-Type: application/json" "$KMX/comms/chat?token=demo-token" \
     -d "{\"text\":\"approve $code\",\"user\":\"Maya\",\"channel\":\"eng\"}"; echo
 fi
 
