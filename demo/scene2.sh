@@ -14,11 +14,13 @@ say "Waiting for KARMAX to notice (probe every 5s, window 4)…"
 if chat_up; then
   msg=$(wait_msg '🚨' 120) || { echo "no 🚨 message within 120s — check demo/logs/karmax.log" >&2; exit 1; }
   printf '%s\n' "$msg"
-  code=$(printf '%s' "$msg" | grep -oiE 'approve +[A-Z0-9]{5}' | head -1 | awk '{print toupper($2)}')
+  say "Incident opened — KARMAX is asking for approval to send a fix agent…"
+  amsg=$(wait_msg 'approve [A-Z0-9]{5}' 60) || { echo "no approval request within 60s" >&2; exit 1; }
+  code=$(printf '%s' "$amsg" | grep -oE 'approve [A-Z0-9]{5}' | head -1 | awk '{print $2}')
 else
   echo "(chat server not running — reading KARMAX logs)"
   for _ in $(seq 1 120); do
-    code=$(grep -hoiE 'approve +[A-Z0-9]{5}' demo/logs/karmax.log 2>/dev/null | head -1 | awk '{print toupper($2)}')
+    code=$(grep -hoE 'approve [A-Z0-9]{5}' demo/logs/karmax.log 2>/dev/null | head -1 | awk '{print $2}')
     [ -n "$code" ] && break; sleep 1
   done
 fi
@@ -37,7 +39,7 @@ if [ $AUTO = 1 ]; then
 fi
 
 say "Following progress until the incident closes…"
-seen=0
+seen=$(messages 0 | jq "map(.id)|max // 0")
 for _ in $(seq 1 240); do
   if chat_up; then
     messages "$seen" | jq -r '.[]|select(.from=="karmax")|"  [karmax] "+(.text|split("\n")[0])' | tail -n +1
