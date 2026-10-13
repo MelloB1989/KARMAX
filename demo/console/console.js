@@ -214,6 +214,24 @@ function renderPolicy(p){
 }
 
 /* ---- PR drawer ---- */
+/* GitHub-flavoured review body: heading, paragraphs, a findings table (folded), <sub> footer */
+function reviewBody(b){
+  const lines=String(b||"").split("\n"),out=[],tbl=[];let foot="";
+  for(const l of lines){
+    if(/^\s*\|/.test(l)){tbl.push(l);continue}
+    const s=l.match(/^<sub>(.*)<\/sub>$/);if(s){foot=s[1];continue}
+    if(/^#{1,6} /.test(l))continue;
+    out.push(l);
+  }
+  let html=md(out.join("\n").replace(/\n{3,}/g,"\n\n").trim());
+  const rows=tbl.filter(l=>!/^\s*\|[\s|:-]+\|\s*$/.test(l)).map(l=>l.trim().replace(/^\||\|$/g,"").split(/(?<!\\)\|/).map(c=>c.trim().replace(/\\\|/g,"|")));
+  if(rows.length>1){
+    html+='<details style="margin-top:10px"><summary style="cursor:pointer;color:var(--dim)">'+(rows.length-1)+' automated findings</summary><table style="margin-top:8px"><thead><tr>'+rows[0].map(c=>"<th>"+esc(c)+"</th>").join("")+"</tr></thead><tbody>"+
+      rows.slice(1).map(r=>"<tr>"+r.map((c,i)=>"<td"+(i===0?' style="color:'+(c==="blocker"?"var(--red)":"var(--amber)")+';font-weight:600"':"")+">"+md(c)+"</td>").join("")+"</tr>").join("")+"</tbody></table></details>";
+  }
+  if(foot)html+='<div style="margin-top:8px;font-size:.8em;color:var(--faint)">'+esc(foot)+"</div>";
+  return html;
+}
 async function openPR(repo,n){
   $("dtitle").innerHTML="PR #"+n+"<small>"+esc(repo)+"</small>";$("dbody").innerHTML='<div class=empty>Loading…</div>';
   $("drawer").classList.add("open");$("drawer").setAttribute("aria-hidden","false");$("scrim").hidden=false;
@@ -223,7 +241,7 @@ async function openPR(repo,n){
   const pr=j.pr||{};
   $("dtitle").innerHTML="PR #"+n+" · "+esc(pr.title||"")+"<small>"+esc(repo)+" · "+esc((pr.user||{}).login||"")+"</small>";
   let html="";
-  if(rv)html+='<div class="rsum '+(rv.event==="REQUEST_CHANGES"?"bad":rv.event==="APPROVE"?"ok":"")+'"><b>'+(rv.event==="REQUEST_CHANGES"?"⛔ Changes requested":rv.event==="APPROVE"?"✅ Approved":"💬 Review")+"</b>\n"+md(rv.body||"")+"</div>";
+  if(rv)html+='<div class="rsum '+(rv.event==="REQUEST_CHANGES"?"bad":rv.event==="APPROVE"?"ok":"")+'"><b>'+(rv.event==="REQUEST_CHANGES"?"⛔ Changes requested":rv.event==="APPROVE"?"✅ Approved":"💬 Review")+"</b>"+"<div style=\"margin-top:6px;white-space:pre-line\">"+reviewBody(rv.body)+"</div></div>";
   else html+='<div class=rsum>No review yet.</div>';
   const used=new Set();
   for(const f of j.files||[]){
