@@ -98,45 +98,25 @@ The agent has `comms.send`, memory and all office tools and answers from the kno
 
 - **Approve code is exactly 5 characters** (`approve K7F2Q`). The office only takes a code it has pending; a typo is not an office command, so it goes to the agent instead. Retype it.
 - **Identical messages are refused for 6 h** (chat de-dup). Running a scene twice produces silence the second time → always `demo/down.sh && demo/up.sh` between runs; it wipes `demo/data`.
-- **Model summary needs harness auth.** `~/.config/karmax-demo/env` (`CLAUDE_CODE_OAUTH_TOKEN`) must be loaded in the shell that runs `up.sh`. Without it reviews/cards still post (deterministic checks / raw docs) but without the model's wording.
-- **Free-form questions go to the orchestrator agent** (anything that isn't `approve`, `create repo`, `index`, `status`…); it needs the harness token and `run_on_start`.
-- Commands are plain words so they work in any chat; KARMAX uses Slack-style `*bold*` and posts no thread ids with the generic preset.
+- **Model wording needs harness auth.** `up.sh` loads `~/.config/karmax-demo/env` (`CLAUDE_CODE_OAUTH_TOKEN`); KARMAX passes that one variable to every Claude Code session. Without it reviews and cards still post (deterministic checks, raw docs), without the model's wording.
+- **Free-form messages go to the agent; office commands do not.** `approve <CODE>`, `create repo …`, `index …`, `status` are handled by the office alone; anything else is answered by the agent with the office's tools. A question asked while the feed is still moving is fine.
+- Commands are plain words so they work in any chat. With the generic preset every PR and incident carries a `thread` key, which is how the console groups them.
+- Deploy is `git pull && demo/down.sh && demo/up.sh` (it builds every time, cached). The console needs no restart for UI-only changes: reload the page.
 
-## Rehearsal log (scenes 3 and 4, against the merged demo/karmax.yaml, fc05b2d)
+## Final rehearsal (operator, main 0d34cff, fresh stack, every step through the console's buttons)
 
-- Scene 3: ~2 s, all of it as above — repo, CODEOWNERS, CLAUDE.md, PR template, CI, "Branch protection on main: 1 review + checks ci".
-- Scene 4: `index all` → "📚 Indexed 4 repositories"; the free-form question is answered by the model from the cards: *"auth-service (validates JWTs), Postgres (its database), Stripe (the external payment provider) … no queues mentioned."*
-  Run scene 4 **before** scene 2 (or on fresh state): if an incident is on file the model may add a remark about it.
-- Needs `agents[].triggers.run_on_start: true` in the config (without it the agent never starts and free-form chat dead-letters with `agent demo-agent is not running`) and the harness token loaded (`up.sh` does both).
-- Posting to `/comms/chat` by hand needs `Content-Type: application/json` (the scene scripts already send it).
-- `demo/scene2.sh --auto-approve` posts `approve <CODE>` for you.
-- The fake GitHub can't read back branch protection, so it is shown by KARMAX's chat line, not a lookup.
-- The VM's `bin/karmax` must be built with cgo (`CGO_ENABLED=1`, needs `gcc`); a non-cgo build dies with `go-sqlite3 requires cgo to work. This is a stub`.
-
-## Final rehearsal (operator, main 371d854, fresh `down.sh && up.sh`, scenes in pitch order)
-
-Run twice end to end on the demo VM; both runs green.
-
-| scene | time | result |
+| beat | time | what the audience saw |
 |---|---|---|
-| 1 | 16 s | #1 REQUEST_CHANGES (key shown as `AKIAIO••••`, never in full), #2 APPROVE → merged on green CI |
-| 2 | 44 s | 🚨 INC → 🟡 approval → `approve <CODE>` typed via the chat page → fix PR #3 reviewed, merged → ✅ Resolved, `/health` 200 |
-| 3 | 2 s | `acme/ledger-svc` created with README, CODEOWNERS, CLAUDE.md, PR template, CI; protection line in chat |
-| 4 | 24 s | `index all` → 4 repos; "What does payments-api depend on?" → auth-service (JWT), PostgreSQL, Stripe |
+| Leaked PR + clean PR | 18 s | #1 changes requested, the comment under line 17 (`AKIAIO••••` in chat); #2 approved, merged on green CI |
+| Incident | 47 s | Production turns red → INC with 🚨 and the approve code → `approve` → fix PR #3 reviewed, merged → healthy, all 7 stages ticked |
+| Repo factory | 2 s | `ledger-svc` arrives with a NEW tag and every compliance tick, protection `1 review · ci` |
+| Knowledge | 32 s | "What does payments-api depend on?" → auth-service (JWT), Postgres, Stripe; web-app and notifications depend on it |
+| Audit (free-form) | 12 s | "which repos are missing CODEOWNERS?" → only acme/notifications (the red row) |
+| Incident in plain English | ~30 s | "checkout on web-app is timing out for some customers" → INC opened on acme/web-app, owners alerted, approval asked |
 
-`/_fake/state` after the run: merges `acme/payments-api#2`, `acme/payments-api#3`.
-
-### Known core issues visible on stage (not worked around in core)
-
-- **The orchestrator agent also answers office commands.** After `approve <CODE>` it posts "👀 on it…", and after
-  `index all` it can post "I can't run index all…" before the office's own "📚 Indexed …". Every chat message
-  reaches both the office and the agent. Say: "that's the general assistant chiming in; the office did the work."
-- **An agent's answer can be swallowed.** If anything else posts to the same chat target during the agent's turn,
-  KARMAX withholds the answer: `chat already answered this turn; withholding the final text`
-  (internal/agent/agent.go, `repliedDuringTurn`). scene4.sh waits for a quiet chat before asking. **Live, wait
-  until the feed stops moving before typing the question.** If nothing comes, `index payments-api` shows the card.
-- The agent's session reaches KARMAX through the `karmax` CLI and the API (`api:` on 127.0.0.1:9091 in
-  demo/karmax.yaml, `bin/` on PATH in up.sh). Without both, it answers "the KARMAX API is unreachable" and
-  "karmax: command not found".
-- Memory retrieval logs `proactive memory retrieval failed … api.anthropic.com` on each turn, because the
-  agent's API provider is a placeholder (the harness answers first). It's harmless for the demo.
+Fixed in KARMAX core during preparation (no workarounds left in the demo): office commands are answered once
+(the office claims them before the agent sees them); an agent's answer is no longer withheld when the office posts
+during its turn, nor lost when its own `comms.send` fails; JSON chat posts are accepted whatever the content type and
+the generic preset carries thread keys; the harness gets `CLAUDE_CODE_OAUTH_TOKEN`; chat-routed agents start; the fake
+GitHub reads branch protection back; an agent in a Claude Code session receives its configured system prompt; and
+`karmax tool call` checks arguments against the tool's parameters (`karmax tool show <name>` lists them).
