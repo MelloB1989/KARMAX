@@ -92,3 +92,5 @@ agents:
     max_tokens: 4096
     restart_policy: "always"
     max_restarts: 10
+    triggers:
+      run_on_start: true   # without this the agent never starts: no API session, so chat commands dead-letter
