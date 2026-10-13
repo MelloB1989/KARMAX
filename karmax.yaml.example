@@ -243,6 +243,9 @@ agents:
 
     # Triggers — how this agent gets activated
     triggers:
+      # An agent only starts at boot with run_on_start (KARMAX also starts any
+      # agent a comms channel or webhook route names in agent_id, as the
+      # channels above do for this one). A stopped agent cannot answer chat.
       run_on_start: true
       # webhooks: ["github-push"]
       # schedules:

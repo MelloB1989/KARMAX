@@ -28,6 +28,12 @@ var harnessAllowed = map[string]bool{
 	// that look like anything but a missing environment variable.
 	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "CURL_CA_BUNDLE": true,
 	"NODE_EXTRA_CA_CERTS": true,
+	// Claude Code's own headless login. With no ~/.claude credentials file it is
+	// the only way a claude harness can authenticate, and it is the harness
+	// binary's credential, not KARMAX's. Deliberately NOT ANTHROPIC_API_KEY or
+	// any provider key: those switch Claude Code to API billing on a host that
+	// holds one for KARMAX's own provider.
+	"CLAUDE_CODE_OAUTH_TOKEN": true,
 }
 
 // HarnessEnv returns the environment a spawned harness should run with.
