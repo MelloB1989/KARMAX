@@ -29,7 +29,36 @@ func Load(path string) (*KarmaxConfig, error) {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
+	routeAgents(&cfg)
+
 	return &cfg, nil
+}
+
+// routeAgents makes sure an agent that something delivers messages to is
+// running. An agent only starts at boot with triggers.run_on_start, and a
+// stopped agent has no inbox: every chat message a channel routes to it is
+// dead-lettered ("agent X is not running") and, under a harness provider, it
+// has no API session for the harness to fall back to. Nobody writes agent_id on
+// a channel meaning "and leave it off", so the route implies the start.
+func routeAgents(cfg *KarmaxConfig) {
+	routed := map[string]bool{}
+	for _, ch := range cfg.Comms.Channels {
+		if ch.AgentID != "" {
+			routed[ch.AgentID] = true
+		}
+	}
+	for _, rt := range cfg.Webhooks.Routes {
+		if rt.AgentID != "" {
+			routed[rt.AgentID] = true
+		}
+	}
+	for i := range cfg.Agents {
+		a := &cfg.Agents[i]
+		if routed[a.ID] && !a.Triggers.RunOnStart {
+			a.Triggers.RunOnStart = true
+			cfg.AutoStarted = append(cfg.AutoStarted, a.ID)
+		}
+	}
 }
 
 // DatabaseDSN is what every store.New call site should pass. It is the one
@@ -225,6 +254,17 @@ func validate(cfg *KarmaxConfig) error {
 			return fmt.Errorf("duplicate agent id: %s", a.ID)
 		}
 		seen[a.ID] = true
+	}
+
+	for _, ch := range cfg.Comms.Channels {
+		if ch.AgentID != "" && !seen[ch.AgentID] {
+			return fmt.Errorf("comms channel %q routes to unknown agent %q (messages to it would be dead-lettered)", ch.ID, ch.AgentID)
+		}
+	}
+	for _, rt := range cfg.Webhooks.Routes {
+		if rt.AgentID != "" && !seen[rt.AgentID] {
+			return fmt.Errorf("webhook route %q routes to unknown agent %q", rt.Path, rt.AgentID)
+		}
 	}
 
 	for _, l := range cfg.Loops {

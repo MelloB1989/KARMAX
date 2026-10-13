@@ -160,3 +160,19 @@ func TestTheOperatorCanNameAnExtraVariable(t *testing.T) {
 		t.Error("an explicitly allowed variable was still stripped")
 	}
 }
+
+func TestClaudeCodeOAuthTokenReachesTheHarnessButProviderKeysDoNot(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-ok")
+	t.Setenv("ANTHROPIC_API_KEY", "api-key")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "auth-token")
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	joined := strings.Join(HarnessEnv(), "\n")
+	if !strings.Contains(joined, "CLAUDE_CODE_OAUTH_TOKEN=oauth-ok") {
+		t.Error("the harness's own auth token was stripped")
+	}
+	for _, leaked := range []string{"api-key", "auth-token", "openai-key"} {
+		if strings.Contains(joined, leaked) {
+			t.Errorf("%s reached the harness", leaked)
+		}
+	}
+}

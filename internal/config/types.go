@@ -27,6 +27,11 @@ type KarmaxConfig struct {
 	// in, so an upgrade never switches somebody's integrations off.
 	Connectors   RegistryConfig `yaml:"connectors"`
 	Integrations RegistryConfig `yaml:"integrations"`
+
+	// AutoStarted names agents that did not set triggers.run_on_start but that
+	// a comms channel or webhook route delivers to; Load switched them on. The
+	// runtime logs it. Not part of the file.
+	AutoStarted []string `yaml:"-"`
 }
 
 // HarnessConfig runs coding harnesses as long-lived conversations.

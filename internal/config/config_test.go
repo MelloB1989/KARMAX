@@ -82,3 +82,24 @@ func TestValidateLoopRejectsMissingPrompt(t *testing.T) {
 		t.Fatal("expected validation error for loop missing prompt")
 	}
 }
+
+func TestChannelRoutedAgentIsStartedAndUnknownRouteRejected(t *testing.T) {
+	cfg := &KarmaxConfig{
+		Agents: []AgentDefConfig{{ID: "chat"}, {ID: "idle"}, {ID: "up", Triggers: AgentTriggersConfig{RunOnStart: true}}},
+		Comms:  CommsConfig{Channels: []ChannelConfig{{ID: "c", Type: "http", AgentID: "chat"}, {ID: "d", Type: "http", AgentID: "up"}}},
+	}
+	if err := validate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	routeAgents(cfg)
+	if !cfg.Agents[0].Triggers.RunOnStart || cfg.Agents[1].Triggers.RunOnStart {
+		t.Fatalf("run_on_start = %v/%v, want routed true, idle false", cfg.Agents[0].Triggers.RunOnStart, cfg.Agents[1].Triggers.RunOnStart)
+	}
+	if len(cfg.AutoStarted) != 1 || cfg.AutoStarted[0] != "chat" {
+		t.Fatalf("AutoStarted = %v", cfg.AutoStarted)
+	}
+	cfg.Comms.Channels[0].AgentID = "ghost"
+	if err := validate(cfg); err == nil {
+		t.Fatal("a channel routed to an unknown agent was accepted")
+	}
+}

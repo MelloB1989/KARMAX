@@ -396,9 +396,52 @@ func (s *Server) repoAPI(w http.ResponseWriter, r *http.Request, full string, re
 		rp.Protection = in
 		s.mu.Unlock()
 		writeJSON(w, 200, in)
+	case rest[0] == "branches" && len(rest) == 3 && rest[2] == "protection" && r.Method == "GET":
+		if !ok {
+			writeErr(w, 404)
+			return
+		}
+		s.mu.Lock()
+		prot, base := rp.Protection, s.base
+		s.mu.Unlock()
+		if prot == nil {
+			// GitHub: 404 "Branch not protected".
+			writeJSON(w, 404, map[string]any{"message": "Branch not protected"})
+			return
+		}
+		writeJSON(w, 200, protectionJSON(base, full, rest[1], prot))
 	default:
 		writeErr(w, 404)
 	}
+}
+
+// protectionJSON turns what the office PUT into what GitHub's GET returns: the
+// same settings, each sub-object carrying a url, and the boolean toggles as
+// {"enabled": …}.
+func protectionJSON(base, full, branch string, in map[string]any) map[string]any {
+	url := base + "/repos/" + full + "/branches/" + branch + "/protection"
+	out := map[string]any{"url": url}
+	if rs, _ := in["required_status_checks"].(map[string]any); rs != nil {
+		contexts, _ := rs["contexts"].([]any)
+		if contexts == nil {
+			contexts = []any{}
+		}
+		strict, _ := rs["strict"].(bool)
+		out["required_status_checks"] = map[string]any{
+			"url": url + "/required_status_checks", "strict": strict,
+			"contexts": contexts, "contexts_url": url + "/required_status_checks/contexts", "checks": []any{},
+		}
+	}
+	if pr, _ := in["required_pull_request_reviews"].(map[string]any); pr != nil {
+		n, _ := pr["required_approving_review_count"].(float64)
+		out["required_pull_request_reviews"] = map[string]any{
+			"url": url + "/required_pull_request_reviews", "dismiss_stale_reviews": false,
+			"require_code_owner_reviews": false, "required_approving_review_count": int(n),
+		}
+	}
+	admins, _ := in["enforce_admins"].(bool)
+	out["enforce_admins"] = map[string]any{"url": url + "/enforce_admins", "enabled": admins}
+	return out
 }
 
 func (s *Server) pullAPI(w http.ResponseWriter, r *http.Request, pr *PR, rest []string) {

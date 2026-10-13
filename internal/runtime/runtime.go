@@ -1346,6 +1346,10 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		}
 	}
 
+	for _, id := range rt.cfg.AutoStarted {
+		rt.log.Info("agent has no triggers.run_on_start but a comms channel or webhook route delivers to it; starting it so messages are not dead-lettered",
+			zap.String("agent", id))
+	}
 	if err := rt.agents.StartAll(ctx); err != nil {
 		rt.log.Error("agent start error", zap.Error(err))
 		rt.publishCritical("", "agent start error", map[string]any{"error": err.Error()})

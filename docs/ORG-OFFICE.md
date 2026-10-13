@@ -143,14 +143,39 @@ leaves merge decisions on `karmax/fix-*` branches to the incident policy.
 
 ## Trying it locally, with no GitHub org
 
-`cmd/fakegithub` is an in-memory GitHub covering the API the office uses, plus
+`cmd/fakegithub` is an in-memory GitHub covering the API the office uses (including reading branch protection back), plus
 control endpoints that open PRs and set CI and send signed webhooks at KARMAX.
 
+Requirements:
+
+- **cgo and a C compiler.** KARMAX stores state in SQLite, which needs cgo. A
+  `CGO_ENABLED=0` build compiles but dies at start with `go-sqlite3 requires cgo
+  to work. This is a stub`. Install gcc (`build-essential` on Debian/Ubuntu) and
+  build with `CGO_ENABLED=1`.
+- **Harness auth.** Review summaries and knowledge cards run through the Claude
+  Code harness. On a host with no `~/.claude` login, export
+  `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) before `karmax start`;
+  KARMAX passes that one variable to the harness. It never passes
+  `ANTHROPIC_API_KEY` or other provider keys, which would switch Claude Code to
+  API billing. Without any auth the review fails with `Not logged in`.
+  Other variables can be let through with `KARMAX_HARNESS_ENV_PASSTHROUGH`
+  (comma-separated), but that is the operator's explicit choice.
+- **An agent that receives chat.** Chat is answered by the agent a comms channel
+  names in `agent_id`. Agents only start at boot with `triggers.run_on_start:
+  true`; KARMAX also starts any agent a channel or webhook route targets (and
+  logs that it did), so messages are not dead-lettered. A channel naming an agent
+  that does not exist is a config error.
+
 ```bash
-go build -o fakegithub ./cmd/fakegithub && go build -o karmax ./cmd/karmax
+CGO_ENABLED=1 go build -o fakegithub ./cmd/fakegithub && CGO_ENABLED=1 go build -o karmax ./cmd/karmax
 ./fakegithub -addr 127.0.0.1:8787 -webhook http://127.0.0.1:9090/orgops/github -secret dev -seed acme
 # karmax.yaml: org_ops.github.api_url: http://127.0.0.1:8787, webhook_secret: dev, org: acme
 ./karmax start
+
+# Chat: post plain JSON (the Content-Type header is required) to a webhook-chat
+# channel (comms channel id "chat", type "webhook", settings.preset "generic",
+# settings.inbound_token "demo-token", agent_id naming a defined agent):
+curl -XPOST '127.0.0.1:9090/comms/chat?token=demo-token' -H 'Content-Type: application/json' -d '{"text":"status"}'
 
 # A PR that leaks a key → REQUEST_CHANGES review + chat summary
 curl -XPOST 127.0.0.1:8787/_fake/pulls -d '{"repo":"acme/payments-api","title":"add stripe client","author":"dev1",
