@@ -725,10 +725,14 @@ func isStaleIDError(err error) bool {
 // have access to a lookup tool" — every tool silently gone. So Bedrock streams,
 // with the chunks discarded, which returns the same final response and runs
 // the tool loop on the way.
-func completeManaged(kai *ai.KarmaAI, history *models.AIChatHistory, gate *streamGate) (*models.AIChatResponse, error) {
+func completeManaged(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatHistory, gate *streamGate) (*models.AIChatResponse, error) {
 	if kai.Model.GetModelProvider() == ai.Bedrock {
 		var said strings.Builder
 		resp, err := kai.ChatCompletionStreamManaged(history, func(c models.StreamedResponse) error {
+			// karma takes no context; failing the next chunk is how a cancelled turn stops generating.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			said.WriteString(c.AIResponse)
 			gate.write(c.AIResponse)
 			return nil
@@ -816,7 +820,7 @@ func chatWithRetry(ctx context.Context, kai *ai.KarmaAI, history *models.AIChatH
 			}
 		}
 
-		resp, err := completeManaged(kai, history, gate)
+		resp, err := completeManaged(ctx, kai, history, gate)
 		if err == nil && resp == nil {
 			err = fmt.Errorf("model returned no response")
 		}

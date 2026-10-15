@@ -244,3 +244,34 @@ func TestStartCarriesTheTagCapability(t *testing.T) {
 		t.Fatalf("call = %+v", c)
 	}
 }
+
+// slowFirstBrain takes as long as its context allows on "first" and answers anything else at once.
+type slowFirstBrain struct{ testBrain }
+
+func (b *slowFirstBrain) Answer(ctx context.Context, u Utterance) (Reply, error) {
+	if u.Text == "first" {
+		<-ctx.Done()
+		return Reply{}, ctx.Err()
+	}
+	return Reply{Text: "answer to " + u.Text}, nil
+}
+
+func TestANewerUtteranceAbandonsTheAnswerInProgress(t *testing.T) {
+	brain := &slowFirstBrain{testBrain{notices: make(chan Reply, 1), ended: make(chan struct{})}}
+	conn, done := dial(t, brain)
+	defer done()
+	send(t, conn, wire{Type: "start", CallID: "t"})
+	if g, ok := recv(t, conn, 2*time.Second); !ok || g.Text != "hi" {
+		t.Fatalf("greeting = %+v", g)
+	}
+	send(t, conn, wire{Type: "utterance", ID: 1, Text: "first"})
+	time.Sleep(100 * time.Millisecond)
+	send(t, conn, wire{Type: "utterance", ID: 2, Text: "second"})
+	m, ok := recv(t, conn, time.Second)
+	if !ok || m.For != 2 || m.Text != "answer to second" {
+		t.Fatalf("the newer utterance waited on the abandoned one, or got the wrong reply: %+v ok=%v", m, ok)
+	}
+	if extra, ok := recv(t, conn, 300*time.Millisecond); ok {
+		t.Fatalf("the abandoned turn said something: %+v", extra)
+	}
+}

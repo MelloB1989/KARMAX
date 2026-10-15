@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/MelloB1989/karma/models"
 	"github.com/MelloB1989/karmax/internal/agent"
@@ -101,7 +102,10 @@ type voiceBrain struct {
 	// so most questions answer in one pass instead of model → tool → model.
 	// The tool stays for what keyword overlap misses.
 	lookup *voiceMemoryLookup
-	brief  string
+	// abandoned is an utterance whose answer was dropped for a newer one, owed to the next turn.
+	abandonedMu sync.Mutex
+	abandoned   string
+	brief       string
 	// late holds hits from a search that outran its turn's budget.
 	late chan []string
 	// tags: the call's voice performs inline audio tags.
@@ -270,8 +274,19 @@ func (b *voiceBrain) Answer(ctx context.Context, u voice.Utterance) (voice.Reply
 	}
 	ts := b.startStream(ctx)
 	defer b.session.SetTurnStream(nil)
+	before := b.session.GetHistory()
+	before.Messages = append([]models.AIMessage(nil), before.Messages...)
+	said := b.withAbandoned(u.Text)
 	modelStart := time.Now()
-	text, calls, _, err := b.session.Chat(ctx, u.Text)
+	text, calls, _, err := b.session.Chat(ctx, said)
+	if ctx.Err() != nil {
+		// Abandoned for a newer utterance: undo the half turn and carry its words into the next one.
+		b.session.SetHistory(before)
+		b.abandonedMu.Lock()
+		b.abandoned = said
+		b.abandonedMu.Unlock()
+		return voice.Reply{}, ctx.Err()
+	}
 	ts.Flush()
 	// Where a reply's time went, per turn: on a phone the total is the
 	// product, and a slow reply is only fixable once it says which half was slow.
@@ -380,6 +395,27 @@ func endAboveThreshold() float64 {
 		return v
 	}
 	return 0.7
+}
+
+// withAbandoned puts an abandoned turn's words in front of the next utterance unless it already repeats them.
+func (b *voiceBrain) withAbandoned(text string) string {
+	b.abandonedMu.Lock()
+	prev := b.abandoned
+	b.abandoned = ""
+	b.abandonedMu.Unlock()
+	if prev == "" || strings.Contains(normWords(text), normWords(prev)) {
+		return text
+	}
+	return prev + " " + text
+}
+
+func normWords(s string) string {
+	return strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
+			return unicode.ToLower(r)
+		}
+		return ' '
+	}, s)), " ")
 }
 
 // collectHits waits up to the pre-answer budget for memory matching the

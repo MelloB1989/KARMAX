@@ -111,6 +111,9 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 	// The reader runs on its own so the newest utterance is known even while
 	// an answer is being composed: latest is what makes a reply stale.
 	msgs := make(chan wire, 16)
+	// cancelTurn stops the answer being composed once a newer utterance makes it moot.
+	var turnMu sync.Mutex
+	var cancelTurn context.CancelFunc
 	go func() {
 		defer close(msgs)
 		for {
@@ -125,6 +128,11 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 			}
 			if m.Type == "utterance" && m.ID > latest.Load() {
 				latest.Store(m.ID)
+				turnMu.Lock()
+				if cancelTurn != nil {
+					cancelTurn()
+				}
+				turnMu.Unlock()
 			}
 			select {
 			case msgs <- m:
@@ -167,10 +175,28 @@ func ServeConversation(ctx context.Context, conn *websocket.Conn, factory Factor
 				log.Info("voice: heard the caller", zap.String("said", text), zap.Bool("interrupted", m.Interrupted))
 				started := time.Now()
 				turn := stream(m.ID)
-				reply, err := brain.Answer(WithSay(ctx, turn.say), Utterance{
+				tctx, cancel := context.WithCancel(ctx)
+				turnMu.Lock()
+				cancelTurn = cancel
+				turnMu.Unlock()
+				if m.ID != 0 && latest.Load() > m.ID {
+					cancel()
+				}
+				reply, err := brain.Answer(WithSay(tctx, turn.say), Utterance{
 					CallID: start.CallID, Peer: start.Peer, PeerName: start.PeerName,
 					Language: start.Language, Text: text, Interrupted: m.Interrupted,
 				})
+				turnMu.Lock()
+				cancelTurn = nil
+				turnMu.Unlock()
+				superseded := tctx.Err() != nil && ctx.Err() == nil
+				cancel()
+				if superseded {
+					log.Info("voice: answer abandoned for a newer utterance",
+						zap.Int64("for", m.ID), zap.Int64("latest", latest.Load()),
+						zap.Duration("after", time.Since(started).Round(time.Millisecond)))
+					continue
+				}
 				if err != nil {
 					log.Warn("voice: the brain could not answer", zap.Error(err))
 					// Said out loud rather than swallowed: silence on a phone

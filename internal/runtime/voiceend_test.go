@@ -97,3 +97,18 @@ func TestToolTextIsNeverSpoken(t *testing.T) {
 		t.Fatalf("final = %q", got)
 	}
 }
+
+func TestAbandonedWordsCarryIntoTheNextTurn(t *testing.T) {
+	b := &voiceBrain{}
+	b.abandoned = "Okay, so remind me what I should do first."
+	if got := b.withAbandoned("to day."); got != "Okay, so remind me what I should do first. to day." {
+		t.Fatalf("separate utterance = %q", got)
+	}
+	b.abandoned = "Okay, so"
+	if got := b.withAbandoned("Okay so remind me what to do"); got != "Okay so remind me what to do" {
+		t.Fatalf("a resend that repeats the words was doubled: %q", got)
+	}
+	if got := b.withAbandoned("next"); got != "next" {
+		t.Fatalf("carried twice: %q", got)
+	}
+}
