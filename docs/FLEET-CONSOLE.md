@@ -180,31 +180,31 @@ the index written out, not a separate list. To refresh it after a route changes:
 <!-- routes:begin -->
 | route | scopes | fleetctl | what |
 |---|---|---|---|
-| `GET /v1` | full, relay, console | `fleetctl api` | the index of every route and the scopes that may call it |
-| `GET /v1/whoami` | full, relay, console | `fleetctl whoami` | which scope and name this token has |
-| `GET /v1/status` | full, relay, console | `fleetctl status`, `ls` | one row per agent (phase, task, idle, model, alerts), plus the orchestrator's quota |
+| `GET /v1` | full, relay, console, member | `fleetctl api` | the index of every route and the scopes that may call it |
+| `GET /v1/whoami` | full, relay, console, member | `fleetctl whoami` | which scope and name this token has (on the tailnet: your login) |
+| `GET /v1/status` | full, relay, console, member | `fleetctl status`, `ls` | one row per agent (phase, task, idle, model, alerts), plus the orchestrator's quota |
 | `POST /v1/tell` | full, relay, console | `fleetctl tell` | deliver a message to a session; to `operator` it is stored in the inbox |
 | `POST /v1/assign` | full | `fleetctl assign`, `give` | record a task for an agent, and with a brief deliver it; a new task supersedes the agent's old one |
-| `POST /v1/run` | full | `fleetctl run` | pick a free agent (or the one named), record the task with its repo, deliver the brief; 409 with the candidates when none is free (`queue` retries) |
-| `POST /v1/done` | full | `fleetctl done` | close a task (`agent` may be left out when `task` is named); archives and rotates the session unless `keep_session` |
-| `POST /v1/tasks/{id}/followup` | full | `fleetctl followup` | relay more instructions to the agent on an open task (409 when closed) |
-| `POST /v1/tasks/{id}/cancel` | full | `fleetctl cancel` | interrupt the agent, tell it, close the task as `cancelled` (409 when closed) |
+| `POST /v1/run` | full, member | `fleetctl run` | pick a free agent (or the one named), record the task with its repo, deliver the brief; 409 with the candidates when none is free (`queue` retries) |
+| `POST /v1/done` | full, member | `fleetctl done` | close a task (`agent` may be left out when `task` is named); archives and rotates the session unless `keep_session` |
+| `POST /v1/tasks/{id}/followup` | full, member | `fleetctl followup` | relay more instructions to the agent on an open task (409 when closed) |
+| `POST /v1/tasks/{id}/cancel` | full, member | `fleetctl cancel` | interrupt the agent, tell it, close the task as `cancelled` (409 when closed) |
 | `POST /v1/rotate` | full, console | `fleetctl rotate` | archive the session and start fresh; `dry_run` replies with what it would close and when |
 | `POST /v1/enable` | full | `fleetctl enable` | re-enable an agent disabled for a subscription problem |
 | `POST /v1/restore` | full | `fleetctl restore` | restore an archived session |
 | `GET /v1/inbox` | full, console | `fleetctl inbox` | what agents reported to the operator (`after=<id>` cursor) |
-| `GET /v1/wait` | full, console | `fleetctl wait` | long poll: returns when the agent reports, its task closes, or it stops; with `task` (`agent` then optional) it returns the agent's first report after the task's latest instruction (brief, follow-up), to whomever it was sent, unless `after` is set |
-| `GET /v1/guide` | full, console | `fleetctl guide` | the guide to putting the fleet to work (`{"text": …}`), also installed as a skill by `fleetctl skill install` |
+| `GET /v1/wait` | full, console, member | `fleetctl wait` | long poll: returns when the agent reports, its task closes, or it stops; with `task` (`agent` then optional) it returns the agent's first report after the task's latest instruction (brief, follow-up), to whomever it was sent, unless `after` is set |
+| `GET /v1/guide` | full, console, member | `fleetctl guide` | the guide to putting the fleet to work (`{"text": …}`), also installed as a skill by `fleetctl skill install` |
 | `GET /v1/events` | full, console | `fleetctl events` | an agent's recorded events |
 | `GET /v1/usage` | full, console | `fleetctl usage` | tokens and cost, by agent or model |
 | `GET /v1/history` | full, console | `fleetctl history` | an agent's past tasks |
-| `GET /v1/quota` | full, console | `fleetctl quota` | each subscription's 5 h and 7 d windows |
-| `GET /v1/tasks/{id}` | full, console | `fleetctl result` | a task with its conversation (brief, reports, follow-ups, oldest first, each with from/to) and the commits on its branch; 404 unknown |
-| `GET /v1/tasks` | full, console | `fleetctl tasks` | tasks, open or all |
+| `GET /v1/quota` | full, console, member | `fleetctl quota` | each subscription's 5 h and 7 d windows |
+| `GET /v1/tasks/{id}` | full, console, member | `fleetctl result` | a task with its conversation (brief, reports, follow-ups, oldest first, each with from/to) and the commits on its branch; 404 unknown |
+| `GET /v1/tasks` | full, console, member | `fleetctl tasks` | tasks, open or all; a member's own |
 | `GET /v1/activity` | full, console | `fleetctl activity` | event counts per agent in time buckets |
 | `GET /v1/today` | full, console | `fleetctl today` | tasks closed and spend since local midnight |
-| `GET /v1/pick` | full, console | `fleetctl pick` | which agent a new task would go to, and why each other was passed over |
-| `GET /v1/peek` | full, console | `fleetctl peek` | the last lines of an agent's pane |
+| `GET /v1/pick` | full, console, member | `fleetctl pick` | which agent a new task would go to, and why each other was passed over |
+| `GET /v1/peek` | full, console, member | `fleetctl peek` | the last lines of an agent's pane; a member's only while it works on their task |
 | `POST /v1/prompt` | full, console | `fleetctl prompt` | type into an agent's session as the operator |
 | `GET /v1/archives` | full, console | `fleetctl archive ls` | list archived sessions |
 | `GET /v1/archives/{id...}` | full | `fleetctl archive show` | one archive |
@@ -213,6 +213,8 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/down` | full | `fleetctl down` | docker compose down for hosts |
 | `POST /v1/render` | full | `fleetctl render` | regenerate env files, compose files and briefs |
 <!-- routes:end -->
+
+`member` is a person on the tailnet (`tailnet:` in fleet.yaml, no token: Tailscale says who they are). A member runs tasks as themselves, at most `member_open` open at once, and the task routes answer them only for their own tasks (403 otherwise); `wait` needs `task`, and `done` closes by task alone. An operator login on the tailnet has `full`.
 
 ## Install, upgrade, undo on PC2
 

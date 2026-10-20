@@ -28,6 +28,10 @@ const (
 	// CodeMissing: agent-run found the shared code directory empty and exits
 	// so Docker restarts the container onto the real mount.
 	CodeMissing Phase = "code_missing"
+	// Unreachable is shown, never stored: fleetd has not been able to ask the
+	// agent's host about it for unreachableAfter (State.OutOfReach). Its
+	// phase is kept as it was, for when the host is back.
+	Unreachable Phase = "unreachable"
 )
 
 // State is what fleetd remembers about one agent between ticks.
@@ -36,8 +40,16 @@ type State struct {
 	Phase     Phase  `json:"phase"`
 	SessionID string `json:"session_id"`
 	Task      string `json:"task,omitempty"`
-	// Done is set by `fleetctl done`; the next idle tick rotates.
-	Done bool `json:"done,omitempty"`
+	// Done is set by `fleetctl done`, at DoneAt; the next idle tick rotates.
+	Done   bool      `json:"done,omitempty"`
+	DoneAt time.Time `json:"done_at,omitzero"`
+	// ReportNudged: the agent, silent on its task with a word owed, was asked
+	// to report; cleared once it writes back.
+	ReportNudged bool `json:"report_nudged,omitempty"`
+	// HookIdle: the session's hooks say its last turn ended (Stop) and no
+	// tool has run since. Claude Code calls a session busy while a background
+	// command it started runs, turn or no turn; the hooks tell the two apart.
+	HookIdle bool `json:"hook_idle,omitempty"`
 
 	LastBusy     time.Time   `json:"last_busy"`
 	Restarts     []time.Time `json:"restarts,omitempty"`
@@ -51,6 +63,26 @@ type State struct {
 	// registered for it: starting, or wedged.
 	PaneOrphanSince time.Time `json:"pane_orphan_since,omitzero"`
 	DisabledReason  string    `json:"disabled_reason,omitempty"`
+
+	// Proc is the claude process last seen running the agent's session
+	// (Obs.Proc). TurnOpen: that session began a turn (UserPromptSubmit, or
+	// seen busy) and no Stop has ended it; TurnProc is the process the turn
+	// ran in. When the session is next seen idle in another process, the
+	// turn died with the old one — a power cut, a crash, a container restart
+	// — and fleetd tells the session to carry on with its task.
+	Proc     string `json:"proc,omitempty"`
+	TurnOpen bool   `json:"turn_open,omitempty"`
+	TurnProc string `json:"turn_proc,omitempty"`
+	// StartTried is when fleetd last started the container Docker had left
+	// stopped, and StartFailing since when it has been failing to start.
+	StartTried   time.Time `json:"start_tried,omitzero"`
+	StartFailing time.Time `json:"start_failing,omitzero"`
+	// CodeMissingSince is when the agent was first seen without its code
+	// share, in the current episode.
+	CodeMissingSince time.Time `json:"code_missing_since,omitzero"`
+	// UnreachableSince is when fleetd first failed to ask the agent's host
+	// about its container, in the current episode.
+	UnreachableSince time.Time `json:"unreachable_since,omitzero"`
 
 	// Low and Reserved are quota flags, independent of the phase: a low agent
 	// still works, but new tasks should prefer others.
@@ -69,6 +101,26 @@ type State struct {
 	Alerted map[string]bool `json:"alerted,omitempty"`
 }
 
+// OutOfReach reports whether the agent's host has been out of fleetd's reach
+// for unreachableAfter: it shows as unreachable, and takes no new work.
+func (s State) OutOfReach(now time.Time) bool {
+	return !s.UnreachableSince.IsZero() && now.Sub(s.UnreachableSince) >= unreachableAfter
+}
+
+// Recovering reports whether the agent is out of work only while fleetd
+// brings it back: its container failed to start and fleetd is starting it,
+// or it came up before its code share (a boot's race). Neither has gone on
+// long enough to be news.
+func (s State) Recovering(now time.Time) bool {
+	switch s.Phase {
+	case Down:
+		return !s.StartFailing.IsZero() && now.Sub(s.StartFailing) < startAlertAfter
+	case CodeMissing:
+		return !s.CodeMissingSince.IsZero() && now.Sub(s.CodeMissingSince) < codeMissingAfter
+	}
+	return false
+}
+
 // Quota is the account's last known windows. It is the account's truth, so
 // it is kept across sessions and aged out only at its reset.
 type Quota struct {
@@ -83,10 +135,17 @@ type Quota struct {
 type Obs struct {
 	Now         time.Time
 	ContainerUp bool
-	PaneAlive   bool
+	// ContainerFailed is Docker's error when the container is stopped because
+	// Docker could not start it, which its restart policy never retries.
+	ContainerFailed string
+	PaneAlive       bool
 	// PanePID is the pid of the claude the pane runs, when known; it tells the
 	// agent's own session from a stray using the same name.
 	PanePID int
+	// Proc names the claude process the pane runs: the host's boot id and
+	// the pane's pid, so a process after a reboot is never taken for the one
+	// before it.
+	Proc string
 	// Screen is the pane's visible text (its last lines), for dialogs that
 	// block a session before it has registered one.
 	Screen string
@@ -97,12 +156,32 @@ type Obs struct {
 	Events          []observe.Event // hook events since the last tick
 	TranscriptSize  int64
 	TranscriptMTime time.Time
+	// Owes: the agent owes its open task the next word (the ledger's last
+	// message on the task was to it), so it was still working on it.
+	Owes bool
+	// Unreachable is the agent's host when it could not be asked about the
+	// container: nothing else in the observation is known. (Why is in
+	// fleetd's fleet.unreachable event.)
+	Unreachable string
+	// Outbox is what fleetctl tell queued in the container while fleetd did
+	// not answer, oldest first. fleetd delivers it; it decides nothing.
+	Outbox []Outboxed
+}
+
+// Outboxed is one message an agent queued for fleetd (fleetctl tell).
+type Outboxed struct {
+	File string    `json:"-"`
+	From string    `json:"from"`
+	To   string    `json:"to"`
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
 }
 
 // Kind is what an action does.
 type Kind string
 
 const (
+	Start        Kind = "start"         // start the container Docker left stopped
 	Restart      Kind = "restart"       // restart the pane on Session (resume)
 	Rotate       Kind = "rotate"        // archive Session, start a fresh one
 	ArchiveStray Kind = "archive_stray" // archive and stop a session that is not the agent's
@@ -135,6 +214,55 @@ func Dialog(screen string) string {
 
 // stuckAfter is how long a session may wait on a dialog before you are told.
 const stuckAfter = 5 * time.Minute
+
+// startEvery is how often fleetd starts a container Docker failed to start,
+// and startAlertAfter how long that may go on before you are told.
+const (
+	startEvery      = time.Minute
+	startAlertAfter = 10 * time.Minute
+)
+
+// reportNudge is how long an agent may sit idle, its turn over, owing its task
+// a word, before it is asked to report: its report failed to send (fleetd was
+// away), or it stopped without one.
+const reportNudge = 10 * time.Minute
+
+// reportText is what such an agent is asked.
+func reportText(task string) string {
+	return fmt.Sprintf("Task %s: whoever gave it to you has heard nothing from you since their last message. "+
+		"If you have finished, send your report now — and if a report failed to send earlier, send it again. "+
+		"If you are blocked, or waiting on something, report that instead. Do not start the task over.", task)
+}
+
+// doneGrace is how long a session may stay busy after its task is done
+// before it is rotated anyway: the task is closed, and the agent is out of the
+// pool until it has its fresh session.
+const doneGrace = 3 * time.Minute
+
+// codeMissingAfter is how long an agent may go without its code share before
+// you are told: at boot it is a race, over within a restart or two.
+const codeMissingAfter = 3 * time.Minute
+
+// unreachableAfter is how long an agent's host may be out of fleetd's reach
+// before the agent shows as unreachable and you are told: a boot, a network
+// blip, a Docker restart pass well within it.
+const unreachableAfter = 5 * time.Minute
+
+// turnSettle is how long a session may sit idle, in the process that ran
+// it, on a turn no Stop ended before the turn is taken as over: a person
+// pressed Escape (Claude Code runs no Stop hook for that).
+const turnSettle = 2 * time.Minute
+
+// resumeText is what a session whose turn was cut short is told.
+func resumeText(task string) string {
+	return fmt.Sprintf("Your session was restarted while you were working on task %s "+
+		"(a power cut, a crash or a container restart). Whatever it was running was killed: "+
+		"the turn you were in, and any background command you were waiting on. Check where "+
+		"things stand first: git status in your worktree, and what your last steps left behind. "+
+		"Then carry on with the task from there. Do not start it over. Run anything long as a "+
+		"background command of your session, so you are woken when it ends — never detached with "+
+		"nohup, setsid or &.", task)
+}
 
 // Reasons a session ends.
 const (
@@ -196,14 +324,19 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	// directory is empty (a bind of the NFS automount stub before the share
 	// was mounted); Docker's restart policy re-binds it. Until a session is
 	// up again the agent shows as code_missing, not waiting or down.
+	// At boot that is a race agent-run usually wins on its next restart, so it
+	// is news only once it has gone on for codeMissingAfter.
 	for _, e := range o.Events {
 		if e.Event == "agent-run.code_missing" {
-			if st.Phase != CodeMissing {
-				push("code_missing", st.Name+": the shared code directory is empty in its container; it is restarting until the mount is there")
+			if st.CodeMissingSince.IsZero() {
+				st.CodeMissingSince = o.Now
 			}
-			alertOnce("code", fmt.Sprintf("%s: the shared code directory is empty in its container (NFS not mounted?) — it restarts until the share is there", st.Name))
 			st.Phase = CodeMissing
 		}
+	}
+	if st.Phase == CodeMissing && !st.CodeMissingSince.IsZero() && o.Now.Sub(st.CodeMissingSince) >= codeMissingAfter && !st.Alerted["code"] {
+		push("code_missing", st.Name+": the shared code directory is empty in its container; it is restarting until the mount is there")
+		alertOnce("code", fmt.Sprintf("%s: the shared code directory is empty in its container (NFS not mounted?) — it restarts until the share is there", st.Name))
 	}
 
 	// A subscription that refused the agent is not fought with restarts.
@@ -237,16 +370,50 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		}
 	}
 
+	if o.Unreachable != "" {
+		// Not down: unknown. At boot fleetd starts before the network, and a
+		// host that cannot be asked has said nothing about its containers.
+		if st.UnreachableSince.IsZero() {
+			st.UnreachableSince = o.Now
+		}
+		if st.OutOfReach(o.Now) && !st.Alerted["unreachable"] {
+			push("unreachable", fmt.Sprintf("%s: its host has been out of reach since %s", st.Name, st.UnreachableSince.Format(time.Kitchen)))
+			alertOnce("unreachable", fmt.Sprintf("fleetd cannot reach %s — its agents are not seen until it is back", o.Unreachable))
+		}
+		return st, acts
+	}
+	st.UnreachableSince = time.Time{}
+	delete(st.Alerted, "unreachable")
+
 	if !o.ContainerUp {
+		if o.ContainerFailed != "" {
+			// Docker could not start the container (after a power cut: a
+			// bind of the code share before the share was mounted), and its
+			// restart policy never retries that. Start it again, every
+			// startEvery, until it runs. A container someone stopped carries
+			// no error, and one `fleetctl down` removed is not there at all.
+			if st.StartFailing.IsZero() {
+				st.StartFailing = o.Now
+			}
+			if o.Now.Sub(st.StartTried) >= startEvery {
+				st.StartTried = o.Now
+				acts = append(acts, Action{Kind: Start, Reason: o.ContainerFailed})
+			}
+			if o.Now.Sub(st.StartFailing) >= startAlertAfter {
+				alertOnce("start", fmt.Sprintf("%s's container will not start: %s", st.Name, o.ContainerFailed))
+			}
+		}
 		if st.Phase == CodeMissing {
 			return st, acts // between restarts: still waiting on the mount
 		}
-		if st.Phase != Down {
+		if st.Phase != Down && o.ContainerFailed == "" { // one fleetd is starting is not news yet (startAlertAfter)
 			push("down", st.Name+"'s container is not running")
 		}
 		st.Phase = Down
 		return st, acts
 	}
+	st.StartTried, st.StartFailing = time.Time{}, time.Time{}
+	delete(st.Alerted, "start")
 
 	// Which session is the agent's: the one the pane runs, else the one named
 	// for the agent. Every other session in the container is a stray.
@@ -273,6 +440,27 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 			continue
 		}
 		acts = append(acts, Action{Kind: ArchiveStray, Session: s.SessionID, PID: s.PID, Reason: ReasonStray})
+	}
+
+	// The agent's turns, from its hooks. They are read here, before any
+	// early return, because they outlive a power cut on the agent's volume:
+	// a Stop written just before one must close the turn, not leave it open
+	// to be taken for cut short. A turn begun since the last tick ran in the
+	// process seen then.
+	for _, e := range o.Events {
+		if e.Session == "" || !(own(e.Session) || (mine != nil && e.Session == mine.SessionID)) {
+			continue
+		}
+		switch e.Event {
+		case "UserPromptSubmit":
+			st.TurnOpen, st.TurnProc = true, firstOf(st.Proc, o.Proc)
+			st.HookIdle = false
+		case "PreToolUse", "PostToolUse", "PostToolUseFailure":
+			st.HookIdle = false
+		case "Stop", "StopFailure":
+			st.TurnOpen = false
+			st.HookIdle = true
+		}
 	}
 
 	if d := Dialog(o.Screen); mine == nil && o.PaneAlive && d != "" {
@@ -305,10 +493,15 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	}
 	st.PaneOrphanSince = time.Time{}
 	st.SessionID = mine.SessionID
+	// A new process: the old one died (a power cut, a crash, a container
+	// restart) and the session was resumed in this one.
+	moved := st.Proc != "" && o.Proc != "" && st.Proc != o.Proc
+	st.Proc = o.Proc
 	if st.Phase == Down || st.Phase == CodeMissing {
 		st.Phase = Standby
 	}
 	delete(st.Alerted, "code") // a session is up: the code is mounted
+	st.CodeMissingSince = time.Time{}
 	delete(st.Alerted, "crashloop")
 	delete(st.Alerted, "home") // a session is up: HOME is writable now
 	// A dialog nobody answers leaves the session deaf to messages. Say so,
@@ -326,6 +519,9 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		delete(st.Alerted, "stuck")
 	}
 	busy := mine.Activity() == "busy"
+	if !o.Owes {
+		st.ReportNudged = false // it wrote back: a later instruction may be nudged again
+	}
 	if busy || (st.LastBusy.IsZero() && o.TranscriptMTime.IsZero()) {
 		st.LastBusy = o.Now // busy now, or never seen: the idle clock starts here
 	}
@@ -342,6 +538,27 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		st.CoolingUntil = time.Time{}
 		if st.Task != "" && !busy {
 			acts = append(acts, Action{Kind: Prompt, Text: "Your rate-limit window has reset. Continue the task you were working on."})
+			st.TurnOpen = false // that is its carry-on
+		}
+	}
+
+	if busy {
+		st.TurnOpen, st.TurnProc = true, o.Proc
+	} else {
+		// The session is back, idle, in another process than its turn's: the
+		// turn was cut short. Or it is back in a new process with its task
+		// still owed a word: between turns, it was waiting on a background
+		// command of its own, which died with the old process. Either way it
+		// is told to carry on, and the outage does not count as idleness.
+		// One that had reported and waits on its orchestrator is left be.
+		cut := st.TurnOpen && st.TurnProc != "" && o.Proc != "" && st.TurnProc != o.Proc
+		if (cut || (moved && o.Owes)) && st.Task != "" && !st.Done {
+			acts = append(acts, Action{Kind: Prompt, Text: resumeText(st.Task)})
+			push("resumed", fmt.Sprintf("%s was restarted while working on %s and told to carry on", st.Name, st.Task))
+			st.LastBusy, idle = o.Now, 0
+		}
+		if cut || (st.TurnOpen && idle > turnSettle) {
+			st.TurnOpen = false // over; with no Stop when a person pressed Escape
 		}
 	}
 
@@ -353,15 +570,20 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	default:
 		st.Phase = Standby
 	}
-	if busy {
+	// A task that is done rotates once its turn is over, though a background
+	// command it left keeps the session busy (one that never ends would keep
+	// the agent out of the pool for good) — and after doneGrace, regardless.
+	doneNow := st.Done && (st.HookIdle || (!st.DoneAt.IsZero() && o.Now.Sub(st.DoneAt) >= doneGrace))
+	if busy && !doneNow {
 		st.NudgedAt = time.Time{}
 		return st, acts
 	}
 
-	// Everything below acts on an idle session only.
+	// Everything below acts on an idle session only (or a done one, above).
 	rotate := func(reason string) {
 		acts = append(acts, Action{Kind: Rotate, Session: st.SessionID, Task: st.Task, Reason: reason})
 		st.Task, st.Done, st.Phase, st.SessionID = "", false, Standby, "" // the next one is learned when seen
+		st.TurnOpen, st.HookIdle, st.DoneAt = false, false, time.Time{}
 		st.NudgedAt, st.CompactedAt, st.LastBusy = time.Time{}, 0, o.Now
 	}
 	switch {
@@ -380,6 +602,12 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	case st.Task != "" && idle > th.WaitingNudge && st.NudgedAt.IsZero():
 		st.NudgedAt = o.Now
 		push("idle_on_task", fmt.Sprintf("%s idle %s on %s", st.Name, round(idle), st.Task))
+	}
+
+	if o.Owes && st.Task != "" && !st.ReportNudged && idle >= reportNudge {
+		st.ReportNudged = true
+		acts = append(acts, Action{Kind: Prompt, Text: reportText(st.Task)})
+		push("report_nudged", fmt.Sprintf("%s was silent %s on %s with a report owed, and was asked for it", st.Name, round(idle), st.Task))
 	}
 
 	if o.TranscriptSize >= th.CompactBytes && o.TranscriptSize > st.CompactedAt+th.CompactBytes/4 {
@@ -403,6 +631,7 @@ func restart(th config.Thresholds, st State, o Obs, acts *[]Action, push func(st
 		push("crashed", fmt.Sprintf("%s crash-looped; its session was archived and it starts fresh", st.Name))
 		alertOnce("crashloop", fmt.Sprintf("%s failed to start %d times in %s; started fresh", st.Name, len(recent)+1, th.RestartWindow))
 		st.Restarts, st.Task, st.Done, st.Phase, st.SessionID = nil, "", false, Standby, ""
+		st.TurnOpen = false
 		return st
 	}
 	st.Restarts = append(recent, o.Now)
@@ -434,6 +663,13 @@ func observeQuota(th config.Thresholds, st State, o Obs) State {
 	st.Low = st.Quota.FiveHour >= th.Low5h
 	st.Reserved = st.Quota.SevenDay >= th.Reserved7d
 	return st
+}
+
+func firstOf(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 func round(d time.Duration) string {

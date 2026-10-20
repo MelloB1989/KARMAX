@@ -24,6 +24,17 @@ listen: 127.0.0.1:7878       # fleetd API on Kali
 relay_listen: 0.0.0.0:7879   # for containers (and PC2): tell + status with the relay token
 otlp_listen: 0.0.0.0:4318    # the agents' OpenTelemetry
 
+# People on the Tailscale network, no token: Tailscale says who calls.
+# Install for them: curl -fsSL http://<kali>:7878/install.sh | sh  (builds: fleet/scripts/dist.sh)
+# tailnet:
+#   listen: 100.64.0.1:7878   # Kali's tailnet address (tailscale ip -4)
+#   operators: [you@example.com] # the full token's scope
+#   members: ["*@example.com"]   # run tasks as themselves; see and close their own
+#   member_open: 2               # open tasks per member
+
+# Under code, but never for an agent to read: an empty read-only tmpfs covers each.
+hide_from_agents: [secrets]
+
 hosts:
   kali:
     exec: [docker]

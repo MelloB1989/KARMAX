@@ -275,6 +275,7 @@ type service struct {
 	Environment   map[string]string `yaml:"environment,omitempty"`
 	ExtraHosts    []string          `yaml:"extra_hosts,omitempty"`
 	Volumes       []string          `yaml:"volumes,omitempty"`
+	Tmpfs         []string          `yaml:"tmpfs,omitempty"`
 	CPUs          string            `yaml:"cpus,omitempty"`
 	MemLimit      string            `yaml:"mem_limit,omitempty"`
 	StopGrace     string            `yaml:"stop_grace_period,omitempty"`
@@ -308,6 +309,12 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 		c.Code + ":" + c.Code,
 		"fleet-peers:" + c.Home + "/.claude/sessions",
 		"fleet-socks:" + c.SockDir,
+	}
+	// What agents must not read (credentials kept beside the code) is
+	// covered by an empty read-only tmpfs: the agent sees an empty directory.
+	var hidden []string
+	for _, p := range c.HideFromAgents {
+		hidden = append(hidden, filepath.Join(c.Code, p)+":ro,size=4k,mode=755")
 	}
 	common := func(name string) map[string]string {
 		e := map[string]string{
@@ -369,7 +376,7 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 			Environment: env, ExtraHosts: []string{"host.docker.internal:host-gateway"},
 			Volumes: append(append([]string{}, shared...),
 				name+"-home:"+c.Home+"/.claude", name+"-work:/work"),
-			CPUs: a.CPUs, MemLimit: a.Memory,
+			Tmpfs: hidden, CPUs: a.CPUs, MemLimit: a.Memory,
 		}
 		doc.Volumes[name+"-home"] = map[string]any{}
 		doc.Volumes[name+"-work"] = map[string]any{}

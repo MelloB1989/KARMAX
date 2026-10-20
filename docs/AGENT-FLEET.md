@@ -104,10 +104,20 @@ path, from the container env) has entries; if not it logs to stderr and `agent-r
 the event log, sleeps `FLEET_CODE_RETRY` (20 s, so the restart policy does not spin) and **exits 1**
 — it never loops. The compose service has `restart: unless-stopped`, which restarts on any exit with
 a doubling backoff capped at a minute, and the restart re-binds the (by then mounted) share.
-fleetd shows such an agent as `code_missing` (not `waiting` or `down`), alerts once, and excludes it
-from task assignment; the first session to come up clears it. Does not cover a share that stays
+fleetd shows such an agent as `code_missing` (not `waiting` or `down`) and excludes it from task
+assignment; the first session to come up clears it. At boot this is a race agent-run usually wins on
+its next restart, so you are told (once) only if it lasts 3 minutes. Does not cover a share that stays
 unmounted (friction #40: a changed DHCP address) — the agent then restarts every ~20 s, loudly, until
 the share is fixed.
+
+Two more things happen after a power cut (seen 2026-10-14). Docker starts the agents before PC2's
+network or Kali is up, each one triggers the automount, and the failed attempts hit systemd's start
+limit in a second: the mount unit fails, the automount with it, and nothing mounts the share again.
+`host-bootstrap.sh pc2` installs a drop-in with `StartLimitIntervalSec=0` beside the mount unit, so
+every later access retries. And a container whose bind Docker could not make at start (`no such
+device`, exit 128) is left stopped: the restart policy never retries a failed start. fleetd starts it
+again, once a minute, while Docker's `State.Error` is set — a container someone stopped has none, and
+one `fleetctl down` removed is not there — and alerts if that goes on for 10 minutes.
 
 Every container on a host joins one `fleet-anchor` PID namespace. Not `--pid host`: that would also
 make your own Kali sessions messageable, but every agent runs in bypass mode as your UID and could
@@ -175,9 +185,15 @@ files, the status-line snapshot (quota, context) and transcript mtime/size:
 | observation | action |
 |---|---|
 | no live session | restart the pane with `--resume <last sid>`; three failures in 10 min → archive, start fresh, alert |
+| container stopped because Docker failed to start it (`State.Error`) | `docker start` it once a minute; alert after 10 min |
+| session back, idle, in a new process (boot id + pane pid), with a turn its hooks opened and no `Stop` closed — or its task still owed a word (the last message on the task went to it: it was waiting on a background command of its own) | type a carry-on prompt: check the worktree, continue the task from there, do not start over; push `resumed` to the orchestrator |
 | a second session in the container, or one not named `agent-NN` | archive it |
-| task closed (`fleetctl done`, or the agent says done and the orchestrator confirms) | archive, rotate to a fresh standby session — **one task, one session**, so context never leaks between tasks |
+| task closed (`fleetctl done`, or the agent says done and the orchestrator confirms) | archive, rotate to a fresh standby session — **one task, one session**, so context never leaks between tasks;
+whatever the old session left running (a job it detached, a server) is ended — every command Claude
+Code runs carries the session's id in `CLAUDE_CODE_SESSION_ID`, and claude itself does not. fleetd looks every 5 s until it has rotated, and the agent takes no new task until its fresh session is up. A session `claude agents` calls busy only because a background command it left still runs (its hooks saw `Stop`) is rotated anyway, and any session 3 min after `done` |
+| the agent's host does not answer (`docker inspect` fails: at boot before the network, the host off, Docker restarting) | nothing: the agent is unknown, not down — no push, no restart, its phase kept. It takes no new task. After 5 min it shows `unreachable`, `wait` returns, and you get one alert per host |
 | standby, idle > 12 h, transcript non-trivial | archive, rotate (standby sessions must not accumulate junk) |
+| waiting, owing its task a word (the last message on the task went to it), idle 10 min | type into its session: report now, resend a report that failed, or say what blocks you — once per instruction |
 | waiting (task open) idle > 2 h | message the orchestrator: "agent-03 idle 2 h on <task>" |
 | waiting idle > 24 h | archive (worktree kept), rotate, tell the orchestrator and you |
 | transcript past a size threshold while idle | type `/compact` into the pane — a fleet action you configured, not a peer's |
@@ -188,6 +204,25 @@ files, the status-line snapshot (quota, context) and transcript mtime/size:
 
 All thresholds live in `fleet.yaml`.
 
+**Messages are not lost to a restart or an outage.** Every relay is written to the ledger *before* it is sent
+and marked delivered after, so a brief fleetd was typing when it stopped (a power cut, a deploy)
+is found by the next fleetd and sent again, once its receiver's session is up, with a note that it
+may be a second copy. A relay counts as delivered only when its `SendMessage` says so for the
+receiver (the relay's `claude -p` exits 0 either way); one that did not get through — the session
+was restarting or rotating — is tried twice more, 5 s and 15 s later. A follow-up, cancel notice or
+`tell` whose receiver still cannot take it — its host does not answer, its container is down, or the
+relay has not gone through in 75 s — is **held**: fleetd answers `queued` (HTTP 202; fleetctl prints
+the line and exits 0), keeps the message on the ledger, and sends it, in order with anything held
+before it, when the receiver is back, headed by a note saying when it was sent. A message to a
+receiver with one still held waits behind it. A pending message that fails five tries (30 s apart)
+while its receiver is up is dropped, and you are told. A held message whose task closes is dropped
+— except the cancel notice. A brief is never held: a `run` whose brief does not get through closes
+the task `undelivered` and fails, so its caller places it again. In the other direction,
+`fleetctl tell` in an agent's container retries for a few seconds and then queues the message in
+`/work/.fleet/outbox/`; fleetd reads the outbox with each look at the container, delivers it as the
+agent's, and removes it. A `run` repeated with the same `--task` (its answer was lost) returns the
+agent that already has it instead of giving the task to a second one.
+
 ### Archive — copy, verify, then stop
 
 1. Only act on an idle session (`status: idle`). A busy one waits for the next tick.
@@ -197,8 +232,11 @@ All thresholds live in `fleet.yaml`.
    - `transcript.jsonl.zst` plus any subagent transcripts
    - `worktrees.json`: path, branch, upstream, clean?, unpushed commits
 3. Verify by hash. Only then stop the session (`claude stop` / kill the pane).
-4. Worktrees: clean and pushed → `git worktree remove`. Anything uncommitted or unpushed → stays,
-   locked, listed in the manifest and in `fleetctl ls`. Never discarded by fleetd.
+4. Worktrees: clean and pushed → `git worktree remove`. "Pushed" is every commit on some remote
+   branch, not on the upstream: agents push without `-u`, and a worktree made from `origin/main` has
+   main as its upstream. (Judged by the upstream, every task's worktree was kept, and resets slowed
+   with each one.) Anything uncommitted or unpushed, or a worktree git cannot read → stays, locked,
+   listed in the manifest and in `fleetctl ls`. Never discarded by fleetd.
 5. Write `/work/.fleet/next` empty and restart the pane → fresh standby `agent-NN`.
 6. Optional: hand the manifest's summary to `karmax memory add`, so the orchestrator remembers what was
    done without re-reading a transcript.
@@ -284,6 +322,39 @@ fleet and read it back by task id, without knowing which agent is free:
 The skill carries the whole loop (briefs, fan-out, review rules, exit codes), so a fresh session that
 sees a task it can delegate knows how.
 
+## From anyone's machine — the tailnet
+
+fleetd has a fourth listener, on Kali's Tailscale address (`tailnet:` in fleet.yaml). It takes no token:
+each request is whoever tailscaled's WhoIs says owns the calling address, and that login's role decides
+what it may do.
+
+    tailnet:
+      listen: 100.64.0.1:7878        # bound even before tailscale0 is up (IP_FREEBIND)
+      operators: [you@example.com]   # the full token's scope
+      members: ["*@example.com"]     # their own tasks only
+      member_open: 2                 # open tasks one member may hold
+
+- **Who is nobody.** A tagged device (a subnet router, whose traffic may be anyone's), an address
+  tailscaled does not know (a subnet-routed VPC range: the ACL lets it reach Kali, WhoIs does not name
+  it), a login of another domain shared into the tailnet, anyone on neither list: 403. A token sent
+  here counts for nothing.
+- **A member** runs tasks as themselves (`from` is their login, whatever they send), at most
+  `member_open` open at once, and sees and acts on only their own: `wait --task`, `result`,
+  `followup`, `cancel`, `done --task`, `tasks`, and `peek` of an agent at work on theirs; plus `ls`,
+  `pick`, `quota`, `guide`. Not the operator's inbox, events, `prompt`, `tell`, `assign`, rotate,
+  enable, restore, archives, or the hosts. The agent reports to their login (`fleetctl tell
+  name@example.com`); fleetd files it under the task, and their `wait --task` returns it.
+- **Install.** fleetd serves fleetctl to anyone on the list: `curl -fsSL http://<kali>.<tailnet>.ts.net:7878/install.sh | sh`
+  (Windows: `irm http://<kali>.<tailnet>.ts.net:7878/install.ps1 | iex`) downloads the build for
+  their OS from `/dl/`, runs `fleetctl connect` (saved in their config dir; it prints who fleetd knows
+  them as), and installs the skill. The builds come from `fleet/scripts/dist.sh`, into
+  `~/.karmax/fleet/dist`; rerun it after changing fleetctl.
+- **What the agents can read.** Anyone on the list can brief an agent, and an agent reads all of
+  `~/code` and pushes as the fleet's GitHub account. Credentials kept under `~/code` are hidden from
+  agents with `hide_from_agents: [secrets]`: each path is covered by an empty read-only tmpfs in the
+  agent containers (not in the orchestrator's). Anything else under `~/code` an agent can read, a member
+  can ask for.
+
 ## Prompting an agent directly
 
 The live panel, the 3D office and the keyboard handover (`Ctrl+]`) are described in [FLEET-CONSOLE.md](FLEET-CONSOLE.md); `attach` below goes through the console when the host runs one.
@@ -308,7 +379,10 @@ The operator's panel on PC2 (virtual display, kiosk, RustDesk) and how to instal
 
 **Kali (orchestrator + 3 agents).** Docker from Kali's repos (`docker.io`, `docker-compose`),
 `nfs-kernel-server` exporting `~/code` to PC2's IP only (`rw,sync,no_subtree_check`, NFSv4), firewall
-allowing NFS and fleetd's relay port from PC2 only. Kali is rolling — `apt-mark hold` docker and nfs,
+allowing NFS and fleetd's relay port from PC2 only. NFSv4 delegations are off (`fs.leases-enable = 0`
+in `/etc/sysctl.d/90-fleet-nfs.conf`): the code is used on Kali too, and with them an open on Kali of a
+file PC2 holds one on waits for PC2 to hand it back — 45 s a file when PC2 is cut off or powered down
+(seen after a partition: every review stalled 45 s). Kali is rolling — `apt-mark hold` docker and nfs,
 and don't `full-upgrade` with agents mid-task.
 
 **PC2 (5 agents).** Don't build a custom distro: a hand-rolled ISO is one more thing to maintain.

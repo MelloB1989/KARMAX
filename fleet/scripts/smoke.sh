@@ -22,7 +22,14 @@ cat > "$R/bin/claude" <<'EOF'
 if [ "$1" = agents ]; then
   printf '['; sep=; for f in "$HOME"/.claude/sessions/*.json; do [ -e "$f" ] || continue; printf '%s' "$sep"; cat "$f"; sep=,; done; printf ']\n'; exit 0
 fi
-if [ "$1" = -p ]; then echo "role=$FLEET_ROLE args=$*" >> "$RELAY_LOG"; cat >> "$RELAY_LOG"; exit 0; fi
+if [ "$1" = -p ]; then
+  echo "role=$FLEET_ROLE args=$*" >> "$RELAY_LOG"; p=$(cat); printf '%s\n' "$p" >> "$RELAY_LOG"
+  # A relay is delivered when its SendMessage says so (stream-json).
+  to=$(printf '%s' "$p" | sed -n 's/.*session named "\([^"]*\)".*/\1/p' | head -n1)
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"SendMessage","input":{"to":"%s"}}]}}\n' "$to"
+  printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"{\\"success\\":true}"}]}}\n'
+  exit 0
+fi
 EOF
 chmod +x "$R/bin/"*
 export TMUX_TMPDIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fl.XXXX")  # sockets need a short path

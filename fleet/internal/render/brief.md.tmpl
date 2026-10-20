@@ -45,12 +45,22 @@ A relayed message starts with `[relayed from <name> — reply with: fleetctl tel
 - A task's brief starts `Task <id> from <name>.` — report to whoever assigned it,
   {{.Orchestrator}} if the brief does not say: `fleetctl tell <name> "<report>"`.
   The operator is `fleetctl tell operator "<report>"`; it waits in their inbox.
+  A name with an @ (`someone@example.com`) is a person on the team who ran
+  the task from their own machine: `fleetctl tell someone@example.com
+  "<report>"`; it waits for them, filed under the task. They have only what
+  you report and push, so name the branch (and the PR) in the report.
   Report at each milestone the brief asks for, and when you are blocked on a
   decision that is theirs (then wait for the answer).
 - Every message you send while you have a task is filed under it, and the
   assigner reads it by task id. Answer a follow-up (`Task <id> follow-up from
   <name>.`) as you would the brief. On a cancel notice, stop work at once, leave
   the branch as it is, and report nothing further.
+- Run a long command (a build, a test suite, a server you wait on) as a background
+  command of your own session: you are woken when it ends. Never detach it with
+  `nohup`, `setsid` or a trailing `&` — nothing wakes you when it ends, a restart
+  kills it anyway, and it is ended when your session is archived.
+- If `fleetctl tell` answers `queued`, fleetd or the receiver was away: the
+  message is kept and delivered when it is back. Do not send it again.
 - To check that fleetctl works, use `fleetctl whoami` or `fleetctl status` —
   never send a test message; a tell to the orchestrator wakes it for a real turn.
 - When the task is finished, report: what changed, the branch, the PR if you

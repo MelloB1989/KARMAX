@@ -40,11 +40,28 @@ After=$unit network-online.target
 EOF
 }
 
+# mount_retry_dropin: the drop-in that keeps the code mount retrying. At boot Docker starts every
+# agent, each one triggers the automount, and until the network and Kali are up each attempt fails:
+# five in a second hit systemd's start limit, the mount unit fails, the automount with it, and nothing
+# mounts the share again until someone resets it (seen after a power cut, 2026-10-14). With no limit,
+# every later access tries again: fleetd starting an agent Docker failed to start is one.
+mount_retry_dropin() {
+  cat <<EOF
+# installed by host-bootstrap.sh: never stop retrying the shared code mount
+[Unit]
+StartLimitIntervalSec=0
+EOF
+}
+
 mode="${1:-}"
 # no root needed to see what would be installed
 if [ "$mode" = docker-dropin ]; then
   [ "${2:-}" = --code ] && [ -n "${3:-}" ] || die "usage: host-bootstrap.sh docker-dropin --code <path>"
   docker_mount_dropin "$3"
+  exit 0
+fi
+if [ "$mode" = mount-dropin ]; then
+  mount_retry_dropin
   exit 0
 fi
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
@@ -79,6 +96,11 @@ kali)
 
   line="$code $pc2_ip(rw,sync,no_subtree_check)"
   grep -qxF "$line" /etc/exports 2>/dev/null || echo "$line" >> /etc/exports
+  # No NFSv4 delegations: the code is used here too, and an open here of a file
+  # PC2 holds one on waits for PC2 to give it back — up to lease-break-time
+  # (45 s) per file when PC2 is cut off or powered down.
+  echo "fs.leases-enable = 0" > /etc/sysctl.d/90-fleet-nfs.conf
+  sysctl -q -p /etc/sysctl.d/90-fleet-nfs.conf
   exportfs -ra
   systemctl enable --now nfs-server
 
@@ -151,6 +173,10 @@ EOF
   # Docker must not start before the code mount exists (see docker_mount_dropin).
   install -d -m 0755 /etc/systemd/system/docker.service.d
   docker_mount_dropin "$code" > /etc/systemd/system/docker.service.d/fleet-code-mount.conf
+  # Nor may the mount give up for good before Kali is up (see mount_retry_dropin).
+  mount_unit=$(systemd-escape --path --suffix=mount "$code") || die "cannot derive the mount unit for $code"
+  install -d -m 0755 "/etc/systemd/system/$mount_unit.d"
+  mount_retry_dropin > "/etc/systemd/system/$mount_unit.d/fleet-retry.conf"
   systemctl daemon-reload
   mount "$code" 2>/dev/null || true
 

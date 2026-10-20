@@ -20,7 +20,7 @@ type fake struct {
 }
 
 func (f *fake) Status(time.Time) []daemon.Row {
-	return []daemon.Row{{Agent: "agent-03", State: "standby"}}
+	return []daemon.Row{{Agent: "agent-03", State: "standby", Task: "T-ram"}, {Agent: "agent-02", State: "working", Task: "T1"}}
 }
 func (f *fake) Tell(_ context.Context, from, to, text string, _ time.Time) error {
 	f.calls = append(f.calls, "tell "+from+" "+to+" "+text)
@@ -63,6 +63,9 @@ func (f *fake) Followup(_ context.Context, task, from, text string, _ time.Time)
 	if task == "T-closed" {
 		return fmt.Errorf("%w: task %s is closed", daemon.ErrConflict, task)
 	}
+	if task == "T-away" {
+		return &daemon.Held{To: "agent-03", Cause: fmt.Errorf("its host pc2 does not answer")}
+	}
 	if task == "T-missing" {
 		return fmt.Errorf("%w %s", daemon.ErrNoTask, task)
 	}
@@ -96,9 +99,25 @@ func (f *fake) History(agent string, n int) ([]ledger.Session, error) {
 	return []ledger.Session{{ID: "s", Agent: agent, CostUSD: 1}}, nil
 }
 func (f *fake) Quota() (map[string]ledger.Quota, error) { return map[string]ledger.Quota{}, nil }
-func (f *fake) Tasks(open bool, agent string, n int) ([]ledger.Task, error) {
-	f.calls = append(f.calls, fmt.Sprintf("tasks open=%v agent=%q n=%d", open, agent, n))
+func (f *fake) Tasks(open bool, agent, assigner string, n int) ([]ledger.Task, error) {
+	call := fmt.Sprintf("tasks open=%v agent=%q n=%d", open, agent, n)
+	if assigner != "" {
+		call += " by=" + assigner
+	}
+	f.calls = append(f.calls, call)
 	return []ledger.Task{{ID: "T1", Agent: "agent-03", Assigner: "operator"}}, nil
+}
+
+// TaskAgent: T-ram is a tailnet member's task; T-missing does not exist;
+// every other is the operator's.
+func (f *fake) TaskAgent(task string) (*ledger.Task, error) {
+	switch task {
+	case "T-missing":
+		return nil, fmt.Errorf("%w %s", daemon.ErrNoTask, task)
+	case "T-ram":
+		return &ledger.Task{ID: task, Agent: "agent-03", Assigner: "ram@example.com"}, nil
+	}
+	return &ledger.Task{ID: task, Agent: "agent-03", Assigner: "operator"}, nil
 }
 func (f *fake) Activity(_ time.Time, b time.Duration, _ time.Time) (daemon.ActivityReply, error) {
 	f.calls = append(f.calls, "activity "+b.String())
@@ -163,6 +182,7 @@ func TestScopes(t *testing.T) {
 		{"POST", "/v1/tell", "relay", `{"from":"agent-05","to":"agent-03","text":"hi"}`, 200},
 		// The operator's authority is not an agent's to claim.
 		{"POST", "/v1/tell", "relay", `{"from":"operator","to":"agent-03","text":"hi"}`, 403},
+		{"POST", "/v1/tell", "relay", `{"from":"ram@example.com","to":"agent-03","text":"hi"}`, 403},
 		{"POST", "/v1/tell", "full", `{"from":"operator","to":"agent-03","text":"hi"}`, 200},
 		{"POST", "/v1/assign", "relay", `{"agent":"agent-03","task":"T1"}`, 403},
 		{"POST", "/v1/restore", "relay", `{"archive":"a/b"}`, 403},
@@ -213,7 +233,7 @@ func TestStatusShape(t *testing.T) {
 	var out struct {
 		Agents []daemon.Row `json:"agents"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out.Agents) != 1 || out.Agents[0].Agent != "agent-03" {
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out.Agents) != 2 || out.Agents[0].Agent != "agent-03" {
 		t.Fatalf("body = %s", rec.Body)
 	}
 }
@@ -537,6 +557,15 @@ func TestFollowupAndCancelRoutes(t *testing.T) {
 	}
 	if w := do(t, h, "POST", "/v1/tasks/T-missing/followup", "full", `{"text":"x"}`); w.Code != 404 {
 		t.Fatalf("unknown followup = %d", w.Code)
+	}
+	// Held for an agent out of reach: taken, and said so.
+	w := do(t, h, "POST", "/v1/tasks/T-away/followup", "full", `{"text":"x"}`)
+	var q struct {
+		OK, Queued bool
+		Why        string
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &q); w.Code != 202 || err != nil || !q.OK || !q.Queued || !strings.Contains(q.Why, "pc2 does not answer") {
+		t.Fatalf("held followup = %d %s", w.Code, w.Body)
 	}
 	if w := do(t, h, "POST", "/v1/tasks/T1/cancel", "full", `{"from":"karmax","reason":"wrong repo"}`); w.Code != 200 {
 		t.Fatalf("cancel = %d %s", w.Code, w.Body)

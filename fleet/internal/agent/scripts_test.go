@@ -249,14 +249,43 @@ func TestWorktreesScriptForReal(t *testing.T) {
 	git(repo, "worktree", "add", "-q", "--lock", "-b", "fleet/agent-03/dirty", dirty)
 	git(dirty, "commit", "-q", "--allow-empty", "-m", "local only")
 	_ = os.WriteFile(filepath.Join(dirty, "wip.txt"), []byte("x"), 0o644)
+	// How agents really leave them: pushed without -u (no upstream), and made
+	// from origin/main, which becomes the upstream, then pushed to their own
+	// branch. Both are on the remote: removing them loses nothing.
+	git(repo, "fetch", "-q", "origin")
+	noU, mainUp, notPushed := filepath.Join(l.work, "wt", "no-u"), filepath.Join(l.work, "wt", "main-up"), filepath.Join(l.work, "wt", "not-pushed")
+	git(repo, "worktree", "add", "-q", "--lock", "-b", "fleet/agent-03/no-u", noU)
+	git(noU, "commit", "-q", "--allow-empty", "-m", "work")
+	git(noU, "push", "-q", "origin", "fleet/agent-03/no-u")
+	git(repo, "worktree", "add", "-q", "--lock", "--track", "-b", "fleet/agent-03/main-up", mainUp, "origin/main")
+	git(mainUp, "commit", "-q", "--allow-empty", "-m", "work")
+	git(mainUp, "push", "-q", "origin", "fleet/agent-03/main-up")
+	git(repo, "worktree", "add", "-q", "--lock", "--track", "-b", "fleet/agent-03/not-pushed", notPushed, "origin/main")
+	git(notPushed, "commit", "-q", "--allow-empty", "-m", "local only")
+	// One git cannot read at all: not taken for clean and pushed.
+	broken := filepath.Join(l.work, "wt", "broken")
+	_ = os.MkdirAll(broken, 0o755)
+	_ = os.WriteFile(filepath.Join(broken, ".git"), []byte("gitdir: /nonexistent/x\n"), 0o644)
 
 	wts, err := l.a.Worktrees(ctx)
-	if err != nil || len(wts) != 2 {
+	if err != nil || len(wts) != 6 {
 		t.Fatalf("worktrees %+v, %v", wts, err)
 	}
-	byPath := map[string]Worktree{wts[0].Path: wts[0], wts[1].Path: wts[1]}
+	byPath := map[string]Worktree{}
+	for _, w := range wts {
+		byPath[w.Path] = w
+	}
 	if !byPath[clean].Safe() || byPath[dirty].Safe() || byPath[dirty].Unpushed != 1 || byPath[dirty].Dirty != 1 {
 		t.Fatalf("worktrees = %+v", wts)
+	}
+	if !byPath[noU].Safe() || !byPath[mainUp].Safe() || byPath[mainUp].Upstream != "origin/main" {
+		t.Fatalf("pushed, yet kept: %+v %+v", byPath[noU], byPath[mainUp])
+	}
+	if w := byPath[notPushed]; w.Safe() || w.Unpushed != 1 {
+		t.Fatalf("a commit on no remote: %+v", w)
+	}
+	if w := byPath[broken]; w.Safe() || w.Dirty != -1 || w.Unpushed != -1 {
+		t.Fatalf("unreadable: %+v", w)
 	}
 	if err := l.a.RemoveWorktree(ctx, byPath[dirty]); err == nil {
 		t.Fatal("removed a worktree with unpushed work")

@@ -23,7 +23,11 @@ func (f *fake) Pick(repo string, _ time.Time) daemon.PickReply {
 }
 
 func (f *fake) Run(_ context.Context, in daemon.RunRequest, _ time.Time) (daemon.RunReply, error) {
-	f.calls = append(f.calls, fmt.Sprintf("run brief=%q repo=%q agent=%q from=%q task=%q queue=%s", in.Brief, in.Repo, in.Agent, in.From, in.Task, in.Queue))
+	call := fmt.Sprintf("run brief=%q repo=%q agent=%q from=%q task=%q queue=%s", in.Brief, in.Repo, in.Agent, in.From, in.Task, in.Queue)
+	if in.Limit > 0 {
+		call += fmt.Sprintf(" limit=%d", in.Limit)
+	}
+	f.calls = append(f.calls, call)
 	switch {
 	case in.Brief == "nobody free":
 		return daemon.RunReply{}, &daemon.NoFreeAgent{Candidates: fakeCandidates}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"net"
 	"strings"
 	"testing"
 
@@ -30,4 +32,14 @@ func TestAConsoleTokenValueMayNotBeTheFullOrRelayOne(t *testing.T) {
 	if err := checkTokens(server.Tokens{Full: "f"}, cfg); err != nil {
 		t.Errorf("unset tokens refused: %v", err)
 	}
+}
+
+// The tailnet listener binds tailscale0's address even when a boot has not
+// given it to the host yet (192.0.2.1 is an address no host has).
+func TestTheTailnetListenerBindsAnAddressNotYetUp(t *testing.T) {
+	ln, err := (&net.ListenConfig{Control: freebind}).Listen(context.Background(), "tcp", "192.0.2.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
 }

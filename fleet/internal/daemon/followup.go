@@ -38,7 +38,7 @@ func (f *Fleet) Followup(ctx context.Context, task, from, text string, now time.
 	if err != nil {
 		return err
 	}
-	return f.tell(ctx, from, t.Agent, fmt.Sprintf("Task %s follow-up from %s. %s", task, from, text), task, now)
+	return f.send(ctx, from, t.Agent, fmt.Sprintf("Task %s follow-up from %s. %s", task, from, text), task, now)
 }
 
 // Cancel stops an agent's work on a task: it presses Escape in the agent's
@@ -55,16 +55,29 @@ func (f *Fleet) Cancel(ctx context.Context, task, from, reason string, now time.
 		notice += " " + reason
 	}
 	var errs []error
-	if err := f.box(t.Agent).Interrupt(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("interrupt %s: %w", t.Agent, err))
+	// An agent that cannot be reached is not pressed: its notice is held,
+	// and it stops when the notice reaches it.
+	if f.unable(t.Agent) == nil {
+		ictx, cancel := context.WithTimeout(ctx, f.holdAfter)
+		if err := f.box(t.Agent).Interrupt(ictx); err != nil {
+			errs = append(errs, fmt.Errorf("interrupt %s: %w", t.Agent, err))
+		}
+		cancel()
 	}
-	if err := f.tell(ctx, from, t.Agent, notice, task, now); err != nil {
+	var held *Held
+	if err := f.send(ctx, from, t.Agent, notice, task, now); errors.As(err, &held) {
+		held.Cause = errors.Join(append(errs, held.Cause)...)
+		errs = nil
+	} else if err != nil {
 		errs = append(errs, fmt.Errorf("notify %s: %w", t.Agent, err))
 	}
 	if err := f.Close(t.Agent, task, "cancelled", "", "", now); err != nil {
 		errs = append(errs, err)
 	}
 	f.event(t.Agent, "fleet.cancel", "", map[string]string{"task": task, "by": from})
+	if held != nil && len(errs) == 0 {
+		return held // closed; the notice goes out when the agent is back
+	}
 	return errors.Join(errs...)
 }
 

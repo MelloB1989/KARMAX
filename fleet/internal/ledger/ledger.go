@@ -606,13 +606,20 @@ func (db *DB) Task(id string) (*Task, error) {
 // Tasks lists tasks, newest assignment first. open keeps only those not yet
 // closed; an agent of "" means every agent; limit <= 0 means all.
 func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
+	return db.TasksBy(open, agent, "", limit)
+}
+
+// TasksBy is Tasks of one assigner (any, when empty): the tasks a person
+// on the tailnet asked for.
+func (db *DB) TasksBy(open bool, agent, assigner string, limit int) ([]Task, error) {
 	q := `SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)`
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)
+		AND (?='' OR assigner=?)`
 	if open {
 		q += ` AND closed IS NULL`
 	}
 	q += ` ORDER BY assigned DESC, id DESC`
-	args := []any{agent, agent}
+	args := []any{agent, agent, assigner, assigner}
 	if limit > 0 {
 		q += ` LIMIT ?`
 		args = append(args, limit)
@@ -671,6 +678,12 @@ type Relay struct {
 // Operator is the inbox name: messages to it wait for the operator.
 const Operator = "operator"
 
+// IsPerson reports whether a name is a person rather than a session: the
+// operator, or someone on the tailnet by their login (you@example.com; no
+// agent or orchestrator name has an @). A message to a person is filed on
+// the ledger, where they read it (wait, result); nothing is relayed.
+func IsPerson(name string) bool { return name == Operator || strings.Contains(name, "@") }
+
 // Inbox is the messages to the operator with an id above after, oldest first.
 func (db *DB) Inbox(after int64) ([]Relay, error) {
 	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), at, COALESCE(text,''), COALESCE(task,'') FROM relays
@@ -713,6 +726,17 @@ func (db *DB) LastInstruction(task string) (int64, error) {
 	return id, err
 }
 
+// Owes reports whether a task's agent owes it the next word: the newest
+// message filed under the task is one the agent was given (the brief, a
+// follow-up), not one it wrote. An agent that owes is still working on it.
+func (db *DB) Owes(task string) (bool, error) {
+	var owes bool
+	err := db.sql.QueryRow(`SELECT COALESCE(MAX(CASE WHEN r.sender IS NOT t.agent AND r.delivered THEN r.id END), 0)
+		> COALESCE(MAX(CASE WHEN r.sender = t.agent THEN r.id END), 0)
+		FROM relays r JOIN tasks t ON t.id = r.task WHERE r.task = ?`, task).Scan(&owes)
+	return owes, err
+}
+
 // LatestTask is an agent's most recently assigned task, nil if it has had none.
 func (db *DB) LatestTask(agent string) (*Task, error) {
 	ts, err := db.Tasks(false, agent, 1)
@@ -744,9 +768,91 @@ func (db *DB) taskRelays(extra, task string, after int64) ([]Relay, error) {
 
 // AddRelay records a relayed message.
 func (db *DB) AddRelay(r Relay) error {
-	_, err := db.sql.Exec(`INSERT INTO relays(sender, recipient, at, size, delivered, text, error, task) VALUES(?,?,?,?,?,?,?,?)`,
-		r.From, r.To, r.At.Unix(), len(r.Text), r.Delivered, r.Text, nullStr(r.Error), nullStr(r.Task))
+	_, err := db.addRelay(r)
 	return err
+}
+
+func (db *DB) addRelay(r Relay) (int64, error) {
+	res, err := db.sql.Exec(`INSERT INTO relays(sender, recipient, at, size, delivered, text, error, task) VALUES(?,?,?,?,?,?,?,?)`,
+		r.From, r.To, r.At.Unix(), len(r.Text), r.Delivered, r.Text, nullStr(r.Error), nullStr(r.Task))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// A relay's error while it is on its way (Sending), once fleetd found it that
+// way when it started (Interrupted: fleetd stopped in the middle of it), and
+// while fleetd keeps it for a receiver it could not reach (Held).
+const (
+	Sending     = "sending"
+	Interrupted = "interrupted"
+	Held        = "held"
+)
+
+// BeginRelay records a message before it is sent, so a brief is never only
+// in the memory of a fleetd that dies delivering it. EndRelay records how the
+// send went.
+func (db *DB) BeginRelay(r Relay) (int64, error) {
+	r.Delivered, r.Error = false, Sending
+	return db.addRelay(r)
+}
+
+// EndRelay records a send's outcome: delivered when err is nil.
+func (db *DB) EndRelay(id int64, err error) error {
+	var msg any
+	if err != nil {
+		msg = err.Error()
+	}
+	_, e := db.sql.Exec(`UPDATE relays SET delivered=?, error=? WHERE id=?`, err == nil, msg, id)
+	return e
+}
+
+// HoldRelay keeps a relay that did not get through for sending later
+// (Pending).
+func (db *DB) HoldRelay(id int64) error {
+	_, err := db.sql.Exec(`UPDATE relays SET delivered=0, error=? WHERE id=?`, Held, id)
+	return err
+}
+
+// InterruptRelays marks the relays a previous fleetd left on their way as
+// interrupted, and counts them. fleetd calls it once, when it starts.
+func (db *DB) InterruptRelays() (int, error) {
+	res, err := db.sql.Exec(`UPDATE relays SET error=? WHERE error=? AND NOT COALESCE(delivered,0)`, Interrupted, Sending)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
+// Pending is the relays to the receiver since a time that are still to be
+// sent — interrupted or held — and still matter, oldest first: no task, or a
+// task still open whose receiver no later message got through to. A closed
+// task's last word (the cancel notice, written as it closed) still goes.
+func (db *DB) Pending(agent string, since time.Time) ([]Relay, error) {
+	rows, err := db.sql.Query(`SELECT r.id, COALESCE(r.sender,''), r.at, COALESCE(r.text,''), COALESCE(r.task,''), r.error
+		FROM relays r WHERE r.recipient=? AND r.error IN (?, ?) AND r.at >= ?
+		AND (r.task IS NULL OR (
+			EXISTS (SELECT 1 FROM tasks t WHERE t.id=r.task AND (t.closed IS NULL OR r.at >= t.closed))
+			AND NOT EXISTS (SELECT 1 FROM relays l WHERE l.task=r.task AND l.recipient=r.recipient
+				AND l.id > r.id AND COALESCE(l.delivered,0))))
+		ORDER BY r.id`, agent, Interrupted, Held, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Relay
+	for rows.Next() {
+		r := Relay{To: agent}
+		var at int64
+		if err := rows.Scan(&r.ID, &r.From, &at, &r.Text, &r.Task, &r.Error); err != nil {
+			return nil, err
+		}
+		r.At = time.Unix(at, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // HostSample is one container's resource use.

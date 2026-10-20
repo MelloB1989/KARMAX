@@ -37,17 +37,40 @@ type box struct {
 	onStop func(b *box)
 	// interruptErr is what Interrupt returns.
 	interruptErr error
+	// relayErr is what Relay returns; onRelay runs as it sends. The first
+	// relayFails relays fail whatever relayErr is.
+	relayErr   error
+	relayFails int
+	onRelay    func()
+	// relayHangs makes Relay wait for its context: a host gone silent.
+	relayHangs bool
+	// observeErr is what Observe returns with a blank observation: the
+	// host did not answer.
+	observeErr error
 }
 
 func (b *box) log(s string) { b.mu.Lock(); b.calls = append(b.calls, s); b.mu.Unlock() }
 
+func (b *box) snapshotCalls() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.calls...)
+}
+
 func (b *box) Observe(_ context.Context, now time.Time) (reconcile.Obs, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.observeErr != nil {
+		return reconcile.Obs{Now: now}, b.observeErr
+	}
 	o := b.obs
+	o.Sessions = append([]observe.Agent(nil), b.obs.Sessions...)
 	o.Now = now
 	return o, nil
 }
 func (b *box) AckEvents(context.Context) error             { b.acked++; return nil }
 func (b *box) Restart(_ context.Context, sid string) error { b.log("restart " + sid); return nil }
+func (b *box) Start(context.Context) error                 { b.log("start"); return nil }
 func (b *box) Fresh(context.Context) error {
 	b.log("fresh")
 	if b.onStop != nil {
@@ -92,12 +115,35 @@ func (b *box) PushTranscript(_ context.Context, sid string, _ *agent.Transcript)
 	b.log("push " + sid)
 	return nil
 }
-func (b *box) Relay(_ context.Context, to, from, text string) error {
+func (b *box) Relay(ctx context.Context, to, from, text string) error {
 	b.log("relay " + from + "→" + to + ": " + text)
-	return nil
+	if b.onRelay != nil {
+		b.onRelay()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.relayHangs {
+		b.mu.Unlock()
+		<-ctx.Done()
+		b.mu.Lock()
+		return ctx.Err()
+	}
+	if b.relayFails > 0 {
+		b.relayFails--
+		return errors.New("relay to " + to + ": not delivered: No agent named '" + to + "' is reachable.")
+	}
+	return b.relayErr
 }
 
 func (b *box) Interrupt(context.Context) error { b.log("interrupt"); return b.interruptErr }
+func (b *box) KillSessionProcs(_ context.Context, sid string) (int, error) {
+	b.log("reap " + sid)
+	return 0, nil
+}
+func (b *box) AckOutbox(_ context.Context, files []string) error {
+	b.log("ackoutbox " + strings.Join(files, " "))
+	return nil
+}
 
 func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
@@ -149,6 +195,8 @@ func newFleet(t *testing.T) (*Fleet, map[string]*box, *outbox) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.relayBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+	f.soonEvery = 0
 	return f, boxes, out
 }
 
@@ -203,7 +251,7 @@ func TestDoneArchivesThenStartsFresh(t *testing.T) {
 	f.Tick(context.Background(), t0)
 
 	// Verified, then stopped (fresh), then cleaned up — never the reverse.
-	want := []string{"fresh", "delete s-agent-03", "rmwt /work/wt/fix"}
+	want := []string{"fresh", "reap s-agent-03", "delete s-agent-03", "rmwt /work/wt/fix"}
 	if !slices.Equal(b.calls, want) {
 		t.Fatalf("calls = %q, want %q", b.calls, want)
 	}
@@ -255,7 +303,7 @@ func TestRotatingASessionWithNoTranscript(t *testing.T) {
 	_ = f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0)
 	_ = f.Done("agent-03", "T1", "done", "", "", t0)
 	f.Tick(context.Background(), t0)
-	if b := boxes["agent-03"]; !slices.Equal(b.calls, []string{"fresh"}) {
+	if b := boxes["agent-03"]; !slices.Equal(b.calls, []string{"fresh", "reap s-agent-03"}) {
 		t.Fatalf("calls = %q", b.calls)
 	}
 }
@@ -266,7 +314,7 @@ func TestStraysAreArchivedThenStopped(t *testing.T) {
 	b.obs.Sessions = append(b.obs.Sessions, observe.Agent{PID: 99, Kind: "interactive", Name: "helper", SessionID: "stray", Status: "idle"})
 	b.transcript["stray"] = transcript
 	f.Tick(context.Background(), t0)
-	if !slices.Equal(b.calls, []string{"stop 99", "delete stray"}) {
+	if !slices.Equal(b.calls, []string{"stop 99", "delete stray", "reap stray"}) {
 		t.Fatalf("calls = %q", b.calls)
 	}
 }
@@ -733,5 +781,425 @@ func TestDoneShowsInStatusAtOnce(t *testing.T) {
 	f.Tick(context.Background(), t0.Add(time.Minute))
 	if r := row(); r.Task != "" || r.State != string(reconcile.Standby) {
 		t.Fatalf("after the rotation tick: %+v", r)
+	}
+}
+
+// A power cut, end to end. agent-03 was mid-turn on a task; fleetd comes back
+// with only what its ledger kept, finds the container Docker failed to start,
+// starts it, and once the session is back in the new boot tells it to carry on.
+func TestAfterAPowerCutTheContainerIsStartedAndTheTurnCarriedOn(t *testing.T) {
+	f, boxes, out := newFleet(t)
+	b := boxes["agent-03"]
+	b.obs.Proc = "boot1/7"
+	b.obs.Sessions[0].Status = "busy"
+	f.Tick(context.Background(), t0)
+	st := f.State("agent-03")
+	st.Task = "T1"
+	f.setState(st)
+
+	// The power is back. fleetd starts over from the ledger.
+	f, err := New(f.cfg, f.db, func(name string) Box { return boxes[name] }, out, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.obs = reconcile.Obs{ContainerFailed: `error mounting "/home/op/code": no such device`}
+	f.Tick(context.Background(), t0.Add(time.Hour))
+	if !slices.Contains(b.calls, "start") {
+		t.Fatalf("the container was not started: %q", b.calls)
+	}
+	evs, _ := f.db.Events("agent-03", time.Time{})
+	if !slices.ContainsFunc(evs, func(e ledger.Event) bool { return e.Kind == "fleet.container_start" }) {
+		t.Errorf("no fleet.container_start in %+v", evs)
+	}
+
+	b.obs = healthy("agent-03")
+	b.obs.Proc = "boot2/7" // the same pid, in a new boot
+	f.Tick(context.Background(), t0.Add(time.Hour+time.Minute))
+	var told string
+	for _, c := range b.calls {
+		if strings.HasPrefix(c, "prompt ") {
+			told = c
+		}
+	}
+	if !strings.Contains(told, "T1") || !strings.Contains(told, "carry on") {
+		t.Fatalf("not told to carry on: %q", b.calls)
+	}
+	if f.State("agent-03").Task != "T1" {
+		t.Fatalf("the task was dropped: %+v", f.State("agent-03"))
+	}
+}
+
+// Between turns, waiting on its own background build, when the power went:
+// the ledger says it still owes its task a word, so once its session is back
+// in the new boot it is told to carry on.
+func TestAfterAPowerCutAnAgentThatOwesItsTaskIsToldToCarryOn(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	b.obs.Proc = "boot1/7"
+	_ = f.db.OpenTask("T2", "agent-03", "karmax", t0)
+	if err := f.db.AddRelay(ledger.Relay{From: "karmax", To: "agent-03", Task: "T2", Text: "brief", At: t0, Delivered: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.Tick(context.Background(), t0)
+	st := f.State("agent-03")
+	st.Task = "T2"
+	f.setState(st)
+
+	b.obs.Proc = "boot2/7"
+	f.Tick(context.Background(), t0.Add(time.Hour))
+	if !slices.ContainsFunc(b.calls, func(c string) bool { return strings.HasPrefix(c, "prompt ") && strings.Contains(c, "T2") }) {
+		t.Fatalf("not told to carry on: %q", b.calls)
+	}
+
+	// Had it reported, a restart would leave it be.
+	b.calls = nil
+	if err := f.db.AddRelay(ledger.Relay{From: "agent-03", To: "karmax", Task: "T2", Text: "done", At: t0, Delivered: true}); err != nil {
+		t.Fatal(err)
+	}
+	b.obs.Proc = "boot3/7"
+	f.Tick(context.Background(), t0.Add(2*time.Hour))
+	if slices.ContainsFunc(b.calls, func(c string) bool { return strings.HasPrefix(c, "prompt ") }) {
+		t.Fatalf("woken after reporting: %q", b.calls)
+	}
+}
+
+// fleetd died while it was typing a brief into agent-03 (a power cut on its
+// host, a restart): the ledger has the brief, marked as on its way. The next
+// fleetd sends it again, once, when the agent's session is up — the task is
+// not left with an agent that never heard of it.
+func TestABriefCutShortByARestartIsSentAgain(t *testing.T) {
+	f, boxes, out := newFleet(t)
+	b := boxes["agent-03"]
+	_ = f.db.OpenTask("T1", "agent-03", "karmax", t0)
+	st := f.State("agent-03")
+	st.Task = "T1"
+	f.setState(st)
+	if _, err := f.db.BeginRelay(ledger.Relay{From: "karmax", To: "agent-03", Task: "T1", Text: "the brief", At: t0}); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := New(f.cfg, f.db, func(name string) Box { return boxes[name] }, out, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.obs = reconcile.Obs{} // down: nothing is sent to a container that is not up
+	f.Tick(context.Background(), t0.Add(time.Minute))
+	if slices.ContainsFunc(b.calls, func(c string) bool { return strings.HasPrefix(c, "relay ") }) {
+		t.Fatalf("sent while down: %q", b.calls)
+	}
+	b.obs = healthy("agent-03")
+	f.Tick(context.Background(), t0.Add(2*time.Minute))
+	var sent []string
+	for _, c := range b.calls {
+		if strings.HasPrefix(c, "relay ") {
+			sent = append(sent, c)
+		}
+	}
+	if len(sent) != 1 || !strings.Contains(sent[0], "karmax→agent-03") || !strings.Contains(sent[0], "the brief") || !strings.Contains(sent[0], "sent again") {
+		t.Fatalf("resent = %q", sent)
+	}
+	th, _ := f.db.TaskThread("T1")
+	if len(th) != 1 || !th[0].Delivered || th[0].Error != "" {
+		t.Fatalf("thread = %+v", th)
+	}
+	if o, _ := f.db.Owes("T1"); !o {
+		t.Fatal("the agent does not owe the brief it now has")
+	}
+	b.calls = nil
+	f.Tick(context.Background(), t0.Add(3*time.Minute))
+	if slices.ContainsFunc(b.calls, func(c string) bool { return strings.HasPrefix(c, "relay ") }) {
+		t.Fatalf("sent twice: %q", b.calls)
+	}
+}
+
+// A resend that fails is tried again a little later, a few times, but not
+// forever: then you are told the message is lost.
+func TestABriefThatCannotBeResentIsReported(t *testing.T) {
+	f, boxes, out := newFleet(t)
+	b := boxes["agent-03"]
+	b.relayErr = errors.New("no session named agent-03")
+	_ = f.db.OpenTask("T1", "agent-03", "karmax", t0)
+	_, _ = f.db.BeginRelay(ledger.Relay{From: "karmax", To: "agent-03", Task: "T1", Text: "the brief", At: t0})
+	f, err := New(f.cfg, f.db, func(name string) Box { return boxes[name] }, out, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relays := func() int {
+		n := 0
+		for _, c := range b.calls {
+			if strings.HasPrefix(c, "relay ") {
+				n++
+			}
+		}
+		return n
+	}
+	f.Tick(context.Background(), t0.Add(time.Minute))
+	f.Tick(context.Background(), t0.Add(time.Minute+10*time.Second))
+	if n := relays(); n != 1 || len(out.alerts) != 0 {
+		t.Fatalf("tried %d times, alerts %q; want once, and a pause before the next", n, out.alerts)
+	}
+	for i := 2; i <= resendTries+2; i++ {
+		f.Tick(context.Background(), t0.Add(time.Duration(i)*time.Minute))
+	}
+	if n := relays(); n != resendTries {
+		t.Fatalf("tried %d times: %q", n, b.calls)
+	}
+	if len(out.alerts) != 1 || !strings.Contains(out.alerts[0], "T1") || !strings.Contains(out.alerts[0], "agent-03") {
+		t.Fatalf("alerts = %q", out.alerts)
+	}
+}
+
+// A relay is on the ledger before it is sent.
+func TestTellRecordsTheRelayBeforeSendingIt(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	_ = f.db.OpenTask("T1", "agent-03", "karmax", t0)
+	b.onRelay = func() {
+		th, _ := f.db.TaskThread("T1")
+		if len(th) != 1 || th[0].Error != ledger.Sending || th[0].Text != "go" {
+			t.Errorf("while sending: %+v", th)
+		}
+	}
+	if err := f.tell(context.Background(), "karmax", "agent-03", "go", "T1", t0); err != nil {
+		t.Fatal(err)
+	}
+	th, _ := f.db.TaskThread("T1")
+	if len(th) != 1 || !th[0].Delivered || th[0].Error != "" {
+		t.Fatalf("after: %+v", th)
+	}
+}
+
+// An agent's report to the orchestrator, cut short, is sent again too.
+func TestAReportToTheOrchestratorCutShortIsSentAgain(t *testing.T) {
+	f, boxes, out := newFleet(t)
+	_, _ = f.db.BeginRelay(ledger.Relay{From: "agent-03", To: "karmax", Text: "PR is up", At: t0})
+	f, err := New(f.cfg, f.db, func(name string) Box { return boxes[name] }, out, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Tick(context.Background(), t0.Add(time.Minute))
+	if !slices.ContainsFunc(boxes["karmax"].calls, func(c string) bool {
+		return strings.Contains(c, "agent-03→karmax") && strings.Contains(c, "PR is up")
+	}) {
+		t.Fatalf("karmax calls = %q", boxes["karmax"].calls)
+	}
+}
+
+// At boot fleetd starts before the network: pc2 does not answer. Its agents
+// are not taken for down — no push, no restart, no "down" to wait on — and
+// after a while they show as unreachable, take no work, and you are told.
+func TestAnAgentWhoseHostDoesNotAnswerIsNotDown(t *testing.T) {
+	f, boxes, out := newFleet(t)
+	b := boxes["agent-05"]
+	_ = f.db.OpenTask("T1", "agent-05", "karmax", t0)
+	f.Tick(context.Background(), t0)
+	st := f.State("agent-05")
+	st.Task = "T1"
+	f.setState(st)
+	f.Tick(context.Background(), t0.Add(30*time.Second))
+
+	b.observeErr = errors.New("docker --context pc2 inspect: exit status 1: error during connect: ssh: connect to host 192.0.2.26 port 22: Network is unreachable")
+	// A message fleetd was sending when it stopped waits for the host too.
+	_, _ = f.db.BeginRelay(ledger.Relay{From: "karmax", To: "agent-05", Task: "T1", Text: "f1", At: t0.Add(time.Minute)})
+	_, _ = f.db.InterruptRelays()
+	f.Tick(context.Background(), t0.Add(time.Minute))
+	if st := f.State("agent-05"); st.Phase != reconcile.Waiting || st.Task != "T1" {
+		t.Fatalf("state = %+v", st)
+	}
+	if len(out.pushes) != 0 || len(b.calls) != 0 {
+		t.Fatalf("pushes %q calls %q", out.pushes, b.calls)
+	}
+	if p := f.Pick("", t0.Add(time.Minute)); slices.ContainsFunc(p.Candidates, func(c Candidate) bool { return c.Agent == "agent-05" && c.Eligible }) {
+		t.Fatalf("an agent on a host that does not answer is pickable: %+v", p)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	f.waitEvery = 10 * time.Millisecond
+	f.Tick(context.Background(), t0.Add(10*time.Minute))
+	var row Row
+	for _, r := range f.Status(t0.Add(10 * time.Minute)) {
+		if r.Agent == "agent-05" {
+			row = r
+		}
+	}
+	if row.State != "unreachable" || !slices.Contains(row.Alerts, "unreachable") {
+		t.Fatalf("row = %+v", row)
+	}
+	if len(out.alerts) != 1 || !strings.Contains(out.alerts[0], "pc2") {
+		t.Fatalf("alerts = %q", out.alerts)
+	}
+	if r, err := f.Wait(ctx, "", "T1", 0); err != nil || r.Reason != "phase" || r.Phase != "unreachable" {
+		t.Fatalf("wait = %+v, %v", r, err)
+	}
+
+	b.observeErr = nil
+	f.Tick(context.Background(), t0.Add(11*time.Minute))
+	if st := f.State("agent-05"); st.Phase != reconcile.Waiting || !st.UnreachableSince.IsZero() {
+		t.Fatalf("back: %+v", st)
+	}
+	if evs, _ := f.db.Events("agent-05", time.Time{}); !slices.ContainsFunc(evs, func(e ledger.Event) bool {
+		return e.Kind == "fleet.reachable" && strings.Contains(e.Detail, `"after":"10m"`)
+	}) {
+		t.Errorf("no fleet.reachable with the outage's length: %+v", evs)
+	}
+	if !slices.ContainsFunc(b.calls, func(c string) bool { return strings.HasPrefix(c, "relay ") && strings.Contains(c, "f1") }) {
+		t.Fatalf("not resent once back: %q", b.calls)
+	}
+}
+
+// A host out of reach is one alert on your phone, not one per agent: each
+// agent's docker error names its own container, so the alert must not carry
+// it. (A router power cut sent eight.)
+func TestAHostOutOfReachIsOneAlertWhateverEachAgentsErrorSays(t *testing.T) {
+	f, boxes, out := newFleet(t)
+	a := f.cfg.Agents["agent-03"]
+	a.Host = "pc2"
+	f.cfg.Agents["agent-03"] = a
+	for _, n := range []string{"agent-03", "agent-05"} {
+		boxes[n].observeErr = errors.New(`docker --context pc2 inspect: error during connect: Get "http://docker.example.com/v1.51/containers/` + n + `/json": ssh exited with 255`)
+	}
+	f.Tick(context.Background(), t0)
+	f.Tick(context.Background(), t0.Add(10*time.Minute))
+	if len(out.alerts) != 1 || out.alerts[0] != "fleetd cannot reach pc2 — its agents are not seen until it is back" {
+		t.Fatalf("alerts = %q", out.alerts)
+	}
+	if evs, _ := f.db.Events("agent-05", time.Time{}); !slices.ContainsFunc(evs, func(e ledger.Event) bool {
+		return e.Kind == "fleet.unreachable" && strings.Contains(e.Detail, "containers/agent-05")
+	}) {
+		t.Errorf("the error itself is not kept: %+v", evs)
+	}
+}
+
+// One alert text goes out once in a while, however many agents raise it: a
+// host's agents all alert that it is out of reach.
+func TestTheSameAlertFromManyAgentsGoesOutOnce(t *testing.T) {
+	f, boxes, out := newFleet(t)
+	a := []reconcile.Action{{Kind: reconcile.Alert, Text: "fleetd cannot reach pc2"}}
+	f.execute(context.Background(), "agent-03", boxes["agent-03"], reconcile.State{}, reconcile.State{}, a, t0)
+	f.execute(context.Background(), "agent-05", boxes["agent-05"], reconcile.State{}, reconcile.State{}, a, t0.Add(time.Minute))
+	if len(out.alerts) != 1 {
+		t.Fatalf("alerts = %q", out.alerts)
+	}
+	f.execute(context.Background(), "agent-05", boxes["agent-05"], reconcile.State{}, reconcile.State{}, a, t0.Add(time.Hour))
+	if len(out.alerts) != 2 {
+		t.Fatalf("an hour later: %q", out.alerts)
+	}
+}
+
+// A session restarting or rotating has no one to take a message for a few
+// seconds: a relay that did not get through is tried again before it fails.
+func TestARelayThatDidNotGetThroughIsTriedAgain(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	b.relayFails = 2
+	_ = f.db.OpenTask("T1", "agent-03", "karmax", t0)
+	if err := f.tell(context.Background(), "karmax", "agent-03", "go", "T1", t0); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range b.calls {
+		if strings.HasPrefix(c, "relay ") {
+			n++
+		}
+	}
+	th, _ := f.db.TaskThread("T1")
+	if n != 3 || len(th) != 1 || !th[0].Delivered {
+		t.Fatalf("relays %d, thread %+v", n, th)
+	}
+	b.relayFails = 5
+	if err := f.tell(context.Background(), "karmax", "agent-03", "again", "T1", t0); err == nil {
+		t.Fatal("never got through, and no error")
+	}
+}
+
+// What an agent queued while fleetd was away is delivered on the next tick,
+// as the agent's — the file's own "from" is not trusted — and removed once
+// it is. One whose receiver cannot take it now is held by fleetd, which sends
+// it later; one to nobody is dropped.
+func TestTheOutboxIsDeliveredAsTheAgentsAndThenRemoved(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	b := boxes["agent-03"]
+	_ = f.db.OpenTask("T1", "agent-03", "karmax", t0)
+	st := f.State("agent-03")
+	st.Task = "T1"
+	f.setState(st)
+	boxes["karmax"].relayErr = errors.New("relay to karmax: not delivered: no session")
+	b.obs.Outbox = []reconcile.Outboxed{
+		{File: "1-1.json", From: "agent-05", To: "operator", Text: "DONE T1", At: t0.Add(-time.Minute)},
+		{File: "2-1.json", From: "agent-03", To: "karmax", Text: "also this", At: t0.Add(-time.Minute)},
+		{File: "3-1.json", From: "agent-03", To: "agent-99", Text: "lost", At: t0.Add(-time.Minute)},
+	}
+	f.Tick(context.Background(), t0)
+	th, _ := f.db.TaskThread("T1")
+	var rep *ledger.Relay
+	for i := range th {
+		if th[i].To == "operator" {
+			rep = &th[i]
+		}
+	}
+	if rep == nil || rep.From != "agent-03" || rep.Text != "DONE T1" {
+		t.Fatalf("thread = %+v", th)
+	}
+	if !slices.Contains(b.calls, "ackoutbox 1-1.json 2-1.json 3-1.json") {
+		t.Fatalf("calls = %q", b.calls)
+	}
+	boxes["karmax"].relayErr = nil
+	boxes["karmax"].calls = nil
+	b.obs.Outbox = nil
+	f.Tick(context.Background(), t0.Add(time.Minute))
+	if !slices.ContainsFunc(boxes["karmax"].calls, func(c string) bool {
+		return strings.Contains(c, "agent-03→karmax") && strings.Contains(c, "also this") && strings.Contains(c, "could not reach you")
+	}) {
+		t.Fatalf("karmax calls %q", boxes["karmax"].calls)
+	}
+}
+
+// A power cut, from the waiter's side: the agent's container failed to start
+// and fleetd is starting it, or it came up before the code share. Those heal
+// in a minute; wait rides through them rather than report an agent fleetd is
+// already bringing back. A recovery that keeps failing still ends the wait.
+func TestWaitRidesThroughARecoveryFleetdIsMaking(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*reconcile.State, time.Time)
+	}{
+		{"being started", func(s *reconcile.State, now time.Time) { s.Phase, s.StartFailing = reconcile.Down, now }},
+		{"code share not there yet", func(s *reconcile.State, now time.Time) { s.Phase, s.CodeMissingSince = reconcile.CodeMissing, now }},
+	} {
+		f, _, _ := newFleet(t)
+		f.waitEvery = 5 * time.Millisecond
+		st := f.State("agent-03")
+		tc.edit(&st, time.Now())
+		st.RecordedAt = time.Now()
+		f.setState(st)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		r, err := f.Wait(ctx, "agent-03", "", 0)
+		cancel()
+		if err != nil || r.Reason != "timeout" {
+			t.Fatalf("%s: wait = %+v, %v", tc.name, r, err)
+		}
+		// Gone on too long: the wait ends.
+		tc.edit(&st, time.Now().Add(-11*time.Minute))
+		f.setState(st)
+		ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+		r, err = f.Wait(ctx, "agent-03", "", 0)
+		cancel()
+		if err != nil || r.Reason != "phase" {
+			t.Fatalf("%s, long failing: wait = %+v, %v", tc.name, r, err)
+		}
+	}
+}
+
+// Just assigned, before the next tick: the roster does not say standby next
+// to a task.
+func TestARowWithATaskIsNotStandby(t *testing.T) {
+	f, _, _ := newFleet(t)
+	if err := f.Assign(context.Background(), "agent-03", "T1", "operator", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.Status(t0) {
+		if r.Agent == "agent-03" && (r.Task != "T1" || r.State != string(reconcile.Waiting)) {
+			t.Fatalf("row = %+v", r)
+		}
 	}
 }

@@ -114,15 +114,52 @@ func (c Container) InteractiveArgv(cmd ...string) []string {
 
 // Running reports whether the container is up.
 func (c Container) Running(ctx context.Context) (bool, error) {
+	s, err := c.State(ctx)
+	return s.Running, err
+}
+
+// State is a container as Docker reports it.
+type State struct {
+	Running bool
+	// Failed is Docker's error when the container is stopped because Docker
+	// could not start it — a bind mount whose source was not there yet, after
+	// a power cut — which its restart policy never retries. It is empty when
+	// the container runs, or was stopped on purpose.
+	Failed string
+}
+
+// State reads the container's state.
+func (c Container) State(ctx context.Context) (State, error) {
 	if c.native() {
-		return true, nil
+		return State{Running: true}, nil
 	}
-	argv := append(append([]string{}, c.Exec...), "inspect", "-f", "{{.State.Running}}", c.Name)
+	argv := append(append([]string{}, c.Exec...), "inspect", "-f", "{{.State.Running}}\t{{.State.Status}}\t{{.State.Error}}", c.Name)
 	out, err := c.runner().Run(ctx, argv, nil)
 	if err != nil {
-		return false, err
+		if missing(err) {
+			return State{}, nil // removed (fleetctl down): stopped, with nothing to start
+		}
+		// The host did not answer: that says nothing about the container.
+		return State{}, err
 	}
-	return strings.TrimSpace(string(out)) == "true", nil
+	f := strings.SplitN(strings.TrimSpace(string(out)), "\t", 3)
+	s := State{Running: f[0] == "true"}
+	if !s.Running && len(f) == 3 && (f[1] == "exited" || f[1] == "created") {
+		s.Failed = strings.TrimSpace(f[2])
+	}
+	return s, nil
+}
+
+// missing is Docker saying the container does not exist.
+func missing(err error) bool {
+	m := err.Error()
+	return strings.Contains(m, "No such object") || strings.Contains(m, "No such container")
+}
+
+// Start starts the stopped container.
+func (c Container) Start(ctx context.Context) error {
+	_, err := c.runner().Run(ctx, append(append([]string{}, c.Exec...), "start", c.Name), nil)
+	return err
 }
 
 // Host runs a docker subcommand against the host itself (stats, compose…).

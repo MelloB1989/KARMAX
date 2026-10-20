@@ -5,6 +5,10 @@
 // operator; Console (fleet-console) reads everything and prompts and rotates
 // as the operator. Requests with none are refused, on every listener;
 // GET /v1 lists every route and the scopes it allows.
+//
+// On the tailnet listener (Tailnet) there is no token: the caller is who
+// Tailscale says, an operator (Full's scope) or a member, who runs tasks as
+// themselves and sees and closes only their own.
 package server
 
 import (
@@ -48,7 +52,8 @@ type Ops interface {
 	Usage(by string, since time.Time) ([]ledger.UsageRow, error)
 	History(agent string, n int) ([]ledger.Session, error)
 	Quota() (map[string]ledger.Quota, error)
-	Tasks(open bool, agent string, n int) ([]ledger.Task, error)
+	Tasks(open bool, agent, assigner string, n int) ([]ledger.Task, error)
+	TaskAgent(task string) (*ledger.Task, error)
 	Activity(since time.Time, bucket time.Duration, now time.Time) (daemon.ActivityReply, error)
 	Today(now time.Time) (daemon.TodayReply, error)
 	Peek(ctx context.Context, agent string, n int) (string, error)
@@ -72,6 +77,7 @@ const (
 	full    scope = "full"    // the operator and the orchestrator
 	relay   scope = "relay"   // every agent: status, tell, its reports
 	console scope = "console" // fleet-console: reads, prompt, rotate, as the operator
+	member  scope = "member"  // a person on the tailnet: their own tasks
 )
 
 var (
@@ -79,6 +85,10 @@ var (
 	readers  = []scope{full, console}
 	fullOnly = []scope{full}
 )
+
+// and is a route's scopes and member: what a person on the tailnet may do
+// too, on their own tasks.
+func and(s []scope, more scope) []scope { return append(slices.Clone(s), more) }
 
 func (t Tokens) scope(r *http.Request) scope {
 	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -120,15 +130,29 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		index = append(index, Route{Route: pattern, Scopes: names})
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			s := tok.scope(r)
+			if c := callerOf(r); c != nil {
+				s = c.scope() // the tailnet: who, not a token
+			}
 			if s == none {
 				writeErr(w, http.StatusUnauthorized, fmt.Errorf("a fleet token is required (FLEET_TOKEN)"))
 				return
 			}
 			if !slices.Contains(allowed, s) {
-				writeErr(w, http.StatusForbidden, fmt.Errorf("this token (scope %s) may: %s", s, strings.Join(may[s], ", ")))
+				who := fmt.Sprintf("this token (scope %s)", s)
+				if c := callerOf(r); c != nil {
+					who = fmt.Sprintf("%s (%s)", c.Login, c.Role)
+				}
+				writeErr(w, http.StatusForbidden, fmt.Errorf("%s may: %s", who, strings.Join(may[s], ", ")))
 				return
 			}
 			v, err := h(w, r.WithContext(context.WithValue(r.Context(), scopeKey{}, s)))
+			var held *daemon.Held
+			if errors.As(err, &held) { // taken, to be delivered later: not a failure
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "queued": true, "why": held.Error()})
+				return
+			}
 			if err != nil {
 				code := http.StatusInternalServerError
 				if be, ok := err.(badRequest); ok {
@@ -171,15 +195,18 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 	})
 	route("GET /v1", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		return index, nil
-	}, everyone...)
+	}, and(everyone, member)...)
 	route("GET /v1/whoami", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		s := scopeOf(r)
 		name := ledger.Operator
 		if s == relay {
 			name = "agent"
 		}
+		if c := callerOf(r); c != nil {
+			name = c.Login
+		}
 		return map[string]string{"scope": string(s), "name": name}, nil
-	}, everyone...)
+	}, and(everyone, member)...)
 	route("GET /v1/status", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		out := map[string]any{"agents": ops.Status(time.Now())}
 		if orch != nil {
@@ -188,7 +215,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 			}
 		}
 		return out, nil
-	}, everyone...)
+	}, and(everyone, member)...)
 	route("POST /v1/tell", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct{ From, To, Text string }
 		if err := body(r, &in); err != nil {
@@ -198,8 +225,8 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		case console:
 			in.From = ledger.Operator // the console is the operator's keyboard
 		case relay:
-			if in.From == ledger.Operator {
-				return nil, forbidden{fmt.Errorf("only the operator's tokens speak as the operator")}
+			if ledger.IsPerson(in.From) {
+				return nil, forbidden{fmt.Errorf("an agent does not speak as %s: only that person does", in.From)}
 			}
 		}
 		if in.From == "" || in.To == "" || strings.TrimSpace(in.Text) == "" {
@@ -241,15 +268,19 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				return nil, badRequest{fmt.Errorf("queue %q: want a duration like 30m", in.Queue)}
 			}
 		}
+		limit := 0
+		if c := callerOf(r); c != nil && scopeOf(r) == member {
+			in.From, limit = c.Login, c.MaxOpen // a member runs as themselves, and only so many
+		}
 		// A queued run holds the request open for the queue time.
 		ctx, cancel := context.WithTimeout(r.Context(), queue+3*time.Minute)
 		defer cancel()
 		return ops.Run(ctx, daemon.RunRequest{Brief: in.Brief, Repo: in.Repo, Agent: in.Agent, From: in.From,
-			Task: in.Task, Queue: queue}, time.Now())
-	}, fullOnly...)
+			Task: in.Task, Queue: queue, Limit: limit}, time.Now())
+	}, and(fullOnly, member)...)
 	route("GET /v1/pick", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		return ops.Pick(r.URL.Query().Get("repo"), time.Now()), nil
-	}, readers...)
+	}, and(readers, member)...)
 	route("POST /v1/done", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct {
 			Agent, Task, Outcome, Branch, PR string
@@ -261,11 +292,17 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		if in.Agent == "" && in.Task == "" {
 			return nil, badRequest{fmt.Errorf("done needs agent or task")}
 		}
+		if err := own(r, ops, in.Task); err != nil {
+			return nil, err
+		}
+		if scopeOf(r) == member {
+			in.Agent = "" // the task's own agent, not one a member names
+		}
 		if in.KeepSession {
 			return ok, ops.Close(in.Agent, in.Task, in.Outcome, in.Branch, in.PR, time.Now())
 		}
 		return ok, ops.Done(in.Agent, in.Task, in.Outcome, in.Branch, in.PR, time.Now())
-	}, fullOnly...)
+	}, and(fullOnly, member)...)
 	route("POST /v1/tasks/{id}/followup", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct{ From, Text string }
 		if err := body(r, &in); err != nil {
@@ -274,25 +311,37 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		if strings.TrimSpace(in.Text) == "" {
 			return nil, badRequest{fmt.Errorf("followup needs text")}
 		}
-		if in.From == "" {
-			in.From = ledger.Operator
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
-		defer cancel()
-		return ok, ops.Followup(ctx, r.PathValue("id"), in.From, in.Text, time.Now())
-	}, fullOnly...)
-	route("POST /v1/tasks/{id}/cancel", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		var in struct{ From, Reason string }
-		if err := body(r, &in); err != nil {
+		if err := own(r, ops, r.PathValue("id")); err != nil {
 			return nil, err
 		}
 		if in.From == "" {
 			in.From = ledger.Operator
 		}
+		if c := callerOf(r); c != nil && scopeOf(r) == member {
+			in.From = c.Login
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		return ok, ops.Followup(ctx, r.PathValue("id"), in.From, in.Text, time.Now())
+	}, and(fullOnly, member)...)
+	route("POST /v1/tasks/{id}/cancel", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct{ From, Reason string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if err := own(r, ops, r.PathValue("id")); err != nil {
+			return nil, err
+		}
+		if in.From == "" {
+			in.From = ledger.Operator
+		}
+		if c := callerOf(r); c != nil && scopeOf(r) == member {
+			in.From = c.Login
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
 		return ok, ops.Cancel(ctx, r.PathValue("id"), in.From, in.Reason, time.Now())
-	}, fullOnly...)
+	}, and(fullOnly, member)...)
 	route("POST /v1/rotate", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct {
 			Agent  string
@@ -352,16 +401,28 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		if q.Get("agent") == "" && q.Get("task") == "" {
 			return nil, badRequest{fmt.Errorf("wait needs agent or task")}
 		}
+		// A member waits on a task of theirs (own needs one): by agent alone
+		// is the operator's inbox.
+		agent := q.Get("agent")
+		if err := own(r, ops, q.Get("task")); err != nil {
+			return nil, err
+		}
+		if scopeOf(r) == member {
+			agent = ""
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
-		return ops.Wait(ctx, q.Get("agent"), q.Get("task"), after)
-	}, readers...)
+		return ops.Wait(ctx, agent, q.Get("task"), after)
+	}, and(readers, member)...)
 	route("GET /v1/tasks/{id}", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		if err := own(r, ops, r.PathValue("id")); err != nil {
+			return nil, err
+		}
 		return ops.Result(r.PathValue("id"))
-	}, readers...)
+	}, and(readers, member)...)
 	route("GET /v1/guide", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		return map[string]string{"text": guide.Text()}, nil
-	}, readers...)
+	}, and(readers, member)...)
 	route("GET /v1/events", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		q := r.URL.Query()
 		after, err := intParam(r, "after")
@@ -409,15 +470,19 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 	}, readers...)
 	route("GET /v1/quota", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		return ops.Quota()
-	}, readers...)
+	}, and(readers, member)...)
 	route("GET /v1/tasks", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		q := r.URL.Query()
 		n, err := intParam(r, "n")
 		if err != nil {
 			return nil, err
 		}
-		return ops.Tasks(q.Get("open") == "1" || q.Get("open") == "true", q.Get("agent"), int(n))
-	}, readers...)
+		var by string
+		if c := callerOf(r); c != nil && scopeOf(r) == member {
+			by = c.Login // a member's own
+		}
+		return ops.Tasks(q.Get("open") == "1" || q.Get("open") == "true", q.Get("agent"), by, int(n))
+	}, and(readers, member)...)
 	route("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		q := r.URL.Query()
 		var since time.Time
@@ -448,11 +513,26 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		if err != nil {
 			return nil, err
 		}
+		// A member sees the screen of an agent at work on a task of theirs.
+		if scopeOf(r) == member {
+			var task string
+			for _, row := range ops.Status(time.Now()) {
+				if row.Agent == agent {
+					task = row.Task
+				}
+			}
+			if task == "" {
+				return nil, forbidden{fmt.Errorf("%s is not working on a task of yours", agent)}
+			}
+			if err := own(r, ops, task); err != nil {
+				return nil, forbidden{fmt.Errorf("%s is not working on a task of yours", agent)}
+			}
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 		defer cancel()
 		text, err := ops.Peek(ctx, agent, int(n))
 		return map[string]string{"agent": agent, "text": text}, err
-	}, readers...)
+	}, and(readers, member)...)
 	route("POST /v1/prompt", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct{ Agent, Text string }
 		if err := body(r, &in); err != nil {
@@ -511,6 +591,50 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 }
 
 type scopeKey struct{}
+
+// Caller is who a request on the tailnet listener is from, set by Tailnet:
+// it stands in for a token. Role is "operator" or "member".
+type Caller struct {
+	Login, Name, Role string
+	// MaxOpen is how many open tasks a member may hold.
+	MaxOpen int
+}
+
+type callerKey struct{}
+
+func callerOf(r *http.Request) *Caller {
+	c, _ := r.Context().Value(callerKey{}).(*Caller)
+	return c
+}
+
+func (c *Caller) scope() scope {
+	switch c.Role {
+	case "operator":
+		return full
+	case "member":
+		return member
+	}
+	return none
+}
+
+// own refuses a member a task someone else asked for. Everyone else may.
+func own(r *http.Request, ops Ops, task string) error {
+	c := callerOf(r)
+	if c == nil || scopeOf(r) != member {
+		return nil
+	}
+	if task == "" {
+		return badRequest{fmt.Errorf("name the task (--task)")}
+	}
+	t, err := ops.TaskAgent(task)
+	if err != nil {
+		return err
+	}
+	if t.Assigner != c.Login {
+		return forbidden{fmt.Errorf("task %s is not yours", task)}
+	}
+	return nil
+}
 
 func scopeOf(r *http.Request) scope {
 	s, _ := r.Context().Value(scopeKey{}).(scope)

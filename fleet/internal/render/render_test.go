@@ -120,6 +120,7 @@ type compose struct {
 		EnvFile       []string          `yaml:"env_file"`
 		Environment   map[string]string `yaml:"environment"`
 		Volumes       []string          `yaml:"volumes"`
+		Tmpfs         []string          `yaml:"tmpfs"`
 		CPUs          string            `yaml:"cpus"`
 		MemLimit      string            `yaml:"mem_limit"`
 		Restart       string            `yaml:"restart"`
@@ -193,6 +194,30 @@ func TestComposePerHost(t *testing.T) {
 	}
 	if pc2.Services["agent-04"].Environment["FLEETD_URL"] != "http://192.168.1.10:7879" {
 		t.Errorf("agent-04 fleetd url")
+	}
+}
+
+// Credentials kept under the code root are covered in every agent
+// container; the orchestrator, the operator's own session, still sees them.
+func TestHiddenPathsAreCoveredInAgentsOnly(t *testing.T) {
+	c := cfg(t)
+	c.HideFromAgents = []string{"secrets", "KARMAX/.env.d"}
+	dir := filepath.Join(t.TempDir(), "render")
+	if err := Render(c, env, dir); err != nil {
+		t.Fatal(err)
+	}
+	kali := loadCompose(t, filepath.Join(dir, "compose.kali.yaml"))
+	want := []string{"/home/op/code/secrets:ro,size=4k,mode=755", "/home/op/code/KARMAX/.env.d:ro,size=4k,mode=755"}
+	for _, n := range []string{"agent-01", "agent-02"} {
+		if got := kali.Services[n].Tmpfs; !slices.Equal(got, want) {
+			t.Errorf("%s tmpfs = %v", n, got)
+		}
+	}
+	if got := kali.Services["karmax-brain"].Tmpfs; len(got) != 0 {
+		t.Errorf("karmax-brain tmpfs = %v", got)
+	}
+	if got := loadCompose(t, filepath.Join(dir, "compose.pc2.yaml")).Services["agent-04"].Tmpfs; !slices.Equal(got, want) {
+		t.Errorf("agent-04 tmpfs = %v", got)
 	}
 }
 

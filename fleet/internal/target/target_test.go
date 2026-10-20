@@ -66,7 +66,34 @@ func TestRunningReadsTheContainersState(t *testing.T) {
 	if err != nil || !up {
 		t.Fatalf("up=%v err=%v", up, err)
 	}
-	if !slices.Equal(r.calls[0], []string{"docker", "inspect", "-f", "{{.State.Running}}", "agent-01"}) {
+	if want := []string{"docker", "inspect", "-f", "{{.State.Running}}\t{{.State.Status}}\t{{.State.Error}}", "agent-01"}; !slices.Equal(r.calls[0], want) {
+		t.Fatalf("argv = %q", r.calls[0])
+	}
+}
+
+// A container Docker failed to start (its bind mount's source was missing
+// after a power cut) carries Docker's error; one stopped on purpose does not.
+func TestStateSaysWhyDockerLeftAContainerStopped(t *testing.T) {
+	for _, tc := range []struct{ out, failed string }{
+		{"false\texited\terror mounting \"/home/op/code\": no such device\n", `error mounting "/home/op/code": no such device`},
+		{"false\texited\t\n", ""},
+		{"false\trestarting\tsome error\n", ""}, // Docker is still retrying it
+		{"true\trunning\t\n", ""},
+	} {
+		r := &fakeRunner{answer: func([]string) (string, error) { return tc.out, nil }}
+		s, err := Container{Exec: []string{"docker"}, Name: "agent-01", Runner: r}.State(context.Background())
+		if err != nil || s.Failed != tc.failed || s.Running != strings.HasPrefix(tc.out, "true") {
+			t.Errorf("%q: state = %+v, %v", tc.out, s, err)
+		}
+	}
+}
+
+func TestStartStartsTheContainerOnItsHost(t *testing.T) {
+	r := &fakeRunner{}
+	if err := (Container{Exec: []string{"docker", "--context", "pc2"}, Name: "agent-05", Runner: r}).Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"docker", "--context", "pc2", "start", "agent-05"}; !slices.Equal(r.calls[0], want) {
 		t.Fatalf("argv = %q", r.calls[0])
 	}
 }
@@ -157,5 +184,26 @@ func TestKillGroupKillsChildren(t *testing.T) {
 	}
 	if syscall.Kill(pid, 0) == nil {
 		t.Fatalf("grandchild %d survived KillGroup", pid)
+	}
+}
+
+// A container that is not there (fleetctl down removed it) is stopped, with
+// nothing to start. Any other failure is the host not answering, which says
+// nothing about the container: an error.
+func TestStateTellsAMissingContainerFromAnUnreachableHost(t *testing.T) {
+	for _, tc := range []struct {
+		err     string
+		wantErr bool
+	}{
+		{"docker --context pc2 inspect: exit status 1: Error: No such object: agent-01", false},
+		{"docker inspect: exit status 1: Error response from daemon: No such container: agent-01", false},
+		{"docker --context pc2 inspect: exit status 1: error during connect: ssh: connect to host 192.0.2.26 port 22: Network is unreachable", true},
+		{"docker inspect: exit status 1: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?", true},
+	} {
+		r := &fakeRunner{answer: func([]string) (string, error) { return "", errors.New(tc.err) }}
+		s, err := Container{Exec: []string{"docker"}, Name: "agent-01", Runner: r}.State(context.Background())
+		if (err != nil) != tc.wantErr || s.Running || s.Failed != "" {
+			t.Errorf("%q: state %+v, err %v; want err=%v", tc.err, s, err, tc.wantErr)
+		}
 	}
 }

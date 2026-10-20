@@ -682,10 +682,43 @@ func TestFollowupAndCancelCommands(t *testing.T) {
 	if in := reqBody(t, f.reqs[1]); in["reason"] != "wrong repo" {
 		t.Fatalf("request = %s", f.reqs[1])
 	}
+	if out, _ := fleetctl(t, f, "followup", "T1", "x"); out != "ok\n" {
+		t.Fatalf("sent: %q", out)
+	}
+	// fleetd holds it for an agent out of reach: said, not "ok".
+	f.reply = map[string]string{"/v1/tasks/T2/followup": `{"ok":true,"queued":true,"why":"queued: agent-03 cannot take it now"}`}
+	if out, err := fleetctl(t, f, "followup", "T2", "ascending"); err != nil || out != "queued: agent-03 cannot take it now\n" {
+		t.Fatalf("held: %q, %v", out, err)
+	}
 	if _, err := fleetctl(t, f, "followup", "T1"); err == nil {
 		t.Fatal("followup without text must fail")
 	}
 	if _, err := fleetctl(t, f, "cancel"); err == nil {
 		t.Fatal("cancel without a task must fail")
+	}
+}
+
+// fleet.yaml changed after the last render (a new image, say): up would roll
+// out the old compose files and say nothing. It refuses, and names the fix.
+func TestUpRefusesAStaleRender(t *testing.T) {
+	dir := t.TempDir()
+	state := dir + "/state"
+	if err := os.MkdirAll(state+"/render/agents", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(state+"/render/compose.h1.yaml", []byte("services: {}\n"), 0o600)
+	yml := "home: /home/op\nimage: img:3\nstate_dir: " + state + "\nhosts:\n  h1: {exec: [docker]}\n" +
+		"orchestrator: {host: h1, native: true}\nagents:\n  agent-01: {host: h1, token_env: T1}\n"
+	_ = os.WriteFile(dir+"/fleet.yaml", []byte(yml), 0o600)
+	later := time.Now().Add(time.Minute)
+	_ = os.Chtimes(dir+"/fleet.yaml", later, later)
+	hostYAML = dir + "/fleet.yaml"
+	t.Cleanup(func() { hostYAML = "" })
+	old := runDocker
+	defer func() { runDocker = old }()
+	runDocker = func(context.Context, []string) ([]byte, error) { return nil, errors.New("docker must not run") }
+	out, err := fleetctl(t, &fakeFleetd{}, "up")
+	if err == nil || !strings.Contains(err.Error()+out, "fleetctl render") {
+		t.Fatalf("up on a stale render: err %v\n%s", err, out)
 	}
 }

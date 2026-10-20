@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -64,6 +65,58 @@ type Config struct {
 	Thresholds   Thresholds       `yaml:"thresholds"`
 	// Console is the fleet console on one host; nil means none.
 	Console *Console `yaml:"console"`
+	// Tailnet opens the API to people on the Tailscale network; nil means
+	// it is not.
+	Tailnet *Tailnet `yaml:"tailnet"`
+	// HideFromAgents are paths under Code the agents do not see: each is
+	// covered by an empty read-only tmpfs in their containers.
+	HideFromAgents []string `yaml:"hide_from_agents"`
+}
+
+// Tailnet is fleetd's API for people on the Tailscale network. Who calls is
+// who Tailscale says (tailscaled's WhoIs on the caller's address), so there
+// is no token to hand out: a login on Operators has the full token's scope,
+// one on Members may run tasks as itself and see and close its own. A
+// tagged device is nobody, and so is anyone on neither list.
+type Tailnet struct {
+	// Listen is the API's address on the tailnet, e.g. 100.64.0.1:7878.
+	// It binds before tailscale0 has the address (IP_FREEBIND).
+	Listen string `yaml:"listen"`
+	// Operators and Members are Tailscale logins (you@example.com), or
+	// "*@example.com" for every login of that domain.
+	Operators []string `yaml:"operators"`
+	Members   []string `yaml:"members"`
+	// MemberOpen is how many open tasks one member may hold; 0 is 2.
+	MemberOpen int `yaml:"member_open"`
+	// Socket is tailscaled's LocalAPI socket.
+	Socket string `yaml:"socket"`
+	// Dist holds the fleetctl builds served at /dl/ (fleet/scripts/dist.sh).
+	Dist string `yaml:"dist"`
+}
+
+// Role is what a Tailscale login may do on the tailnet listener:
+// "operator", "member", or "" (nothing).
+func (t *Tailnet) Role(login string) string {
+	switch {
+	case t == nil || login == "":
+		return ""
+	case matchLogin(t.Operators, login):
+		return "operator"
+	case matchLogin(t.Members, login):
+		return "member"
+	}
+	return ""
+}
+
+func matchLogin(list []string, login string) bool {
+	login = strings.ToLower(login)
+	for _, p := range list {
+		p = strings.ToLower(p)
+		if p == login || strings.HasPrefix(p, "*@") && strings.HasSuffix(login, p[1:]) {
+			return true
+		}
+	}
+	return false
 }
 
 // Console is fleet-console: the live panel on one fleet host. fleetctl
@@ -288,6 +341,15 @@ func (c *Config) defaults() {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:7878"
 	}
+	if t := c.Tailnet; t != nil {
+		if t.MemberOpen <= 0 {
+			t.MemberOpen = 2
+		}
+		if t.Socket == "" {
+			t.Socket = "/var/run/tailscale/tailscaled.sock"
+		}
+		or(&t.Dist, filepath.Join(c.StateDir, "dist"))
+	}
 	if c.TokenEnv == "" {
 		c.TokenEnv = "FLEET_TOKEN"
 	}
@@ -445,6 +507,25 @@ func (c *Config) validate() error {
 		if !strings.HasPrefix(k.FleetdURL, "http://") && !strings.HasPrefix(k.FleetdURL, "https://") {
 			return fmt.Errorf("console: fleetd_url %q is not an http(s) URL", k.FleetdURL)
 		}
+	}
+	if t := c.Tailnet; t != nil {
+		if _, port, err := net.SplitHostPort(t.Listen); err != nil || port == "" {
+			return fmt.Errorf("tailnet: listen %q: want the tailnet address and a port, e.g. 100.64.0.1:7878", t.Listen)
+		}
+		for _, l := range append(append([]string{}, t.Operators...), t.Members...) {
+			if at := strings.Index(l, "@"); at < 1 || at == len(l)-1 || strings.Contains(l[at+1:], "*") || strings.Contains(l[:at], "*") && l[:at] != "*" {
+				return fmt.Errorf("tailnet: %q is not a Tailscale login (you@example.com) or *@example.com", l)
+			}
+		}
+	}
+	for _, p := range c.HideFromAgents {
+		if p == "" || filepath.IsAbs(p) || filepath.Clean(p) == "." || strings.HasPrefix(filepath.Clean(p), "..") {
+			return fmt.Errorf("hide_from_agents: %q: want a path under code, like secrets", p)
+		}
+	}
+	// A name with @ in it is a person on the tailnet (a task's requester).
+	if strings.Contains(c.Orchestrator.Name, "@") {
+		return fmt.Errorf("orchestrator: name %q: no @ in it — that is a person's login", c.Orchestrator.Name)
 	}
 	th := c.Thresholds
 	if th.Low5h < 0 || th.Low5h > 100 || th.Reserved7d < 0 || th.Reserved7d > 100 {

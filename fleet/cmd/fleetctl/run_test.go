@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // serve answers fleetd's routes from a table and records each request.
@@ -198,5 +201,70 @@ func TestPickPrintsTheTableAndExits5WhenNoneEligible(t *testing.T) {
 	out, err = ctl(t, s, "", "pick")
 	if exitOf(err) != 5 || !strings.Contains(out, "down") {
 		t.Errorf("out = %q, err = %v", out, err)
+	}
+}
+
+// fleetd restarting (a deploy, a power cut) as a run goes in: fleetctl tries
+// again, with a task id of its own making, so a run that did land is answered
+// with its agent, never given to a second one.
+func TestRunRetriesWithOneTaskIDWhileFleetdIsAway(t *testing.T) {
+	old := runRetrySleep
+	runRetrySleep = func(time.Duration) {}
+	defer func() { runRetrySleep = old }()
+	s := &serve{out: map[string]string{"/v1/run": runReply}}
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n.Add(1) <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		s.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	t.Setenv("FLEETD_URL", srv.URL)
+	t.Setenv("FLEET_TOKEN", "tok")
+	t.Setenv("FLEET_NAME", "")
+	t.Setenv("FLEET_AGENT", "")
+	t.Setenv("FLEET_CONFIG", t.TempDir()+"/none.yaml")
+	var sent []string
+	srvBodies := func() []string { s.mu.Lock(); defer s.mu.Unlock(); return s.body }
+	if err := run("run", []string{"--json", "fix", "the", "login", "redirect"}); err != nil {
+		t.Fatal(err)
+	}
+	sent = srvBodies()
+	if n.Load() != 3 || len(sent) != 1 {
+		t.Fatalf("tries %d, bodies %q", n.Load(), sent)
+	}
+	var in map[string]string
+	_ = json.Unmarshal([]byte(sent[0]), &in)
+	if !regexp.MustCompile(`^\d{8}-fix-the-login-redirect-[0-9a-f]{4}$`).MatchString(in["task"]) {
+		t.Fatalf("task id %q: fleetctl makes it, so every try names the same run", in["task"])
+	}
+}
+
+// done is the same request however often it is sent: while fleetd is away,
+// fleetctl sends it again rather than leave the task open.
+func TestDoneIsSentAgainWhileFleetdIsAway(t *testing.T) {
+	old := runRetrySleep
+	runRetrySleep = func(time.Duration) {}
+	defer func() { runRetrySleep = old }()
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n.Add(1) <= 2 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	t.Setenv("FLEETD_URL", srv.URL)
+	t.Setenv("FLEET_TOKEN", "tok")
+	t.Setenv("FLEET_CONFIG", t.TempDir()+"/none.yaml")
+	if err := run("done", []string{"--task", "T1"}); err != nil || n.Load() != 3 {
+		t.Fatalf("err %v after %d tries", err, n.Load())
+	}
+	n.Store(0)
+	if err := run("done", []string{"--task", "T1", "--task", "T2"}); err != nil || n.Load() != 4 {
+		t.Fatalf("several: err %v after %d tries", err, n.Load())
 	}
 }

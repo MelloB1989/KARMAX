@@ -70,12 +70,13 @@ func (f *Fleet) History(agent string, n int) ([]ledger.Session, error) {
 // Quota is each account's latest windows.
 func (f *Fleet) Quota() (map[string]ledger.Quota, error) { return f.db.LatestQuota() }
 
-// Tasks lists tasks, newest first. n defaults to everything when open, else 50.
-func (f *Fleet) Tasks(open bool, agent string, n int) ([]ledger.Task, error) {
+// Tasks lists tasks, newest first, of one assigner when given. n defaults
+// to everything when open, else 50.
+func (f *Fleet) Tasks(open bool, agent, assigner string, n int) ([]ledger.Task, error) {
 	if n <= 0 && !open {
 		n = 50
 	}
-	return f.db.Tasks(open, agent, n)
+	return f.db.TasksBy(open, agent, assigner, n)
 }
 
 // ActivityReply is event counts per agent in fixed buckets.

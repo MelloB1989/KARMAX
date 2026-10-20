@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,8 @@ type Agent struct {
 const snapshotScript = `P="$HOME/.claude/projects"
 echo ==pane==
 tmux list-panes -t main -F '#{pane_pid}' 2>/dev/null | head -n1
+echo ==boot==
+cat /proc/sys/kernel/random/boot_id 2>/dev/null
 echo ==screen==
 tmux capture-pane -p -t main 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 40
 echo ==current==
@@ -64,13 +67,18 @@ echo ==owners==
 for f in "$HOME"/.claude/sessions/*.json; do
   [ -e "$f" ] || continue
   p=${f##*/}; p=${p%.json}
-  e=$(tr '\0' '\n' < /proc/$p/environ 2>/dev/null)
+  e=$(tr '\0' '\n' 2>/dev/null < /proc/$p/environ) # stderr first: the shell opens the file
   a=$(printf '%s\n' "$e" | sed -n 's/^FLEET_AGENT=//p')
   r=$(printf '%s\n' "$e" | sed -n 's/^FLEET_ROLE=//p')
   echo "$p $a $r"
 done
 echo ==status==
 cat "$HOME/.claude/fleet/status.json" 2>/dev/null; echo
+echo ==outbox==
+for f in "${FLEET_WORK:-/work}"/.fleet/outbox/*.json; do
+  [ -e "$f" ] || continue
+  printf '%s ' "${f##*/}"; tr -d '\n' < "$f"; echo
+done
 echo ==transcripts==
 find "$P" -mindepth 2 -maxdepth 2 -name '*.jsonl' -printf '%s %T@ %p\n' 2>/dev/null
 echo ==events==
@@ -89,9 +97,9 @@ true
 // Observe takes one tick's observation. A stopped container is reported as
 // such without exec'ing into it.
 func (a *Agent) Observe(ctx context.Context, now time.Time) (reconcile.Obs, error) {
-	up, err := a.C.Running(ctx)
-	if err != nil || !up {
-		return reconcile.Obs{Now: now}, err
+	cs, err := a.C.State(ctx)
+	if err != nil || !cs.Running {
+		return reconcile.Obs{Now: now, ContainerFailed: cs.Failed}, err
 	}
 	out, err := a.C.Sh(ctx, snapshotScript)
 	if err != nil {
@@ -140,6 +148,9 @@ func parseSnapshot(name string, b []byte, now time.Time) (reconcile.Obs, error) 
 	sec := sections(b)
 	if pid, err := strconv.Atoi(strings.TrimSpace(sec["pane"])); err == nil && pid > 0 {
 		o.PaneAlive, o.PanePID = true, pid
+		if boot := strings.TrimSpace(sec["boot"]); boot != "" {
+			o.Proc = boot + "/" + strconv.Itoa(pid)
+		}
 	}
 	owners := map[int][2]string{}
 	for _, l := range strings.Split(sec["owners"], "\n") {
@@ -195,12 +206,29 @@ func parseSnapshot(name string, b []byte, now time.Time) (reconcile.Obs, error) 
 			o.TranscriptMTime = time.Unix(int64(sec), 0)
 		}
 	}
+	for _, l := range strings.Split(sec["outbox"], "\n") {
+		name, body, ok := strings.Cut(l, " ")
+		var m reconcile.Outboxed
+		if !ok || json.Unmarshal([]byte(body), &m) != nil || m.To == "" {
+			continue // half written, or not a message
+		}
+		m.File = name
+		o.Outbox = append(o.Outbox, m)
+	}
+	sort.Slice(o.Outbox, func(i, j int) bool { return o.Outbox[i].File < o.Outbox[j].File })
 	evs, err := observe.ParseEvents(strings.NewReader(sec["events"]))
 	if err != nil {
 		return o, err
 	}
 	o.Events = evs
 	return o, nil
+}
+
+// AckOutbox removes queued messages fleetd has delivered (or dropped).
+func (a *Agent) AckOutbox(ctx context.Context, files []string) error {
+	_, err := a.C.Sh(ctx, `cd "${FLEET_WORK:-/work}/.fleet/outbox" 2>/dev/null || exit 0
+for f in "$@"; do case "$f" in */*|.*) ;; *) rm -f -- "$f" ;; esac; done`, files...)
+	return err
 }
 
 // next writes /work/.fleet/next and kills the pane, so agent-run starts the
@@ -226,6 +254,35 @@ func (a *Agent) Restart(ctx context.Context, sessionID string) error {
 	_, err := a.C.Sh(ctx, nextScript, mode, sessionID)
 	return err
 }
+
+// killSessionScript ends what a session left running: every process carrying
+// its id (Claude Code gives each command it runs CLAUDE_CODE_SESSION_ID, and a
+// job detached with setsid or nohup keeps it) and this agent's name — every
+// agent on a host shares one PID namespace. claude itself carries neither.
+// TERM, then KILL for what is left after 3 s. It prints what it ended.
+const killSessionScript = `pids=""
+for d in /proc/[0-9]*; do
+  e=$(tr '\0' '\n' 2>/dev/null < "$d/environ") || continue
+  printf '%s\n' "$e" | grep -qx "CLAUDE_CODE_SESSION_ID=$1" || continue
+  printf '%s\n' "$e" | grep -qx "FLEET_AGENT=$2" || continue
+  p=${d#/proc/}
+  kill -TERM "$p" 2>/dev/null && pids="$pids $p" && echo "$p"
+done
+[ -n "$pids" ] && sleep 3 && for p in $pids; do kill -KILL "$p" 2>/dev/null; done
+true
+`
+
+// KillSessionProcs ends the processes a session left running, and counts them.
+func (a *Agent) KillSessionProcs(ctx context.Context, sid string) (int, error) {
+	if sid == "" {
+		return 0, errors.New("no session")
+	}
+	out, err := a.C.Sh(ctx, killSessionScript, sid, a.Name)
+	return len(strings.Fields(string(out))), err
+}
+
+// Start starts the agent's container when Docker left it stopped.
+func (a *Agent) Start(ctx context.Context) error { return a.C.Start(ctx) }
 
 // Fresh restarts the pane on a brand-new session.
 func (a *Agent) Fresh(ctx context.Context) error {
@@ -286,11 +343,101 @@ func (a *Agent) Relay(ctx context.Context, to, from, text string) error {
 		"claude", "-p", "--model", "haiku", "--name", "relay-from-"+from,
 		"--permission-mode", "bypassPermissions", "--tools", "SendMessage,ListAgents",
 		"--allowedTools", "SendMessage,ListAgents", "--strict-mcp-config", "--max-turns", "4",
-		"--settings", relaySettings)
+		"--settings", relaySettings, "--output-format", "stream-json", "--verbose")
 	if err != nil {
-		return fmt.Errorf("relay to %s: %w (%s)", to, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("relay to %s: %w (%s)", to, err, clip(strings.TrimSpace(string(out)), 400))
 	}
-	return nil
+	return sent(out, to)
+}
+
+// sent reads a relay's stream-json and reports whether a SendMessage to `to`
+// got through. The relay's claude exits 0 either way — a receiver with no
+// session registered (restarting, rotating) is a tool result of
+// {"success":false}, and the model may not call the tool at all — so its
+// exit status says nothing about delivery.
+func sent(out []byte, to string) error {
+	type block struct {
+		Type      string          `json:"type"`
+		ID        string          `json:"id"`
+		Name      string          `json:"name"`
+		Input     json.RawMessage `json:"input"`
+		ToolUseID string          `json:"tool_use_id"`
+		Content   json.RawMessage `json:"content"`
+		Text      string          `json:"text"`
+	}
+	var line struct {
+		Type    string `json:"type"`
+		Result  string `json:"result"`
+		Message struct {
+			Content []block `json:"content"`
+		} `json:"message"`
+	}
+	calls := map[string]bool{} // SendMessage tool_use ids addressed to `to`
+	why := "the relay sent nothing"
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
+	for sc.Scan() {
+		line.Type, line.Result, line.Message.Content = "", "", nil
+		if json.Unmarshal(sc.Bytes(), &line) != nil {
+			continue
+		}
+		if line.Type == "result" && line.Result != "" && len(calls) == 0 {
+			why = "the relay sent nothing: " + line.Result
+		}
+		for _, b := range line.Message.Content {
+			switch b.Type {
+			case "tool_use":
+				var in struct{ To, Recipient string }
+				if b.Name == "SendMessage" && json.Unmarshal(b.Input, &in) == nil && (in.To == to || in.Recipient == to) {
+					calls[b.ID] = true
+				} else if b.Name == "SendMessage" {
+					why = "the relay sent to someone else: " + string(b.Input)
+				}
+			case "tool_result":
+				if !calls[b.ToolUseID] {
+					continue
+				}
+				var res struct {
+					Success *bool  `json:"success"`
+					Message string `json:"message"`
+				}
+				text := toolText(b.Content)
+				if json.Unmarshal([]byte(text), &res) == nil && res.Success != nil {
+					if *res.Success {
+						return nil
+					}
+					why = res.Message
+				} else {
+					why = "SendMessage said: " + text
+				}
+			}
+		}
+	}
+	return fmt.Errorf("relay to %s: not delivered: %s", to, clip(why, 300))
+}
+
+// toolText is a tool result's text: a string, or the text of its blocks.
+func toolText(c json.RawMessage) string {
+	var s string
+	if json.Unmarshal(c, &s) == nil {
+		return s
+	}
+	var blocks []struct{ Type, Text string }
+	if json.Unmarshal(c, &blocks) == nil {
+		var b strings.Builder
+		for _, x := range blocks {
+			b.WriteString(x.Text)
+		}
+		return b.String()
+	}
+	return string(c)
+}
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // Peek returns the last n lines of the pane.
@@ -427,18 +574,21 @@ type Worktree struct {
 }
 
 // Safe reports whether removing the worktree loses nothing: clean, and every
-// commit is on its upstream.
-func (w Worktree) Safe() bool { return w.Upstream != "" && w.Dirty == 0 && w.Unpushed == 0 }
+// commit is on a remote. Not its upstream: an agent pushes without -u, and a
+// worktree made from origin/main has main as its upstream though its commits
+// are on its own branch. A count git failed to give (-1) is not safe.
+func (w Worktree) Safe() bool { return w.Dirty == 0 && w.Unpushed == 0 }
 
+// worktreesScript reports each worktree; dirty and unpushed are -1 when git
+// could not say.
 const worktreesScript = `for d in "${FLEET_WORK:-/work}"/wt/*/; do
   d=${d%/}
   [ -e "$d/.git" ] || continue
   b=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)
   u=$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
-  n=$(git -C "$d" status --porcelain 2>/dev/null | wc -l)
-  if [ -n "$u" ]; then p=$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null)
-  else p=$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null); fi
-  jq -nc --arg path "$d" --arg branch "$b" --arg up "$u" --argjson dirty "${n:-0}" --argjson unpushed "${p:-0}" \
+  if s=$(git -C "$d" status --porcelain 2>/dev/null); then n=$(printf '%s' "$s" | grep -c .); else n=-1; fi
+  p=$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null) || p=-1
+  jq -nc --arg path "$d" --arg branch "$b" --arg up "$u" --argjson dirty "${n:--1}" --argjson unpushed "${p:--1}" \
     '{path:$path,branch:$branch,upstream:$up,dirty:$dirty,unpushed:$unpushed}'
 done
 true

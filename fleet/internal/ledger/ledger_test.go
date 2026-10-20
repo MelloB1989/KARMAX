@@ -3,6 +3,7 @@ package ledger
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -304,6 +305,13 @@ func TestTasksOpenAndNewest(t *testing.T) {
 	if tot.TasksClosed != 1 {
 		t.Fatalf("totals = %+v", tot)
 	}
+	mine, _ := db.TasksBy(false, "", "mira", 0)
+	if len(mine) != 1 || mine[0].ID != "T2" {
+		t.Fatalf("mira's = %+v", mine)
+	}
+	if ops, _ := db.TasksBy(true, "", "operator", 0); len(ops) != 1 || ops[0].ID != "T3" {
+		t.Fatalf("operator's open = %+v", ops)
+	}
 }
 
 func TestSessionJSONIsSnakeCase(t *testing.T) {
@@ -480,6 +488,143 @@ func TestTaskReportsAreOnlyTheAgentsAndTheThreadIsBoth(t *testing.T) {
 	}
 	if none, err := db.LastInstruction("T9"); err != nil || none != 0 {
 		t.Fatalf("T9 = %d, %v", none, err)
+	}
+}
+
+// An agent owes its task the next word from the brief or a follow-up until
+// it writes back; one it never received does not count.
+func TestAnAgentOwesItsTaskUntilItWritesBack(t *testing.T) {
+	db := open(t)
+	_ = db.OpenTask("T1", "agent-01", "karmax", t0)
+	owes := func() bool {
+		t.Helper()
+		o, err := db.Owes("T1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	add := func(r Relay) {
+		t.Helper()
+		r.At, r.Task = t0, "T1"
+		if err := db.AddRelay(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if owes() {
+		t.Fatal("owes with nothing filed")
+	}
+	add(Relay{From: "karmax", To: "agent-01", Text: "brief", Delivered: true})
+	if !owes() {
+		t.Fatal("does not owe its brief")
+	}
+	add(Relay{From: "agent-01", To: "karmax", Text: "report", Delivered: true})
+	if owes() {
+		t.Fatal("owes after reporting")
+	}
+	add(Relay{From: "karmax", To: "agent-01", Text: "lost", Error: "no session"})
+	if owes() {
+		t.Fatal("owes a follow-up it never got")
+	}
+	add(Relay{From: "karmax", To: "agent-01", Text: "followup", Delivered: true})
+	if !owes() {
+		t.Fatal("does not owe its follow-up")
+	}
+	if o, err := db.Owes("T9"); err != nil || o {
+		t.Fatalf("T9 = %v, %v", o, err)
+	}
+}
+
+// A relay is on the ledger before it is sent, so one fleetd dies in the middle
+// of is found when it starts again, and handed back for resending until it is
+// sent, its task closes, or a later message on the task got through.
+func TestARelayCutShortIsKeptForResending(t *testing.T) {
+	db := open(t)
+	_ = db.OpenTask("T1", "agent-01", "karmax", t0)
+	sent, err := db.BeginRelay(Relay{From: "karmax", To: "agent-01", Task: "T1", Text: "brief 1", At: t0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EndRelay(sent, nil); err != nil {
+		t.Fatal(err)
+	}
+	failed, _ := db.BeginRelay(Relay{From: "karmax", To: "agent-01", Task: "T1", Text: "f1", At: t0})
+	_ = db.EndRelay(failed, errors.New("no session"))
+	cut, _ := db.BeginRelay(Relay{From: "karmax", To: "agent-01", Task: "T1", Text: "f2", At: t0.Add(time.Minute)})
+	untasked, _ := db.BeginRelay(Relay{From: "agent-02", To: "agent-01", Text: "hi", At: t0.Add(time.Minute)})
+	other, _ := db.BeginRelay(Relay{From: "karmax", To: "agent-02", Text: "x", At: t0.Add(time.Minute)})
+
+	// Still sending: nothing is cut short while fleetd lives.
+	if got, _ := db.Pending("agent-01", t0); len(got) != 0 {
+		t.Fatalf("before a restart: %+v", got)
+	}
+	if n, err := db.InterruptRelays(); err != nil || n != 3 {
+		t.Fatalf("interrupted %d, %v; want 3", n, err)
+	}
+	got, err := db.Pending("agent-01", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != cut || got[1].ID != untasked || got[0].Text != "f2" || got[0].Task != "T1" || got[0].From != "karmax" {
+		t.Fatalf("interrupted = %+v; want %d then %d", got, cut, untasked)
+	}
+	if got, _ := db.Pending("agent-01", t0.Add(2*time.Minute)); len(got) != 0 {
+		t.Fatalf("too old to resend: %+v", got)
+	}
+	// Sent on the second try.
+	if err := db.EndRelay(untasked, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.Pending("agent-01", t0); len(got) != 1 || got[0].ID != cut {
+		t.Fatalf("after resending one: %+v", got)
+	}
+	// A later word on the task got through: the cut one is not resent.
+	later, _ := db.BeginRelay(Relay{From: "karmax", To: "agent-01", Task: "T1", Text: "f3", At: t0.Add(2 * time.Minute)})
+	_ = db.EndRelay(later, nil)
+	if got, _ := db.Pending("agent-01", t0); len(got) != 0 {
+		t.Fatalf("superseded by a later message: %+v", got)
+	}
+	// A closed task's are not resent either.
+	_ = db.OpenTask("T2", "agent-02", "karmax", t0)
+	t2, _ := db.BeginRelay(Relay{From: "karmax", To: "agent-02", Task: "T2", Text: "b2", At: t0})
+	_, _ = db.InterruptRelays()
+	if got, _ := db.Pending("agent-02", t0); len(got) != 2 || got[1].ID != t2 {
+		t.Fatalf("agent-02: %+v (other %d)", got, other)
+	}
+	_ = db.CloseTask("T2", t0.Add(time.Hour), "cancelled", "", "")
+	if got, _ := db.Pending("agent-02", t0); len(got) != 1 || got[0].ID != other {
+		t.Fatalf("after T2 closed: %+v", got)
+	}
+}
+
+// A relay its receiver could not take is held, and pending like one cut
+// short. A closed task's are dropped, but for the word written as it closed:
+// the cancel notice.
+func TestAHeldRelayIsPendingUntilItsTaskCloses(t *testing.T) {
+	db := open(t)
+	_ = db.OpenTask("T1", "agent-01", "karmax", t0)
+	f1, _ := db.BeginRelay(Relay{From: "karmax", To: "agent-01", Task: "T1", Text: "f1", At: t0})
+	if err := db.HoldRelay(f1); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.Pending("agent-01", t0)
+	if err != nil || len(got) != 1 || got[0].ID != f1 || got[0].Error != Held {
+		t.Fatalf("pending = %+v, %v", got, err)
+	}
+	if th, _ := db.TaskThread("T1"); len(th) != 1 || th[0].Delivered || th[0].Error != Held {
+		t.Fatalf("thread = %+v", th)
+	}
+	notice, _ := db.BeginRelay(Relay{From: "karmax", To: "agent-01", Task: "T1", Text: "cancelled", At: t0.Add(time.Minute)})
+	_ = db.HoldRelay(notice)
+	_ = db.CloseTask("T1", t0.Add(time.Minute), "cancelled", "", "")
+	if got, _ := db.Pending("agent-01", t0); len(got) != 1 || got[0].ID != notice {
+		t.Fatalf("after the cancel: %+v; want only the notice %d", got, notice)
+	}
+	if err := db.EndRelay(notice, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.Pending("agent-01", t0); len(got) != 0 {
+		t.Fatalf("after delivery: %+v", got)
 	}
 }
 

@@ -67,13 +67,18 @@ func runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	if task == "" {
+		// Made here, not by fleetd: a run sent again after fleetd went away
+		// is then the same run, and fleetd answers it with the agent it has.
+		task = daemon.TaskID(brief, time.Now())
+	}
 	req := map[string]string{"brief": brief, "repo": repo, "agent": agent, "from": from, "task": task}
 	if queue > 0 {
 		req["queue"] = queue.String()
 		c.timeout = queue + 6*time.Minute
 	}
 	var rep daemon.RunReply
-	if err := c.do("POST", "/v1/run", req, &rep); err != nil {
+	if err := doAgain(c, "POST", "/v1/run", req, &rep); err != nil {
 		var se *statusError
 		if errors.As(err, &se) && se.Code == http.StatusConflict {
 			var body struct {
@@ -81,7 +86,9 @@ func runCmd(args []string) error {
 			}
 			_ = json.Unmarshal(se.Body, &body)
 			fmt.Println(err)
-			printCandidates(body.Candidates)
+			if len(body.Candidates) > 0 { // none for a busy named agent, a member at their limit
+				printCandidates(body.Candidates)
+			}
 			return exitCode{5}
 		}
 		return err
@@ -120,6 +127,26 @@ func runCmd(args []string) error {
 		return exitCode{4}
 	}
 	return nil
+}
+
+// runRetryFor is how long run keeps sending a run fleetd did not answer: a
+// restart takes seconds, a reboot of its host a minute or two.
+const runRetryFor = 3 * time.Minute
+
+// runRetrySleep is the pause between tries; tests replace it.
+var runRetrySleep = time.Sleep
+
+// doAgain is c.do for a request that is the same however often it is sent (a
+// run with its task id, done): while fleetd does not answer — restarting, its
+// host rebooting — it is sent again, for up to runRetryFor.
+func doAgain(c *client, method, path string, in, out any) error {
+	err := c.do(method, path, in, out)
+	for back, start := 2*time.Second, time.Now(); err != nil && retryable(err) && time.Since(start) < runRetryFor; back = min(back*2, 15*time.Second) {
+		fmt.Fprintf(os.Stderr, "fleetd unreachable, sending %s again: %v\n", path, err)
+		runRetrySleep(back)
+		err = c.do(method, path, in, out)
+	}
+	return err
 }
 
 // pickCmd is `pick [--repo R]`: GET /v1/pick, as a table.

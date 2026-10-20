@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +27,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/otlp"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
+	"github.com/MelloB1989/karmax/fleet/internal/tailnet"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
@@ -148,7 +150,7 @@ func run(cfgPath string, once bool) error {
 
 	api := server.Handler(f, tokens, orchQuota.Load)
 	var servers []*http.Server
-	serve := func(addr string, h http.Handler, what string) {
+	serve := func(addr string, h http.Handler, what string, lc net.ListenConfig) {
 		if addr == "" {
 			return
 		}
@@ -156,15 +158,24 @@ func run(cfgPath string, once bool) error {
 		servers = append(servers, s)
 		go func() {
 			log.Printf("%s listening on %s", what, addr)
-			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			ln, err := lc.Listen(ctx, "tcp", addr)
+			if err == nil {
+				err = s.Serve(ln)
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("%s: %v", what, err)
 				stop()
 			}
 		}()
 	}
-	serve(cfg.Listen, api, "api")
-	serve(cfg.RelayListen, api, "relay api")
-	serve(cfg.OTLPListen, otlp.Handler(db, tokens.Relay), "otlp")
+	serve(cfg.Listen, api, "api", net.ListenConfig{})
+	serve(cfg.RelayListen, api, "relay api", net.ListenConfig{})
+	serve(cfg.OTLPListen, otlp.Handler(db, tokens.Relay), "otlp", net.ListenConfig{})
+	if t := cfg.Tailnet; t != nil {
+		// Who calls is who tailscaled says. The address is tailscale0's,
+		// which a boot may not have given it yet: bound regardless.
+		serve(t.Listen, server.Tailnet(api, &tailnet.Local{Socket: t.Socket}, t), "tailnet api", net.ListenConfig{Control: freebind})
+	}
 
 	log.Printf("%d agents on %d hosts, tick %s", len(cfg.Agents), len(cfg.Hosts), cfg.Thresholds.Tick)
 	tick(ctx)
@@ -208,6 +219,15 @@ func writeDashboard(d outbound.Dashboard, f *daemon.Fleet, db *ledger.DB, orch *
 		"events":       events,
 		"updated":      map[string]any{"at": now.UTC()},
 	})
+}
+
+// freebind lets a socket bind an address this host does not have yet.
+func freebind(_, _ string, c syscall.RawConn) error {
+	var serr error
+	err := c.Control(func(fd uintptr) {
+		serr = syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_FREEBIND, 1)
+	})
+	return errors.Join(err, serr)
 }
 
 // checkTokens refuses a console token whose value is the full or relay

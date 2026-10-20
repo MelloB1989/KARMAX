@@ -48,6 +48,14 @@ fi
 if grep -q 'docker_mount_dropin "\$code" > /etc/systemd/system/docker.service.d/fleet-code-mount.conf' "$HERE/host-bootstrap.sh"; then
 	ok "pc2 installs the drop-in"
 else fail "pc2 installs the drop-in"; fi
+
+# the code mount never stops retrying, and pc2 installs that beside the mount unit
+OUT="$("$HERE/host-bootstrap.sh" mount-dropin 2>&1)"
+has "the mount has no start limit" "$OUT" "StartLimitIntervalSec=0"
+has "in its [Unit] section" "$OUT" "[Unit]"
+if grep -qF 'mount_retry_dropin > "/etc/systemd/system/$mount_unit.d/fleet-retry.conf"' "$HERE/host-bootstrap.sh"; then
+	ok "pc2 installs the retry drop-in"
+else fail "pc2 installs the retry drop-in"; fi
 if bash -n "$HERE/host-bootstrap.sh"; then ok "bash -n"; else fail "bash -n"; fi
 printf '\n%d failed\n' "$FAILS"
 [ "$FAILS" -eq 0 ]

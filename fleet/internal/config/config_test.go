@@ -88,10 +88,18 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"console is full":     "console: {host: kali, fleetd_url: 'http://f:7879', token_env: FLEET_TOKEN}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console is relay":    "console: {host: kali, fleetd_url: 'http://f:7879', token_env: FLEET_RELAY_TOKEN}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console url":         "console: {host: kali, fleetd_url: 'f:7879', token_env: C}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"tailnet no port":     "tailnet: {listen: 100.64.0.1}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"tailnet bare *":      "tailnet: {listen: '100.64.0.1:7878', members: ['*']}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"tailnet any domain":  "tailnet: {listen: '100.64.0.1:7878', members: ['*@*']}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"tailnet not a login": "tailnet: {listen: '100.64.0.1:7878', operators: [op]}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"hide absolute":       "hide_from_agents: [/etc]\nagents: {agent-01: {host: kali, token_env: T}}",
+		"hide outside code":   "hide_from_agents: [../.ssh]\nagents: {agent-01: {host: kali, token_env: T}}",
+		"hide all of code":    "hide_from_agents: [.]\nagents: {agent-01: {host: kali, token_env: T}}",
+		"orchestrator @":      "orchestrator: {host: kali, token_env: O, name: 'a@b.c'}\nagents: {agent-01: {host: kali, token_env: T}}",
 	}
 	for name, body := range cases {
 		src := "home: /h\nhosts: {kali: {exec: [docker]}}\norchestrator: {host: kali, token_env: O}\n" + body
-		if name == "no exec" || name == "orchestrator host" || name == "name clash" {
+		if name == "no exec" || name == "orchestrator host" || name == "name clash" || name == "orchestrator @" {
 			src = "home: /h\n" + body
 			if name != "no exec" {
 				src = "home: /h\nhosts: {kali: {exec: [docker]}}\n" + body
@@ -171,5 +179,40 @@ func TestGitHubOwners(t *testing.T) {
 	}
 	if got := OwnerTokenVar("acme-org"); got != "GH_TOKEN_OWNER_ACME_ORG" {
 		t.Errorf("OwnerTokenVar = %q", got)
+	}
+}
+
+// A tailnet login is an operator, a member, or nobody; *@domain is every
+// login of that domain and no other.
+func TestTailnetRoles(t *testing.T) {
+	c, err := Parse([]byte(example + `
+tailnet:
+  listen: 100.64.0.1:7878
+  operators: [Op@Example.com]
+  members: ["*@example.com", guest@other.org]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn := c.Tailnet
+	if tn.MemberOpen != 2 || tn.Socket != "/var/run/tailscale/tailscaled.sock" || tn.Dist != "/home/op/.karmax/fleet/dist" {
+		t.Errorf("defaults: %+v", tn)
+	}
+	for login, want := range map[string]string{
+		"op@example.com":    "operator",
+		"ram@example.com":   "member",
+		"guest@other.org":   "member",
+		"someone@other.org": "",
+		"x@evilexample.com": "",
+		"tagged-devices":    "",
+		"":                  "",
+	} {
+		if got := tn.Role(login); got != want {
+			t.Errorf("Role(%q) = %q, want %q", login, got, want)
+		}
+	}
+	var none *Tailnet
+	if none.Role("op@example.com") != "" {
+		t.Error("no tailnet section: nobody")
 	}
 }

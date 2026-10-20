@@ -15,6 +15,9 @@ Wants=network-online.target
 [Service]
 ExecStart=%h/.local/bin/fleetd
 Environment=FLEET_CONFIG=%h/.karmax/fleet/fleet.yaml
+# Started at boot, before a login imports one, the user manager's PATH lacks
+# ~/.local/bin, where `karmax` (alerts) lives.
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Environment=SSH_AUTH_SOCK=%t/ssh-agent.socket
 Restart=on-failure
 RestartSec=5

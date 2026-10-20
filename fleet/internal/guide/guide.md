@@ -81,7 +81,9 @@ Agents prefer the one that last worked in that repo, then the least quota used, 
 ## Questions, follow-ups, cancel
 
 An agent that is blocked on a decision sends you a report like any other: `wait` returns it and `result`
-lists it. Answer with `fleetctl followup <task> "<answer>"`. A follow-up needs an open task.
+lists it. Answer with `fleetctl followup <task> "<answer>"`. A follow-up needs an open task. If the
+agent cannot be reached (its host is down or cut off), fleetd keeps the follow-up and prints
+`queued: …`: it reaches the agent when the agent is back. Do not send it again.
 
 To stop work: `fleetctl cancel <task> --reason "no longer needed"`. It presses Esc in the agent's
 session, tells the agent to stop and leave its branch, and closes the task as cancelled. The session is
@@ -96,6 +98,25 @@ kept. Cancelling a task that is already closed is an error and does nothing.
     fleetctl quota              # 5-hour and 7-day windows per agent
 
 Do not poll `peek` while you wait: `wait` returns the moment the agent reports.
+
+## From another machine (the tailnet)
+
+fleetd also listens on the Tailscale network, where it knows who you are without a token. If your
+login is on the fleet's list, install fleetctl from fleetd itself and connect it in one step:
+
+    curl -fsSL http://<fleetd host>:7878/install.sh | sh        # macOS, Linux
+    irm http://<fleetd host>:7878/install.ps1 | iex             # Windows, in PowerShell
+
+It installs fleetctl, runs `fleetctl connect http://<fleetd host>:7878` (which prints who fleetd knows you
+as), and installs this guide as your Claude Code skill. As a member you can `run`, `wait --task`,
+`result`, `followup`, `cancel` and `done --task` your own tasks, and `ls`, `pick`, `quota`, `tasks` and
+`peek` (an agent at work on your task). Tasks run as you: the agent reports to your login, and `--from`
+is ignored. You may hold a few open tasks at once (fleetd says how many when you reach it); close one
+with `done --task` before you start another, or pass `--queue`. `--repo` names a checkout in the fleet
+host's code directory; for a repo that is not there, say in the brief where to clone it from.
+
+The agents work in the fleet host's checkouts, not your machine's: review what they push in your own
+clone, `git fetch origin <branch> && git log -p main..FETCH_HEAD`.
 
 ## Rules
 

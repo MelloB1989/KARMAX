@@ -535,26 +535,343 @@ func TestAnEmptyCodeDirShowsAsCodeMissingAndAlertsOnce(t *testing.T) {
 	if st.Phase != CodeMissing {
 		t.Fatalf("phase = %s, want code_missing", st.Phase)
 	}
+	// At boot agent-run often starts before the share is mounted, and the
+	// next restart finds it: that race is not news.
+	if has(acts, Alert) != nil || has(acts, Push) != nil {
+		t.Fatalf("told at once: %v", kinds(acts))
+	}
+	// Between restarts the container is down: still code_missing.
+	o.Now, o.Events, o.ContainerUp = t0.Add(time.Minute), nil, false
+	st, acts = Decide(th(), st, o)
+	if st.Phase != CodeMissing || has(acts, Alert) != nil {
+		t.Fatalf("phase = %s acts = %v", st.Phase, kinds(acts))
+	}
+	// Still missing after codeMissingAfter: the share is down. Told, once.
+	o.Now = t0.Add(codeMissingAfter)
+	st, acts = Decide(th(), st, o)
 	if a := has(acts, Alert); a == nil || !strings.Contains(a.Text, "code directory") {
 		t.Fatalf("acts = %v", acts)
 	}
 	if p := has(acts, Push); p == nil || p.Event != "fleet.agent.code_missing" {
 		t.Errorf("orchestrator not told: %v", kinds(acts))
 	}
-	// Between restarts the container is down: still code_missing, no new alert.
-	o.Now, o.Events, o.ContainerUp = t0.Add(time.Minute), nil, false
-	st, acts = Decide(th(), st, o)
-	if st.Phase != CodeMissing || has(acts, Alert) != nil {
-		t.Fatalf("phase = %s acts = %v", st.Phase, kinds(acts))
-	}
-	// Another event: still one alert.
 	o.Events, o.ContainerUp = []observe.Event{{T: t0.Unix(), Event: "agent-run.code_missing"}}, true
-	if st, acts = Decide(th(), st, o); has(acts, Alert) != nil {
-		t.Fatalf("alerted twice: %v", kinds(acts))
+	o.Now = t0.Add(codeMissingAfter + time.Minute)
+	if st, acts = Decide(th(), st, o); has(acts, Alert) != nil || has(acts, Push) != nil {
+		t.Fatalf("told twice: %v", kinds(acts))
 	}
 	up := obs("idle")
-	up.Now = t0.Add(2 * time.Minute)
-	if st, _ = Decide(th(), st, up); st.Phase == CodeMissing || st.Alerted["code"] {
+	up.Now = t0.Add(codeMissingAfter + 2*time.Minute)
+	if st, _ = Decide(th(), st, up); st.Phase == CodeMissing || st.Alerted["code"] || !st.CodeMissingSince.IsZero() {
 		t.Fatalf("not cleared once a session is up: %s %v", st.Phase, st.Alerted)
+	}
+}
+
+// After a power cut Docker can fail to start a container (its bind of the
+// code share, before the share is mounted) and never retries. fleetd starts
+// it, once a minute, and tells you only if that keeps failing.
+func TestAContainerDockerFailedToStartIsStartedAgain(t *testing.T) {
+	const why = `error mounting "/home/op/code": no such device`
+	o := Obs{Now: t0, ContainerFailed: why}
+	st, acts := Decide(th(), State{Name: "agent-03", Phase: Working, Task: "T1"}, o)
+	if a := has(acts, Start); a == nil || a.Reason != why || st.Phase != Down {
+		t.Fatalf("phase=%s acts=%v", st.Phase, acts)
+	}
+	if has(acts, Push) != nil {
+		t.Fatalf("pushed down while fleetd starts it: %v", kinds(acts)) // the alert below is the news
+	}
+	o.Now = t0.Add(30 * time.Second)
+	if st, acts = Decide(th(), st, o); has(acts, Start) != nil {
+		t.Fatalf("started again within a minute: %v", kinds(acts))
+	}
+	o.Now = t0.Add(time.Minute)
+	if st, acts = Decide(th(), st, o); has(acts, Start) == nil || has(acts, Alert) != nil {
+		t.Fatalf("a minute on: %v", kinds(acts))
+	}
+	o.Now = t0.Add(10 * time.Minute)
+	if st, acts = Decide(th(), st, o); has(acts, Alert) == nil || !strings.Contains(has(acts, Alert).Text, why) {
+		t.Fatalf("ten minutes on: %v", acts)
+	}
+	up := obs("idle")
+	up.Now = t0.Add(11 * time.Minute)
+	if st, _ = Decide(th(), st, up); !st.StartTried.IsZero() || !st.StartFailing.IsZero() || st.Alerted["start"] {
+		t.Fatalf("running again, still marked failing: %+v", st)
+	}
+	if st.Task != "T1" {
+		t.Fatalf("the task was dropped: %+v", st)
+	}
+}
+
+// A container that is merely stopped (by a person, or not there after
+// `fleetctl down`) carries no Docker error and is left alone.
+func TestAStoppedContainerIsNotStarted(t *testing.T) {
+	_, acts := Decide(th(), State{Name: "agent-03"}, Obs{Now: t0})
+	if has(acts, Start) != nil {
+		t.Fatalf("acts = %v", kinds(acts))
+	}
+}
+
+func atProc(o Obs, proc string, at time.Duration, events ...observe.Event) Obs {
+	o.Proc, o.Now, o.Events = proc, t0.Add(at), events
+	return o
+}
+
+// A turn in flight when the power went is not lost: when the session comes
+// back (resumed, idle, in a new process) it is told to carry on.
+func TestATurnCutShortByARestartIsCarriedOn(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, atProc(obs("busy"), "boot1/100", 0))
+	if !st.TurnOpen || st.TurnProc != "boot1/100" {
+		t.Fatalf("busy: %+v", st)
+	}
+	// Three hours of outage, then the session is back in another boot.
+	st, acts := Decide(th(), st, atProc(obs("idle"), "boot2/90", 3*time.Hour))
+	p := has(acts, Prompt)
+	if p == nil || !strings.Contains(p.Text, "T1") || !strings.Contains(p.Text, "carry on") {
+		t.Fatalf("acts = %v", acts)
+	}
+	if a := has(acts, Push); a == nil || a.Event != "fleet.agent.resumed" {
+		t.Fatalf("acts = %v", acts)
+	}
+	if st.TurnOpen || has(acts, Rotate) != nil || !st.LastBusy.Equal(t0.Add(3*time.Hour)) {
+		t.Fatalf("the outage counted as idleness, or the turn stayed open: %+v %v", st, kinds(acts))
+	}
+	// It is told once.
+	if _, acts = Decide(th(), st, atProc(obs("idle"), "boot2/90", 3*time.Hour+10*time.Second)); has(acts, Prompt) != nil {
+		t.Fatalf("told twice: %v", kinds(acts))
+	}
+}
+
+// A turn that ended (its Stop is on the agent's volume) just before the power
+// went is not resumed, even when the Stop is read only after the restart,
+// while the new session is still registering.
+func TestATurnThatEndedBeforeTheCutIsLeftAlone(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, atProc(obs("busy"), "boot1/100", 0))
+	starting := atProc(obs(""), "boot2/90", time.Hour, observe.Event{Event: "Stop", Session: "s1"})
+	starting.Sessions = nil // claude is starting: no session registered yet
+	st, _ = Decide(th(), st, starting)
+	if st.TurnOpen {
+		t.Fatalf("the Stop was lost: %+v", st)
+	}
+	if _, acts := Decide(th(), st, atProc(obs("idle"), "boot2/90", time.Hour+time.Minute)); has(acts, Prompt) != nil {
+		t.Fatalf("acts = %v", acts)
+	}
+}
+
+// A turn begun between the last tick and the power cut ran in the process
+// seen at that tick, though fleetd reads its UserPromptSubmit only after.
+func TestATurnBegunJustBeforeTheCutIsCarriedOn(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, atProc(obs("idle"), "boot1/100", 0))
+	o := atProc(obs("idle"), "boot2/90", time.Hour, observe.Event{Event: "UserPromptSubmit", Session: "s1"})
+	if _, acts := Decide(th(), st, o); has(acts, Prompt) == nil {
+		t.Fatalf("acts = %v", kinds(acts))
+	}
+}
+
+// Escape ends a turn with no Stop. Once it has been idle a while in the same
+// process, the turn is over, and a later restart does not revive it.
+func TestATurnStoppedByEscapeIsNotRevivedByALaterRestart(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, atProc(obs("busy"), "boot1/100", 0))
+	st, acts := Decide(th(), st, atProc(obs("idle"), "boot1/100", time.Minute))
+	if !st.TurnOpen || has(acts, Prompt) != nil {
+		t.Fatalf("closed too soon: %+v", st)
+	}
+	st, _ = Decide(th(), st, atProc(obs("idle"), "boot1/100", 5*time.Minute))
+	if st.TurnOpen {
+		t.Fatalf("still open after idling: %+v", st)
+	}
+	if _, acts = Decide(th(), st, atProc(obs("idle"), "boot2/90", time.Hour)); has(acts, Prompt) != nil {
+		t.Fatalf("revived: %v", kinds(acts))
+	}
+}
+
+// A restart with no task, or with the task done, has nothing to carry on.
+func TestACutTurnWithNoOpenTaskIsNotPrompted(t *testing.T) {
+	for _, st0 := range []State{{Name: "agent-03"}, {Name: "agent-03", Task: "T1", Done: true}} {
+		st, _ := Decide(th(), st0, atProc(obs("busy"), "boot1/100", 0))
+		st.Done = st0.Done
+		if _, acts := Decide(th(), st, atProc(obs("idle"), "boot2/90", time.Hour)); has(acts, Prompt) != nil {
+			t.Fatalf("%+v: acts = %v", st0, acts)
+		}
+	}
+}
+
+// Between turns, waiting on a background command of its own (a build, a test
+// run): the restart killed the command, and Claude Code starts no turn to say
+// so. An agent that still owes its task a word is told to carry on.
+func TestAnAgentWaitingOnItsOwnBackgroundCommandIsToldToCarryOn(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, atProc(obs("busy"), "boot1/100", 0, observe.Event{Event: "UserPromptSubmit", Session: "s1"}))
+	st, _ = Decide(th(), st, atProc(obs("idle"), "boot1/100", 10*time.Second, observe.Event{Event: "Stop", Session: "s1"}))
+	if st.TurnOpen {
+		t.Fatalf("the turn ended: %+v", st)
+	}
+	back := atProc(obs("idle"), "boot2/90", time.Hour)
+	back.Owes = true
+	_, acts := Decide(th(), st, back)
+	if p := has(acts, Prompt); p == nil || !strings.Contains(p.Text, "background command") {
+		t.Fatalf("acts = %v", acts)
+	}
+}
+
+// One that had reported and waits on its orchestrator owes nothing: a restart
+// does not wake it.
+func TestAnAgentThatReportedIsNotWokenByARestart(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, atProc(obs("idle"), "boot1/100", 0))
+	if _, acts := Decide(th(), st, atProc(obs("idle"), "boot2/90", time.Hour)); has(acts, Prompt) != nil {
+		t.Fatalf("acts = %v", kinds(acts))
+	}
+}
+
+// Owing in the same process is only working between turns: nothing to do.
+func TestOwingInTheSameProcessIsLeftAlone(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, atProc(obs("idle"), "boot1/100", 0))
+	o := atProc(obs("idle"), "boot1/100", time.Minute)
+	o.Owes = true
+	if _, acts := Decide(th(), st, o); has(acts, Prompt) != nil {
+		t.Fatalf("acts = %v", kinds(acts))
+	}
+}
+
+// fleetd could not ask the agent's host about it — at boot, before the
+// network is up; the host is off — so what the agent is doing is unknown. It
+// is not down: nothing is pushed, nothing restarted, and the phase it had is
+// kept. Once the host has been out of reach for a while it is out of reach
+// (shown as unreachable) and you are told, once.
+func TestAnUnreachableHostIsNotDown(t *testing.T) {
+	st0 := State{Name: "agent-03", Phase: Waiting, Task: "T1", SessionID: "s1"}
+	o := Obs{Now: t0, Unreachable: "pc2: ssh: connect to host 192.0.2.26 port 22: Network is unreachable"}
+	st, acts := Decide(th(), st0, o)
+	if len(acts) != 0 || st.Phase != Waiting || st.Task != "T1" || st.SessionID != "s1" || !st.UnreachableSince.Equal(t0) {
+		t.Fatalf("at once: phase=%s acts=%v %+v", st.Phase, acts, st)
+	}
+	o.Now = t0.Add(unreachableAfter - time.Second)
+	if st, acts = Decide(th(), st, o); len(acts) != 0 || st.Phase != Waiting {
+		t.Fatalf("within the grace: phase=%s acts=%v", st.Phase, acts)
+	}
+	o.Now = t0.Add(unreachableAfter)
+	st, acts = Decide(th(), st, o)
+	if st.Phase != Waiting || !st.OutOfReach(o.Now) || has(acts, Alert) == nil || !strings.Contains(has(acts, Alert).Text, "pc2") || has(acts, Push) == nil {
+		t.Fatalf("after the grace: phase=%s acts=%v", st.Phase, acts)
+	}
+	// One alert per episode, and the alert's text is the host's, not the
+	// agent's, so a host's agents alert as one.
+	other, _ := Decide(th(), State{Name: "agent-04", UnreachableSince: t0}, o)
+	_, otherActs := Decide(th(), other, o)
+	if a := has(otherActs, Alert); a != nil {
+		t.Fatalf("alerted twice: %v", otherActs)
+	}
+	o.Now = t0.Add(time.Hour)
+	if st, acts = Decide(th(), st, o); len(acts) != 0 {
+		t.Fatalf("again: %v", acts)
+	}
+
+	// Back: the phase is the observed one again, and the episode is over.
+	back := obs("idle")
+	back.Now = t0.Add(2 * time.Hour)
+	st, _ = Decide(th(), st, back)
+	if st.Phase != Waiting || !st.UnreachableSince.IsZero() || st.Alerted["unreachable"] || st.OutOfReach(back.Now) {
+		t.Fatalf("back: %+v", st)
+	}
+}
+
+// The text of the alert names only the host: every agent on it says the same.
+func TestTheUnreachableAlertIsTheSameForEveryAgentOnTheHost(t *testing.T) {
+	o := Obs{Now: t0.Add(unreachableAfter), Unreachable: "pc2: connection refused"}
+	_, a := Decide(th(), State{Name: "agent-03", UnreachableSince: t0}, o)
+	_, b := Decide(th(), State{Name: "agent-04", UnreachableSince: t0}, o)
+	if has(a, Alert) == nil || has(b, Alert) == nil || has(a, Alert).Text != has(b, Alert).Text {
+		t.Fatalf("a=%v b=%v", a, b)
+	}
+}
+
+// Claude Code reports a session busy while any background command it started
+// runs, turn or no turn. A task that is done must not stay unrotated behind
+// one (a leftover that never ends would keep the agent out of the pool for
+// good): once the hooks say its turn is over, it rotates.
+func TestADoneTaskRotatesWhenItsTurnIsOverThoughABackgroundCommandRuns(t *testing.T) {
+	st := State{Name: "agent-03", Task: "T1", Done: true, DoneAt: t0, SessionID: "s1"}
+	o := obs("busy") // a background shell
+	o.Events = []observe.Event{{T: t0.Unix(), Event: "Stop", Session: "s1"}}
+	st, acts := Decide(th(), st, o)
+	if a := has(acts, Rotate); a == nil || a.Task != "T1" || st.Done {
+		t.Fatalf("not rotated: %v %+v", kinds(acts), st)
+	}
+}
+
+// Busy with no Stop yet: its last turn may still be writing. It is given a
+// few minutes, then rotated anyway — the task is closed.
+func TestADoneTaskBusyWithoutAStopRotatesAfterAGrace(t *testing.T) {
+	st := State{Name: "agent-03", Task: "T1", Done: true, DoneAt: t0, SessionID: "s1"}
+	o := obs("busy")
+	o.Now = t0.Add(time.Minute)
+	st, acts := Decide(th(), st, o)
+	if has(acts, Rotate) != nil {
+		t.Fatalf("rotated mid-turn at once: %v", kinds(acts))
+	}
+	o.Now = t0.Add(doneGrace)
+	o.Events = []observe.Event{{T: t0.Unix(), Event: "PreToolUse", Session: "s1"}}
+	if _, acts = Decide(th(), st, o); has(acts, Rotate) == nil {
+		t.Fatalf("not rotated after the grace: %v", kinds(acts))
+	}
+}
+
+// Not done: a busy agent is left alone, background command or not — it may
+// be waiting on its own build, and is woken when the build ends.
+func TestAnOpenTaskBusyInTheBackgroundIsNotRotated(t *testing.T) {
+	st := State{Name: "agent-03", Task: "T1", SessionID: "s1"}
+	o := obs("busy")
+	o.Events = []observe.Event{{T: t0.Unix(), Event: "Stop", Session: "s1"}}
+	o.Now = t0.Add(time.Hour)
+	if st, acts := Decide(th(), st, o); len(acts) != 0 || st.Phase != Working {
+		t.Fatalf("acts %v phase %s", kinds(acts), st.Phase)
+	}
+}
+
+// An agent that owes its task a word, is idle with its turn over, and has
+// said nothing for reportNudge — its report failed to send, or it stopped
+// without one — is asked once to report or say what blocks it. Not before,
+// not while it works, not when it owes nothing; again only after it has
+// written back and been given something new.
+func TestAnAgentSilentOnItsTaskIsAskedToReportOnce(t *testing.T) {
+	st := State{Name: "agent-03", Task: "T1", SessionID: "s1", HookIdle: true, LastBusy: t0}
+	o := obs("idle")
+	o.TranscriptMTime = t0
+	o.Owes = true
+	o.Now = t0.Add(reportNudge - time.Minute)
+	if _, acts := Decide(th(), st, o); has(acts, Prompt) != nil {
+		t.Fatalf("too soon: %v", kinds(acts))
+	}
+	o.Now = t0.Add(reportNudge)
+	st, acts := Decide(th(), st, o)
+	p := has(acts, Prompt)
+	if p == nil || !strings.Contains(p.Text, "T1") || !strings.Contains(p.Text, "report") {
+		t.Fatalf("not asked: %v", acts)
+	}
+	o.Now = t0.Add(reportNudge + time.Hour)
+	if st, acts = Decide(th(), st, o); has(acts, Prompt) != nil {
+		t.Fatalf("asked twice: %v", kinds(acts))
+	}
+	// It wrote back; a follow-up came; silence again: asked again.
+	o.Owes = false
+	st, _ = Decide(th(), st, o)
+	o.Owes = true
+	o.Now = o.Now.Add(time.Minute)
+	if _, acts = Decide(th(), st, o); has(acts, Prompt) == nil {
+		t.Fatalf("not asked about the next instruction: %v", kinds(acts))
+	}
+
+	// Owing nothing, or working, or its task done: never.
+	for name, edit := range map[string]func(*State, *Obs){
+		"owes nothing": func(s *State, o *Obs) { o.Owes = false },
+		"busy":         func(s *State, o *Obs) { o.Sessions = live("busy") },
+		"done":         func(s *State, o *Obs) { s.Done = true },
+		"no task":      func(s *State, o *Obs) { s.Task = "" },
+	} {
+		s := State{Name: "agent-03", Task: "T1", SessionID: "s1", HookIdle: true, LastBusy: t0}
+		ob := obs("idle")
+		ob.TranscriptMTime, ob.Owes, ob.Now = t0, true, t0.Add(time.Hour)
+		edit(&s, &ob)
+		if _, acts := Decide(th(), s, ob); has(acts, Prompt) != nil && has(acts, Rotate) == nil {
+			t.Errorf("%s: asked: %v", name, kinds(acts))
+		}
 	}
 }

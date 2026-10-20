@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -47,6 +48,8 @@ func newPool(t *testing.T) (*Fleet, map[string]*box) {
 		t.Fatal(err)
 	}
 	f.waitEvery = 5 * time.Millisecond
+	f.relayBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+	f.soonEvery = 0
 	return f, boxes
 }
 
@@ -121,6 +124,12 @@ func TestPickExcludes(t *testing.T) {
 		{"disabled", func(s *reconcile.State) { s.Phase = reconcile.Disabled }, "disabled"},
 		{"low", func(s *reconcile.State) { s.Low = true }, "low"},
 		{"reserved", func(s *reconcile.State) { s.Reserved = true }, "reserved"},
+		// Rotated: its fresh session is not up yet, and a brief would find no
+		// one to take it.
+		{"starting a session", func(s *reconcile.State) { s.SessionID, s.RecordedAt = "", t0 }, "starting"},
+		// Done, and not yet rotated: a task now would run in the last task's
+		// session, with its context.
+		{"done, not yet rotated", func(s *reconcile.State) { s.Task, s.Done, s.SessionID = "T0", true, "s1" }, "rotat"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, _ := newPool(t)
@@ -150,8 +159,16 @@ func TestPickWaitingWithClosedTaskIsEligible(t *testing.T) {
 		set(f, n, func(s *reconcile.State) { s.Phase = reconcile.Down })
 	}
 	set(f, "agent-01", func(s *reconcile.State) { s.Phase, s.Task, s.Done = reconcile.Waiting, "T1", true })
+	if r := f.Pick("", t0); r.Agent != "" {
+		t.Errorf("picked before its rotation, into the closed task's session: %+v", r)
+	}
+	// The idle tick rotates it: a closed task holds the agent no longer.
+	f.Tick(context.Background(), t0)
+	set(f, "agent-02", func(s *reconcile.State) { s.Phase = reconcile.Down })
+	set(f, "agent-03", func(s *reconcile.State) { s.Phase = reconcile.Down })
+	set(f, "agent-01", func(s *reconcile.State) { s.SessionID = "s-new" }) // its fresh session, seen
 	if r := f.Pick("", t0); r.Agent != "agent-01" {
-		t.Errorf("a closed task does not hold the agent: %+v", r)
+		t.Errorf("a closed task still holds the agent after its rotation: %+v", r)
 	}
 }
 
@@ -308,7 +325,7 @@ func TestTaskIDShape(t *testing.T) {
 		"!!! ???":                    "task",
 		"supercalifragilisticexpialidocious antidisestablishmentarianism x y": "supercalifragilisticexpialidocious"[:32-0],
 	} {
-		id := taskID(brief, now)
+		id := TaskID(brief, now)
 		if !re.MatchString(id) {
 			t.Errorf("%q → %q", brief, id)
 			continue
@@ -317,7 +334,7 @@ func TestTaskIDShape(t *testing.T) {
 			t.Errorf("%q → %q, want slug %q", brief, id, slug)
 		}
 	}
-	if taskID("same", now) == taskID("same", now) {
+	if TaskID("same", now) == TaskID("same", now) {
 		t.Error("two ids for one brief collided")
 	}
 }
@@ -360,5 +377,92 @@ func TestRunFilesTheBriefUnderTheTask(t *testing.T) {
 	thread, err := f.db.TaskThread("T9")
 	if err != nil || len(thread) != 1 || thread[0].To != "agent-01" || !strings.HasSuffix(thread[0].Text, "do it") {
 		t.Fatalf("thread = %+v, %v", thread, err)
+	}
+}
+
+// A run whose answer was lost (fleetd restarted, the connection dropped) is
+// tried again by a careful caller with the same task id. It must not hand the
+// task to a second agent: it answers with the first.
+func TestARunRetriedWithItsTaskIDIsNotAssignedTwice(t *testing.T) {
+	f, boxes := newPool(t)
+	in := RunRequest{Brief: "fix it", Task: "T1"}
+	first, err := f.Run(context.Background(), in, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := f.Run(context.Background(), in, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Agent != first.Agent || again.Task != "T1" {
+		t.Fatalf("first %+v, again %+v", first, again)
+	}
+	held := 0
+	for _, n := range []string{"agent-01", "agent-02", "agent-03"} {
+		if f.State(n).Task == "T1" {
+			held++
+		}
+		relays := 0
+		for _, c := range boxes[n].calls {
+			if strings.HasPrefix(c, "relay ") {
+				relays++
+			}
+		}
+		if relays > 1 || (relays == 1 && n != first.Agent) {
+			t.Errorf("%s got %d briefs", n, relays)
+		}
+	}
+	if held != 1 {
+		t.Fatalf("%d agents hold T1", held)
+	}
+
+	// A closed task is not run again under its id, except one whose brief
+	// never got there.
+	_ = f.Done("", "T1", "done", "", "", t0.Add(time.Hour))
+	if _, err := f.Run(context.Background(), in, t0.Add(2*time.Hour)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("rerun of a closed task: %v", err)
+	}
+	boxes["agent-01"].relayErr = errors.New("no session")
+	boxes["agent-02"].relayErr = errors.New("no session")
+	boxes["agent-03"].relayErr = errors.New("no session")
+	in2 := RunRequest{Brief: "other", Task: "T2"}
+	if _, err := f.Run(context.Background(), in2, t0); err == nil {
+		t.Fatal("undelivered run succeeded")
+	}
+	boxes["agent-01"].relayErr, boxes["agent-02"].relayErr, boxes["agent-03"].relayErr = nil, nil, nil
+	if _, err := f.Run(context.Background(), in2, t0.Add(time.Minute)); err != nil {
+		t.Fatalf("rerun of an undelivered task: %v", err)
+	}
+}
+
+// Done is followed by the rotation within seconds, not at the next tick: the
+// agent is out of the pool until it has its fresh session.
+func TestDoneRotatesSoonAfterTheTurnEnds(t *testing.T) {
+	f, boxes := newPool(t)
+	f.soonEvery = 5 * time.Millisecond
+	f.Tick(context.Background(), t0)
+	b := boxes["agent-01"]
+	b.mu.Lock()
+	b.obs.Sessions[0].Status = "busy" // done lands while it writes its last words
+	b.mu.Unlock()
+	if _, err := f.Run(context.Background(), RunRequest{Brief: "x", Agent: "agent-01", Task: "T1"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Done("", "T1", "done", "", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	if p := f.Pick("", t0); slices.ContainsFunc(p.Candidates, func(c Candidate) bool { return c.Agent == "agent-01" && c.Eligible }) {
+		t.Fatal("eligible before its rotation")
+	}
+	time.Sleep(30 * time.Millisecond)
+	b.mu.Lock()
+	b.obs.Sessions[0].Status = "idle"
+	b.mu.Unlock()
+	deadline := time.Now().Add(2 * time.Second)
+	for f.State("agent-01").Done && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if f.State("agent-01").Done || !slices.ContainsFunc(b.snapshotCalls(), func(c string) bool { return c == "fresh" }) {
+		t.Fatalf("not rotated: %+v calls %q", f.State("agent-01"), b.snapshotCalls())
 	}
 }

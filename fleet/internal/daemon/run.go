@@ -125,11 +125,22 @@ func (f *Fleet) ineligible(r Row) string {
 		return "code directory missing"
 	case reconcile.Cooling:
 		return "cooling"
+	case reconcile.Unreachable:
+		return "its host is out of reach"
 	case reconcile.Working:
 		if r.Task != "" {
 			return "working on " + r.Task
 		}
 		return "working"
+	}
+	if r.Unreachable {
+		return "its host is not answering"
+	}
+	if r.Rotating {
+		return "rotating to a fresh session" // a task now would run in the last one's, with its context
+	}
+	if r.Session == "" && !r.RecordedAt.IsZero() {
+		return "starting a session" // rotated: a brief now would find no one to take it
 	}
 	if r.Task != "" {
 		return "holds open task " + r.Task
@@ -153,6 +164,9 @@ func (f *Fleet) ineligible(r Row) string {
 type RunRequest struct {
 	Brief, Repo, Agent, From, Task string
 	Queue                          time.Duration
+	// Limit is how many open tasks From may hold at once, this one
+	// included; 0 is no limit. The server sets it for a tailnet member.
+	Limit int
 }
 
 // RunReply is where a run went.
@@ -160,6 +174,9 @@ type RunReply struct {
 	Task  string `json:"task"`
 	Agent string `json:"agent"`
 	Why   string `json:"why"`
+	// placed: the task was already open on Agent — this run is a retry of
+	// one whose answer was lost — and nothing was assigned or sent.
+	placed bool
 }
 
 // Run hands a brief to a free agent: pick (or check the named agent), make
@@ -184,6 +201,9 @@ func (f *Fleet) Run(ctx context.Context, in RunRequest, now time.Time) (RunReply
 	deadline := start.Add(in.Queue)
 	for {
 		rep, err := f.place(in, now.Add(time.Since(start)))
+		if err == nil && rep.placed {
+			return rep, nil // a retry of a run that landed: its brief is the agent's already
+		}
 		if err == nil {
 			return f.deliver(ctx, in, rep, now)
 		}
@@ -202,6 +222,32 @@ func (f *Fleet) Run(ctx context.Context, in RunRequest, now time.Time) (RunReply
 func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
+	if in.Task != "" {
+		// The same id again is the same run, retried: never a second agent.
+		// A brief cut short on its way is sent again by the tick (resend).
+		if t, err := f.db.Task(in.Task); err == nil {
+			switch {
+			case t.Closed.IsZero():
+				return RunReply{Task: t.ID, Agent: t.Agent, Why: "already assigned to " + t.Agent, placed: true}, nil
+			case t.Outcome != "undelivered": // its brief never got there: run it again
+				return RunReply{}, fmt.Errorf("%w: task %s is closed (%s)", ErrConflict, t.ID, t.Outcome)
+			}
+		}
+	}
+	if in.Limit > 0 {
+		open, err := f.db.TasksBy(true, "", in.From, 0)
+		if err != nil {
+			return RunReply{}, err
+		}
+		if len(open) >= in.Limit {
+			ids := make([]string, len(open))
+			for i, t := range open {
+				ids[i] = t.ID
+			}
+			return RunReply{}, fmt.Errorf("%w: %s holds %d open tasks, the most one person may (%s): close one with fleetctl done --task <id>, or cancel it",
+				ErrConflict, in.From, len(open), strings.Join(ids, ", "))
+		}
+	}
 	p := f.Pick(in.Repo, now)
 	rep := RunReply{Agent: p.Agent, Why: p.Why}
 	if in.Agent != "" {
@@ -216,7 +262,7 @@ func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 	}
 	rep.Task = in.Task
 	if rep.Task == "" {
-		rep.Task = taskID(in.Brief, now)
+		rep.Task = TaskID(in.Brief, now)
 	}
 	if err := f.assign(rep.Agent, rep.Task, in.From, now); err != nil {
 		return RunReply{}, err
@@ -242,9 +288,11 @@ func (f *Fleet) deliver(ctx context.Context, in RunRequest, rep RunReply, now ti
 	return rep, nil
 }
 
-// taskID is YYYYMMDD-<slug>-<4 hex>: the slug is the brief's first four
+// TaskID is YYYYMMDD-<slug>-<4 hex>: the slug is the brief's first four
 // words, lowercased to [a-z0-9] and joined by "-", at most 32 characters.
-func taskID(brief string, now time.Time) string {
+// fleetctl makes one itself, so that a run it has to send again is the same
+// run.
+func TaskID(brief string, now time.Time) string {
 	var words []string
 	for _, w := range strings.Fields(brief) {
 		if len(words) == 4 {

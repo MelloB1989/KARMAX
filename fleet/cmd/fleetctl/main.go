@@ -1,8 +1,9 @@
 // Command fleetctl is the agent fleet's CLI.
 //
 // Every command but attach is an HTTP client of fleetd: on a fleet host it
-// finds fleetd through fleet.yaml, anywhere else it needs FLEETD_URL and
-// FLEET_TOKEN. attach goes straight to the container through its host's exec
+// finds fleetd through fleet.yaml; anywhere else through FLEETD_URL and
+// FLEET_TOKEN, or the fleetd `fleetctl connect` saved, reached over the
+// tailnet with no token (Tailscale says who you are). attach goes straight to the container through its host's exec
 // prefix — it is your keyboard, and no model-callable tool ever wraps it.
 // render, up and down run on a fleet host directly, and through fleetd from
 // anywhere else (or with --remote).
@@ -16,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -84,6 +86,8 @@ Your keyboard:
   peek <agent> [-n 80]                its last lines (fleetd)
 
 About fleetd:
+  connect http://<host>:7878          from a machine on the tailnet: save that fleetd as yours, and
+                                      say who it knows you as (no token: Tailscale says)
   whoami                              which scope this token has
   api                                 every route and the scopes it allows
 
@@ -142,7 +146,8 @@ func loadConfig() (*config.Config, error) {
 }
 
 // client finds fleetd: FLEETD_URL and FLEET_TOKEN from the environment, else
-// fleet.yaml's listen address and the env file's token.
+// fleet.yaml's listen address and the env file's token, else (no fleet.yaml:
+// not a fleet host) the fleetd connect saved, on the tailnet, with no token.
 type client struct {
 	base, token string
 	timeout     time.Duration // 0: six minutes
@@ -150,6 +155,17 @@ type client struct {
 
 func newClient() (*client, error) {
 	c := &client{base: os.Getenv("FLEETD_URL"), token: os.Getenv("FLEET_TOKEN")}
+	if _, err := os.Stat(configPath()); errors.Is(err, os.ErrNotExist) && c.token == "" {
+		// Not a fleet host: the tailnet says who this is.
+		if c.base == "" {
+			c.base = savedServer()
+		}
+		if c.base == "" {
+			return nil, fmt.Errorf("no fleetd to talk to: run fleetctl connect http://<fleetd host>:7878 (it is on your tailnet), or set FLEETD_URL")
+		}
+		c.base = strings.TrimRight(c.base, "/")
+		return c, nil
+	}
 	if c.base == "" || c.token == "" {
 		cfg, err := loadConfig()
 		if err != nil {
@@ -177,13 +193,18 @@ func (c *client) do(method, path string, in, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	timeout := c.timeout
 	if timeout == 0 {
 		timeout = 6 * time.Minute
 	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	// A connect fleetd does not answer (its host is down) fails in seconds,
+	// not the minutes TCP would wait: callers retry, or queue (tell).
+	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext}
+	resp, err := (&http.Client{Timeout: timeout, Transport: tr}).Do(req)
 	if err != nil {
 		return fmt.Errorf("fleetd unreachable at %s: %w", c.base, err)
 	}
@@ -611,6 +632,9 @@ func run(cmd string, args []string) error {
 	case "skill":
 		return skillCmd(args)
 
+	case "connect":
+		return connectCmd(args)
+
 	case "whoami":
 		return getAndPrint(args, "/v1/whoami", func(raw json.RawMessage) error {
 			var w struct{ Scope, Name string }
@@ -653,7 +677,15 @@ func run(cmd string, args []string) error {
 			return errors.New("usage: fleetctl done <agent> [--task <id>] [--keep-session] | done --task <id> [--task <id>…]")
 		}
 		if len(tasks) <= 1 {
-			return post("/v1/done", map[string]any{"agent": agent, "task": tasks.first(), "outcome": outcome, "branch": branch, "pr": pr, "keep_session": keep})
+			c, err := newClient()
+			if err != nil {
+				return err
+			}
+			if err := doAgain(c, "POST", "/v1/done", map[string]any{"agent": agent, "task": tasks.first(), "outcome": outcome, "branch": branch, "pr": pr, "keep_session": keep}, nil); err != nil {
+				return err
+			}
+			fmt.Println("ok")
+			return nil
 		}
 		// Several tasks: each is closed by its own id, so an agent, branch or PR would apply to all of them.
 		if agent != "" || branch != "" || pr != "" {
@@ -665,7 +697,7 @@ func run(cmd string, args []string) error {
 		}
 		var failed []error
 		for _, id := range tasks {
-			if err := c.do("POST", "/v1/done", map[string]any{"task": id, "outcome": outcome, "agent": "", "branch": "", "pr": "", "keep_session": keep}, nil); err != nil {
+			if err := doAgain(c, "POST", "/v1/done", map[string]any{"task": id, "outcome": outcome, "agent": "", "branch": "", "pr": "", "keep_session": keep}, nil); err != nil {
 				failed = append(failed, fmt.Errorf("%s: %w", id, err))
 				continue
 			}
@@ -695,7 +727,16 @@ func run(cmd string, args []string) error {
 		if err := need(pos, 2, `tell <name> "<text>"`); err != nil {
 			return err
 		}
-		return post("/v1/tell", map[string]string{"from": from, "to": pos[0], "text": strings.Join(pos[1:], " ")})
+		c, err := newClient()
+		if err != nil {
+			return err
+		}
+		said, err := tell(c, from, pos[0], strings.Join(pos[1:], " "), outboxDir(), time.Sleep)
+		if err != nil {
+			return err
+		}
+		fmt.Println(said)
+		return nil
 
 	case "enable":
 		if err := need(args, 1, cmd+" <agent>"); err != nil {
@@ -886,8 +927,15 @@ func post(path string, body any) error {
 	if err != nil {
 		return err
 	}
-	if err := c.do("POST", path, body, nil); err != nil {
+	var raw json.RawMessage
+	if err := c.do("POST", path, body, &raw); err != nil {
 		return err
+	}
+	// A message fleetd holds for a receiver it cannot reach is taken: say so.
+	var rep sendReply
+	if json.Unmarshal(raw, &rep) == nil && rep.Queued {
+		fmt.Println(rep.Why)
+		return nil
 	}
 	fmt.Println("ok")
 	return nil
@@ -1222,6 +1270,11 @@ func upDown(cmd string, args []string) error {
 	if err != nil {
 		return err
 	}
+	if cmd == "up" {
+		if err := renderCurrent(cfg, configPath()); err != nil {
+			return err
+		}
+	}
 	ctx := context.Background()
 	if whenIdle && timeout > 0 {
 		var cancel context.CancelFunc
@@ -1232,6 +1285,28 @@ func upDown(cmd string, args []string) error {
 		Run: hostctl.ExecRunner, Docker: runDocker, DryRun: dryRun || plan, WhenIdle: whenIdle,
 		States: fleetdStates, Sleep: sleepCtx, Every: 10 * time.Second,
 	}, os.Stdout)
+}
+
+// renderCurrent fails when fleet.yaml or its env file changed after the last
+// render: up would roll out the old compose files, and its plan would compare
+// against them too.
+func renderCurrent(cfg *config.Config, yamlPath string) error {
+	files, _ := filepath.Glob(filepath.Join(hostctl.RenderDir(cfg), "compose.*.yaml"))
+	var rendered time.Time
+	for _, f := range files {
+		if st, err := os.Stat(f); err == nil && (rendered.IsZero() || st.ModTime().Before(rendered)) {
+			rendered = st.ModTime()
+		}
+	}
+	if rendered.IsZero() {
+		return nil // never rendered: up says so itself
+	}
+	for _, src := range []string{yamlPath, cfg.EnvFile} {
+		if st, err := os.Stat(src); err == nil && st.ModTime().After(rendered) {
+			return fmt.Errorf("%s changed after the last render: run fleetctl render, then fleetctl up", src)
+		}
+	}
+	return nil
 }
 
 // runDocker runs the docker CLI for the plan; tests replace it.
