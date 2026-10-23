@@ -92,7 +92,8 @@ type Agent struct {
 	Session    string    `json:"session,omitempty"`
 	RecordedAt time.Time `json:"recorded_at"`
 
-	// From the status line (live, 5 s).
+	// From the status line (live, 5 s); for an agent on another host, the
+	// quota is fleetd's and StatuslineAt is when fleetd last knew it.
 	Model          string    `json:"model,omitempty"`
 	ContextPct     float64   `json:"context_pct"`
 	FiveHourPct    float64   `json:"five_hour_pct"`

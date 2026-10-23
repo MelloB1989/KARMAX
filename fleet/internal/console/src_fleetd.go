@@ -114,6 +114,12 @@ type fleetdRow struct {
 	Models     []string  `json:"models"`
 	Session    string    `json:"session"`
 	RecordedAt time.Time `json:"recorded_at"`
+
+	ContextPct     float64   `json:"context_pct"`
+	FiveHourPct    float64   `json:"five_hour_pct"`
+	SevenDayPct    float64   `json:"seven_day_pct"`
+	FiveHourResets time.Time `json:"five_hour_resets"`
+	QuotaAsOf      time.Time `json:"quota_as_of"`
 }
 
 type fleetdStatus struct {

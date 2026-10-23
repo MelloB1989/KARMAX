@@ -41,9 +41,17 @@ func TestFillMarksRemoteAgentsNotLive(t *testing.T) {
 	if a1.StatuslineAt.IsZero() || a1.RecordedAt.IsZero() {
 		t.Fatal("every group of fields carries its own at")
 	}
-	if a2.Live || a2.CurrentTool != nil || a2.Container != nil || a2.Term != (TermSize{}) || a2.Model != "" ||
-		a2.ContextPct != 0 || !a2.StatuslineAt.IsZero() || !a2.LastEventAt.IsZero() {
+	if a2.Live || a2.CurrentTool != nil || a2.Container != nil || a2.Term != (TermSize{}) || a2.Model != "" || !a2.LastEventAt.IsZero() {
 		t.Fatalf("remote agent has live fields: %+v", a2)
+	}
+	// No status line reaches here from another host: its quota is fleetd's,
+	// dated when fleetd knew it.
+	if a2.ContextPct != 12 || a2.FiveHourPct != 40 || a2.SevenDayPct != 7 || a2.FiveHourResets.IsZero() ||
+		!a2.StatuslineAt.Equal(time.Date(2026, 10, 11, 13, 59, 30, 0, time.UTC)) {
+		t.Fatalf("remote agent's quota is not fleetd's: %+v", a2)
+	}
+	if a1.ContextPct != 8 || a1.FiveHourPct != 0 {
+		t.Fatalf("a live agent's quota is its status line's, not fleetd's: %+v", a1)
 	}
 	if a2.Phase != "standby" || a2.Host != "kali" || a2.Alerts == nil || a2.Models == nil {
 		t.Fatalf("remote agent keeps fleetd's fields: %+v", a2)

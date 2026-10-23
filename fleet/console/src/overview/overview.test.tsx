@@ -37,7 +37,29 @@ describe("overview", () => {
     expect(orderAgents(s.agents).map((a) => a.id)).toEqual(["agent-01", "agent-02", "agent-10"]);
     const html = renderToStaticMarkup(<Roster snapshot={s} now={t0} selected={null} onSelect={() => {}} />);
     expect(html.indexOf("agent-01")).toBeLessThan(html.indexOf("agent-02"));
-    expect(html.match(/remote · no live view/g)).toHaveLength(1);
+    expect(html.match(/class="remote"/g)).toHaveLength(1);
+    expect(html).toContain("on kali");
+  });
+
+  it("every agent whose session runs is up, on whichever host", () => {
+    const mk = (id: string, host: string, phase: string): Agent => ({ ...working, id, host, phase });
+    const s = snap({}, [
+      mk("agent-01", "pc2", "working"), mk("agent-02", "pc2", "down"), mk("agent-09", "kali", "standby"),
+      mk("agent-10", "kali", "waiting"), mk("agent-11", "kali", "unreachable"), mk("agent-12", "kali", "disabled"),
+    ]);
+    expect(renderToStaticMarkup(<Roster snapshot={s} now={t0} selected={null} onSelect={() => {}} />)).toContain("AGENTS · 3 / 6 UP");
+  });
+
+  it("an agent on another host shows fleetd's quota, and says so when fleetd has none", () => {
+    const fresh = { ...base.sources, fleetd: { ok: true, at: new Date(t0).toISOString() } };
+    const remote: Agent = { ...working, id: "agent-09", host: "kali", live: false, phase: "standby", five_hour_pct: 40, statusline_at: new Date(t0 - 30_000).toISOString() };
+    const html = (a: Agent) =>
+      renderToStaticMarkup(<AgentCard agent={a} snapshot={snap({ sources: fresh }, [a])} now={t0} index={8} selected={false} onSelect={() => {}} />);
+    expect(html(remote)).toContain('class="card-bars"');
+    expect(html(remote)).toContain("40");
+    const none = html({ ...remote, statusline_at: undefined });
+    expect(none).not.toContain('class="card-bars"');
+    expect(none).toContain("quota");
   });
 
   it("ActivityTrack places a bucket at its time fraction", () => {

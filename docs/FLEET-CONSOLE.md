@@ -54,8 +54,10 @@ console observes the agents on its own host directly. When the two disagree, liv
 | container CPU, memory, network | archives |
 | host load, memory, uptime; git | the orchestrator's quota |
 
-An agent on a different host from the console has recorded data only and says "remote · no live view".
-Today all four agents are on PC2.
+An agent on a different host from the console has recorded data only. Its card says "on <host>", and
+its quota bars are fleetd's, dated when fleetd last knew them. The header counts every agent whose
+session runs (standby, working, waiting, cooling), on any host. With nine or more agents the cards drop
+their meta line (what the agent is doing moves beside its name), so twelve fit at 1080p.
 
 ### Staleness: nothing shows an old value as live
 

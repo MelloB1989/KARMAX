@@ -1,6 +1,6 @@
 import type { Snapshot } from "../model";
 import { AgentCard } from "./AgentCard";
-import { densityFor, isRemote, orderAgents } from "./roster";
+import { densityFor, isUp, orderAgents } from "./roster";
 
 export function Roster({
   snapshot,
@@ -14,7 +14,7 @@ export function Roster({
   onSelect: (id: string) => void;
 }) {
   const agents = orderAgents(snapshot.agents);
-  const up = agents.filter((a) => a.phase !== "down" && !isRemote(a, snapshot)).length;
+  const up = agents.filter(isUp).length;
   const density = densityFor(agents.length);
   return (
     <aside className={`roster roster-${density}`} data-count={agents.length}>

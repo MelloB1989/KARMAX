@@ -5,6 +5,12 @@ export function orderAgents(agents: Agent[] | null): Agent[] {
   return [...(agents ?? [])].sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
 }
 
+/** Phases whose session runs: the agent takes work, or is doing it, on whichever host. */
+const UP = new Set(["standby", "working", "waiting", "cooling"]);
+export function isUp(a: Agent): boolean {
+  return UP.has(a.phase);
+}
+
 /** An agent on another host (or without a live view) has recorded data only. */
 export function isRemote(a: Agent, s: Snapshot): boolean {
   return !a.live || a.host !== s.host.name;

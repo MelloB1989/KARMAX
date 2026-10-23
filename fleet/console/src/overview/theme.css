@@ -71,6 +71,11 @@ html, body { background: var(--ground); overflow: hidden; }
 .roster-dense { gap: 4px; }
 .roster-dense .card { padding: 4px 12px; gap: 2px; }
 .roster-dense .card-name { font-size: 18px; line-height: 20px; }
+/* dense: what the agent is doing moves into the head, and the meta line goes, so 12 fit at 1080p */
+.card-doing { display: none; font-size: 12px; white-space: nowrap; }
+.roster-dense .card-head { gap: 8px; }
+.roster-dense .card-doing { display: inline; }
+.roster-dense .card-meta { display: none; }
 .activity[data-count] .tick { top: 1px; bottom: 1px; }
 .activity[data-count] .track-name { font-size: 11px; line-height: var(--row-h); }
 .activity[data-count="4"] .track-name, .activity[data-count="3"] .track-name { font-size: 12px; }

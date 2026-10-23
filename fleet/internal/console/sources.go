@@ -247,6 +247,10 @@ func (s *Sources) Fill(snap *Snapshot) {
 				a.RecordedAt = polled // fleetd did not date it; the poll that saw it did
 			}
 			a.Model = r.Model
+			if !c.Live { // no status line from another host: fleetd's quota, as of when fleetd knew it
+				a.ContextPct, a.FiveHourPct, a.SevenDayPct = r.ContextPct, r.FiveHourPct, r.SevenDayPct
+				a.FiveHourResets, a.StatuslineAt = r.FiveHourResets, r.QuotaAsOf
+			}
 		}
 		a.LastTask = last[c.Name]
 		if c.Live {

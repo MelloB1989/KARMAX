@@ -15,8 +15,9 @@ import (
 
 const (
 	statusJSON = `{"agents":[
-	 {"agent":"agent-01","host":"pc2","state":"working","task":"T1","idle_s":4,"model":"sonnet","alerts":["stuck"],"models":["sonnet"],"session":"s1","recorded_at":"2026-10-11T14:00:00Z"},
-	 {"agent":"agent-02","host":"pc2","state":"standby","idle_s":900,"models":[],"recorded_at":"2026-10-11T14:00:00Z"}],
+	 {"agent":"agent-01","host":"pc2","state":"working","task":"T1","idle_s":4,"model":"sonnet","alerts":["stuck"],"models":["sonnet"],"session":"s1","recorded_at":"2026-10-11T14:00:00Z","five_hour_pct":55,"context_pct":30},
+	 {"agent":"agent-02","host":"pc2","state":"standby","idle_s":900,"models":[],"recorded_at":"2026-10-11T14:00:00Z",
+	  "context_pct":12,"five_hour_pct":40,"seven_day_pct":7,"five_hour_resets":"2026-10-11T18:00:00Z","quota_as_of":"2026-10-11T13:59:30Z"}],
 	 "orchestrator":{"FiveHour":12.5,"SevenDay":30,"FiveHourResets":"2026-10-11T18:00:00Z","SevenDayResets":"2026-10-15T00:00:00Z"}}`
 	tasksOpen  = `[{"id":"T1","agent":"agent-01","assigner":"operator","assigned":"2026-10-11T13:00:00Z","closed":null,"outcome":""}]`
 	eventsJSON = `[{"id":7,"agent":"agent-01","at":"2026-10-11T13:59:00Z","kind":"Stop","session":"s1","detail":{"x":1}},

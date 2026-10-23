@@ -30,11 +30,22 @@ export function AgentCard({
 }) {
   const remote = isRemote(a, s);
   const fleetdStale = sourceStale(s, "fleetd", now);
-  const lineStale = remote || sourceStale(s, "statusline", now);
+  // Another host's quota is fleetd's (statusline_at is when fleetd knew it).
+  const lineStale = remote ? fleetdStale || !isKnown(a.statusline_at) : sourceStale(s, "statusline", now);
   const dockerStale = remote || sourceStale(s, "docker", now);
   const look = phaseLook(a.phase, a.alerts);
   const flash = useFlash(a.phase);
   const toolSecs = a.current_tool ? ageOf(a.current_tool.since, now) : 0;
+  const doing =
+    a.phase === "working" && a.current_tool && !remote ? (
+      <span className="tool">
+        {a.current_tool.name} {fmtAge(toolSecs)}
+      </span>
+    ) : fleetdStale ? (
+      <span>idle —</span>
+    ) : (
+      <span>idle {fmtAge(a.idle_s)}</span>
+    );
 
   return (
     <button
@@ -48,20 +59,17 @@ export function AgentCard({
         <span className="dot" />
         <span className="card-name">{a.id}</span>
         <span className="card-key dim">{index + 1}</span>
-        {remote && <span className="remote">remote · no live view</span>}
+        {remote && (
+          <span className="remote" title={`no live view: ${a.host} is not ${s.host.name}`}>
+            on {a.host}
+          </span>
+        )}
+        <span className="card-doing dim">{doing}</span>
         <span className="grow" />
         <span className="card-phase">{!isKnown(a.recorded_at) ? <span className="dim">no record</span> : fleetdStale ? <Aged at={a.recorded_at} now={now} /> : look.label}</span>
       </div>
       <div className="card-meta dim">
-        {a.phase === "working" && a.current_tool && !remote ? (
-          <span className="tool">
-            {a.current_tool.name} {fmtAge(toolSecs)}
-          </span>
-        ) : fleetdStale ? (
-          <span>idle —</span>
-        ) : (
-          <span>idle {fmtAge(a.idle_s)}</span>
-        )}
+        {doing}
         <span>{lineStale ? "" : a.model}</span>
         <span>{a.session ? `sess ${a.session.slice(0, 8)}` : ""}</span>
       </div>
