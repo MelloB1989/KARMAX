@@ -222,6 +222,16 @@ const (
 	startAlertAfter = 10 * time.Minute
 )
 
+// dockerCause is what runc found wrong in Docker's start error, without the
+// layers ("failed to create shim task: OCI runtime create failed: …") that
+// passed it up.
+func dockerCause(err string) string {
+	if _, cause, ok := strings.Cut(err, "error during container init: "); ok {
+		return cause
+	}
+	return err
+}
+
 // reportNudge is how long an agent may sit idle, its turn over, owing its task
 // a word, before it is asked to report: its report failed to send (fleetd was
 // away), or it stopped without one.
@@ -304,6 +314,13 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		}
 	}
 
+	// A host back from out of reach has most likely rebooted, and its
+	// containers race its code share anew: how long one has failed to start,
+	// or run without its code, counts from now, not from before the outage.
+	if o.Unreachable == "" && st.OutOfReach(o.Now) {
+		st.StartTried, st.StartFailing, st.CodeMissingSince = time.Time{}, time.Time{}, time.Time{}
+	}
+
 	st = observeQuota(th, st, o)
 	if st.Reserved {
 		alertOnce("reserved", fmt.Sprintf("%s: 7-day window at %.0f%% — small tasks only until it resets", st.Name, st.Quota.SevenDay))
@@ -334,7 +351,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 			st.Phase = CodeMissing
 		}
 	}
-	if st.Phase == CodeMissing && !st.CodeMissingSince.IsZero() && o.Now.Sub(st.CodeMissingSince) >= codeMissingAfter && !st.Alerted["code"] {
+	if st.Phase == CodeMissing && o.Unreachable == "" && !st.CodeMissingSince.IsZero() && o.Now.Sub(st.CodeMissingSince) >= codeMissingAfter && !st.Alerted["code"] {
 		push("code_missing", st.Name+": the shared code directory is empty in its container; it is restarting until the mount is there")
 		alertOnce("code", fmt.Sprintf("%s: the shared code directory is empty in its container (NFS not mounted?) — it restarts until the share is there", st.Name))
 	}
@@ -400,7 +417,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 				acts = append(acts, Action{Kind: Start, Reason: o.ContainerFailed})
 			}
 			if o.Now.Sub(st.StartFailing) >= startAlertAfter {
-				alertOnce("start", fmt.Sprintf("%s's container will not start: %s", st.Name, o.ContainerFailed))
+				alertOnce("start", fmt.Sprintf("%s's container will not start: %s", st.Name, dockerCause(o.ContainerFailed)))
 			}
 		}
 		if st.Phase == CodeMissing {

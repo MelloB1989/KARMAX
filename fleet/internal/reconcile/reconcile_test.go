@@ -602,6 +602,66 @@ func TestAContainerDockerFailedToStartIsStartedAgain(t *testing.T) {
 	}
 }
 
+// A container failed to start, its host went out of reach and rebooted, and
+// half an hour on raced its code share once more. That is a fresh start, not
+// one failing for half an hour: no alert until it has failed startAlertAfter
+// since the host came back. The alert gives runc's cause, not Docker's layers.
+func TestAHostBackFromOutOfReachCountsAFailedStartFromNow(t *testing.T) {
+	const why = `failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: error mounting "/home/op/code" to rootfs at "/home/op/code": no such device`
+	st, _ := Decide(th(), State{Name: "agent-03", Phase: Working, Task: "T1"}, Obs{Now: t0, ContainerFailed: why})
+	away := Obs{Now: t0.Add(2 * time.Minute), Unreachable: "pc2: no route to host"}
+	st, _ = Decide(th(), st, away)
+	away.Now = t0.Add(34 * time.Minute)
+	st, _ = Decide(th(), st, away)
+
+	back := Obs{Now: t0.Add(34*time.Minute + 30*time.Second), ContainerFailed: why}
+	st, acts := Decide(th(), st, back)
+	if has(acts, Start) == nil || has(acts, Alert) != nil {
+		t.Fatalf("back from the reboot: %v", acts)
+	}
+	back.Now = back.Now.Add(startAlertAfter)
+	_, acts = Decide(th(), st, back)
+	if a := has(acts, Alert); a == nil || a.Text != `agent-03's container will not start: error mounting "/home/op/code" to rootfs at "/home/op/code": no such device` {
+		t.Fatalf("still failing: %v", acts)
+	}
+
+	// A blip shorter than unreachableAfter is no reboot: the clock runs on.
+	st, _ = Decide(th(), State{Name: "agent-03", Phase: Working, Task: "T1"}, Obs{Now: t0, ContainerFailed: why})
+	st, _ = Decide(th(), st, Obs{Now: t0.Add(8 * time.Minute), Unreachable: "pc2: no route to host"})
+	_, acts = Decide(th(), st, Obs{Now: t0.Add(startAlertAfter), ContainerFailed: why})
+	if has(acts, Alert) == nil {
+		t.Fatalf("a blip restarted the clock: %v", acts)
+	}
+}
+
+// An agent without its code share whose host then goes out of reach is not
+// told about while it is away (nothing is known of it), and back from the
+// reboot it has codeMissingAfter again to find the share.
+func TestCodeMissingIsNotToldWhileTheHostIsAwayNorAtOnceWhenBack(t *testing.T) {
+	missing := []observe.Event{{T: t0.Unix(), Event: "agent-run.code_missing"}}
+	st, _ := Decide(th(), State{Name: "agent-03", Phase: Waiting, Task: "t1"}, Obs{Now: t0, Events: missing})
+	if st.Phase != CodeMissing {
+		t.Fatalf("phase = %s", st.Phase)
+	}
+	away := Obs{Now: t0.Add(time.Minute), Unreachable: "pc2: no route to host"}
+	for _, at := range []time.Duration{time.Minute, codeMissingAfter, 30 * time.Minute} {
+		away.Now = t0.Add(at)
+		var acts []Action
+		if st, acts = Decide(th(), st, away); has(acts, Alert) != nil && !strings.Contains(has(acts, Alert).Text, "cannot reach") {
+			t.Fatalf("at %s: %v", at, acts)
+		}
+	}
+	back := Obs{Now: t0.Add(31 * time.Minute), Events: []observe.Event{{T: t0.Add(31 * time.Minute).Unix(), Event: "agent-run.code_missing"}}}
+	st, acts := Decide(th(), st, back)
+	if st.Phase != CodeMissing || has(acts, Alert) != nil {
+		t.Fatalf("back: phase=%s acts=%v", st.Phase, acts)
+	}
+	back.Now, back.Events = back.Now.Add(codeMissingAfter), nil
+	if _, acts = Decide(th(), st, back); has(acts, Alert) == nil || !strings.Contains(has(acts, Alert).Text, "code directory") {
+		t.Fatalf("still missing: %v", acts)
+	}
+}
+
 // A container that is merely stopped (by a person, or not there after
 // `fleetctl down`) carries no Docker error and is left alone.
 func TestAStoppedContainerIsNotStarted(t *testing.T) {
