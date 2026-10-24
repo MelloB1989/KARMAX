@@ -2,17 +2,22 @@
 // it, restart or rotate its session, type into its pane, and move its
 // transcripts and worktrees.
 //
-// The container side of the contract (packaging/fleet/agent-run):
+// The container side of the contract (packaging/fleet/agent-run), per slot:
+// an agent runs FLEET_SLOTS sessions at once, each a worker of its own.
+// Slot 1 is the agent itself; slot k ≥ 2 is the worker "<agent>:k", and
+// keeps its files in a slot-k directory beside slot 1's:
 //
-//   - tmux session "main" runs `claude --name <agent>`; the pane's pid is
-//     claude's.
-//   - /work/.fleet/next says what the next pane starts on: a session id to
-//     resume, or empty for a fresh session. Absent means "continue the
-//     current one" (/work/.fleet/current). agent-run consumes it.
+//   - tmux session "main" (slot k: "main-k") runs `claude --name <worker>`;
+//     the pane's pid is claude's.
+//   - /work/.fleet/next (slot k: /work/.fleet/slot-k/next) says what the
+//     next pane starts on: a session id to resume, or empty for a fresh
+//     session. Absent means "continue the current one" (current, beside
+//     it). agent-run consumes it. The outbox is beside it too.
 //   - ~/.claude/fleet/status.json is the latest status-line snapshot;
-//     ~/.claude/fleet/events.jsonl is the hook log.
-//   - Every process the container starts carries FLEET_AGENT=<agent>; a relay
-//     also carries FLEET_ROLE=relay.
+//     ~/.claude/fleet/events.jsonl is the hook log (slot k: both under
+//     ~/.claude/fleet/slot-k).
+//   - Every process a slot starts carries FLEET_AGENT=<worker> and
+//     FLEET_SLOT=k; a relay also carries FLEET_ROLE=relay.
 package agent
 
 import (
@@ -35,31 +40,71 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
-// Pane is the tmux session the agent's claude runs in.
+// Pane is the tmux session slot 1's claude runs in.
 const Pane = "main"
 
-// Agent is one agent's container.
+// Agent is one worker: a session slot in an agent's container.
 type Agent struct {
 	Name string
+	// Slot is the worker's slot; 0 or 1 is the agent's own.
+	Slot int
 	C    target.Container
 }
+
+// PaneOf is the tmux session a slot's claude runs in.
+func PaneOf(slot int) string {
+	if slot <= 1 {
+		return Pane
+	}
+	return Pane + "-" + strconv.Itoa(slot)
+}
+
+// SlotDir is where a slot keeps its files, under /work/.fleet and
+// ~/.claude/fleet: "" for slot 1, which keeps them there itself.
+func SlotDir(slot int) string {
+	if slot <= 1 {
+		return ""
+	}
+	return "slot-" + strconv.Itoa(slot)
+}
+
+func (a *Agent) pane() string { return PaneOf(a.Slot) }
+
+// target is the slot's pane as a tmux target, matched exactly: tmux takes
+// "main" for "main-2" when there is no session "main".
+func (a *Agent) target() string { return "=" + a.pane() + ":" }
+
+// slotArgs are what every per-slot script takes first: the pane, and the
+// slot's directory.
+func (a *Agent) slotArgs(more ...string) []string {
+	return append([]string{a.pane(), SlotDir(a.Slot)}, more...)
+}
+
+// slotDirs sets W and H, the slot's state directory and hook directory, from
+// a script's second argument.
+const slotDirs = `W="${FLEET_WORK:-/work}/.fleet${2:+/$2}"
+H="$HOME/.claude/fleet${2:+/$2}"
+`
 
 // snapshotScript prints everything one tick needs in one exec, as sections.
 // Over ssh to another host, round trips are the cost that matters.
 //
 // owners: the session registry is shared by every container on a host, so
-// `claude agents` lists every agent's sessions. A session is this
-// container's when its process carries this container's FLEET_AGENT, read
-// from /proc — the PID namespace is shared, and every agent runs as one uid.
-const snapshotScript = `P="$HOME/.claude/projects"
+// `claude agents` lists every agent's sessions. A session is this worker's
+// when its process carries the worker's FLEET_AGENT, read from /proc — the
+// PID namespace is shared, every agent runs as one uid, and an agent's slots
+// share its container.
+//
+// $1 is the slot's pane, $2 its directory (slotDirs).
+const snapshotScript = slotDirs + `P="$HOME/.claude/projects"
 echo ==pane==
-tmux list-panes -t main -F '#{pane_pid}' 2>/dev/null | head -n1
+tmux list-panes -t "=$1:" -F '#{pane_pid}' 2>/dev/null | head -n1
 echo ==boot==
 cat /proc/sys/kernel/random/boot_id 2>/dev/null
 echo ==screen==
-tmux capture-pane -p -t main 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 40
+tmux capture-pane -p -t "=$1:" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 40
 echo ==current==
-cat "${FLEET_WORK:-/work}/.fleet/current" 2>/dev/null; echo
+cat "$W/current" 2>/dev/null; echo
 echo ==agents==
 claude agents --json 2>/dev/null || echo '!!FAILED'
 echo
@@ -73,21 +118,21 @@ for f in "$HOME"/.claude/sessions/*.json; do
   echo "$p $a $r"
 done
 echo ==status==
-cat "$HOME/.claude/fleet/status.json" 2>/dev/null; echo
+cat "$H/status.json" 2>/dev/null; echo
 echo ==outbox==
-for f in "${FLEET_WORK:-/work}"/.fleet/outbox/*.json; do
+for f in "$W"/outbox/*.json; do
   [ -e "$f" ] || continue
   printf '%s ' "${f##*/}"; tr -d '\n' < "$f"; echo
 done
 echo ==transcripts==
 find "$P" -mindepth 2 -maxdepth 2 -name '*.jsonl' -printf '%s %T@ %p\n' 2>/dev/null
 echo ==events==
-if cd "$HOME/.claude/fleet" 2>/dev/null; then
+if cd "$H" 2>/dev/null; then
   [ -f events.taking ] || { [ -f events.jsonl ] && mv events.jsonl events.taking; }
   cat events.taking 2>/dev/null
 fi
 # agent-run's own events when HOME was unwritable (it cannot log under it).
-if cd "${FLEET_WORK:-/work}/.fleet" 2>/dev/null; then
+if cd "$W" 2>/dev/null; then
   [ -f events.taking ] || { [ -f events.jsonl ] && mv events.jsonl events.taking; }
   cat events.taking 2>/dev/null
 fi
@@ -101,7 +146,7 @@ func (a *Agent) Observe(ctx context.Context, now time.Time) (reconcile.Obs, erro
 	if err != nil || !cs.Running {
 		return reconcile.Obs{Now: now, ContainerFailed: cs.Failed}, err
 	}
-	out, err := a.C.Sh(ctx, snapshotScript)
+	out, err := a.C.Sh(ctx, snapshotScript, a.slotArgs()...)
 	if err != nil {
 		return reconcile.Obs{Now: now, ContainerUp: true}, err
 	}
@@ -113,7 +158,7 @@ func (a *Agent) Observe(ctx context.Context, now time.Time) (reconcile.Obs, erro
 // AckEvents drops the hook events the last Observe returned, once they are
 // stored. Until then they are returned again.
 func (a *Agent) AckEvents(ctx context.Context) error {
-	_, err := a.C.Sh(ctx, `rm -f "$HOME/.claude/fleet/events.taking" "${FLEET_WORK:-/work}/.fleet/events.taking"`)
+	_, err := a.C.Sh(ctx, slotDirs+`rm -f "$H/events.taking" "$W/events.taking"`, a.slotArgs()...)
 	return err
 }
 
@@ -226,21 +271,22 @@ func parseSnapshot(name string, b []byte, now time.Time) (reconcile.Obs, error) 
 
 // AckOutbox removes queued messages fleetd has delivered (or dropped).
 func (a *Agent) AckOutbox(ctx context.Context, files []string) error {
-	_, err := a.C.Sh(ctx, `cd "${FLEET_WORK:-/work}/.fleet/outbox" 2>/dev/null || exit 0
-for f in "$@"; do case "$f" in */*|.*) ;; *) rm -f -- "$f" ;; esac; done`, files...)
+	_, err := a.C.Sh(ctx, slotDirs+`cd "$W/outbox" 2>/dev/null || exit 0
+shift 2
+for f in "$@"; do case "$f" in */*|.*) ;; *) rm -f -- "$f" ;; esac; done`, a.slotArgs(files...)...)
 	return err
 }
 
-// next writes /work/.fleet/next and kills the pane, so agent-run starts the
-// next session. mode is resume (with a session id), fresh, or continue.
-const nextScript = `W="${FLEET_WORK:-/work}/.fleet"
-mkdir -p "$W"
-case "$1" in
-  resume) printf '%s' "$2" > "$W/next" ;;
+// next writes the slot's next and kills its pane, so agent-run starts the
+// next session. mode ($3) is resume (with a session id, $4), fresh, or
+// continue. A sibling slot's pane is not touched.
+const nextScript = slotDirs + `mkdir -p "$W"
+case "$3" in
+  resume) printf '%s' "$4" > "$W/next" ;;
   fresh) : > "$W/next" ;;
   continue) : ;; # whatever is pending in next still applies; else agent-run resumes current
 esac
-tmux kill-session -t main 2>/dev/null
+tmux kill-session -t "=$1" 2>/dev/null
 true
 `
 
@@ -251,7 +297,7 @@ func (a *Agent) Restart(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		mode = "continue"
 	}
-	_, err := a.C.Sh(ctx, nextScript, mode, sessionID)
+	_, err := a.C.Sh(ctx, nextScript, a.slotArgs(mode, sessionID)...)
 	return err
 }
 
@@ -259,7 +305,8 @@ func (a *Agent) Restart(ctx context.Context, sessionID string) error {
 // its id (Claude Code gives each command it runs CLAUDE_CODE_SESSION_ID, and a
 // job detached with setsid or nohup keeps it) and this agent's name — every
 // agent on a host shares one PID namespace. claude itself carries neither.
-// TERM, then KILL for what is left after 3 s. It prints what it ended.
+// A sibling slot's processes carry its own name. TERM, then KILL for what
+// is left after 3 s. It prints what it ended.
 const killSessionScript = `pids=""
 for d in /proc/[0-9]*; do
   e=$(tr '\0' '\n' 2>/dev/null < "$d/environ") || continue
@@ -281,29 +328,30 @@ func (a *Agent) KillSessionProcs(ctx context.Context, sid string) (int, error) {
 	return len(strings.Fields(string(out))), err
 }
 
-// Start starts the agent's container when Docker left it stopped.
+// Start starts the agent's container when Docker left it stopped. It is the
+// container's, so fleetd has slot 1 do it.
 func (a *Agent) Start(ctx context.Context) error { return a.C.Start(ctx) }
 
 // Fresh restarts the pane on a brand-new session.
 func (a *Agent) Fresh(ctx context.Context) error {
-	_, err := a.C.Sh(ctx, nextScript, "fresh", "")
+	_, err := a.C.Sh(ctx, nextScript, a.slotArgs("fresh", "")...)
 	return err
 }
 
 // Prompt types text into the pane and presses Enter: your keyboard, with your
 // authority. It is never a model-callable tool.
 func (a *Agent) Prompt(ctx context.Context, text string) error {
-	if _, err := a.C.Run(ctx, "tmux", "send-keys", "-t", Pane, "-l", "--", text); err != nil {
+	if _, err := a.C.Run(ctx, "tmux", "send-keys", "-t", a.target(), "-l", "--", text); err != nil {
 		return err
 	}
-	_, err := a.C.Run(ctx, "tmux", "send-keys", "-t", Pane, "Enter")
+	_, err := a.C.Run(ctx, "tmux", "send-keys", "-t", a.target(), "Enter")
 	return err
 }
 
 // Interrupt presses Escape in the pane, as a person would to stop the agent's
 // current turn. It types nothing.
 func (a *Agent) Interrupt(ctx context.Context) error {
-	_, err := a.C.Run(ctx, "tmux", "send-keys", "-t", Pane, "Escape")
+	_, err := a.C.Run(ctx, "tmux", "send-keys", "-t", a.target(), "Escape")
 	return err
 }
 
@@ -442,13 +490,13 @@ func clip(s string, n int) string {
 
 // Peek returns the last n lines of the pane.
 func (a *Agent) Peek(ctx context.Context, n int) (string, error) {
-	out, err := a.C.Run(ctx, "tmux", "capture-pane", "-p", "-t", Pane, "-S", strconv.Itoa(-n))
+	out, err := a.C.Run(ctx, "tmux", "capture-pane", "-p", "-t", a.target(), "-S", strconv.Itoa(-n))
 	return string(out), err
 }
 
 // AttachArgv is the command that attaches your terminal to the pane.
 func (a *Agent) AttachArgv() []string {
-	return a.C.InteractiveArgv("tmux", "attach", "-t", Pane)
+	return a.C.InteractiveArgv("tmux", "attach", "-t", "="+a.pane())
 }
 
 // StopPID ends a stray session's process.
@@ -571,32 +619,55 @@ type Worktree struct {
 	Upstream string `json:"upstream"`
 	Dirty    int    `json:"dirty"`
 	Unpushed int    `json:"unpushed"`
+	// UsedBySlot is a sibling slot whose current session's transcript names
+	// the worktree: it is that slot's work in progress, whatever git says.
+	UsedBySlot int `json:"used_by_slot,omitempty"`
 }
 
-// Safe reports whether removing the worktree loses nothing: clean, and every
-// commit is on a remote. Not its upstream: an agent pushes without -u, and a
-// worktree made from origin/main has main as its upstream though its commits
-// are on its own branch. A count git failed to give (-1) is not safe.
-func (w Worktree) Safe() bool { return w.Dirty == 0 && w.Unpushed == 0 }
+// Safe reports whether removing the worktree loses nothing: clean, every
+// commit is on a remote, and no sibling slot is working in it. Not its
+// upstream: an agent pushes without -u, and a worktree made from origin/main
+// has main as its upstream though its commits are on its own branch. A count
+// git failed to give (-1) is not safe.
+func (w Worktree) Safe() bool { return w.Dirty == 0 && w.Unpushed == 0 && w.UsedBySlot == 0 }
 
 // worktreesScript reports each worktree; dirty and unpushed are -1 when git
-// could not say.
-const worktreesScript = `for d in "${FLEET_WORK:-/work}"/wt/*/; do
+// could not say. Every slot of an agent shares /work/wt, so a worktree the
+// current session of another slot ($2 is this one's directory) has named in
+// its transcript is reported as that slot's.
+const worktreesScript = slotDirs + `B="${FLEET_WORK:-/work}/.fleet"
+others=""
+for f in "$B/current" "$B"/slot-*/current; do
+  [ -f "$f" ] && [ "$f" != "$W/current" ] || continue
+  sid=$(cat "$f" 2>/dev/null); [ -n "$sid" ] || continue
+  case "$f" in "$B/current") k=1 ;; *) k=${f%/current}; k=${k##*/slot-} ;; esac
+  for t in "$HOME"/.claude/projects/*/"$sid".jsonl; do
+    [ -f "$t" ] && others="$others$k $t
+"
+  done
+done
+for d in "${FLEET_WORK:-/work}"/wt/*/; do
   d=${d%/}
   [ -e "$d/.git" ] || continue
+  used=0
+  while read -r k t; do
+    [ -n "$t" ] && grep -qF -- "$d" "$t" 2>/dev/null && { used=$k; break; }
+  done <<EOF
+$others
+EOF
   b=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)
   u=$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
   if s=$(git -C "$d" status --porcelain 2>/dev/null); then n=$(printf '%s' "$s" | grep -c .); else n=-1; fi
   p=$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null) || p=-1
   jq -nc --arg path "$d" --arg branch "$b" --arg up "$u" --argjson dirty "${n:--1}" --argjson unpushed "${p:--1}" \
-    '{path:$path,branch:$branch,upstream:$up,dirty:$dirty,unpushed:$unpushed}'
+    --argjson used "$used" '{path:$path,branch:$branch,upstream:$up,dirty:$dirty,unpushed:$unpushed} + (if $used > 0 then {used_by_slot:$used} else {} end)'
 done
 true
 `
 
 // Worktrees lists the agent's worktrees and what removing each would lose.
 func (a *Agent) Worktrees(ctx context.Context) ([]Worktree, error) {
-	out, err := a.C.Sh(ctx, worktreesScript)
+	out, err := a.C.Sh(ctx, worktreesScript, a.slotArgs()...)
 	if err != nil {
 		return nil, err
 	}
@@ -621,7 +692,7 @@ func parseWorktrees(b []byte) ([]Worktree, error) {
 // RemoveWorktree removes a worktree that Safe said loses nothing.
 func (a *Agent) RemoveWorktree(ctx context.Context, w Worktree) error {
 	if !w.Safe() {
-		return fmt.Errorf("worktree %s has unpushed or uncommitted work; it is never removed by the fleet", w.Path)
+		return fmt.Errorf("worktree %s has unpushed or uncommitted work, or a sibling slot works in it; it is never removed by the fleet", w.Path)
 	}
 	_, err := a.C.Sh(ctx, `repo=$(dirname "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)")
 git -C "$repo" worktree unlock "$1" 2>/dev/null

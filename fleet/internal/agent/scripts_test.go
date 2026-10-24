@@ -58,10 +58,20 @@ printf '['; sep=
 for f in "$HOME"/.claude/sessions/*.json; do [ -e "$f" ] || continue; printf '%s' "$sep"; cat "$f"; sep=,; done
 printf ']\n'
 `)
+	// tmux: the real one, always on the shipped tmux.conf (the host's own
+	// /etc/tmux.conf may be an older image's).
+	realTmux, _ := exec.LookPath("tmux")
+	conf, _ := filepath.Abs("../../../packaging/fleet/tmux.conf")
+	write(l.bin+"/tmux", "#!/bin/sh\nexec "+realTmux+" -f "+conf+" \"$@\"\n")
 	t.Setenv("PATH", l.bin+":"+os.Getenv("PATH"))
 	t.Setenv("HOME", l.home)
 	t.Setenv("FLEET_WORK", l.work)
 	t.Setenv("TMUX_TMPDIR", root)
+	// Inside a tmux pane (an agent running these tests) TMUX names that
+	// pane's server, and tmux would use it over TMUX_TMPDIR: kill-server
+	// would end the agent's own session.
+	t.Setenv("TMUX", "")
+	os.Unsetenv("TMUX")
 	l.a = &Agent{Name: "agent-03", C: target.Container{Exec: []string{l.bin + "/docker"}, Name: "agent-03"}}
 	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
 	return l
@@ -71,7 +81,13 @@ printf ']\n'
 // the session registry under name.
 func (l *local) startPane(name string, env ...string) int {
 	l.t.Helper()
-	args := []string{"new-session", "-d", "-s", "main"}
+	return l.startPaneOn("main", name, "s1", env...)
+}
+
+// startPaneOn is startPane for any slot's pane and session.
+func (l *local) startPaneOn(pane, name, sid string, env ...string) int {
+	l.t.Helper()
+	args := []string{"new-session", "-d", "-s", pane}
 	for _, e := range env {
 		args = append(args, "-e", e)
 	}
@@ -79,14 +95,14 @@ func (l *local) startPane(name string, env ...string) int {
 	if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil {
 		l.t.Fatalf("tmux: %v %s", err, out)
 	}
-	out, err := exec.Command("tmux", "list-panes", "-t", "main", "-F", "#{pane_pid}").Output()
+	out, err := exec.Command("tmux", "list-panes", "-t", pane, "-F", "#{pane_pid}").Output()
 	if err != nil {
 		l.t.Fatal(err)
 	}
 	var pid int
 	fmt.Sscan(string(out), &pid)
 	time.Sleep(100 * time.Millisecond) // let the exec land so environ is the sleep's
-	l.register(pid, name, "s1")
+	l.register(pid, name, sid)
 	return pid
 }
 
@@ -392,8 +408,17 @@ func TestTmuxConfPinsSizeAndHasNoPrefix(t *testing.T) {
 	if got := size(); got != "220x50" {
 		t.Errorf("with an 80x24 client attached the window is %s, want 220x50", got)
 	}
-	if got := tm("show-options", "-gv", "window-size"); got != "manual" {
+	if got := tm("show-options", "-wv", "-t", "=main:", "window-size"); got != "manual" {
 		t.Errorf("window-size = %q", got)
+	}
+	// A second session (an agent's second slot) is pinned the same, and
+	// takes the server down with it no more.
+	tm("new-session", "-d", "-s", "main-2", "-x", "220", "-y", "50", "exec sleep 300")
+	if got := tm("display-message", "-p", "-t", "=main-2:", "#{window_width}x#{window_height}"); got != "220x50" {
+		t.Errorf("second session = %s, want 220x50", got)
+	}
+	if got := tm("show-options", "-wv", "-t", "=main-2:", "window-size"); got != "manual" {
+		t.Errorf("second session's window-size = %q", got)
 	}
 
 	// C-b is not a prefix: it, and the key after it, reach the pane.
