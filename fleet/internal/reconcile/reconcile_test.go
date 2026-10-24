@@ -935,3 +935,45 @@ func TestAnAgentSilentOnItsTaskIsAskedToReportOnce(t *testing.T) {
 		}
 	}
 }
+
+// An agent waiting on an answer to its question is not idle on its task: it
+// is neither nudged to report nor given up on, however long the wait.
+func TestAnAgentWaitingOnAnAnswerIsNotNudgedOrArchived(t *testing.T) {
+	st := State{Name: "agent-03", Task: "T1", SessionID: "s1", HookIdle: true, LastBusy: t0}
+	o := obs("idle")
+	o.TranscriptMTime = t0
+	o.Owes = true
+	o.Asking = true
+	for _, d := range []time.Duration{reportNudge, 3 * time.Hour, 30 * time.Hour} {
+		o.Now = t0.Add(d)
+		var acts []Action
+		st, acts = Decide(th(), st, o)
+		if len(acts) != 0 {
+			t.Fatalf("after %s asking: %v", d, kinds(acts))
+		}
+	}
+	// Answered: it is idle on the task again, from the answer, not the question.
+	o.Asking = false
+	o.AnsweredAt = t0.Add(30 * time.Hour)
+	o.Now = o.AnsweredAt.Add(3 * time.Hour)
+	st, acts := Decide(th(), st, o)
+	if p := has(acts, Push); p == nil || p.Event != "fleet.agent.idle_on_task" || has(acts, Rotate) != nil {
+		t.Fatalf("3h after the answer: %v", kinds(acts))
+	}
+	o.Now = o.AnsweredAt.Add(25 * time.Hour)
+	if _, acts = Decide(th(), st, o); has(acts, Rotate) == nil {
+		t.Fatalf("25h after the answer: %v", kinds(acts))
+	}
+}
+
+// Without the answer's time the stale clock would have run through the wait.
+func TestTheIdleClockCountsFromTheAnswerNotTheQuestion(t *testing.T) {
+	st := State{Name: "agent-03", Task: "T1", SessionID: "s1", HookIdle: true, LastBusy: t0}
+	o := obs("idle")
+	o.TranscriptMTime = t0
+	o.Now = t0.Add(25 * time.Hour)
+	o.AnsweredAt = t0.Add(24 * time.Hour)
+	if _, acts := Decide(th(), st, o); has(acts, Rotate) != nil {
+		t.Fatalf("archived 1h after an answer: %v", kinds(acts))
+	}
+}

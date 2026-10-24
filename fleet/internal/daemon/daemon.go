@@ -92,6 +92,9 @@ type Fleet struct {
 	soonEvery time.Duration
 	// waitEvery is how often Wait looks again.
 	waitEvery time.Duration
+	// asks are the questions agents are blocked on (fleetctl ask), by task.
+	askMu sync.Mutex
+	asks  map[string]*ask
 	// git runs git in a directory; tests replace it.
 	git func(ctx context.Context, dir string, args ...string) (string, error)
 	// Memory, when set, is the operator's long-term memory, read for callers
@@ -115,7 +118,7 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 		locks: map[string]*sync.Mutex{}, states: map[string]reconcile.State{}, Log: func(string, ...any) {},
 		waitEvery: 500 * time.Millisecond, git: runGit, relayBackoff: []time.Duration{5 * time.Second, 15 * time.Second},
 		soonEvery: 5 * time.Second, holdAfter: 75 * time.Second, sendMus: map[string]*sync.Mutex{},
-		resendFailed: map[string]time.Time{}, resendTries: map[int64]int{}}
+		resendFailed: map[string]time.Time{}, resendTries: map[int64]int{}, asks: map[string]*ask{}}
 	for _, name := range append(cfg.AgentNames(), cfg.Orchestrator.Name, "") {
 		f.sendMus[name] = &sync.Mutex{}
 	}
@@ -231,6 +234,7 @@ func (f *Fleet) Tick(ctx context.Context, now time.Time) {
 		}
 	}
 	wg.Wait()
+	f.escalate(ctx, now)
 	if now.Sub(f.lastRetain) > 24*time.Hour {
 		th := f.cfg.Thresholds
 		if err := f.db.Retain(now, ledger.Retention{EventsRaw: th.EventsRaw, QuotaRaw: th.QuotaRaw,
@@ -295,6 +299,15 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 		if o.Owes, err = f.db.Owes(old.Task); err != nil {
 			f.Log("ledger: owes %s: %v", old.Task, err)
 		}
+		if o.Asking, o.AnsweredAt, err = f.db.Asking(old.Task); err != nil {
+			f.Log("ledger: asking %s: %v", old.Task, err)
+		}
+		// An ask blocked on the answer holds its agent's turn open: asking, even
+		// before the ledger has the question.
+		f.askMu.Lock()
+		_, blocked := f.asks[old.Task]
+		f.askMu.Unlock()
+		o.Asking = o.Asking || blocked
 	}
 	next, acts := reconcile.Decide(f.cfg.Thresholds, old, o)
 	if !old.UnreachableSince.IsZero() && next.UnreachableSince.IsZero() {
@@ -344,13 +357,13 @@ func (f *Fleet) deliverOutbox(ctx context.Context, name string, b Box, msgs []re
 		if at.IsZero() || at.After(now) {
 			at = now
 		}
-		err := f.send(ctx, name, m.To, m.Text, "", at)
+		err := f.deliverMsg(ctx, name, m.To, m.Text, "", m.Kind, at, true)
 		var held *Held
 		f.event(name, "fleet.outbox", "", map[string]any{"to": m.To, "queued_at": at, "delivered": err == nil, "held": errors.As(err, &held)})
 		switch {
 		case err == nil, held != nil: // held: on the ledger now, and fleetd's to send
 			gone = append(gone, m.File)
-		case m.To != f.cfg.Orchestrator.Name && !ledger.IsPerson(m.To) && f.known(m.To) != nil, now.Sub(at) > outboxGiveUp:
+		case m.To != f.cfg.Orchestrator.Name && !f.inbox(m.To) && f.known(m.To) != nil, now.Sub(at) > outboxGiveUp:
 			gone = append(gone, m.File)
 			text := fmt.Sprintf("%s's message to %s, queued while fleetd was away, could not be delivered: %v", name, m.To, err)
 			f.Log("%s", text)
@@ -801,8 +814,33 @@ func (f *Fleet) Enable(name string) error {
 // Tell relays a message across hosts: a throwaway session in the receiver's
 // container delivers it with SendMessage, so it arrives as a peer message.
 func (f *Fleet) Tell(ctx context.Context, from, to, text string, now time.Time) error {
-	return f.send(ctx, from, to, text, "", now)
+	return f.TellKind(ctx, from, to, text, "", now)
 }
+
+// TellKind is Tell of a message of a kind (ledger.KindQuestion, KindProgress;
+// "" is a report).
+func (f *Fleet) TellKind(ctx context.Context, from, to, text, kind string, now time.Time) error {
+	if !ledger.ValidKind(kind) {
+		return fmt.Errorf("%w: kind %q: want report, question or progress", ErrBadInput, kind)
+	}
+	return f.deliverMsg(ctx, from, to, text, "", kind, now, true)
+}
+
+// inbox reports whether messages to a name are filed on the ledger, for it
+// to read, instead of being relayed: a person, or a session that ran a task.
+func (f *Fleet) inbox(name string) bool {
+	if ledger.IsPerson(name) {
+		return true
+	}
+	if _, ok := f.cfg.Agents[name]; ok || name == f.cfg.Orchestrator.Name {
+		return false
+	}
+	return f.db.IsSession(name)
+}
+
+// noTask files a message under no task, whoever sent it: what fleetd says on
+// an agent's behalf (an escalated question) is not the agent's report.
+const noTask = "-"
 
 // lateWindow is how long after a task closed its agent's messages still
 // belong to it.
@@ -841,7 +879,7 @@ func (h *Held) Unwrap() error { return h.Cause }
 // agent's own message is filed under its task. A message that does not get
 // through is an error: a brief's run is placed again by its caller.
 func (f *Fleet) tell(ctx context.Context, from, to, text, task string, now time.Time) error {
-	return f.deliverMsg(ctx, from, to, text, task, now, false)
+	return f.deliverMsg(ctx, from, to, text, task, "", now, false)
 }
 
 // send is tell for a message nobody would send again: a follow-up, a cancel
@@ -849,7 +887,7 @@ func (f *Fleet) tell(ctx context.Context, from, to, text, task string, now time.
 // host does not answer, it is down, or the relay did not get through in
 // holdAfter — it is held (*Held) and goes out when the receiver is back.
 func (f *Fleet) send(ctx context.Context, from, to, text, task string, now time.Time) error {
-	return f.deliverMsg(ctx, from, to, text, task, now, true)
+	return f.deliverMsg(ctx, from, to, text, task, "", now, true)
 }
 
 // unable says why a receiver cannot take a message now, without trying: its
@@ -868,25 +906,35 @@ func (f *Fleet) unable(to string) error {
 	return nil
 }
 
-func (f *Fleet) deliverMsg(ctx context.Context, from, to, text, task string, now time.Time, hold bool) error {
+func (f *Fleet) deliverMsg(ctx context.Context, from, to, text, task, kind string, now time.Time, hold bool) error {
 	// The receiver is told who sent it and replies there, so the sender must
 	// be someone a reply can reach (or a person, who reads the ledger).
-	if from != f.cfg.Orchestrator.Name && !ledger.IsPerson(from) {
+	if from != f.cfg.Orchestrator.Name && !f.inbox(from) {
 		if err := f.known(from); err != nil {
 			return fmt.Errorf("unknown sender: %w", err)
 		}
 	}
 	// What an agent writes while it has a task is filed under that task (done
-	// does not clear it: a late report still belongs). Nobody else's does.
+	// does not clear it: a late report still belongs). Nobody else's does,
+	// and neither does a word to another agent that is not the assigner: that
+	// is a peer's chat, not a report on the task.
 	if _, ok := f.cfg.Agents[from]; ok && task == "" {
 		task = f.reportTask(from, now)
+		if _, toAgent := f.cfg.Agents[to]; toAgent && task != "" {
+			if t, err := f.db.Task(task); err != nil || t.Assigner != to {
+				task = ""
+			}
+		}
 	}
-	// A person's inbox: stored, read with Inbox (the operator's) and Wait.
-	if ledger.IsPerson(to) {
-		if ledger.IsPerson(from) {
+	if task == noTask {
+		task = ""
+	}
+	// A person's or a session's inbox: stored, read with Inbox and Wait.
+	if f.inbox(to) {
+		if f.inbox(from) && ledger.IsPerson(from) && ledger.IsPerson(to) {
 			return fmt.Errorf("%s does not message %s through the fleet: people read the ledger", from, to)
 		}
-		if err := f.db.AddRelay(ledger.Relay{From: from, To: to, Task: task, Text: text, At: now, Delivered: true}); err != nil {
+		if err := f.db.AddRelay(ledger.Relay{From: from, To: to, Task: task, Text: text, Kind: kind, At: now, Delivered: true}); err != nil {
 			return err
 		}
 		f.event(from, "fleet.report", "", map[string]any{"to": to, "size": len(text)})
@@ -899,7 +947,7 @@ func (f *Fleet) deliverMsg(ctx context.Context, from, to, text, task string, now
 	}
 	// On the ledger before it is sent: a fleetd that dies sending it leaves it
 	// there, and the next one sends it again (resend).
-	id, berr := f.db.BeginRelay(ledger.Relay{From: from, To: to, Task: task, Text: text, At: now})
+	id, berr := f.db.BeginRelay(ledger.Relay{From: from, To: to, Task: task, Text: text, Kind: kind, At: now})
 	if berr != nil {
 		f.Log("ledger: relay to %s: %v", to, berr)
 	}
@@ -963,6 +1011,11 @@ func (f *Fleet) relay(ctx context.Context, b Box, to, from, text string) error {
 // after the given id.
 func (f *Fleet) Inbox(after int64) ([]ledger.Relay, error) { return f.db.Inbox(after) }
 
+// InboxOf is Inbox of a session's, or a person's: what was sent to them.
+func (f *Fleet) InboxOf(to string, after int64) ([]ledger.Relay, error) {
+	return f.db.InboxOf(to, after)
+}
+
 // WaitResult is why a Wait returned: "message" (the agent wrote to the
 // operator), "closed" (its task closed), "phase" (it went down, cooling or
 // disabled) or "timeout" (the context ended).
@@ -979,6 +1032,21 @@ type WaitResult struct {
 // message is anything filed under the task after the relay id after, whoever
 // it was sent to.
 func (f *Fleet) Wait(ctx context.Context, agent, task string, after int64) (WaitResult, error) {
+	return f.wait(ctx, agent, task, after, "")
+}
+
+// WaitNew is Wait for the messages a reader — a session, by name — has not
+// been handed yet: it returns the oldest message filed under the task after
+// the reader's cursor, and moves the cursor past it. Called again it returns
+// the next one, and never the same twice. The task is required.
+func (f *Fleet) WaitNew(ctx context.Context, agent, task, reader string) (WaitResult, error) {
+	if task == "" || reader == "" {
+		return WaitResult{}, fmt.Errorf("%w: wait --new needs a task and a reader", ErrBadInput)
+	}
+	return f.wait(ctx, agent, task, 0, reader)
+}
+
+func (f *Fleet) wait(ctx context.Context, agent, task string, after int64, reader string) (WaitResult, error) {
 	if agent == "" && task == "" {
 		return WaitResult{}, fmt.Errorf("wait needs an agent or a task")
 	}
@@ -995,7 +1063,12 @@ func (f *Fleet) Wait(ctx context.Context, agent, task string, after int64) (Wait
 	if err := f.known(agent); err != nil {
 		return WaitResult{}, err
 	}
-	if task != "" && after == 0 {
+	if reader != "" {
+		var err error
+		if after, err = f.db.Cursor(task, reader); err != nil {
+			return WaitResult{}, err
+		}
+	} else if task != "" && after == 0 {
 		// "The answer to my latest instruction": what the agent wrote before
 		// the last brief or follow-up answered something older.
 		var err error
@@ -1018,6 +1091,11 @@ func (f *Fleet) Wait(ctx context.Context, agent, task string, after int64) (Wait
 		}
 		for i := range msgs {
 			if task != "" || msgs[i].From == agent {
+				if reader != "" {
+					if err := f.db.SetCursor(task, reader, msgs[i].ID); err != nil {
+						return WaitResult{}, err
+					}
+				}
 				return WaitResult{Reason: "message", Message: &msgs[i]}, nil
 			}
 		}

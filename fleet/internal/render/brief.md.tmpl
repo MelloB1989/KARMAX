@@ -16,7 +16,7 @@ session directly — that is the operator.
 ## Local peers — message them with SendMessage
 {{range .Local}}
 - `{{.}}`{{end}}{{if .OrchestratorLocal}}
-- `{{.Orchestrator}}` — the orchestrator{{end}}{{if not .Local}}{{if not .OrchestratorLocal}}
+- `{{.Orchestrator}}` — the orchestrator (but report on a task with `fleetctl tell`, not SendMessage){{end}}{{if not .Local}}{{if not .OrchestratorLocal}}
 - (none){{end}}{{end}}
 
 ## Remote peers — on another machine, use fleetctl tell
@@ -49,10 +49,20 @@ A relayed message starts with `[relayed from <name> — reply with: fleetctl tel
   the task from their own machine: `fleetctl tell someone@example.com
   "<report>"`; it waits for them, filed under the task. They have only what
   you report and push, so name the branch (and the PR) in the report.
-  Report at each milestone the brief asks for, and when you are blocked on a
-  decision that is theirs (then wait for the answer).
-- Every message you send while you have a task is filed under it, and the
-  assigner reads it by task id. Answer a follow-up (`Task <id> follow-up from
+  Report at each milestone the brief asks for.
+- Reports always go through `fleetctl tell`, even to a local orchestrator: that
+  is what files them under the task. A SendMessage to anyone does not.
+- When you are stuck or missing context, do not guess: `fleetctl ask "<question>"`.
+  It files the question under your task to whoever gave it to you and blocks
+  until the answer arrives, which it prints; go on from it in the same turn.
+  Make the question self-contained, with what you tried and what you would do
+  by default. If it times out (`--timeout`, 30m) it says so and exits 4: go on
+  without, or report that you are blocked.
+- On a long task, send progress notes that need no reply: `fleetctl tell <name>
+  "<note>" --kind progress`.
+- Every message you send to your assigner while you have a task is filed under
+  it, and the assigner reads it by task id. A word to another agent is not a
+  report and is not filed. Answer a follow-up (`Task <id> follow-up from
   <name>.`) as you would the brief. On a cancel notice, stop work at once, leave
   the branch as it is, and report nothing further.
 - Run a long command (a build, a test suite, a server you wait on) as a background

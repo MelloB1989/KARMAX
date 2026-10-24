@@ -31,12 +31,16 @@ func (f *Fleet) openTask(id string) (*ledger.Task, error) {
 	return t, nil
 }
 
-// Followup relays more instructions, or an answer to its question, to the
-// agent working a task. The task must be open.
+// Followup relays more instructions to the agent working a task. The task
+// must be open. When the agent is blocked on a question (fleetctl ask) the
+// text is its answer instead: the output of its ask, not a new message.
 func (f *Fleet) Followup(ctx context.Context, task, from, text string, now time.Time) error {
 	t, err := f.openTask(task)
 	if err != nil {
 		return err
+	}
+	if f.answerBlocked(task, from, t.Agent, text, now) {
+		return nil
 	}
 	return f.send(ctx, from, t.Agent, fmt.Sprintf("Task %s follow-up from %s. %s", task, from, text), task, now)
 }

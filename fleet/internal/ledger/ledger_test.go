@@ -640,3 +640,56 @@ func TestLatestTaskOfAnAgent(t *testing.T) {
 		t.Fatalf("latest = %+v", got)
 	}
 }
+
+func TestAskingSaysWhetherAQuestionIsOutAndWhenItWasAnswered(t *testing.T) {
+	db := open(t)
+	if err := db.OpenTask("T1", "agent-01", "operator", t0); err != nil {
+		t.Fatal(err)
+	}
+	state := func() (bool, time.Time) {
+		t.Helper()
+		a, at, err := db.Asking("T1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a, at
+	}
+	if a, at := state(); a || !at.IsZero() {
+		t.Fatalf("no question: %v %v", a, at)
+	}
+	_ = db.AddRelay(Relay{From: "agent-01", To: "operator", Task: "T1", Text: "which?", Kind: KindQuestion, At: t0.Add(time.Minute), Delivered: true})
+	if a, _ := state(); !a {
+		t.Fatal("a question with nothing after it is not out")
+	}
+	_ = db.AddRelay(Relay{From: "operator", To: "agent-01", Task: "T1", Text: "this", Kind: KindAnswer, At: t0.Add(5 * time.Minute), Delivered: true})
+	if a, at := state(); a || !at.Equal(t0.Add(5*time.Minute)) {
+		t.Fatalf("answered: %v %v", a, at)
+	}
+	// A report that is not a question is no question.
+	_ = db.AddRelay(Relay{From: "agent-01", To: "operator", Task: "T1", Text: "done", At: t0.Add(9 * time.Minute), Delivered: true})
+	if a, _ := state(); a {
+		t.Fatal("still asking after it reported")
+	}
+}
+
+func TestSessionsAreInboxesAndTheirNamesBelongToTheirPerson(t *testing.T) {
+	db := open(t)
+	_ = db.OpenTask("T1", "agent-01", "review-1", time.Now())
+	_ = db.OpenTask("T2", "agent-01", "ram@example.com/a", time.Now())
+	if !db.IsSession("review-1") || db.IsSession("review-2") || db.IsSession("operator") || db.IsSession("ram@example.com/a") {
+		t.Fatal("IsSession")
+	}
+	if OwnerOf("ram@example.com/a") != "ram@example.com" || OwnerOf("review-1") != "review-1" {
+		t.Fatal("OwnerOf")
+	}
+	if ts, _ := db.TasksBy(false, "", "ram@example.com", 0); len(ts) != 1 {
+		t.Fatalf("tasks of the person = %+v", ts)
+	}
+	if err := db.SetCursor("T1", "me", 7); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.SetCursor("T1", "me", 3)
+	if c, _ := db.Cursor("T1", "me"); c != 7 {
+		t.Fatalf("cursor went back: %d", c)
+	}
+}
