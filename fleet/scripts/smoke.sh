@@ -9,37 +9,16 @@ R=$(mktemp -d); B=$R/fleetbin
 go build -o "$B/" ./cmd/... || exit 1
 mkdir -p "$R"/{bin,home/.claude/sessions,home/.claude/fleet,home/.claude/projects/-work,work,state}
 chmod 700 "$R/state"
-cat > "$R/bin/docker" <<'EOF'
-#!/bin/bash
-case "$1" in
-  inspect) echo true ;;
-  stats) echo '{"Name":"agent-01","CPUPerc":"1.00%","MemUsage":"100MiB / 15GiB","MemPerc":"0.6%"}' ;;
-  exec) shift; env=(); while [[ "$1" == -* ]]; do if [[ "$1" == -e ]]; then env+=("$2"); shift; fi; shift; done; shift; exec env "${env[@]}" "$@" ;;
-esac
-EOF
-cat > "$R/bin/claude" <<'EOF'
-#!/bin/bash
-if [ "$1" = agents ]; then
-  printf '['; sep=; for f in "$HOME"/.claude/sessions/*.json; do [ -e "$f" ] || continue; printf '%s' "$sep"; cat "$f"; sep=,; done; printf ']\n'; exit 0
-fi
-if [ "$1" = -p ]; then
-  echo "role=$FLEET_ROLE args=$*" >> "$RELAY_LOG"; p=$(cat); printf '%s\n' "$p" >> "$RELAY_LOG"
-  # A relay is delivered when its SendMessage says so (stream-json).
-  to=$(printf '%s' "$p" | sed -n 's/.*session named "\([^"]*\)".*/\1/p' | head -n1)
-  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"SendMessage","input":{"to":"%s"}}]}}\n' "$to"
-  printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"{\\"success\\":true}"}]}}\n'
-  exit 0
-fi
-EOF
-chmod +x "$R/bin/"*
+. scripts/smoke-lib.sh; smoke_fakes "$R"
+API=127.0.0.1:$(free_port) OTLP=127.0.0.1:$(free_port)
 export TMUX_TMPDIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fl.XXXX")  # sockets need a short path
 export HOME=$R/home FLEET_WORK=$R/work PATH=$R/bin:$PATH RELAY_LOG=$R/relay.log
 cat > "$R/state/fleet.yaml" <<EOF
 home: $R/home
 env_file: $R/env
 state_dir: $R/state
-listen: 127.0.0.1:17878
-otlp_listen: 127.0.0.1:17318
+listen: $API
+otlp_listen: $OTLP
 hosts: {kali: {exec: [$R/bin/docker]}}
 orchestrator: {host: kali, token_env: CLAUDE_TOKEN_KARMAX}
 agents:
@@ -71,12 +50,12 @@ echo "== next file: [$(cat "$R/work/.fleet/next" 2>&1)] pane alive: $(tmux has-s
 echo "== transcript left in container: $(ls "$HOME/.claude/projects/-work/")"
 echo "== archive ls"; "$B/fleetctl" archive ls
 echo "== history"; "$B/fleetctl" history agent-01
-echo "== tell"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" tell agent-01 "please rebase" --from karmax; head -3 "$R/relay.log"
-echo "== an unknown sender is refused:"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" tell agent-01 "x" --from mallory
-echo "== relay token cannot assign:"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" assign agent-01 --task X
+echo "== tell"; FLEET_TOKEN=relay FLEETD_URL=http://$API "$B/fleetctl" tell agent-01 "please rebase" --from karmax; head -3 "$R/relay.log"
+echo "== an unknown sender is refused:"; FLEET_TOKEN=relay FLEETD_URL=http://$API "$B/fleetctl" tell agent-01 "x" --from mallory
+echo "== relay token cannot assign:"; FLEET_TOKEN=relay FLEETD_URL=http://$API "$B/fleetctl" assign agent-01 --task X
 echo "== otlp"; curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer relay' -H 'Content-Type: application/json' \
   -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"fleet.agent","value":{"stringValue":"agent-01"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"'$(date +%s)'000000000","attributes":[{"key":"event.name","value":{"stringValue":"api_request"}},{"key":"model","value":{"stringValue":"claude-sonnet"}},{"key":"output_tokens","value":{"intValue":"500"}},{"key":"cost_usd","value":{"doubleValue":0.02}}]}]}]}]}' \
-  http://127.0.0.1:17318/v1/logs
+  http://$OTLP/v1/logs
 echo "== usage"; "$B/fleetctl" usage
 echo "== events"; "$B/fleetctl" events agent-01 --since 1000d | head -20
 echo "== quota"; "$B/fleetctl" quota
