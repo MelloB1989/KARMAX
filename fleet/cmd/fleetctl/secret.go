@@ -91,14 +91,18 @@ func secretCmd(args []string) error {
 		return post("/v1/secrets/"+url.PathEscape(pos[0])+"/"+sub, body)
 
 	case "rm":
-		if err := need(args, 1, "secret rm <name>"); err != nil {
+		_, pos, err := flags("secret rm", args, func(*flag.FlagSet) {})
+		if err != nil {
+			return err
+		}
+		if err := need(pos, 1, "secret rm <name>"); err != nil {
 			return err
 		}
 		c, err := newClient()
 		if err != nil {
 			return err
 		}
-		if err := c.do("DELETE", "/v1/secrets/"+url.PathEscape(args[0]), nil, nil); err != nil {
+		if err := c.do("DELETE", "/v1/secrets/"+url.PathEscape(pos[0]), nil, nil); err != nil {
 			return err
 		}
 		fmt.Println("ok")

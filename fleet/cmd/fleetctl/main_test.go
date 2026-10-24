@@ -377,8 +377,8 @@ func TestInboxFollowSurvivesAFleetdRestartAndResumesFromTheLastID(t *testing.T) 
 	if !strings.Contains(string(out), "first") || !strings.Contains(string(out), "second") || strings.Count(string(out), "first") != 1 {
 		t.Errorf("messages:\n%s", out)
 	}
-	if got := strings.Count(errOut.String(), "fleetd unreachable, retrying\n"); got != 2 {
-		t.Errorf("stderr = %q, want one line per failed poll (2)", errOut.String())
+	if got := strings.Count(errOut.String(), "fleetd unreachable, retrying\n"); got != 1 {
+		t.Errorf("stderr = %q, want the notice once for the whole outage", errOut.String())
 	}
 	if len(sleeps) < 4 || sleeps[1] != time.Second || sleeps[2] != 2*time.Second || sleeps[3] != 2*time.Second {
 		t.Errorf("sleeps = %v: want poll, 1s, 2s back-off, then the poll interval again", sleeps)

@@ -158,7 +158,7 @@ func run(cfgPath string, once bool) error {
 		return nil
 	}
 
-	api := server.Handler(f, tokens, orchQuota.Load)
+	api, drain := server.DrainingHandler(f, tokens, orchQuota.Load)
 	var servers []*http.Server
 	serve := func(addr string, h http.Handler, what string, lc net.ListenConfig) {
 		if addr == "" {
@@ -194,6 +194,9 @@ func run(cfgPath string, once bool) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// Long polls end with a 503 first, so none is answered from a
+			// ledger that is closing; their callers wait for fleetd to be back.
+			drain()
 			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			for _, s := range servers {
 				_ = s.Shutdown(sctx)
