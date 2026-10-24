@@ -245,8 +245,57 @@ if has "$usage" "secret put"; then # v2-secrets-2
 else
   echo "SKIP secrets: fleetctl secret is not in this build (v2-secrets-2)"
 fi
-if has "$usage" "  cp " || has "$usage" "  sync "; then # v2-files
-  echo "SKIP files: fleetctl cp/sync is in this build but has no check here yet: add it"
+if has "$usage" "  cp "; then # v2-files
+  # The fake docker runs the container's commands on this machine with
+  # FLEET_WORK set, so /work in a path is $R/work here.
+  S=$R/filesrc; mkdir -p "$S/proj/sub"
+  printf '#!/bin/sh\necho hi\n' > "$S/proj/run.sh"; chmod 755 "$S/proj/run.sh"
+  echo secret > "$S/proj/keep.txt"; chmod 600 "$S/proj/keep.txt"
+  echo deep > "$S/proj/sub/a.txt"; ln -s sub/a.txt "$S/proj/link"
+  out=$(op cp "$S/proj" agent-01 2>&1)
+  check "cp puts a directory in the agent's inbox" "got: $out" test -x "$R/work/inbox/proj/run.sh" -a "$(cat "$R/work/inbox/proj/sub/a.txt" 2>/dev/null)" = deep
+  check "cp keeps modes and relative links" "modes: $(stat -c %a "$R/work/inbox/proj/keep.txt" 2>&1) link: $(readlink "$R/work/inbox/proj/link" 2>&1)" \
+    bash -c 'test "$(stat -c %a "$1/keep.txt")" = 600 && test "$(readlink "$1/link")" = sub/a.txt' _ "$R/work/inbox/proj"
+  mkdir -p "$R/back"; out=$(op cp agent-01:/work/inbox/proj "$R/back" 2>&1)
+  check "cp brings a directory back" "got: $out" test "$(cat "$R/back/proj/sub/a.txt" 2>/dev/null)" = deep -a "$(stat -c %a "$R/back/proj/run.sh" 2>/dev/null)" = 755
+  out=$(op cp "$S/proj" agent-01:/etc 2>&1); rc=$?
+  check "cp refuses a destination outside /work and /tmp" "exit $rc: $out" bash -c 'test $1 != 0 && grep -q "/work or /tmp" <<<"$2"' _ $rc "$out"
+  out=$(op cp agent-01:/etc/hosts "$R/back" 2>&1); rc=$?
+  check "cp refuses to read outside /work and /tmp" "exit $rc: $out" test $rc != 0
+  ln -s /etc/hosts "$S/proj/out"
+  out=$(op cp "$S/proj" agent-01:/tmp/smoke-files 2>&1); rc=$?
+  check "cp refuses a tree with a symlink out of it" "exit $rc: $out" bash -c 'test $1 != 0 && grep -q out <<<"$2"' _ $rc "$out"
+  rm "$S/proj/out"
+  out=$(agent cp "$S/proj" agent-01 2>&1); rc=$?
+  check "an agent may not copy files" "exit $rc: $out" test $rc != 0
+  out=$(member cp "$S/proj" agent-01 2>&1); rc=$?
+  check "a member may not copy to an agent that is not on their task" "exit $rc: $out" bash -c 'test $1 != 0 && grep -q "not working on a task of yours" <<<"$2"' _ $rc "$out"
+  out=$(consoleTok cp "$S/proj" agent-01 2>&1); rc=$?
+  check "the console token may not copy files" "exit $rc: $out" test $rc != 0
+  out=$(op run --attach "$S/proj" --agent agent-01 --task T-FILES "Read the attached files." 2>&1)
+  check "run --attach puts the files in the task's inbox" "got: $out" test "$(cat "$R/work/inbox/T-FILES/proj/sub/a.txt" 2>/dev/null)" = deep
+  sleep 1
+  check "the brief names the inbox" "relay log: $(tail -n 3 "$RELAY_LOG")" grep -q "Files sent with it are in /work/inbox/T-FILES/" "$RELAY_LOG"
+  op done agent-01 --task T-FILES --keep-session >/dev/null 2>&1
+  out=$(op rsh agent-01 sh -c 'cat; echo err >&2; exit 3' <<<"in" 2>"$R/rsh.err"); rc=$?
+  check "rsh streams stdin and stdout and returns the exit status" "exit $rc: $out" test $rc = 3 -a "$out" = in
+  check "rsh shows the command's stderr" "stderr: $(cat "$R/rsh.err")" grep -q err "$R/rsh.err"
+  out=$(op cp "$S/proj" agent-02:2:/work/inbox/slot 2>&1)
+  check "cp reaches a slot (agent-02:2) in its agent's /work" "got: $out" test "$(cat "$R/work/inbox/slot/proj/sub/a.txt" 2>/dev/null)" = deep
+  out=$(op cp agent-02:2:/work/inbox/slot/proj "$R/back2" 2>&1)
+  check "cp brings a file back from a slot" "got: $out" test "$(cat "$R/back2/proj/sub/a.txt" 2>/dev/null)" = deep
+  out=$(member rsh agent-01 true 2>&1); rc=$?
+  check "a member may not rsh" "exit $rc: $out" test $rc != 0
+  if command -v rsync >/dev/null; then
+    mkdir -p "$R/syncback"; out=$(op sync "$S/proj/" agent-01:/work/synced 2>&1)
+    check "sync copies a directory in by rsync" "got: $out" test "$(cat "$R/work/synced/sub/a.txt" 2>/dev/null)" = deep
+    out=$(op sync agent-01:/work/synced/ "$R/syncback" 2>&1)
+    check "sync copies it back" "got: $out" test "$(cat "$R/syncback/sub/a.txt" 2>/dev/null)" = deep
+    out=$(op sync "$S/proj/" agent-01:/etc 2>&1); rc=$?
+    check "sync refuses a destination outside /work and /tmp" "exit $rc: $out" test $rc != 0
+  else
+    echo "SKIP sync: rsync is not installed here"
+  fi
 else
   echo "SKIP files: fleetctl cp/sync is not in this build (v2-files)"
 fi

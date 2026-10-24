@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -22,6 +23,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
+	"github.com/MelloB1989/karmax/fleet/internal/target"
 	"github.com/MelloB1989/karmax/fleet/internal/vault"
 )
 
@@ -48,6 +50,12 @@ type Box interface {
 	AckOutbox(ctx context.Context, files []string) error
 	// KillSessionProcs ends what a session left running, once it is gone.
 	KillSessionProcs(ctx context.Context, sid string) (int, error)
+	// PutFiles unpacks a tar stream into a directory under /work or /tmp.
+	PutFiles(ctx context.Context, dir string, tarball io.Reader) error
+	// GetFiles writes a tar of a path under /work or /tmp.
+	GetFiles(ctx context.Context, path string, w io.Writer) error
+	// Rsh runs a command in the container, streaming stdin and stdout.
+	Rsh(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) (target.Result, error)
 }
 
 // Pusher tells the orchestrator about a state change.

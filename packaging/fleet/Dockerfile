@@ -34,7 +34,7 @@ ARG HOME_DIR=/home/op
 ARG USER_NAME=op
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git tini tmux jq ripgrep procps less openssh-client gnupg unzip xz-utils zstd \
+      ca-certificates curl git tini tmux jq ripgrep rsync procps less openssh-client gnupg unzip xz-utils zstd \
       python3 python3-venv python3-pip build-essential make locales \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \

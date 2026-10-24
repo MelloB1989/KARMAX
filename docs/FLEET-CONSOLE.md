@@ -203,6 +203,10 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/done` | full, member | `fleetctl done` | close a task (`agent` may be left out when `task` is named); archives and rotates the session unless `keep_session` |
 | `POST /v1/tasks/{id}/followup` | full, member | `fleetctl followup` | relay more instructions to the agent on an open task (409 when closed) |
 | `POST /v1/tasks/{id}/cancel` | full, member | `fleetctl cancel` | interrupt the agent, tell it, close the task as `cancelled` (409 when closed) |
+| `POST /v1/tasks/{id}/brief` | full, member | `fleetctl run --attach` | deliver the brief of a task placed with `attach`, naming its inbox; run it only once the files are in |
+| `PUT /v1/agents/{agent}/files` | full, member | `fleetctl cp <local>… <agent>[:<dir>]` | a tar stream, unpacked by `tar -x` in the container under `path` (default `/work/inbox`; only under `/work` or `/tmp`); checked entry by entry, never held; 413 over `files.max_bytes`; a member only on an agent at work on their open task |
+| `GET /v1/agents/{agent}/files` | full, member | `fleetctl cp <agent>:<path> [<localdir>]` | a tar stream of `path` (under `/work` or `/tmp`), checked on the way out; a break after the status is sent ends the stream with an `X-Fleet-Error` trailer |
+| `POST /v1/agents/{agent}/rsh` | full | `fleetctl rsh`, `fleetctl sync` | runs the `arg` query values as a command in the container, the request body as its stdin and its stdout as the response; the exit status and stderr tail come as trailers (`X-Fleet-Exit`, `X-Fleet-Stderr`) |
 | `POST /v1/rotate` | full, console | `fleetctl rotate` | archive the session and start fresh; `dry_run` replies with what it would close and when |
 | `GET /v1/agents/{agent}/model` | full, console | `fleetctl model` | the agent's configured default, its override, its open task's model and the live model |
 | `POST /v1/agents/{agent}/model` | full | `fleetctl model` | `{model}` sets a persistent override, `{reset: true}` clears it; fleetd types `/model` into the idle session. Members may not change models |
