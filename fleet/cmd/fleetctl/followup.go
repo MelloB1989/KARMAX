@@ -2,20 +2,13 @@ package main
 
 import (
 	"flag"
-	"os"
 	"strings"
 )
 
 // followupCmd is `followup <task> <text…>` and `cancel <task>`: each one
 // POST to the task's route, with the sender and nothing else decided here.
 func followupCmd(cmd string, args []string) error {
-	from := os.Getenv("FLEET_NAME") // set in every fleet container
-	if from == "" {
-		from = os.Getenv("FLEET_AGENT")
-	}
-	if from == "" {
-		from = "operator"
-	}
+	from := sessionName()
 	var reason string
 	_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
 		fs.StringVar(&from, "from", from, "")

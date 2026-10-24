@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
 )
 
@@ -235,7 +236,7 @@ func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 		}
 	}
 	if in.Limit > 0 {
-		open, err := f.db.TasksBy(true, "", in.From, 0)
+		open, err := f.db.TasksBy(true, "", ledger.OwnerOf(in.From), 0) // all their sessions' count
 		if err != nil {
 			return RunReply{}, err
 		}

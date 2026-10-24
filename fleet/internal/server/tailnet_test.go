@@ -131,7 +131,7 @@ func TestAMemberSeesAndActsOnTheirOwnTasksOnly(t *testing.T) {
 		{"GET", "/v1/tasks/T-missing", "", 404},
 		{"POST", "/v1/tasks/T-ram/followup", `{"from":"operator","text":"add a test"}`, 200},
 		{"POST", "/v1/tasks/T1/followup", `{"text":"x"}`, 403},
-		{"POST", "/v1/tasks/T-ram/cancel", `{"from":"karmax","reason":"done elsewhere"}`, 200},
+		{"POST", "/v1/tasks/T-ram/cancel", `{"from":"eve@example.com","reason":"done elsewhere"}`, 200},
 		{"POST", "/v1/tasks/T1/cancel", `{}`, 403},
 		{"POST", "/v1/done", `{"task":"T-ram","agent":"agent-07","outcome":"merged"}`, 200},
 		{"POST", "/v1/done", `{"agent":"agent-03"}`, 400},

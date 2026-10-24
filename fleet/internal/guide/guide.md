@@ -62,6 +62,26 @@ Not good: tell the agent what to fix, then wait again:
 `wait --task` always waits for a reply to your latest message on the task (the brief, or the last
 follow-up); a reply that came before you started waiting is returned at once.
 
+### Wait in the background
+
+Do not sit blocked on `wait`. Start it as a background command of your own session, so your harness
+notifies you the moment the agent reports or asks, and carry on meanwhile:
+
+    fleetctl wait --task 20261012-fix-the-redirect-after-3f2a --new     # run in the background
+
+When it ends, its output is the agent's message (`[question]`, `[progress]` or a plain report) and, last,
+the command for the next wait. Read the message, act on it, then start that next wait in the background.
+`--new` returns only messages you have not been handed yet, tracked by fleetd under your session name, so
+re-arming it never replays an old reply; `--after <id>` (the id the output tells you) does the same by hand.
+Without either, a wait returns the latest reply to your last message again and again until you send
+something. A wait that ends on `closed` or `timeout` needs no next one (after `timeout`, run it again).
+
+Your session has a name, and replies, reports and questions for you are filed under it. By default it is
+`cc-` and the start of your Claude Code session id, stable for the session. To choose one, set
+`FLEET_SESSION=review-1` in the environment fleetctl runs in, or pass `--from review-1` to `run`,
+`followup` and `answer`, and `--as review-1` to `wait --new` and `inbox`. `fleetctl inbox` shows what was
+sent to your name.
+
 `done --task` archives the agent's session and puts it back on standby, fresh. One task, one session.
 
 ## Fan-out
@@ -80,8 +100,16 @@ Agents prefer the one that last worked in that repo, then the least quota used, 
 
 ## Questions, follow-ups, cancel
 
-An agent that is blocked on a decision sends you a report like any other: `wait` returns it and `result`
-lists it. Answer with `fleetctl followup <task> "<answer>"`. A follow-up needs an open task. If the
+An agent that is stuck or missing context asks you with `fleetctl ask`, which blocks it until you answer.
+Your background `wait` returns the question, marked `[question]`; `result` lists it too. Answer with
+
+    fleetctl answer <task> "<answer>"
+
+The answer is the output of the agent's `ask`, so it carries on in the same turn. If the agent is not
+waiting (its ask timed out) the answer is sent as a follow-up; a `followup` while it waits is its answer
+too. A question nobody answers within ten minutes goes to the orchestrator, which may answer it; after
+that, one alert goes to the operator. Progress notes (`[progress]`) need no reply.
+A follow-up needs an open task. If the
 agent cannot be reached (its host is down or cut off), fleetd keeps the follow-up and prints
 `queued: …`: it reaches the agent when the agent is back. Do not send it again.
 
@@ -110,8 +138,8 @@ login is on the fleet's list, install fleetctl from fleetd itself and connect it
 It installs fleetctl, runs `fleetctl connect http://<fleetd host>:7878` (which prints who fleetd knows you
 as), and installs this guide as your Claude Code skill. As a member you can `run`, `wait --task`,
 `result`, `followup`, `cancel` and `done --task` your own tasks, and `ls`, `pick`, `quota`, `tasks` and
-`peek` (an agent at work on your task). Tasks run as you: the agent reports to your login, and `--from`
-is ignored. You may hold a few open tasks at once (fleetd says how many when you reach it); close one
+`peek` (an agent at work on your task). Tasks run as you: the agent reports to your login (or a session of yours), and `--from`
+names a session of yours (`ram@example.com/review`), never someone else. You may hold a few open tasks at once (fleetd says how many when you reach it); close one
 with `done --task` before you start another, or pass `--queue`. `--repo` names a checkout in the fleet
 host's code directory; for a repo that is not there, say in the brief where to clone it from.
 
@@ -149,8 +177,9 @@ to assign; console tokens may read.
 | `fleetctl run` | `POST /v1/run` `{brief, repo, agent, from, task, queue}` → `{task, agent, why}` |
 | `fleetctl pick` | `GET /v1/pick?repo=` |
 | `fleetctl result` | `GET /v1/tasks/{id}` |
-| `fleetctl wait` | `GET /v1/wait?task=&after=&timeout=` (agent optional with a task) |
+| `fleetctl wait` | `GET /v1/wait?task=&after=&timeout=` (agent optional with a task; `new=<name>` for unseen messages only) |
 | `fleetctl followup` | `POST /v1/tasks/{id}/followup` `{from, text}` |
+| `fleetctl answer` | `POST /v1/tasks/{id}/answer` `{from, text}` |
 | `fleetctl cancel` | `POST /v1/tasks/{id}/cancel` `{from, reason}` |
 | `fleetctl done --task` | `POST /v1/done` `{task, outcome, branch, pr}` |
 | `fleetctl guide` | `GET /v1/guide` → `{text}` |

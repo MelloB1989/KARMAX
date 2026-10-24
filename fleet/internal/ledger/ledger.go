@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS relays (
   id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, recipient TEXT, at INTEGER,
   size INTEGER, delivered INTEGER, text TEXT, error TEXT);
+CREATE TABLE IF NOT EXISTS cursors (
+  task TEXT NOT NULL, reader TEXT NOT NULL, seen INTEGER NOT NULL, PRIMARY KEY (task, reader));
 CREATE TABLE IF NOT EXISTS host (
   container TEXT NOT NULL, at INTEGER NOT NULL, cpu REAL, mem_bytes INTEGER, mem_pct REAL);
 CREATE INDEX IF NOT EXISTS host_at ON host(at);
@@ -93,6 +95,9 @@ func migrate(db *sql.DB) error {
 		{"tasks", "assigner", "TEXT"},
 		{"tasks", "repo", "TEXT"},
 		{"relays", "task", "TEXT"},
+		{"relays", "kind", "TEXT"},
+		{"relays", "escalated", "INTEGER"},
+		{"relays", "alerted", "INTEGER"},
 	}
 	for _, a := range adds {
 		var n int
@@ -610,16 +615,16 @@ func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
 }
 
 // TasksBy is Tasks of one assigner (any, when empty): the tasks a person
-// on the tailnet asked for.
+// on the tailnet asked for, from any of their sessions (OwnerOf).
 func (db *DB) TasksBy(open bool, agent, assigner string, limit int) ([]Task, error) {
 	q := `SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
 		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)
-		AND (?='' OR assigner=?)`
+		AND (?='' OR assigner=? OR assigner LIKE ? ESCAPE '\')`
 	if open {
 		q += ` AND closed IS NULL`
 	}
 	q += ` ORDER BY assigned DESC, id DESC`
-	args := []any{agent, agent, assigner, assigner}
+	args := []any{agent, agent, assigner, assigner, likeEscape(assigner) + "/%"}
 	if limit > 0 {
 		q += ` LIMIT ?`
 		args = append(args, limit)
@@ -673,6 +678,24 @@ type Relay struct {
 	Delivered bool      `json:"delivered"`
 	// Task is the task its sender had when it wrote: a report belongs to it.
 	Task string `json:"task,omitempty"`
+	// Kind is what the message is: KindReport unless its sender said otherwise.
+	Kind string `json:"kind,omitempty"`
+}
+
+// What a message filed under a task is. An agent's report is the default; a
+// question waits for an answer; progress is a note on the way. An answer is
+// what the assigner sent to a question the agent is blocked on (fleetctl ask).
+const (
+	KindReport   = "report"
+	KindQuestion = "question"
+	KindProgress = "progress"
+	KindAnswer   = "answer"
+)
+
+// ValidKind reports whether an agent may send a message of that kind
+// (fleetctl tell --kind); "" is a report.
+func ValidKind(k string) bool {
+	return k == "" || k == KindReport || k == KindQuestion || k == KindProgress
 }
 
 // Operator is the inbox name: messages to it wait for the operator.
@@ -684,19 +707,44 @@ const Operator = "operator"
 // the ledger, where they read it (wait, result); nothing is relayed.
 func IsPerson(name string) bool { return name == Operator || strings.Contains(name, "@") }
 
+// OwnerOf is the person behind an assigner name. A person's own session is
+// named login/session (ram@example.com/review): the session is theirs, and so
+// is everything it asked for. Any other name is its own owner.
+func OwnerOf(assigner string) string {
+	owner, _, _ := strings.Cut(assigner, "/")
+	return owner
+}
+
+// OwnedBy reports whether a task's assigner is login or one of their sessions.
+func OwnedBy(assigner, login string) bool { return login != "" && OwnerOf(assigner) == login }
+
+// IsSession reports whether a name is a session that assigned a task: a
+// Claude session that ran fleetctl run under a name of its own. Like a
+// person's, its inbox is the ledger.
+func (db *DB) IsSession(name string) bool {
+	if name == "" || IsPerson(name) {
+		return false
+	}
+	var one int
+	return db.sql.QueryRow(`SELECT 1 FROM tasks WHERE assigner=? LIMIT 1`, name).Scan(&one) == nil
+}
+
 // Inbox is the messages to the operator with an id above after, oldest first.
-func (db *DB) Inbox(after int64) ([]Relay, error) {
-	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), at, COALESCE(text,''), COALESCE(task,'') FROM relays
-		WHERE recipient=? AND id > ? ORDER BY id`, Operator, after)
+func (db *DB) Inbox(after int64) ([]Relay, error) { return db.InboxOf(Operator, after) }
+
+// InboxOf is Inbox of any inbox: a person's, or a session's.
+func (db *DB) InboxOf(to string, after int64) ([]Relay, error) {
+	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), at, COALESCE(text,''), COALESCE(task,''), COALESCE(kind,'report') FROM relays
+		WHERE recipient=? AND id > ? ORDER BY id`, to, after)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Relay
 	for rows.Next() {
-		r := Relay{To: Operator, Delivered: true}
+		r := Relay{To: to, Delivered: true}
 		var at int64
-		if err := rows.Scan(&r.ID, &r.From, &at, &r.Text, &r.Task); err != nil {
+		if err := rows.Scan(&r.ID, &r.From, &at, &r.Text, &r.Task, &r.Kind); err != nil {
 			return nil, err
 		}
 		r.At = time.Unix(at, 0)
@@ -737,6 +785,77 @@ func (db *DB) Owes(task string) (bool, error) {
 	return owes, err
 }
 
+// Question is a question an agent asked under an open task that nothing has
+// been filed after: nobody has answered it.
+type Question struct {
+	ID       int64
+	Task     string
+	Agent    string
+	Assigner string
+	Text     string
+	At       time.Time
+	// Escalated and Alerted are when it went to the orchestrator and when you
+	// were told; zero before.
+	Escalated time.Time
+	Alerted   time.Time
+}
+
+// Unanswered is the questions asked under open tasks that nothing was filed
+// after (an answer, a follow-up, the agent's own next word), oldest first.
+func (db *DB) Unanswered() ([]Question, error) {
+	rows, err := db.sql.Query(`SELECT r.id, r.task, COALESCE(t.agent,''), COALESCE(t.assigner,''), COALESCE(r.text,''), r.at,
+		r.escalated, r.alerted FROM relays r JOIN tasks t ON t.id = r.task
+		WHERE r.kind=? AND r.sender = t.agent AND t.closed IS NULL
+		AND NOT EXISTS (SELECT 1 FROM relays l WHERE l.task = r.task AND l.id > r.id)
+		ORDER BY r.id`, KindQuestion)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Question
+	for rows.Next() {
+		var q Question
+		var at int64
+		var esc, al sql.NullInt64
+		if err := rows.Scan(&q.ID, &q.Task, &q.Agent, &q.Assigner, &q.Text, &at, &esc, &al); err != nil {
+			return nil, err
+		}
+		q.At, q.Escalated, q.Alerted = time.Unix(at, 0), fromUnix(esc), fromUnix(al)
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+// Cursor is the id of the last message of a task that a reader (a session's
+// name) was handed by a wait --new; 0 if none.
+func (db *DB) Cursor(task, reader string) (int64, error) {
+	var seen int64
+	err := db.sql.QueryRow(`SELECT seen FROM cursors WHERE task=? AND reader=?`, task, reader).Scan(&seen)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return seen, err
+}
+
+// SetCursor moves a reader's cursor on a task forward to id; never back.
+func (db *DB) SetCursor(task, reader string, id int64) error {
+	_, err := db.sql.Exec(`INSERT INTO cursors(task, reader, seen) VALUES(?,?,?)
+		ON CONFLICT(task, reader) DO UPDATE SET seen=MAX(seen, excluded.seen)`, task, reader, id)
+	return err
+}
+
+// MarkEscalated records when a question went to the orchestrator.
+func (db *DB) MarkEscalated(id int64, at time.Time) error {
+	_, err := db.sql.Exec(`UPDATE relays SET escalated=? WHERE id=?`, at.Unix(), id)
+	return err
+}
+
+// MarkAlerted records when a question was last the subject of an alert to you.
+func (db *DB) MarkAlerted(id int64, at time.Time) error {
+	_, err := db.sql.Exec(`UPDATE relays SET alerted=? WHERE id=?`, at.Unix(), id)
+	return err
+}
+
 // LatestTask is an agent's most recently assigned task, nil if it has had none.
 func (db *DB) LatestTask(agent string) (*Task, error) {
 	ts, err := db.Tasks(false, agent, 1)
@@ -748,7 +867,7 @@ func (db *DB) LatestTask(agent string) (*Task, error) {
 
 func (db *DB) taskRelays(extra, task string, after int64) ([]Relay, error) {
 	rows, err := db.sql.Query(`SELECT id, COALESCE(sender,''), COALESCE(recipient,''), at, COALESCE(text,''),
-		COALESCE(delivered,0), COALESCE(error,'') FROM relays WHERE task=? AND id > ? `+extra+` ORDER BY id`, task, after)
+		COALESCE(delivered,0), COALESCE(error,''), COALESCE(kind,'report') FROM relays WHERE task=? AND id > ? `+extra+` ORDER BY id`, task, after)
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +876,7 @@ func (db *DB) taskRelays(extra, task string, after int64) ([]Relay, error) {
 	for rows.Next() {
 		r := Relay{Task: task}
 		var at int64
-		if err := rows.Scan(&r.ID, &r.From, &r.To, &at, &r.Text, &r.Delivered, &r.Error); err != nil {
+		if err := rows.Scan(&r.ID, &r.From, &r.To, &at, &r.Text, &r.Delivered, &r.Error, &r.Kind); err != nil {
 			return nil, err
 		}
 		r.At = time.Unix(at, 0)
@@ -773,8 +892,11 @@ func (db *DB) AddRelay(r Relay) error {
 }
 
 func (db *DB) addRelay(r Relay) (int64, error) {
-	res, err := db.sql.Exec(`INSERT INTO relays(sender, recipient, at, size, delivered, text, error, task) VALUES(?,?,?,?,?,?,?,?)`,
-		r.From, r.To, r.At.Unix(), len(r.Text), r.Delivered, r.Text, nullStr(r.Error), nullStr(r.Task))
+	if r.Kind == "" {
+		r.Kind = KindReport
+	}
+	res, err := db.sql.Exec(`INSERT INTO relays(sender, recipient, at, size, delivered, text, error, task, kind) VALUES(?,?,?,?,?,?,?,?,?)`,
+		r.From, r.To, r.At.Unix(), len(r.Text), r.Delivered, r.Text, nullStr(r.Error), nullStr(r.Task), r.Kind)
 	if err != nil {
 		return 0, err
 	}

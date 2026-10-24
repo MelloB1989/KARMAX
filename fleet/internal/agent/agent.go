@@ -336,7 +336,7 @@ const relaySettings = `{"disableAllHooks":true}`
 func (a *Agent) Relay(ctx context.Context, to, from, text string) error {
 	header := fmt.Sprintf("[relayed from %s — reply with: fleetctl tell %s \"<text>\"]", from, from)
 	if from == "operator" {
-		header = "[relayed from the operator, through the fleet]"
+		header = `[relayed from the operator, through the fleet — reply with: fleetctl tell operator "<text>"; to ask a question and wait for the answer: fleetctl ask "<question>"]`
 	}
 	prompt := fmt.Sprintf(relayPrompt, to, header, from, text)
 	out, err := a.C.RunInEnv(ctx, []string{"FLEET_ROLE=relay"}, strings.NewReader(prompt),

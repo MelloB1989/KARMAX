@@ -269,6 +269,10 @@ type Thresholds struct {
 	Low5h                float64       `yaml:"low_5h"`
 	Reserved7d           float64       `yaml:"reserved_7d"`
 	CoolingDefault       time.Duration `yaml:"cooling_default"`
+	// QuestionEscalate is how long a question asked of the operator or a
+	// session may go unanswered before the orchestrator is asked, and how
+	// much longer before you get an alert.
+	QuestionEscalate time.Duration `yaml:"question_escalate"`
 	// Retention.
 	EventsRaw   time.Duration `yaml:"events_raw"`
 	QuotaRaw    time.Duration `yaml:"quota_raw"`
@@ -396,6 +400,7 @@ func (c *Config) defaults() {
 	dur(&th.WaitingNudge, 2*time.Hour)
 	dur(&th.WaitingArchive, 24*time.Hour)
 	dur(&th.CoolingDefault, time.Hour)
+	dur(&th.QuestionEscalate, 10*time.Minute)
 	dur(&th.EventsRaw, 90*24*time.Hour)
 	dur(&th.QuotaRaw, 7*24*time.Hour)
 	dur(&th.RelayText, 30*24*time.Hour)

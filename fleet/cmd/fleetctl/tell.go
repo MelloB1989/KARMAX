@@ -31,6 +31,7 @@ type outboxMsg struct {
 	From string    `json:"from"`
 	To   string    `json:"to"`
 	Text string    `json:"text"`
+	Kind string    `json:"kind,omitempty"`
 	At   time.Time `json:"at"`
 }
 
@@ -51,7 +52,15 @@ type sendReply struct {
 // there and fleetd delivers it on its next look at the container: a report is
 // never lost to a restart.
 func tell(c *client, from, to, text, outbox string, sleep func(time.Duration)) (string, error) {
+	return tellKind(c, from, to, "", text, outbox, sleep)
+}
+
+// tellKind is tell of a message of a kind (question, progress; "" is a report).
+func tellKind(c *client, from, to, kind, text, outbox string, sleep func(time.Duration)) (string, error) {
 	body := map[string]string{"from": from, "to": to, "text": text}
+	if kind != "" {
+		body["kind"] = kind
+	}
 	var rep sendReply
 	err := c.do("POST", "/v1/tell", body, &rep)
 	for _, d := range tellBackoff {
@@ -70,7 +79,7 @@ func tell(c *client, from, to, text, outbox string, sleep func(time.Duration)) (
 	if !retryable(err) || outbox == "" {
 		return "", err
 	}
-	b, _ := json.Marshal(outboxMsg{From: from, To: to, Text: text, At: time.Now().UTC()})
+	b, _ := json.Marshal(outboxMsg{From: from, To: to, Text: text, Kind: kind, At: time.Now().UTC()})
 	if qerr := writeAtomic(outbox, strconv.FormatInt(time.Now().UnixNano(), 10)+"-"+strconv.Itoa(os.Getpid())+".json", b); qerr != nil {
 		return "", fmt.Errorf("%w (and it could not be queued: %v)", err, qerr)
 	}

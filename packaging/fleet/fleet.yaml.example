@@ -102,6 +102,7 @@ thresholds:                 # every default shown
   low_5h: 80                # 5-hour window % → low
   reserved_7d: 90           # 7-day window % → reserved, one alert
   cooling_default: 1h       # rate-limited with no known reset
+  question_escalate: 10m    # an agent's question to the operator or a session, unanswered: ask the orchestrator; this much later, one alert
   events_raw: 2160h         # 90 days, then daily counts
   quota_raw: 168h           # every sample for 7 days, hourly after
   relay_text: 720h
