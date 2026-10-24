@@ -168,7 +168,9 @@ Make the Fleet dashboard once, with KARMAX's dashboard tool, using id `fleet`.
 fleetd rewrites its `data/agents.json`, `quota.json`, `usage.json`,
 `events.json` and `orchestrator.json` every tick.
 
-    fleet/scripts/smoke.sh   # fleetd + fleetctl end to end, with a fake docker
+    fleet/scripts/smoke.sh     # fleetd + fleetctl end to end, with a fake docker
+    fleet/scripts/smoke-v2.sh  # the same for v2 (models, ask, memory, the gateway,
+                               # identity, scopes): PASS/FAIL per check, exit 1 on a FAIL
 
 ## Phase 5 — the orchestrator
 

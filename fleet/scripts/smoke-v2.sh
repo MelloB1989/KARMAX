@@ -16,16 +16,15 @@ chmod 700 "$R/state"
 . scripts/smoke-lib.sh; smoke_fakes "$R"
 export TMUX_TMPDIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fl.XXXX") # sockets need a short path
 export HOME=$R/home FLEET_WORK=$R/work PATH=$R/bin:$PATH RELAY_LOG=$R/relay.log
-unset FLEETD_URL FLEET_TOKEN FLEET_AGENT FLEET_NAME FLEET_SESSION FLEET_AGENT_KEY CLAUDE_CODE_SESSION_ID
 
-API=127.0.0.1:17978 TAILNET=127.0.0.1:17979 GITLOOM=17980 KARMAX=17981
+API=127.0.0.1:$(free_port) TAILNET=127.0.0.1:$(free_port) GITLOOM=$(free_port) KARMAX=$(free_port) OTLP=127.0.0.1:$(free_port)
 FULL=smoke-full RELAY=smoke-relay CONSOLE=smoke-console GITLOOM_KEY=gl-smoke-key KARMAX_TOKEN=km-smoke-token
 cat > "$R/state/fleet.yaml" <<EOF
 home: $R/home
 env_file: $R/env
 state_dir: $R/state
 listen: $API
-otlp_listen: 127.0.0.1:17418
+otlp_listen: $OTLP
 hosts: {kali: {exec: [$R/bin/docker]}}
 orchestrator: {host: kali, token_env: CLAUDE_TOKEN_KARMAX}
 agents:
@@ -65,7 +64,10 @@ echo '{"session_id":"s1","context_window":{"used_percentage":12},"rate_limits":{
 start_fleetd() { "$B/fleetd" >> "$R/fleetd.log" 2>&1 & FPID=$!; }
 start_fleetd
 trap 'kill $FPID $P1 $P2 $P3 2>/dev/null; tmux kill-server 2>/dev/null; rm -rf "$R" "$TMUX_TMPDIR"' EXIT
-up() { for _ in $(seq 50); do curl -sf "http://$API/healthz" >/dev/null && return; sleep 0.1; done; }
+up() {
+  for _ in $(seq 50); do curl -sf "http://$API/healthz" >/dev/null && return; sleep 0.1; done
+  echo "FAIL fleetd did not start:"; cat "$R/fleetd.log"; exit 1
+}
 up
 
 FAILS=0 PASSES=0
@@ -165,7 +167,7 @@ last=$(tail -n1 "$R/fakes/karmax-calls.jsonl" 2>/dev/null)
 check "a gateway read passes through at once" "got: $out" bash -c 'jq -e ".result.ok and .result.output.echo.q==\"invoices\"" <<<"$1" >/dev/null' _ "$out"
 check "KARMAX's token is added by fleetd, not the agent" "KARMAX saw: $last" bash -c 'jq -e ".tool==\"mail.search\" and .token_ok" <<<"$1" >/dev/null' _ "$last"
 check "the agent never sees KARMAX's token" "in its output: $out" bash -c '! grep -q "$1" <<<"$2"' _ $KARMAX_TOKEN "$out"
-agent karmax call mail.send to=ram@example.com --reason "send the invoice" --timeout 1m --json > "$R/write.out" 2>&1 & WR=$!
+agent karmax call mail.send to=ram@example.com --reason "send the invoice" --timeout 1m --json > "$R/write.out" 2> "$R/write.err" & WR=$!
 id=
 for _ in $(seq 50); do
   id=$(op approvals --json 2>/dev/null | jq -r '.[] | select(.tool=="mail.send" and .state=="pending") | .id' | head -n1)
@@ -181,6 +183,16 @@ check "the write runs once approved and the agent's call returns its result" "ex
   bash -c 'jq -e ".result.ok and .result.output.echo.to==\"ram@example.com\"" "$1" >/dev/null' _ "$R/write.out"
 out=$(op approve "$id" 2>&1)
 check "an approval runs only once" "KARMAX saw $(sent) sends; second approve: $out" test "$(sent)" = 1
+agent karmax call mail.send to=ram@example.com --reason "send it again" --timeout 1m > "$R/deny.out" 2>&1 & DN=$!
+id2=
+for _ in $(seq 50); do
+  id2=$(op approvals --json 2>/dev/null | jq -r '.[] | select(.tool=="mail.send" and .state=="pending") | .id' | head -n1)
+  [ -n "$id2" ] && break; sleep 0.2
+done
+op deny "$id2" --reason "it went already" >/dev/null 2>&1
+wait $DN; rc=$?
+check "a denied write is refused with the reason and never runs" "exit $rc, KARMAX saw $(sent) sends: $(cat "$R/deny.out")" \
+  bash -c '[ $1 != 0 ] && [ "$2" = 1 ] && grep -q "it went already" "$3"' _ $rc "$(sent)" "$R/deny.out"
 out=$(agent approve "$id" 2>&1)
 check "an agent cannot approve" "got: $out" has "$out" "scope relay"
 out=$(agent karmax call system.exec cmd=ls --reason x 2>&1)
@@ -247,5 +259,5 @@ else
   pass "the fakes saw only the routes fleetd may call"
 fi
 [ -n "$VERBOSE" ] && { echo "== fleetd log"; cat "$R/fleetd.log"; }
-echo "== $PASSES passed, $FAILS failed"
+echo "== $PASSES passed, $FAILS failed in ${SECONDS}s"
 [ $FAILS = 0 ]

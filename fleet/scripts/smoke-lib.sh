@@ -7,9 +7,11 @@
 # went through.
 smoke_fakes() {
 local R=$1
-# Run inside an agent's own tmux, tmux would act on that server: the
-# smoke's new-session and its kill-server at the end must not.
-unset TMUX TMUX_PANE
+# Nothing of the machine it runs on: inside an agent's container, $TMUX is
+# the agent's own tmux (the smoke's kill-server would end its session), and
+# FLEETD_URL and FLEET_TOKEN are the live fleetd's, which fleetctl would
+# talk to instead of the smoke's.
+unset TMUX TMUX_PANE FLEETD_URL FLEET_TOKEN FLEET_AGENT FLEET_NAME FLEET_SESSION FLEET_AGENT_KEY CLAUDE_CODE_SESSION_ID
 cat > "$R/bin/docker" <<'EOF'
 #!/bin/bash
 case "$1" in
@@ -33,4 +35,10 @@ if [ "$1" = -p ]; then
 fi
 EOF
 chmod +x "$R/bin/"*
+}
+
+# free_port prints a TCP port nobody listens on now: agents share a host's
+# network, and two smoke runs on fixed ports would talk to each other's fleetd.
+free_port() {
+python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
 }

@@ -10,14 +10,15 @@ go build -o "$B/" ./cmd/... || exit 1
 mkdir -p "$R"/{bin,home/.claude/sessions,home/.claude/fleet,home/.claude/projects/-work,work,state}
 chmod 700 "$R/state"
 . scripts/smoke-lib.sh; smoke_fakes "$R"
+API=127.0.0.1:$(free_port) OTLP=127.0.0.1:$(free_port)
 export TMUX_TMPDIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fl.XXXX")  # sockets need a short path
 export HOME=$R/home FLEET_WORK=$R/work PATH=$R/bin:$PATH RELAY_LOG=$R/relay.log
 cat > "$R/state/fleet.yaml" <<EOF
 home: $R/home
 env_file: $R/env
 state_dir: $R/state
-listen: 127.0.0.1:17878
-otlp_listen: 127.0.0.1:17318
+listen: $API
+otlp_listen: $OTLP
 hosts: {kali: {exec: [$R/bin/docker]}}
 orchestrator: {host: kali, token_env: CLAUDE_TOKEN_KARMAX}
 agents:
@@ -49,12 +50,12 @@ echo "== next file: [$(cat "$R/work/.fleet/next" 2>&1)] pane alive: $(tmux has-s
 echo "== transcript left in container: $(ls "$HOME/.claude/projects/-work/")"
 echo "== archive ls"; "$B/fleetctl" archive ls
 echo "== history"; "$B/fleetctl" history agent-01
-echo "== tell"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" tell agent-01 "please rebase" --from karmax; head -3 "$R/relay.log"
-echo "== an unknown sender is refused:"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" tell agent-01 "x" --from mallory
-echo "== relay token cannot assign:"; FLEET_TOKEN=relay FLEETD_URL=http://127.0.0.1:17878 "$B/fleetctl" assign agent-01 --task X
+echo "== tell"; FLEET_TOKEN=relay FLEETD_URL=http://$API "$B/fleetctl" tell agent-01 "please rebase" --from karmax; head -3 "$R/relay.log"
+echo "== an unknown sender is refused:"; FLEET_TOKEN=relay FLEETD_URL=http://$API "$B/fleetctl" tell agent-01 "x" --from mallory
+echo "== relay token cannot assign:"; FLEET_TOKEN=relay FLEETD_URL=http://$API "$B/fleetctl" assign agent-01 --task X
 echo "== otlp"; curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer relay' -H 'Content-Type: application/json' \
   -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"fleet.agent","value":{"stringValue":"agent-01"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"'$(date +%s)'000000000","attributes":[{"key":"event.name","value":{"stringValue":"api_request"}},{"key":"model","value":{"stringValue":"claude-sonnet"}},{"key":"output_tokens","value":{"intValue":"500"}},{"key":"cost_usd","value":{"doubleValue":0.02}}]}]}]}]}' \
-  http://127.0.0.1:17318/v1/logs
+  http://$OTLP/v1/logs
 echo "== usage"; "$B/fleetctl" usage
 echo "== events"; "$B/fleetctl" events agent-01 --since 1000d | head -20
 echo "== quota"; "$B/fleetctl" quota
