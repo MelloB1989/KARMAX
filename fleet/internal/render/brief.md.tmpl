@@ -59,6 +59,10 @@ A relayed message starts with `[relayed from <name> — reply with: fleetctl tel
   command of your own session: you are woken when it ends. Never detach it with
   `nohup`, `setsid` or a trailing `&` — nothing wakes you when it ends, a restart
   kills it anyway, and it is ended when your session is archived.
+- If your session is restarted (a power cut, a crash), fleetd tells you what you
+  were doing, what arrived meanwhile and what your worktrees look like. Background
+  commands you started are gone: run them again if you still need them. What you
+  committed and pushed is what survives, so commit early.
 - If `fleetctl tell` answers `queued`, fleetd or the receiver was away: the
   message is kept and delivered when it is back. Do not send it again.
 - To check that fleetctl works, use `fleetctl whoami` or `fleetctl status` —

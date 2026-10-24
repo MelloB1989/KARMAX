@@ -84,6 +84,21 @@ type State struct {
 	// about its container, in the current episode.
 	UnreachableSince time.Time `json:"unreachable_since,omitzero"`
 
+	// AwaySince is when fleetd first found the agent's host out of reach or
+	// its container not running, in the current episode. Time away is not
+	// idleness: IdleAway is what has gone by, away, since the idle clock
+	// started at IdleBase (trackAway).
+	AwaySince time.Time     `json:"away_since,omitzero"`
+	IdleAway  time.Duration `json:"idle_away,omitempty"`
+	IdleBase  time.Time     `json:"idle_base,omitzero"`
+	// HostBackAt is when the agent was last seen again after its host or
+	// container was away, or on a host with another boot id. For a while
+	// after it, a session that will not start is a host still coming up, not
+	// a crashing session (HostSettle).
+	HostBackAt time.Time `json:"host_back_at,omitzero"`
+	// BootID is the host's boot id as last seen with a session up.
+	BootID string `json:"boot_id,omitempty"`
+
 	// Low and Reserved are quota flags, independent of the phase: a low agent
 	// still works, but new tasks should prefer others.
 	Low      bool  `json:"low,omitempty"`
@@ -274,6 +289,10 @@ func resumeText(task string) string {
 		"nohup, setsid or &.", task)
 }
 
+// PromptResume is the Reason of the Prompt that tells a restarted session to
+// carry on: fleetd adds what it knows (resumeNote) to its Text.
+const PromptResume = "resume"
+
 // Reasons a session ends.
 const (
 	ReasonTaskDone = "task_done"
@@ -321,6 +340,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		st.StartTried, st.StartFailing, st.CodeMissingSince = time.Time{}, time.Time{}, time.Time{}
 	}
 
+	st = trackAway(st, o)
 	st = observeQuota(th, st, o)
 	if st.Reserved {
 		alertOnce("reserved", fmt.Sprintf("%s: 7-day window at %.0f%% — small tasks only until it resets", st.Name, st.Quota.SevenDay))
@@ -546,7 +566,12 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	if o.TranscriptMTime.After(idleSince) {
 		idleSince = o.TranscriptMTime
 	}
-	idle := o.Now.Sub(idleSince)
+	if st.IdleBase.IsZero() {
+		st.IdleBase = idleSince
+	} else if !st.IdleBase.Equal(idleSince) {
+		st.IdleBase, st.IdleAway = idleSince, 0 // it did something: the clock restarted
+	}
+	idle := max(o.Now.Sub(idleSince)-st.IdleAway, 0) // the host being away is not idleness
 
 	if st.Phase == Cooling {
 		if o.Now.Before(st.CoolingUntil) {
@@ -570,7 +595,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		// One that had reported and waits on its orchestrator is left be.
 		cut := st.TurnOpen && st.TurnProc != "" && o.Proc != "" && st.TurnProc != o.Proc
 		if (cut || (moved && o.Owes)) && st.Task != "" && !st.Done {
-			acts = append(acts, Action{Kind: Prompt, Text: resumeText(st.Task)})
+			acts = append(acts, Action{Kind: Prompt, Reason: PromptResume, Task: st.Task, Text: resumeText(st.Task)})
 			push("resumed", fmt.Sprintf("%s was restarted while working on %s and told to carry on", st.Name, st.Task))
 			st.LastBusy, idle = o.Now, 0
 		}
@@ -602,6 +627,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		st.Task, st.Done, st.Phase, st.SessionID = "", false, Standby, "" // the next one is learned when seen
 		st.TurnOpen, st.HookIdle, st.DoneAt = false, false, time.Time{}
 		st.NudgedAt, st.CompactedAt, st.LastBusy = time.Time{}, 0, o.Now
+		st.IdleBase, st.IdleAway = time.Time{}, 0
 	}
 	switch {
 	case st.Done:
@@ -637,6 +663,15 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 // restart handles "no live session": resume the last one, or after repeated
 // failures start fresh and say so.
 func restart(th config.Thresholds, st State, o Obs, acts *[]Action, push func(string, string), alertOnce func(string, string)) State {
+	// A host just back from out of reach, or just booted, is still bringing
+	// its mounts and network up: a pane that dies or will not start now says
+	// nothing about the session, and is not counted (a host that power-cycles
+	// must never close a task as crashed).
+	if !st.HostBackAt.IsZero() && o.Now.Sub(st.HostBackAt) < th.HostSettle {
+		st.Restarts = nil
+		*acts = append(*acts, Action{Kind: Restart, Session: st.SessionID})
+		return st
+	}
 	var recent []time.Time
 	for _, t := range st.Restarts {
 		if o.Now.Sub(t) < th.RestartWindow {
@@ -653,6 +688,39 @@ func restart(th config.Thresholds, st State, o Obs, acts *[]Action, push func(st
 	}
 	st.Restarts = append(recent, o.Now)
 	*acts = append(*acts, Action{Kind: Restart, Session: st.SessionID})
+	return st
+}
+
+// bootOf is the host's boot id in a Proc ("<boot id>/<pid>").
+func bootOf(proc string) string {
+	b, _, _ := strings.Cut(proc, "/")
+	return b
+}
+
+// trackAway keeps the clocks a host's downtime must not move. While its host
+// is out of reach or its container is not running the agent is away; when it
+// is seen again the time away is added to IdleAway (idle ignores it) and
+// HostBackAt is set, as it is when the host's boot id is not the one last
+// seen: either way the host went down, and what failed to start since is
+// not a crash (restart).
+func trackAway(st State, o Obs) State {
+	if o.Unreachable != "" || !o.ContainerUp {
+		if st.AwaySince.IsZero() {
+			st.AwaySince = o.Now
+		}
+		return st
+	}
+	if !st.AwaySince.IsZero() {
+		st.IdleAway += o.Now.Sub(st.AwaySince)
+		st.AwaySince = time.Time{}
+		st.HostBackAt, st.Restarts = o.Now, nil
+	}
+	if b := bootOf(o.Proc); b != "" {
+		if st.BootID != "" && st.BootID != b {
+			st.HostBackAt, st.Restarts = o.Now, nil
+		}
+		st.BootID = b
+	}
 	return st
 }
 

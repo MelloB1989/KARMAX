@@ -564,13 +564,18 @@ for f in */"$1".jsonl; do [ -e "$f" ] && rm -f -- "$f" && rm -rf -- "${f%.jsonl}
 	return err
 }
 
-// Worktree is one of the agent's worktrees under /work/wt.
+// Worktree is one of the agent's worktrees: under /work/wt, or under
+// <code>/.worktrees/<agent>/ (the brief tells agents to make the ones they
+// build on the build host there).
 type Worktree struct {
 	Path     string `json:"path"`
 	Branch   string `json:"branch"`
 	Upstream string `json:"upstream"`
 	Dirty    int    `json:"dirty"`
 	Unpushed int    `json:"unpushed"`
+	// Status is the first lines of `git status --short`, for the resume
+	// prompt (resumeNote); empty when clean.
+	Status string `json:"status,omitempty"`
 }
 
 // Safe reports whether removing the worktree loses nothing: clean, and every
@@ -579,24 +584,26 @@ type Worktree struct {
 // are on its own branch. A count git failed to give (-1) is not safe.
 func (w Worktree) Safe() bool { return w.Dirty == 0 && w.Unpushed == 0 }
 
-// worktreesScript reports each worktree; dirty and unpushed are -1 when git
-// could not say.
-const worktreesScript = `for d in "${FLEET_WORK:-/work}"/wt/*/; do
+// worktreesScript reports each worktree, under /work/wt and under
+// <code>/.worktrees/<agent> ($1 is the agent's name); dirty and unpushed are
+// -1 when git could not say.
+const worktreesScript = `for d in "${FLEET_WORK:-/work}"/wt/*/ "${FLEET_CODE:-$HOME/code}/.worktrees/$1"/*/; do
   d=${d%/}
   [ -e "$d/.git" ] || continue
   b=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)
   u=$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
   if s=$(git -C "$d" status --porcelain 2>/dev/null); then n=$(printf '%s' "$s" | grep -c .); else n=-1; fi
   p=$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null) || p=-1
-  jq -nc --arg path "$d" --arg branch "$b" --arg up "$u" --argjson dirty "${n:--1}" --argjson unpushed "${p:--1}" \
-    '{path:$path,branch:$branch,upstream:$up,dirty:$dirty,unpushed:$unpushed}'
+  st=$(git -C "$d" status --short 2>/dev/null | head -n 8)
+  jq -nc --arg path "$d" --arg branch "$b" --arg up "$u" --arg st "$st" --argjson dirty "${n:--1}" --argjson unpushed "${p:--1}" \
+    '{path:$path,branch:$branch,upstream:$up,dirty:$dirty,unpushed:$unpushed} + (if $st != "" then {status:$st} else {} end)'
 done
 true
 `
 
 // Worktrees lists the agent's worktrees and what removing each would lose.
 func (a *Agent) Worktrees(ctx context.Context) ([]Worktree, error) {
-	out, err := a.C.Sh(ctx, worktreesScript)
+	out, err := a.C.Sh(ctx, worktreesScript, a.Name)
 	if err != nil {
 		return nil, err
 	}

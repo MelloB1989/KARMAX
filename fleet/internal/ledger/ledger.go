@@ -93,6 +93,7 @@ func migrate(db *sql.DB) error {
 		{"tasks", "assigner", "TEXT"},
 		{"tasks", "repo", "TEXT"},
 		{"relays", "task", "TEXT"},
+		{"relays", "alerted", "INTEGER"},
 	}
 	for _, a := range adds {
 		var n int
@@ -673,6 +674,11 @@ type Relay struct {
 	Delivered bool      `json:"delivered"`
 	// Task is the task its sender had when it wrote: a report belongs to it.
 	Task string `json:"task,omitempty"`
+	// Held: fleetd has not delivered it yet and is keeping it for a receiver
+	// that cannot take it (Error says held or interrupted).
+	Held bool `json:"held,omitempty"`
+	// Alerted: you were told it has been held a long time (HeldBefore).
+	Alerted bool `json:"-"`
 }
 
 // Operator is the inbox name: messages to it wait for the operator.
@@ -761,6 +767,7 @@ func (db *DB) taskRelays(extra, task string, after int64) ([]Relay, error) {
 			return nil, err
 		}
 		r.At = time.Unix(at, 0)
+		r.Held = !r.Delivered && (r.Error == Held || r.Error == Interrupted)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -826,33 +833,66 @@ func (db *DB) InterruptRelays() (int, error) {
 	return int(n), err
 }
 
-// Pending is the relays to the receiver since a time that are still to be
-// sent — interrupted or held — and still matter, oldest first: no task, or a
-// task still open whose receiver no later message got through to. A closed
-// task's last word (the cancel notice, written as it closed) still goes.
-func (db *DB) Pending(agent string, since time.Time) ([]Relay, error) {
-	rows, err := db.sql.Query(`SELECT r.id, COALESCE(r.sender,''), r.at, COALESCE(r.text,''), COALESCE(r.task,''), r.error
-		FROM relays r WHERE r.recipient=? AND r.error IN (?, ?) AND r.at >= ?
-		AND (r.task IS NULL OR (
+// pendingWhere is what makes a relay still worth sending: no task, or a task
+// still open whose receiver no later message got through to. A closed task's
+// last word (the cancel notice, written as it closed) still goes.
+const pendingWhere = `r.error IN (?, ?) AND (r.task IS NULL OR (
 			EXISTS (SELECT 1 FROM tasks t WHERE t.id=r.task AND (t.closed IS NULL OR r.at >= t.closed))
 			AND NOT EXISTS (SELECT 1 FROM relays l WHERE l.task=r.task AND l.recipient=r.recipient
-				AND l.id > r.id AND COALESCE(l.delivered,0))))
-		ORDER BY r.id`, agent, Interrupted, Held, since.Unix())
+				AND l.id > r.id AND COALESCE(l.delivered,0))))`
+
+// Pending is the relays to the receiver since a time that are still to be
+// sent — interrupted or held — and still matter (pendingWhere), oldest
+// first. A zero since is all of them: a held message has no age limit.
+func (db *DB) Pending(agent string, since time.Time) ([]Relay, error) {
+	rows, err := db.sql.Query(`SELECT r.id, COALESCE(r.sender,''), r.at, COALESCE(r.text,''), COALESCE(r.task,''), r.error,
+		COALESCE(r.alerted,0) FROM relays r WHERE r.recipient=? AND r.at >= ? AND `+pendingWhere+` ORDER BY r.id`,
+		agent, since.Unix(), Interrupted, Held)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Relay
 	for rows.Next() {
-		r := Relay{To: agent}
+		r := Relay{To: agent, Held: true}
 		var at int64
-		if err := rows.Scan(&r.ID, &r.From, &at, &r.Text, &r.Task, &r.Error); err != nil {
+		if err := rows.Scan(&r.ID, &r.From, &at, &r.Text, &r.Task, &r.Error, &r.Alerted); err != nil {
 			return nil, err
 		}
 		r.At = time.Unix(at, 0)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// HeldBefore is the pending relays, to any receiver, written before a time
+// and not yet alerted on: the ones that have waited too long.
+func (db *DB) HeldBefore(cut time.Time) ([]Relay, error) {
+	rows, err := db.sql.Query(`SELECT r.id, COALESCE(r.sender,''), COALESCE(r.recipient,''), r.at, COALESCE(r.task,'')
+		FROM relays r WHERE r.at < ? AND NOT COALESCE(r.alerted,0) AND `+pendingWhere+` ORDER BY r.id`,
+		cut.Unix(), Interrupted, Held)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Relay
+	for rows.Next() {
+		r := Relay{Held: true}
+		var at int64
+		if err := rows.Scan(&r.ID, &r.From, &r.To, &at, &r.Task); err != nil {
+			return nil, err
+		}
+		r.At = time.Unix(at, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// AlertedRelay records that you were told a relay is held too long, so it
+// is said once.
+func (db *DB) AlertedRelay(id int64) error {
+	_, err := db.sql.Exec(`UPDATE relays SET alerted=1 WHERE id=?`, id)
+	return err
 }
 
 // HostSample is one container's resource use.
@@ -903,7 +943,8 @@ func (db *DB) Retain(now time.Time, r Retention) error {
 		now.Add(-r.QuotaRaw).Unix(), now.Add(-r.QuotaRaw).Unix()); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM relays WHERE at < ?`, now.Add(-r.Relays).Unix()); err != nil {
+	if _, err := tx.Exec(`DELETE FROM relays WHERE at < ? AND id NOT IN (SELECT r.id FROM relays r WHERE `+pendingWhere+`)`,
+		now.Add(-r.Relays).Unix(), Interrupted, Held); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM host WHERE at < ?`, now.Add(-r.HostSamples).Unix()); err != nil {
