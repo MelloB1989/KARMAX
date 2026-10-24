@@ -354,7 +354,8 @@ func TestAWriteNobodyDecidesExpires(t *testing.T) {
 
 func TestADeniedClassToolIsRefusedWithoutAnApproval(t *testing.T) {
 	g := gatewaySetup(t)
-	for _, tool := range []string{"shell.exec", "memory.ingest", "file.write", "harness.send", "fleet.tell", "vault.secret_get"} {
+	for _, tool := range []string{"shell.exec", "memory.ingest", "file.write", "harness.send", "fleet.tell", "vault.secret_get",
+		"codex.call", "claude_code.call", "subagent.spawn", "sandbox.start", "orchestrator.send", "saw.run"} {
 		rec := agentDo(t, g.h, "POST", "/v1/karmax/call", "agent-03", `{"tool":"`+tool+`","args":{},"reason":"try"}`)
 		if rec.Code != 403 {
 			t.Errorf("%s: %d %s, want 403", tool, rec.Code, rec.Body)

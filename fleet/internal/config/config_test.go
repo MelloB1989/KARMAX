@@ -290,3 +290,43 @@ func TestNoToolsEntryOpensAnAlwaysDeniedTool(t *testing.T) {
 		t.Fatalf("tools = %v", c.Karmax.Tools)
 	}
 }
+
+func TestToolsThatRunCodeOrStartAgentsAreAlwaysDenied(t *testing.T) {
+	k := Karmax{Tools: map[string]string{"sandbox.*": "read", "saw.*": "write"}}
+	for _, name := range []string{"claude_code.call", "codex.call", "subagent.spawn", "sandbox.start", "orchestrator.send",
+		"saw.run", "job.run", "docker.exec", "worker.spawn"} {
+		if got := k.ToolClass(name); got != ToolDeny {
+			t.Errorf("%s = %s, want deny", name, got)
+		}
+	}
+	// What only looks like them is not.
+	for name, want := range map[string]string{"sandbox.status": "read", "google.calendar.list": "read", "instagram.call": "read",
+		"run.report": "write", "spawn_report.send": "write"} {
+		if got := k.ToolClass(name); got != want {
+			t.Errorf("%s = %s, want %s", name, got, want)
+		}
+	}
+	if _, err := Parse([]byte(example + "karmax:\n  tools: {codex.call: write}\n")); err == nil {
+		t.Error("an entry opened codex.call")
+	}
+}
+
+func TestKnownReadsWithoutAReadVerbAreFree(t *testing.T) {
+	var k Karmax
+	for _, name := range []string{"slack.channels", "slack.user", "instagram.inbox", "instagram.reads", "instagram.commenters",
+		"google.chat.spaces", "keka.departments", "keka.employees", "keka.leave", "activity.recent", "cost.report",
+		"karmax.capabilities", "tools.load"} {
+		if got := k.ToolClass(name); got != ToolRead {
+			t.Errorf("%s = %s, want read", name, got)
+		}
+	}
+	// Their writes stay writes, and an entry still outranks the list.
+	for _, name := range []string{"slack.post", "instagram.send_dm", "instagram.reply_comment", "google.chat.post", "keka.update"} {
+		if got := k.ToolClass(name); got != ToolWrite {
+			t.Errorf("%s = %s, want write", name, got)
+		}
+	}
+	if got := (Karmax{Tools: map[string]string{"slack.*": "write"}}).ToolClass("slack.channels"); got != ToolWrite {
+		t.Errorf("slack.channels under slack.*: write = %s", got)
+	}
+}
