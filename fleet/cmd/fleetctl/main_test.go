@@ -569,7 +569,8 @@ func TestGuidePrintsTheGuide(t *testing.T) {
 
 func TestSkillInstallWritesTheSkill(t *testing.T) {
 	dir := t.TempDir()
-	out, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--dir", dir)
+	op := &fakeFleetd{reply: map[string]string{"/v1/whoami": whoOperator}}
+	out, err := fleetctl(t, op, "skill", "install", "--dir", dir)
 	p, pm := dir+"/fleet/SKILL.md", dir+"/fleet-memory/SKILL.md"
 	if err != nil || strings.TrimSpace(out) != p+"\n"+pm {
 		t.Fatalf("out = %q, %v", out, err)
@@ -582,7 +583,7 @@ func TestSkillInstallWritesTheSkill(t *testing.T) {
 	if b, _ := os.ReadFile(pm); !strings.HasPrefix(string(b), "---\nname: fleet-memory\n") {
 		t.Fatalf("memory skill starts %q", b[:min(len(b), 30)])
 	}
-	if _, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--dir", dir); err != nil {
+	if _, err := fleetctl(t, op, "skill", "install", "--dir", dir); err != nil {
 		t.Fatalf("reinstall over our own skill: %v", err)
 	}
 }
@@ -609,20 +610,88 @@ func TestSkillInstallRefusesAnUnrelatedFile(t *testing.T) {
 func TestSkillInstallPrintAndDefaultDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	out, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--print")
-	if err != nil || !strings.HasPrefix(out, "---\nname: fleet\n") {
+	op := &fakeFleetd{reply: map[string]string{"/v1/whoami": whoTailnetOp}}
+	out, err := fleetctl(t, op, "skill", "install", "--print")
+	if err != nil || !strings.HasPrefix(out, "---\nname: fleet\n") || !strings.Contains(out, "---\nname: fleet-memory\n") {
 		t.Fatalf("--print = %q, %v", out, err)
 	}
 	if _, err := os.Stat(home + "/.claude"); err == nil {
 		t.Fatal("--print wrote files")
 	}
-	if _, err := fleetctl(t, &fakeFleetd{}, "skill", "install"); err != nil {
+	if _, err := fleetctl(t, op, "skill", "install"); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"/.claude/skills/fleet/SKILL.md", "/.claude/skills/fleet-memory/SKILL.md"} {
 		if _, err := os.Stat(home + p); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A member gets the fleet skill alone: a fleet-memory skill fleetctl wrote
+// earlier goes, with its directory when nothing else is in it, and nothing
+// that is not fleetctl's is touched.
+func TestSkillInstallGivesAMemberTheFleetSkillAlone(t *testing.T) {
+	dir := t.TempDir()
+	op := &fakeFleetd{reply: map[string]string{"/v1/whoami": whoOperator}}
+	member := &fakeFleetd{reply: map[string]string{"/v1/whoami": whoMember}}
+	pm := dir + "/fleet-memory/SKILL.md"
+	if _, err := fleetctl(t, op, "skill", "install", "--dir", dir); err != nil {
+		t.Fatal(err)
+	}
+	out, err := fleetctl(t, member, "skill", "install", "--dir", dir)
+	if err != nil || !strings.Contains(out, "removed "+pm) {
+		t.Fatalf("out = %q, %v", out, err)
+	}
+	if _, err := os.Stat(dir + "/fleet-memory"); err == nil {
+		t.Fatal("the fleet-memory skill is still there")
+	}
+	if _, err := os.Stat(dir + "/fleet/SKILL.md"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := fleetctl(t, member, "skill", "install", "--print"); strings.Contains(out, "name: fleet-memory") {
+		t.Fatal("--print shows a member the memory skill")
+	}
+
+	// Beside something of the person's own, only the skill goes.
+	if _, err := fleetctl(t, op, "skill", "install", "--dir", dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(dir+"/fleet-memory/notes.md", []byte("mine\n"), 0o644)
+	if _, err := fleetctl(t, member, "skill", "install", "--dir", dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pm); err == nil {
+		t.Fatal("the fleet-memory skill is still there")
+	}
+	if b, _ := os.ReadFile(dir + "/fleet-memory/notes.md"); string(b) != "mine\n" {
+		t.Fatalf("notes = %q", b)
+	}
+
+	// A fleet-memory skill fleetctl did not write stays.
+	own := "---\nname: fleet-memory\ndescription: my own\n---\n"
+	_ = os.WriteFile(pm, []byte(own), 0o644)
+	if _, err := fleetctl(t, member, "skill", "install", "--dir", dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(pm); string(b) != own {
+		t.Fatalf("someone's own fleet-memory skill = %q", b)
+	}
+}
+
+// When fleetd cannot say who this is, the fleet skill is written and a
+// fleet-memory skill already there is left alone.
+func TestSkillInstallLeavesTheMemorySkillWhenFleetdCannotSay(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := fleetctl(t, &fakeFleetd{reply: map[string]string{"/v1/whoami": whoOperator}}, "skill", "install", "--dir", dir); err != nil {
+		t.Fatal(err)
+	}
+	out, err := fleetctl(t, &fakeFleetd{reply: map[string]string{"/v1/whoami": whoNoOneKnown}}, "skill", "install", "--dir", dir)
+	if err != nil || strings.TrimSpace(out) != dir+"/fleet/SKILL.md" {
+		t.Fatalf("out = %q, %v", out, err)
+	}
+	if b, _ := os.ReadFile(dir + "/fleet-memory/SKILL.md"); !strings.HasPrefix(string(b), "---\nname: fleet-memory\n") {
+		t.Fatalf("memory skill = %q", b)
 	}
 }
 

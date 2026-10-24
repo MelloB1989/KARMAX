@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,8 @@ var (
 //	claude mcp add --scope user fleet -- fleetctl mcp
 //
 // It speaks JSON-RPC 2.0, one message per line. fleetd decides who may do
-// what; this only carries the calls.
+// what; this lists only the tools the caller's scope may use (GET
+// /v1/whoami), so a member's session is not offered the operator's.
 func mcpCmd(args []string) error {
 	if len(args) > 0 {
 		return errors.New("usage: fleetctl mcp (a stdio MCP server; claude mcp add --scope user fleet -- fleetctl mcp)")
@@ -107,7 +109,58 @@ var mcpTools = []mcpTool{
 	},
 }
 
+// operatorTool is a tool on the operator's personal data, which fleetd
+// gives the full scope and agents (relay) on the operator's tasks alone.
+func operatorTool(name string) bool {
+	return strings.HasPrefix(name, "memory_") || strings.HasPrefix(name, "karmax_")
+}
+
+// mayUse is whether a scope may call a tool: what fleetd would refuse is
+// left out.
+func mayUse(scope, tool string) bool {
+	return !operatorTool(tool) || scope == "full" || scope == "relay"
+}
+
+// mcpWho is who fleetd says the session is: asked when first needed, and
+// asked again until fleetd answers.
+type mcpWho struct {
+	mu    sync.Mutex
+	scope string
+}
+
+func (w *mcpWho) get() (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.scope != "" {
+		return w.scope, nil
+	}
+	s, err := whoScope()
+	if err != nil {
+		return "", err
+	}
+	w.scope = s
+	return s, nil
+}
+
+// whoScope is this machine's scope, as fleetd says (GET /v1/whoami).
+func whoScope() (string, error) {
+	c, err := newClient()
+	if err != nil {
+		return "", err
+	}
+	c.timeout = 20 * time.Second
+	var who struct{ Scope string }
+	if err := c.do("GET", "/v1/whoami", nil, &who); err != nil {
+		return "", err
+	}
+	if who.Scope == "" {
+		return "", errors.New("fleetd did not say which scope you have")
+	}
+	return who.Scope, nil
+}
+
 func serveMCP(in io.Reader, out io.Writer) error {
+	who := &mcpWho{}
 	enc := json.NewEncoder(out)
 	var mu sync.Mutex // one message out at a time
 	reply := func(id json.RawMessage, result any, e *rpcErr) error {
@@ -146,12 +199,12 @@ func serveMCP(in io.Reader, out io.Writer) error {
 			calls.Add(1)
 			go func() {
 				defer calls.Done()
-				result, e := mcpHandle(m)
+				result, e := mcpHandle(who, m)
 				_ = reply(m.ID, result, e)
 			}()
 			continue
 		}
-		result, e := mcpHandle(m)
+		result, e := mcpHandle(who, m)
 		if err := reply(m.ID, result, e); err != nil {
 			return err
 		}
@@ -159,7 +212,7 @@ func serveMCP(in io.Reader, out io.Writer) error {
 	return sc.Err()
 }
 
-func mcpHandle(m rpcMsg) (any, *rpcErr) {
+func mcpHandle(who *mcpWho, m rpcMsg) (any, *rpcErr) {
 	switch m.Method {
 	case "initialize":
 		var p struct {
@@ -170,16 +223,30 @@ func mcpHandle(m rpcMsg) (any, *rpcErr) {
 		if v == "" {
 			v = mcpVersion
 		}
+		instructions := "The operator's long-term memory and integrations, through fleetd: memory_recall reads memory; memory_suggest proposes a fact to the orchestrator, which alone saves; karmax_tools lists the integrations you may call and karmax_call calls one (a write waits for the orchestrator's approval)."
+		if s, err := who.get(); err != nil {
+			instructions = "fleetd cannot say who you are yet (" + err.Error() + "), so no tools are offered until it can."
+		} else if !mayUse(s, "memory_recall") {
+			instructions = "Your fleet scope (" + s + ") has none of these tools: the operator's memory and integrations are not for it."
+		}
 		return map[string]any{
 			"protocolVersion": v,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "fleet", "version": server.Version},
-			"instructions":    "The operator's long-term memory and integrations, through fleetd: memory_recall reads memory; memory_suggest proposes a fact to the orchestrator, which alone saves; karmax_tools lists the integrations you may call and karmax_call calls one (a write waits for the orchestrator's approval).",
+			"instructions":    instructions,
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
 	case "tools/list":
-		return map[string]any{"tools": mcpTools}, nil
+		// Unknown (fleetd unreachable): only what any scope may use.
+		s, _ := who.get()
+		tools := []mcpTool{}
+		for _, t := range mcpTools {
+			if mayUse(s, t.Name) {
+				tools = append(tools, t)
+			}
+		}
+		return map[string]any{"tools": tools}, nil
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -201,6 +268,16 @@ func mcpHandle(m rpcMsg) (any, *rpcErr) {
 		if len(p.Arguments) > 0 {
 			if err := json.Unmarshal(p.Arguments, &a); err != nil {
 				return nil, &rpcErr{rpcBadParam, p.Name + ": " + err.Error()}
+			}
+		}
+		known := slices.ContainsFunc(mcpTools, func(t mcpTool) bool { return t.Name == p.Name })
+		if known && operatorTool(p.Name) {
+			s, err := who.get()
+			if err != nil {
+				return toolResult("", fmt.Errorf("%s: fleetd cannot say who you are: %v", p.Name, err)), nil
+			}
+			if !mayUse(s, p.Name) {
+				return nil, &rpcErr{rpcBadParam, fmt.Sprintf("%s is not for scope %s: the operator's memory and integrations are for the operator and their agents", p.Name, s)}
 			}
 		}
 		switch p.Name {

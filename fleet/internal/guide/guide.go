@@ -34,3 +34,7 @@ const memoryFrontmatter = "---\nname: fleet-memory\n" +
 // MemorySkill teaches recalling the operator's memory and suggesting to it:
 // the fleet-memory skill, installed beside the fleet skill.
 func MemorySkill() string { return memoryFrontmatter + strings.TrimRight(memoryText, "\n") + "\n" }
+
+// IsMemorySkill is whether a SKILL.md is the fleet-memory skill fleetctl
+// writes (any version of its text), not one of someone's own.
+func IsMemorySkill(text string) bool { return strings.HasPrefix(text, memoryFrontmatter) }

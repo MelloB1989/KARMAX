@@ -357,8 +357,17 @@ The orchestrator keeps the operator's long-term memory in a gitloom namespace. f
   sends it as `X-Fleet-Agent: <name>:<key>`; fleetd checks it and refuses one that does not verify. A
   worker in the container (agent-03:2, agent-03-s2) uses its container's key. An agent with a key tells as
   itself only. After upgrading fleetd, `fleetctl render` and recreate the agents to hand out the keys.
-- **The skill.** `fleetctl skill install` writes `~/.claude/skills/fleet-memory/SKILL.md` too: recall
-  before work the operator has history with, suggest durable facts, never secrets.
+- **The skill.** `fleetctl skill install` writes `~/.claude/skills/fleet-memory/SKILL.md` too, for the
+  scopes that may use memory (full: the operator, by token or on the tailnet; relay: an agent): recall
+  before work the operator has history with, suggest durable facts, never secrets. It asks fleetd who it
+  is (`GET /v1/whoami`); for a member it writes the fleet skill alone and removes a fleet-memory skill
+  fleetctl wrote earlier (one whose frontmatter is fleetctl's; nothing else in the directory). When
+  fleetd cannot say, it leaves fleet-memory as it is.
+- **The MCP server lists what you may use.** `fleetctl mcp` asks `GET /v1/whoami` at `initialize` (or
+  the first `tools/list`), and lists `memory_*` and `karmax_*` only for full and relay; a member, and
+  anyone fleetd cannot place, sees none of them, and a `tools/call` of one is refused with JSON-RPC
+  error -32602 before fleetd is asked. fleetd still decides each call; this only keeps a session from
+  being offered tools it would be refused. A whoami that fails is asked again on the next request.
 
 ## From anyone's machine — the tailnet
 
@@ -385,7 +394,11 @@ what it may do.
 - **Install.** fleetd serves fleetctl to anyone on the list: `curl -fsSL http://<kali>.<tailnet>.ts.net:7878/install.sh | sh`
   (Windows: `irm http://<kali>.<tailnet>.ts.net:7878/install.ps1 | iex`) downloads the build for
   their OS from `/dl/`, runs `fleetctl connect` (saved in their config dir; it prints who fleetd knows
-  them as), and installs the skill. The builds come from `fleet/scripts/dist.sh`, into
+  them as), and `fleetctl skill install` (the fleet skill; fleet-memory too for an operator). Then, if
+  `claude` is on their PATH, it registers the MCP server in their Claude Code user config:
+  `claude mcp add --scope user fleet -- <installed fleetctl> mcp`. A `fleet` server already there with
+  the same fleetctl is left alone; one with another path is removed and added again; no other server is
+  touched. It prints one line saying which, or, without `claude`, the command to run later. The builds come from `fleet/scripts/dist.sh`, into
   `~/.karmax/fleet/dist`; rerun it after changing fleetctl.
 - **What the agents can read.** Anyone on the list can brief an agent, and an agent reads all of
   `~/code` and pushes as the fleet's GitHub account. Credentials kept under `~/code` are hidden from
