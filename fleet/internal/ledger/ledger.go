@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS relays (
 CREATE TABLE IF NOT EXISTS host (
   container TEXT NOT NULL, at INTEGER NOT NULL, cpu REAL, mem_bytes INTEGER, mem_pct REAL);
 CREATE INDEX IF NOT EXISTS host_at ON host(at);
+CREATE TABLE IF NOT EXISTS approvals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT NOT NULL, task TEXT, tool TEXT NOT NULL,
+  args TEXT, reason TEXT, state TEXT NOT NULL, decided_by TEXT, note TEXT,
+  at INTEGER NOT NULL, decided INTEGER, expires INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS approvals_state ON approvals(state, id);
 `
 
 // Open opens (creating) the ledger.

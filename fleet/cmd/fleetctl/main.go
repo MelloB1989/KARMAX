@@ -84,6 +84,16 @@ Work (fleetd):
                                       survives fleetd restarts; --reset clears it. run --model M gives one task's
                                       session that model, and the agent goes back when the task closes
 
+The operator's integrations (KARMAX gateway; fleetd holds KARMAX's token, never the agent):
+  karmax tools [--json]               the KARMAX tools you may call, each read or write
+  karmax call <tool> [k=v | k:=<json>]… [--json-args '{}'] --reason "<why>" [--timeout 30m] [--json]
+                                      a read runs at once; a write waits for the orchestrator's
+                                      approval, then runs and prints the result (refused or expired:
+                                      exit 1, with why). k=v is a string; k:=5 or k:=true is JSON
+  approvals [--all] [-n 50] [--json]  requests waiting for a decision (full scope)
+  approve <id> | deny <id> --reason "<why>" [--by <name>]
+                                      decide on one (full scope; never on your own request)
+
 Your keyboard:
   attach <agent> [--direct]           the live session's TUI (host only), through the console when
                                       the host runs one (one controller; give it back: Ctrl-])
@@ -733,6 +743,13 @@ func run(cmd string, args []string) error {
 			fmt.Println("ok " + id)
 		}
 		return errors.Join(failed...)
+
+	case "karmax":
+		return karmaxCmd(args)
+	case "approvals":
+		return approvalsCmd(args)
+	case "approve", "deny":
+		return decideCmd(cmd, args)
 
 	case "run":
 		return runCmd(args)

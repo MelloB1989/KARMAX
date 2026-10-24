@@ -263,9 +263,15 @@ type Karmax struct {
 	Notify *bool `yaml:"notify"`
 	// Bin is the karmax CLI. Default "karmax".
 	Bin string `yaml:"bin"`
-	// APIURL is KARMAX's API, read for the orchestrator's own quota.
-	// Default http://127.0.0.1:9091.
+	// APIURL is KARMAX's API, read for the orchestrator's own quota and
+	// called by the gateway (fleetctl karmax) with KARMAX_API_TOKEN, which
+	// only fleetd holds. Default http://127.0.0.1:9091.
 	APIURL string `yaml:"api_url"`
+	// Tools is the gateway's policy, tool name (or prefix*) → read, write or
+	// deny. A read runs at once, a write waits for the orchestrator's
+	// approval, a deny is refused. Unlisted tools are classed by name
+	// (ToolClass); a few are always denied, whatever this says.
+	Tools map[string]string `yaml:"tools"`
 }
 
 // Thresholds is everything the reconciler decides on.
@@ -551,6 +557,9 @@ func (c *Config) validate() error {
 		if p == "" || filepath.IsAbs(p) || filepath.Clean(p) == "." || strings.HasPrefix(filepath.Clean(p), "..") {
 			return fmt.Errorf("hide_from_agents: %q: want a path under code, like secrets", p)
 		}
+	}
+	if err := c.Karmax.validateTools(); err != nil {
+		return err
 	}
 	// A name with @ in it is a person on the tailnet (a task's requester).
 	if strings.Contains(c.Orchestrator.Name, "@") {

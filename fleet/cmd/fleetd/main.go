@@ -116,6 +116,9 @@ func run(cfgPath string, once bool) error {
 		return err
 	}
 	f.Log = log.Printf
+	if karmax.APIToken != "" {
+		f.Karmax = karmax // the gateway: agents call KARMAX's tools, never holding its token
+	}
 	if m := cfg.Memory; m != nil {
 		if key := env[m.KeyEnv]; key != "" {
 			f.Memory = &memory.Client{URL: m.URL, Key: key, Namespace: m.Namespace}

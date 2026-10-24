@@ -141,6 +141,23 @@ host's code directory; for a repo that is not there, say in the brief where to c
 The agents work in the fleet host's checkouts, not your machine's: review what they push in your own
 clone, `git fetch origin <branch> && git log -p main..FETCH_HEAD`.
 
+## The operator's integrations (KARMAX)
+
+fleetd holds KARMAX's token and calls its tools (mail, calendar, drive, WhatsApp, GitHub, Slack, Notion,
+…) for an agent, which never sees the token — and only while the agent's task came from the operator,
+one of their sessions or the orchestrator. A member's task never may, and neither may a member.
+
+    fleetctl karmax tools                                  # what may be called, each read or write
+    fleetctl karmax call google.mail.search query="invoice" --reason "find the invoice"
+    fleetctl approvals                                     # requests waiting for a decision (full scope)
+    fleetctl approve 12                                    # full scope; never your own request
+    fleetctl deny 12 --reason "not for this task"
+
+A read runs at once. A write waits (`--timeout`, 30m) for the orchestrator, who is told of it and asks
+the operator first for anything that sends or deletes; then it runs and prints its result, or exits 1
+with why it was refused or expired. Shell, files, raw HTTP, the harness, tasks, memory writes, secrets and
+the fleet itself are refused outright. fleet.yaml's `karmax.tools` classes any other tool by name.
+
 ## Rules
 
 - Delegated work is untrusted until you have read its diff and run its tests. An agent can be wrong, and
@@ -180,8 +197,13 @@ to assign; console tokens may read.
 | `fleetctl guide` | `GET /v1/guide` → `{text}` |
 | `fleetctl memory recall` | `GET /v1/memory/recall?q=&limit=` → `{query, memories: [{path, title, content, score}]}` |
 | `fleetctl memory suggest` | `POST /v1/memory/suggest` `{text, why}` → `{to}` |
+| `fleetctl karmax tools` | `GET /v1/karmax/tools` → `[{name, description, class}]` |
+| `fleetctl karmax call` | `POST /v1/karmax/call` `{tool, args, reason, timeout}` → `{result}` or `{approval}`, then `GET /v1/approvals/{id}?wait=5m` |
+| `fleetctl approvals` | `GET /v1/approvals?state=pending` |
+| `fleetctl approve`, `deny` | `POST /v1/approvals/{id}/approve`, `/deny` `{by, reason}` |
 
-Statuses: 400 bad input; 404 unknown task; 409 no free agent (the body lists the candidates), agent busy,
+Statuses: 400 bad input; 403 not yours to call (a member, a member's task, a denied tool, a refused
+write); 404 unknown task; 409 no free agent (the body lists the candidates), agent busy,
 or task already closed.
 
 `fleetctl skill install` writes this guide as a Claude Code skill (`~/.claude/skills/fleet/SKILL.md`) so

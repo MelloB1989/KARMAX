@@ -84,3 +84,12 @@ func TestTheMemorySkillSaysWhenToRecallHowToSuggestAndNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestTextSaysHowToUseTheKARMAXGateway(t *testing.T) {
+	for _, want := range []string{"fleetctl karmax tools", "fleetctl karmax call", "--reason", "fleetctl approvals",
+		"fleetctl approve", "fleetctl deny", "POST /v1/karmax/call", "/v1/approvals/{id}/approve", "never sees the token"} {
+		if !strings.Contains(Text(), want) {
+			t.Errorf("guide lacks %q", want)
+		}
+	}
+}

@@ -665,3 +665,28 @@ func TestBriefOmitsGitHubAccountsByDefault(t *testing.T) {
 		t.Errorf("brief has a GitHub accounts section:\n%s", b)
 	}
 }
+
+func TestTheOrchestratorBriefSaysHowToDecideOnTheGatewaysWrites(t *testing.T) {
+	b, err := OrchestratorBrief(cfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"fleetctl approve <id>", "fleetctl deny <id> --reason", "fleetctl approvals",
+		"on WhatsApp first", "you alone write memory"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("orchestrator brief lacks %q", want)
+		}
+	}
+}
+
+func TestAgentBriefSaysHowToUseTheOperatorsIntegrations(t *testing.T) {
+	b, err := Brief(cfg(t), "agent-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"fleetctl karmax tools", "fleetctl karmax call", "--reason", "never\nhold KARMAX's token", "fleetd refuses"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("agent brief lacks %q", want)
+		}
+	}
+}
