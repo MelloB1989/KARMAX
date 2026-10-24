@@ -63,6 +63,7 @@ type Config struct {
 	GitHub       GitHub           `yaml:"github"`
 	Git          Git              `yaml:"git"`
 	Thresholds   Thresholds       `yaml:"thresholds"`
+	Files        Files            `yaml:"files"`
 	// Console is the fleet console on one host; nil means none.
 	Console *Console `yaml:"console"`
 	// Tailnet opens the API to people on the Tailscale network; nil means
@@ -85,6 +86,12 @@ type Memory struct {
 	// KeyEnv names gitloom's key in the env file.
 	KeyEnv    string `yaml:"key_env"`
 	Namespace string `yaml:"namespace"`
+}
+
+// Files is fleetctl cp: files to and from an agent's container.
+type Files struct {
+	// MaxBytes caps one transfer, as the tar stream's size; 0 is 2 GiB.
+	MaxBytes int64 `yaml:"max_bytes"`
 }
 
 // Tailnet is fleetd's API for people on the Tailscale network. Who calls is
@@ -373,6 +380,9 @@ func (c *Config) defaults() {
 			t.Socket = "/var/run/tailscale/tailscaled.sock"
 		}
 		or(&t.Dist, filepath.Join(c.StateDir, "dist"))
+	}
+	if c.Files.MaxBytes <= 0 {
+		c.Files.MaxBytes = 2 << 30
 	}
 	if c.TokenEnv == "" {
 		c.TokenEnv = "FLEET_TOKEN"

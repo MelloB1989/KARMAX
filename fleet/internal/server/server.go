@@ -17,7 +17,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,11 +27,13 @@ import (
 
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
+	"github.com/MelloB1989/karmax/fleet/internal/filexfer"
 	"github.com/MelloB1989/karmax/fleet/internal/guide"
 	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/memory"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
+	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 // Ops is what the API drives; *daemon.Fleet is the real one.
@@ -40,6 +44,7 @@ type Ops interface {
 	Answer(ctx context.Context, task, from, text string, now time.Time) (bool, error)
 	Assign(ctx context.Context, name, task, from, brief string, now time.Time) error
 	Followup(ctx context.Context, task, from, text string, now time.Time) error
+	Brief(ctx context.Context, task, from, repo, brief string, now time.Time) error
 	Cancel(ctx context.Context, task, from, reason string, now time.Time) error
 	Pick(repo string, now time.Time) daemon.PickReply
 	Run(ctx context.Context, in daemon.RunRequest, now time.Time) (daemon.RunReply, error)
@@ -65,6 +70,9 @@ type Ops interface {
 	Today(now time.Time) (daemon.TodayReply, error)
 	Peek(ctx context.Context, agent string, n int) (string, error)
 	Prompt(ctx context.Context, agent, text string) error
+	PutFiles(ctx context.Context, agent, dir string, body io.Reader) (int64, error)
+	GetFiles(ctx context.Context, agent, path string, w io.Writer) error
+	Rsh(ctx context.Context, agent string, argv []string, stdin io.Reader, stdout io.Writer) (target.Result, error)
 	Archives(since time.Time) ([]*archive.Manifest, error)
 	Archive(id string) (*daemon.ArchiveDetail, error)
 	PruneArchives(before time.Time) (int, error)
@@ -162,6 +170,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				return
 			}
 			v, err := h(w, r.WithContext(context.WithValue(r.Context(), scopeKey{}, s)))
+			if _, done := v.(streamed); done && err == nil {
+				return // the handler wrote the response itself
+			}
 			var held *daemon.Held
 			if errors.As(err, &held) { // taken, to be delivered later: not a failure
 				w.Header().Set("Content-Type", "application/json")
@@ -185,6 +196,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				}
 				if errors.Is(err, daemon.ErrMemoryOff) {
 					code = http.StatusNotImplemented
+				}
+				if errors.Is(err, filexfer.ErrTooLarge) {
+					code = http.StatusRequestEntityTooLarge
 				}
 				if errors.Is(err, daemon.ErrConflict) {
 					code = http.StatusConflict
@@ -310,6 +324,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 	route("POST /v1/run", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct {
 			Brief, Repo, Agent, From, Task, Queue, Model string
+			Attach                                       bool
 		}
 		if err := body(r, &in); err != nil {
 			return nil, err
@@ -335,7 +350,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), queue+3*time.Minute)
 		defer cancel()
 		return ops.Run(ctx, daemon.RunRequest{Brief: in.Brief, Repo: in.Repo, Agent: in.Agent, From: in.From,
-			Task: in.Task, Model: in.Model, Queue: queue, Limit: limit}, time.Now())
+			Task: in.Task, Model: in.Model, Queue: queue, Limit: limit, Attach: in.Attach}, time.Now())
 	}, and(fullOnly, member)...)
 	route("GET /v1/pick", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		return ops.Pick(r.URL.Query().Get("repo"), time.Now()), nil
@@ -443,6 +458,65 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		}
 		return map[string]any{"ok": true, "answered": blocked}, nil
 	}, and(and(fullOnly, relay), member)...)
+
+	route("POST /v1/tasks/{id}/brief", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct{ From, Repo, Brief string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if err := own(r, ops, r.PathValue("id")); err != nil {
+			return nil, err
+		}
+		if c := callerOf(r); c != nil && scopeOf(r) == member {
+			in.From = memberFrom(c, in.From)
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		return ok, ops.Brief(ctx, r.PathValue("id"), in.From, in.Repo, in.Brief, time.Now())
+	}, and(fullOnly, member)...)
+	route("PUT /v1/agents/{agent}/files", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		agent := r.PathValue("agent")
+		if err := holds(r, ops, agent); err != nil {
+			return nil, err
+		}
+		n, err := ops.PutFiles(r.Context(), agent, r.URL.Query().Get("path"), r.Body)
+		return map[string]any{"ok": true, "bytes": n}, err
+	}, and(fullOnly, member)...)
+	route("GET /v1/agents/{agent}/files", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		agent := r.PathValue("agent")
+		if err := holds(r, ops, agent); err != nil {
+			return nil, err
+		}
+		w.Header().Set("Trailer", "X-Fleet-Error")
+		sw := &startWriter{w: w, contentType: "application/x-tar"}
+		err := ops.GetFiles(r.Context(), agent, r.URL.Query().Get("path"), sw)
+		if err != nil && !sw.started {
+			return nil, err
+		}
+		if err != nil { // the status is sent: the trailer says why the stream stops
+			w.Header().Set("X-Fleet-Error", oneLine(err.Error()))
+		}
+		sw.start()
+		return streamed{}, nil
+	}, and(fullOnly, member)...)
+	route("POST /v1/agents/{agent}/rsh", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		// Both ways at once: the command reads the request while it writes
+		// the response.
+		_ = http.NewResponseController(w).EnableFullDuplex()
+		w.Header().Set("Trailer", "X-Fleet-Exit, X-Fleet-Stderr, X-Fleet-Error")
+		sw := &startWriter{w: w, contentType: "application/octet-stream", flush: true}
+		res, err := ops.Rsh(r.Context(), r.PathValue("agent"), r.URL.Query()["arg"], r.Body, sw)
+		if err != nil && !sw.started {
+			return nil, err
+		}
+		if err != nil {
+			w.Header().Set("X-Fleet-Error", oneLine(err.Error()))
+		}
+		sw.start()
+		w.Header().Set("X-Fleet-Exit", strconv.Itoa(res.Exit))
+		w.Header().Set("X-Fleet-Stderr", url.QueryEscape(res.Stderr))
+		return streamed{}, nil
+	}, fullOnly...)
 	route("POST /v1/rotate", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct {
 			Agent  string
@@ -642,19 +716,8 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 			return nil, err
 		}
 		// A member sees the screen of an agent at work on a task of theirs.
-		if scopeOf(r) == member {
-			var task string
-			for _, row := range ops.Status(time.Now()) {
-				if row.Agent == agent {
-					task = row.Task
-				}
-			}
-			if task == "" {
-				return nil, forbidden{fmt.Errorf("%s is not working on a task of yours", agent)}
-			}
-			if err := own(r, ops, task); err != nil {
-				return nil, forbidden{fmt.Errorf("%s is not working on a task of yours", agent)}
-			}
+		if err := holds(r, ops, agent); err != nil {
+			return nil, err
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 		defer cancel()
@@ -908,6 +971,62 @@ func memberFrom(c *Caller, asked string) string {
 		return c.Login // someone else's name, or a path: not theirs to use
 	}
 	return c.Login + "/" + asked
+}
+
+// holds refuses a member an agent that is not at work on a task of theirs.
+// Everyone else may reach any agent.
+func holds(r *http.Request, ops Ops, agent string) error {
+	if scopeOf(r) != member {
+		return nil
+	}
+	var task string
+	for _, row := range ops.Status(time.Now()) {
+		if row.Agent == agent {
+			task = row.Task
+		}
+	}
+	if task == "" {
+		return forbidden{fmt.Errorf("%s is not working on a task of yours", agent)}
+	}
+	if err := own(r, ops, task); err != nil {
+		return forbidden{fmt.Errorf("%s is not working on a task of yours", agent)}
+	}
+	return nil
+}
+
+// streamed is a handler's answer when it has written the response itself.
+type streamed struct{}
+
+// startWriter sends the status and headers with the first byte written, so
+// that a failure before any can still be an error response. flush sends
+// each write on its way, for a stream both ways.
+type startWriter struct {
+	w           http.ResponseWriter
+	contentType string
+	flush       bool
+	started     bool
+}
+
+func (s *startWriter) start() {
+	if !s.started {
+		s.started = true
+		s.w.Header().Set("Content-Type", s.contentType)
+		s.w.WriteHeader(http.StatusOK)
+	}
+}
+
+func (s *startWriter) Write(p []byte) (int, error) {
+	s.start()
+	n, err := s.w.Write(p)
+	if s.flush && err == nil {
+		_ = http.NewResponseController(s.w).Flush()
+	}
+	return n, err
+}
+
+// oneLine is text fit for a header value.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func scopeOf(r *http.Request) scope {

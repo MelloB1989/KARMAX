@@ -25,6 +25,7 @@ func runCmd(args []string) error {
 	var repo, agent, task, briefFile, model string
 	var queue, timeout time.Duration
 	var wait, asJSON bool
+	var attach repeated
 	_, pos, err := flags("run", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&repo, "repo", "", "")
 		fs.StringVar(&agent, "agent", "", "")
@@ -35,12 +36,13 @@ func runCmd(args []string) error {
 		fs.DurationVar(&queue, "queue", 0, "")
 		fs.DurationVar(&timeout, "timeout", 2*time.Hour, "")
 		fs.BoolVar(&wait, "wait", false, "")
+		fs.Var(&attach, "attach", "")
 		fs.BoolVar(&asJSON, "json", false, "")
 	})
 	if err != nil {
 		return err
 	}
-	const usage = `run <brief…|-> [--repo R] [--agent A] [--model M] [--task ID] [--from NAME] [--queue 30m] [--wait] [--timeout 2h] [--json] [--brief-file F]`
+	const usage = `run <brief…|-> [--repo R] [--agent A] [--model M] [--task ID] [--from NAME] [--queue 30m] [--attach P]… [--wait] [--timeout 2h] [--json] [--brief-file F]`
 	var brief string
 	switch {
 	case briefFile != "":
@@ -70,7 +72,15 @@ func runCmd(args []string) error {
 		// is then the same run, and fleetd answers it with the agent it has.
 		task = daemon.TaskID(brief, time.Now())
 	}
-	req := map[string]string{"brief": brief, "repo": repo, "agent": agent, "from": from, "task": task}
+	for _, p := range attach {
+		if _, err := os.Lstat(p); err != nil {
+			return err // before a task is placed
+		}
+	}
+	req := map[string]any{"brief": brief, "repo": repo, "agent": agent, "from": from, "task": task}
+	if len(attach) > 0 {
+		req["attach"] = true // placed now, briefed once the files are in
+	}
 	if model != "" {
 		req["model"] = model
 	}
@@ -93,6 +103,11 @@ func runCmd(args []string) error {
 			return exitCode{5}
 		}
 		return err
+	}
+	if len(attach) > 0 {
+		if err := attachAndBrief(c, rep, attach, brief, repo, from); err != nil {
+			return err
+		}
 	}
 	if asJSON {
 		_ = printJSON(rep)
@@ -128,6 +143,23 @@ func runCmd(args []string) error {
 		return exitCode{4}
 	}
 	return nil
+}
+
+// attachAndBrief copies the files into the task's inbox, then has fleetd
+// deliver the brief. When the files fail to arrive the task is closed as
+// undelivered: the agent was never told of it.
+func attachAndBrief(c *client, rep daemon.RunReply, paths []string, brief, repo, from string) error {
+	_, err := upload(context.Background(), c, rep.Agent, strings.TrimSuffix(daemon.Inbox(rep.Task), "/"), paths)
+	if err == nil {
+		err = c.do("POST", "/v1/tasks/"+url.PathEscape(rep.Task)+"/brief", map[string]string{"brief": brief, "repo": repo, "from": from}, nil)
+		if err == nil {
+			return nil
+		}
+	}
+	if cerr := c.do("POST", "/v1/done", map[string]any{"task": rep.Task, "outcome": "undelivered", "keep_session": true}, nil); cerr != nil {
+		err = fmt.Errorf("%w (and the task could not be closed: %v)", err, cerr)
+	}
+	return fmt.Errorf("task %s: attaching files: %w", rep.Task, err)
 }
 
 // runRetryFor is how long run keeps sending a run fleetd did not answer: a
