@@ -608,3 +608,59 @@ func TestShippedSettingsTurnClaudeAttributionOff(t *testing.T) {
 		t.Fatalf("settings.json attribution = %s, want false", s["attribution"])
 	}
 }
+
+// agent-run puts the image's skills under ~/.claude/skills and the fleet MCP
+// server into ~/.claude.json on every start, keeping what is already there.
+func TestAgentRunInstallsTheSkillsAndTheFleetMCPServerOnEveryStart(t *testing.T) {
+	l := newLocal(t)
+	opt := t.TempDir()
+	for _, f := range []string{"skills/fleet-agent/SKILL.md", "skills/fleet-memory/SKILL.md"} {
+		_ = os.MkdirAll(filepath.Dir(filepath.Join(opt, f)), 0o755)
+		if err := os.WriteFile(filepath.Join(opt, f), []byte("image "+f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code := t.TempDir()
+	if err := os.Mkdir(filepath.Join(code, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l.file(".claude.json", `{"mcpServers": {"other": {"command": "x"}}, "userID": "keep"}`)
+	l.file(".claude/skills/fleet-agent/SKILL.md", "stale")
+	l.file(".claude/skills/mine/SKILL.md", "mine")
+	cmd := exec.Command("sh", "../../../packaging/fleet/agent-run")
+	cmd.Env = append(os.Environ(), "FLEET_AGENT=agent-03", "FLEET_CODE="+code, "FLEET_OPT="+opt)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	var cj struct {
+		UserID     string `json:"userID"`
+		MCPServers map[string]struct {
+			Command string
+			Args    []string
+		} `json:"mcpServers"`
+	}
+	for i := 0; i < 100; i++ {
+		b, _ := os.ReadFile(filepath.Join(l.home, ".claude.json"))
+		cj.MCPServers = nil
+		if json.Unmarshal(b, &cj) == nil && cj.MCPServers["fleet"].Command != "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if f := cj.MCPServers["fleet"]; f.Command != "fleetctl" || strings.Join(f.Args, " ") != "mcp" {
+		t.Errorf("mcpServers.fleet = %+v", f)
+	}
+	if cj.MCPServers["other"].Command != "x" || cj.UserID != "keep" {
+		t.Errorf("agent-run dropped what ~/.claude.json already held: %+v", cj)
+	}
+	for _, n := range []string{"fleet-agent", "fleet-memory"} {
+		b, _ := os.ReadFile(filepath.Join(l.home, ".claude/skills", n, "SKILL.md"))
+		if string(b) != "image skills/"+n+"/SKILL.md" {
+			t.Errorf("skill %s = %q", n, b)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(l.home, ".claude/skills/mine/SKILL.md")); string(b) != "mine" {
+		t.Errorf("agent-run removed a skill of the agent's own: %q", b)
+	}
+}

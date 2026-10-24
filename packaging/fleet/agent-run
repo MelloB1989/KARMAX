@@ -56,6 +56,8 @@ mkdir -p "$W" /work/wt "$C/fleet" "$C/sessions"
 # an existing volume. The agent's brief arrives in its env (rendered by
 # fleetctl), which is how it reaches another host's docker daemon too.
 cp /opt/fleet/settings.json "$C/settings.json"
+# The fleet's skills (fleet-agent, fleet-memory), refreshed the same way.
+mkdir -p "$C/skills" && cp -R "${FLEET_OPT:-/opt/fleet}/skills/." "$C/skills/"
 if [ -n "${FLEET_CLAUDE_MD:-}" ]; then
   printf '%s' "$FLEET_CLAUDE_MD" | base64 -d > "$C/CLAUDE.md"
 fi
@@ -81,11 +83,13 @@ done
 # Onboarding done, /work and the shared code trusted, bypass mode accepted,
 # the "make auto mode your default?" nudge seen (2.1.294 opens it on first
 # start, and the pane then sits on it, deaf to messages) — merged into
-# whatever Claude Code already keeps there, on every start. fleetd alerts on
-# any dialog a later version adds.
+# whatever Claude Code already keeps there, on every start, with the fleet MCP
+# server (fleetctl mcp) in every container. fleetd alerts on any dialog a later
+# version adds.
 [ -s "$HOME/.claude.json" ] || echo '{}' > "$HOME/.claude.json"
 jq --arg code "${FLEET_CODE:-$HOME/code}" '. * {
     hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, hasSeenAutoDefaultNudge: true,
+    mcpServers: {fleet: {command: "fleetctl", args: ["mcp"]}},
     projects: {"/work": {hasTrustDialogAccepted: true}, ($code): {hasTrustDialogAccepted: true}}
   }' "$HOME/.claude.json" > "$HOME/.claude.json.tmp" && mv "$HOME/.claude.json.tmp" "$HOME/.claude.json"
 

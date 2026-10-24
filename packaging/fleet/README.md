@@ -17,6 +17,7 @@ session runs by itself no longer stalls it or reaches the next caller.
 | `Dockerfile` | the image every agent and `karmax-brain` runs (build from the repo root) |
 | `agent-run` | inside each agent: keeps `claude --name agent-NN` alive in tmux |
 | `home/settings.json` | fleet-managed Claude Code settings: inbound messages, status line, hooks |
+| `skills/<name>/SKILL.md` | skills copied into `~/.claude/skills` by `agent-run` on every start (`fleet-memory` must equal `fleetctl skill install`'s; a test checks) |
 | `home/status.sh`, `home/event.sh` | the status-line and hook taps fleetd reads |
 | `host-bootstrap.sh` | Phase 1: `kali` and `pc2` host setup |
 | `fleet.yaml.example` | the fleet; copy to `~/.karmax/fleet/fleet.yaml` |

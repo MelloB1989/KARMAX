@@ -83,6 +83,7 @@ COPY packaging/fleet/gh packaging/fleet/git-credential-fleet packaging/fleet/fle
 COPY packaging/fleet/home/status.sh packaging/fleet/home/event.sh packaging/fleet/home/settings.json /opt/fleet/
 COPY packaging/fleet/home/gitconfig /etc/gitconfig
 COPY packaging/fleet/tmux.conf /etc/tmux.conf
+COPY packaging/fleet/skills /opt/fleet/skills
 COPY --from=build /out/karmax /out/fleetctl /usr/local/bin/
 RUN chmod 755 /opt/fleet/agent-run /opt/fleet/*.sh /usr/local/bin/kbuild \
       /usr/local/bin/gh /usr/local/bin/git-credential-fleet /usr/local/bin/fleet-gh-token \

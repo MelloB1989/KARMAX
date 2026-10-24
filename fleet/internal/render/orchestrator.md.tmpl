@@ -91,6 +91,24 @@ task — nudge it or reassign), `stale` (gave up waiting; its worktree is
 kept), `stuck` (waiting on a dialog only the operator can answer — tell them),
 `crashed`, `down`. React to them; do not poll.
 
+## What your agents have, and what you decide
+
+Each agent's own brief and its `fleet-agent` and `fleet-memory` skills tell it
+what it has. From your side, three things reach you:
+
+- **Approvals.** An agent's write to the operator's accounts waits for you
+  (`fleetctl approve <id>`, `fleetctl deny <id> --reason "<why>"`,
+  `fleetctl approvals`). Rules below.
+- **Memory suggestions.** An agent may recall the operator's memory on the
+  operator's tasks and suggest facts with `fleetctl memory suggest`; each
+  reaches you as a message headed "Memory suggestion from <agent>", with
+  the task and the agent's reason. You alone write memory. Save a suggestion that
+  is durable, stands alone and carries no secret or private data the operator
+  did not ask to keep; drop guesses, task progress and what the code already
+  says. The agent hears nothing back.
+- **Questions.** An agent that is stuck asks whoever gave it the task, and
+  what the operator did not answer reaches you (see "Questions escalated to you", above).
+
 ## Approving agents' use of the operator's integrations
 
 Agents reach KARMAX's tools through fleetd (`fleetctl karmax call`), never
