@@ -355,6 +355,50 @@ what it may do.
   agent containers (not in the orchestrator's). Anything else under `~/code` an agent can read, a member
   can ask for.
 
+## The operator's integrations — the KARMAX gateway
+
+KARMAX holds the operator's integrations: WhatsApp (wacli), Google mail, calendar and drive, GitHub,
+Slack, Notion, Jira and more, behind its tool API (`GET /api/tools`, `POST /api/tools/{name}`) and a
+token that can do everything, a shell included. Agents never get that token. fleetd holds it and calls
+the tools for them, under the operator's rules:
+
+    fleetctl karmax tools                       # what this agent may call, each read or write
+    fleetctl karmax call <tool> k=v … --reason "<why>"   # k:=<json> for numbers and lists; --json-args '{}'
+
+- **A read runs at once.** A tool is a read when fleet.yaml's `karmax.tools` says so, else when its last
+  name part starts with a read verb (`list`, `get`, `read`, `search`, `view`, `show`, `find`, `recall`,
+  `retrieve`, `monitored`, `lookup`, `query`, `history`, `status`, …): `google.mail.search`,
+  `notion.query_database`, `whatsapp.monitored`.
+- **A write waits for the orchestrator.** Everything else is a write. fleetd files it on the ledger
+  (`approvals`: id, agent, task, tool, arguments, reason, state, who decided, when) and tells the
+  orchestrator at once through the relay: the tool, its arguments, the reason, the first line of the
+  task's brief, and how to answer. She approves low-risk writes herself; for anything destructive, or
+  that sends or deletes on the operator's behalf, she asks the operator on WhatsApp first and decides
+  from their answer: `fleetctl approve <id>`, `fleetctl deny <id> --reason "…"`, `fleetctl approvals`
+  for what is pending. The agent's `call` blocks until then (`--timeout`, 30m by default; a request
+  nobody decides expires), runs the tool once, and prints the result — or exits 1 with the refusal.
+  Nobody decides on their own request, and an agent cannot decide at all (the routes are full scope).
+- **Some tools are always denied**, whatever `karmax.tools` says: `shell.exec`, `file.*`,
+  `http.request`, `harness.*`, `task.*`, `scheduler.*`, `proposal.*`, `orgops*`, `memory.ingest` and
+  `memory.forget` (the orchestrator alone writes memory), anything named for credentials or secrets, and
+  anything fleet-related. They are left out of `karmax tools` and refused with nothing filed.
+- **Who may use it** is decided by fleetd, as for memory and secrets: the full scope (the operator,
+  their sessions, the orchestrator) may; a member on the tailnet never may, not even to read; an agent
+  may only while its current task — by the ledger's assigner, never by anything the agent sends — came
+  from the operator, an operator's session or the orchestrator, and it proves which agent it is with its
+  container's key (`X-Fleet-Agent`).
+- **Audit.** Every call and decision is an event (`karmax.call`, `karmax.decision`) with the tool, agent,
+  task, class and decision. Events carry argument names, never their values; the values are in the
+  approvals ledger, which only the full scope reads.
+
+    karmax:
+      api_url: http://127.0.0.1:9091     # KARMAX's API; fleetd's env file holds KARMAX_API_TOKEN
+      tools:                             # explicit classes override the name; prefix* entries allowed
+        slack.channels: read
+        instagram.inbox: read
+        github.*: write
+        x.post: deny
+
 ## Prompting an agent directly
 
 The live panel, the 3D office and the keyboard handover (`Ctrl+]`) are described in [FLEET-CONSOLE.md](FLEET-CONSOLE.md); `attach` below goes through the console when the host runs one.

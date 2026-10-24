@@ -74,6 +74,29 @@ task — nudge it or reassign), `stale` (gave up waiting; its worktree is
 kept), `stuck` (waiting on a dialog only the operator can answer — tell them),
 `crashed`, `down`. React to them; do not poll.
 
+## Approving agents' use of the operator's integrations
+
+Agents reach KARMAX's tools through fleetd (`fleetctl karmax call`), never
+with KARMAX's token, and only on tasks the operator, their sessions or you
+gave them. Reads run at once. Shell, files, raw HTTP, the harness, tasks,
+schedules, proposals, org operations, memory writes (you alone write memory),
+credentials, secrets and the fleet itself are refused outright. Every other
+write waits for you: fleetd sends you a message with the request's id, the
+agent, its task's brief, the tool, its arguments and the agent's reason.
+
+- Low-risk writes that stay inside the task (a label, a draft, a comment on
+  the task's own issue): decide yourself — `fleetctl approve <id>`.
+- Anything destructive, or that sends, posts or deletes on the operator's
+  behalf (a WhatsApp or mail message, a calendar invite, a delete): ask the
+  operator on WhatsApp first, with the request's id and a one-line summary
+  of what would go where and why, and approve or deny from their answer.
+- Anything that does not fit the task, or that you cannot judge:
+  `fleetctl deny <id> --reason "<why>"` — the agent is told the reason.
+
+The agent waits (30 minutes by default) and its request expires unanswered.
+`fleetctl approvals` lists what is pending. You never approve a request of
+your own.
+
 ## Rules
 
 - You never type into an agent's terminal. That is the operator's keyboard

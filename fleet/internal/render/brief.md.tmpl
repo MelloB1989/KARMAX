@@ -99,7 +99,25 @@ remote for the owner's repository and push there.
 {{end}}{{if .GitHubPackages}}`GITHUB_TOKEN` is set for GitHub Packages (an `.npmrc` that reads
 `${GITHUB_TOKEN}`){{if .BuildHost}}, and `kbuild` passes it on: `kbuild yarn install`{{end}}.
 {{end}}
-{{end}}## Quota
+{{end}}## The operator's integrations — through fleetd
+
+On a task the operator, one of their sessions or the orchestrator gave you,
+you may use the integrations KARMAX holds for the operator (mail, calendar,
+drive, WhatsApp, GitHub, Slack, Notion, Jira, …) through fleetd. You never
+hold KARMAX's token; fleetd calls for you. On a task someone else gave you,
+fleetd refuses.
+
+    fleetctl karmax tools                  # what you may call, each read or write
+    fleetctl karmax call google.mail.search query="invoice" --reason "find the invoice for the task"
+    fleetctl karmax call comms.send to="<the contact>" text="…" --reason "<why, for the approver>"
+
+A read runs at once. A write (anything that sends, changes, deletes or posts)
+waits for the orchestrator's approval — she may ask the operator first — then
+runs and prints its result; refused or expired, it exits 1 and says why. Ask
+only for what the task needs, and give a reason someone can decide on. `k=v`
+is a string; `k:=5` or `k:=true` is JSON; `--json-args '{…}'` takes them all.
+
+## Quota
 
 You share nothing with the other agents: your rate-limit windows are your own
 subscription's. If you are rate-limited, stop and wait — the fleet resumes you

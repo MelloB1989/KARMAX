@@ -88,7 +88,17 @@ karmax:
   webhook_secret_env: FLEET_WEBHOOK_SECRET
   dashboard: fleet          # make it once with KARMAX's dashboard tool; fleetd fills its data/
   # notify: true            # phone alerts through `karmax notify`
-  # api_url: http://127.0.0.1:9091
+  # api_url: http://127.0.0.1:9091   # also the KARMAX gateway's (fleetctl karmax); KARMAX_API_TOKEN in env_file
+  # The gateway's policy (docs/AGENT-FLEET.md): read runs, write waits for the
+  # orchestrator's approval, deny is refused. Unlisted tools are read when their
+  # name says so (…list, …search, …read), else write. shell.exec, file.*,
+  # http.request, harness.*, task.*, memory writes, secrets and fleet tools are
+  # always denied.
+  # tools:
+  #   slack.channels: read
+  #   instagram.inbox: read
+  #   github.*: write
+  #   x.post: deny
 
 thresholds:                 # every default shown
   tick: 30s
