@@ -141,7 +141,11 @@ func run(cfgPath string, once bool) error {
 		tctx, cancel := context.WithTimeout(ctx, cfg.Thresholds.Tick*3)
 		defer cancel()
 		f.Tick(tctx, now)
-		if q, err := karmax.Quota(tctx); err == nil {
+		// The quota gets its own deadline: a slow tick (many workers, a loaded
+		// host) must not use up the time the orchestrator's quota needs.
+		qctx, qcancel := context.WithTimeout(ctx, 15*time.Second)
+		defer qcancel()
+		if q, err := karmax.Quota(qctx); err == nil {
 			orchQuota.Store(q)
 			_ = db.AddQuota(ledger.Quota{Account: o.Name, At: now, FiveHour: q.FiveHour, FiveResets: q.FiveHourResets,
 				SevenDay: q.SevenDay, SevenResets: q.SevenDayResets, Source: "harness"})

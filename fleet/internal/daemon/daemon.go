@@ -687,16 +687,35 @@ func (f *Fleet) rotate(ctx context.Context, name string, b Box, st reconcile.Sta
 	if err := b.DeleteTranscript(ctx, a.Session); err != nil {
 		f.Log("delete transcript %s/%s: %v", name, a.Session, err)
 	}
+	// Each removal has its own deadline, not the tick's: an agent with a
+	// backlog of old worktrees (its kbuild ones under the shared code) must not
+	// use up the tick every other worker shares. A few per rotation; the rest
+	// go at the next one.
+	tries := 0
 	for _, w := range m.Worktrees {
 		if !w.Safe() {
 			continue
 		}
-		if err := b.RemoveWorktree(ctx, w); err != nil {
+		if tries == removePerRotate {
+			break
+		}
+		tries++
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), removeTimeout)
+		err := b.RemoveWorktree(rctx, w)
+		cancel()
+		if err != nil {
 			f.Log("remove worktree %s: %v", w.Path, err)
 		}
 	}
 	return nil
 }
+
+// removePerRotate is how many safe worktrees one rotation removes, each
+// within removeTimeout.
+const (
+	removePerRotate = 4
+	removeTimeout   = 45 * time.Second
+)
 
 // reap ends what a session that is gone left running: a job it detached, a
 // server it started. Nothing of it belongs to the agent's next task.

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -393,5 +394,41 @@ func TestAGrantToAnAgentIsItsSlot1sAndASlotReadsItsOwnAndItsTasks(t *testing.T) 
 	}
 	if _, err := f.SecretRead("agent-01:2", "API_KEY", t0); err != nil {
 		t.Fatalf("slot 2 reads its own grant: %v", err)
+	}
+}
+
+// An agent with a backlog of old, safe worktrees (its kbuild ones under the
+// shared code, all clean and pushed) has a few removed per rotation, each
+// with a deadline of its own: a tick whose time is already spent does not
+// fail them, and the rest wait for the next rotation.
+func TestARotationRemovesAFewWorktreesOnItsOwnDeadline(t *testing.T) {
+	f, boxes, _ := newSlots(t)
+	f.Tick(context.Background(), t0)
+	b := boxes["agent-01"]
+	b.transcript["s-agent-01"] = transcript
+	for i := range 10 {
+		b.wts = append(b.wts, agent.Worktree{Path: fmt.Sprintf("/home/op/code/.worktrees/agent-01/old-%d", i)})
+	}
+	if err := f.Assign(context.Background(), "agent-01", "t1", "operator", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Done("agent-01", "t1", "done", "", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	f.Tick(spent, t0.Add(time.Minute))
+
+	removed, dead := 0, 0
+	for _, c := range b.snapshotCalls() {
+		switch {
+		case strings.HasPrefix(c, "rmwt-dead "):
+			dead++
+		case strings.HasPrefix(c, "rmwt "):
+			removed++
+		}
+	}
+	if dead != 0 || removed != removePerRotate {
+		t.Fatalf("removed %d, under a spent context %d; want %d and 0: %v", removed, dead, removePerRotate, b.snapshotCalls())
 	}
 }

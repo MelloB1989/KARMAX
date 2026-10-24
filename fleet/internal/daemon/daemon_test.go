@@ -90,7 +90,11 @@ func (b *box) DeleteTranscript(_ context.Context, sid string) error {
 	b.log("delete " + sid)
 	return nil
 }
-func (b *box) RemoveWorktree(_ context.Context, w agent.Worktree) error {
+func (b *box) RemoveWorktree(ctx context.Context, w agent.Worktree) error {
+	if ctx.Err() != nil {
+		b.log("rmwt-dead " + w.Path) // removed under a context already spent
+		return ctx.Err()
+	}
 	b.log("rmwt " + w.Path)
 	return nil
 }
