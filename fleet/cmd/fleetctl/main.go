@@ -43,9 +43,11 @@ import (
 
 const usage = `fleetctl — the agent fleet (docs/AGENT-FLEET.md)
 
+An <agent> is any worker: an agent's own name is its slot 1, <agent>:k its slot k (agent-01:2).
+
 Roster and records (fleetd):
-  status [--json]                     one row per agent, for the orchestrator
-  ls [--json]                         the same, as a table
+  status [--json]                     one row per worker (agent and slot), for the orchestrator
+  ls [--json]                         the same, as a table, each agent's slots under it
   quota [--json]                      each subscription's windows
   events <agent> [--since 2h] [--json]
   usage [--by agent|model] [--since 7d] [--json]

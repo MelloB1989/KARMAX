@@ -308,7 +308,10 @@ func TestHooksAndStatusLineWriteToTheirSlotsFiles(t *testing.T) {
 	run("event.sh", "", `{"hook_event_name":"Stop","session_id":"s1"}`)
 	run("status.sh", "2", `{"session_id":"s2"}`)
 	run("status.sh", "1", `{"session_id":"s1"}`)
-	read := func(rel string) string { b, _ := os.ReadFile(filepath.Join(home, ".claude/fleet", rel)); return string(b) }
+	read := func(rel string) string {
+		b, _ := os.ReadFile(filepath.Join(home, ".claude/fleet", rel))
+		return string(b)
+	}
 	var e struct{ Session string }
 	if json.Unmarshal([]byte(read("slot-2/events.jsonl")), &e); e.Session != "s2" {
 		t.Errorf("slot 2's hook log = %q", read("slot-2/events.jsonl"))

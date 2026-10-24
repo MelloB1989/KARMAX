@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -451,6 +452,14 @@ func TestKillSessionProcsOnRealProcesses(t *testing.T) {
 			t.Skip("cannot start setsid sleep:", err)
 		}
 		t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+		// Until it has exec'd, the child's environ is still the test's: under
+		// load the script would look before it is there.
+		for i := 0; i < 200; i++ {
+			if b, _ := os.ReadFile("/proc/" + strconv.Itoa(c.Process.Pid) + "/environ"); strings.Contains(string(b), env[0]) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		return c
 	}
 	mine := start("CLAUDE_CODE_SESSION_ID=s-gone", "FLEET_AGENT=agent-03")

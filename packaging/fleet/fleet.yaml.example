@@ -59,12 +59,17 @@ orchestrator:
   #                          # Claude login: no karmax-brain, no token_env (use it when
   #                          # no agent runs on this host)
 
+# Sessions each agent runs at once, each a worker with tasks of its own: slot 1 is the
+# agent's name, slot k is <agent>:k (agent-01:2). Give each slot about 1.25 GB of the
+# container's memory (memory: below). agents.<name>.slots overrides it for one agent.
+slots: 2
+
 agents:
   agent-01: {host: kali, token_env: CLAUDE_TOKEN_AGENT_01, models: [sonnet, opus], cpus: "2", memory: 4g}
   agent-02: {host: kali, token_env: CLAUDE_TOKEN_AGENT_02, models: [sonnet, opus], cpus: "2", memory: 4g}
   agent-03: {host: kali, token_env: CLAUDE_TOKEN_AGENT_03, models: [sonnet], cpus: "2", memory: 4g}
   agent-04: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_04, models: [sonnet, opus], cpus: "2", memory: 4g}
-  agent-05: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_05, models: [sonnet]}
+  agent-05: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_05, models: [sonnet], slots: 1}
   agent-06: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_06, models: [sonnet]}
   agent-07: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_07, models: [sonnet]}
   agent-08: {host: pc2,  token_env: CLAUDE_TOKEN_AGENT_08, models: [sonnet]}

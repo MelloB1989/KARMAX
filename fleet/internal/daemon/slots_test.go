@@ -149,7 +149,7 @@ func TestASiblingFollowsSlot1sContainerAndNeverStartsIt(t *testing.T) {
 	if two.Phase != reconcile.Down || !two.StartFailing.Equal(one.StartFailing) || one.StartFailing.IsZero() {
 		t.Errorf("slot 2 = %s since %v; slot 1 = %s since %v", two.Phase, two.StartFailing, one.Phase, one.StartFailing)
 	}
-	if !two.Recovering(t0.Add(2*time.Minute)) {
+	if !two.Recovering(t0.Add(2 * time.Minute)) {
 		t.Error("slot 2 is not recovering while slot 1 is: a wait on its task would give up")
 	}
 	out.mu.Lock()

@@ -85,7 +85,7 @@ type Agent struct {
 	SlotOf string `json:"slot_of"`
 	Slot   int    `json:"slot"`
 	Host   string `json:"host"`
-	Live bool   `json:"live"` // on the console's host: terminals and live sources exist
+	Live   bool   `json:"live"` // on the console's host: terminals and live sources exist
 
 	// From fleetd (recorded, ~30 s).
 	Phase      string    `json:"phase"`
