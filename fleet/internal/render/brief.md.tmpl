@@ -141,9 +141,17 @@ brief wins; say so in your report.
 Secrets come only through `fleetctl secret`. Never print one, commit one,
 write one into a file in a repo, or put one in a message, a report or a
 question; a token you see by accident stays out of everything you write.
-{{- /* v2-secrets: when `fleetctl secret exec` / `get --to` land, add the two
-usage lines here, from that task's brief (run a command with the secret in its
-environment; hand one to a named destination), and what a refusal means. */}}
+
+    fleetctl secret exec OPENAI_API_KEY=openai -- <cmd> [args]   # in cmd's environment, nothing printed
+    fleetctl secret get deploy-key --to deploy_key               # a 0600 file under /work/.secrets
+
+A brief names a granted secret, never its value. Never `--print` one or
+`cat` its file: what you print enters your context. fleetd blanks a stored
+value in any message as `[secret:<name>]`, but do not lean on that. A secret
+you were not granted is refused: say so in your report rather than looking
+for another way in.{{if .BuildHost}} `kbuild` does not carry a secret to the
+build host (it cannot see `/work/.secrets`, and `secret exec` around `kbuild`
+does not pass the environment): run what needs it here, or ask the assigner.{{end}}
 Like the integrations above, secrets are for the operator's tasks only.
 
 ### Public repos

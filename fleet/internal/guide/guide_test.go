@@ -121,7 +121,7 @@ func TestTheShippedAgentSkillCoversEveryToolAndFailure(t *testing.T) {
 	for _, want := range []string{"fleetctl tell", "--kind progress", "fleetctl ask", "exit 4", "/work/inbox/<task>/",
 		"fleetctl karmax tools", "fleetctl karmax call", "--reason", "k:=5", "--json-args", "Reads are free", "Denied outright",
 		"fleetctl memory recall", "fleetctl secret", "fleetctl whoami", "fleetctl model", "kbuild", "--no-verify", "403", "queued",
-		"v2-files", "v2-secrets"} {
+		"v2-files", "fleetctl secret exec", "--to"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("fleet-agent skill lacks %q", want)
 		}

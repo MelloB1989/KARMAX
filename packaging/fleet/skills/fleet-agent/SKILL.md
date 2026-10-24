@@ -107,9 +107,23 @@ a file in a repo, or put one in a message, report, question or `--reason`. If
 you meet one by accident (a token in a log), leave it out of everything you
 write.
 
-<!-- v2-secrets: when `fleetctl secret exec` / `get --to` land, write their usage
-here from that task's brief: running a command with a secret in its environment,
-handing a secret to a named destination, and what each refusal means. -->
+```
+fleetctl secret exec OPENAI_API_KEY=openai -- <cmd> [args]   # the secret in cmd's environment; nothing printed; cmd's exit code
+fleetctl secret get deploy-key --to deploy_key               # a 0600 file under /work/.secrets (other paths refused)
+```
+
+The brief names a secret granted to you (never its value). Grants belong to a
+task and end when it closes. Never use `--print` or `cat` the file: what you
+print enters your context.
+
+| Refusal | What it means | What to do |
+|---|---|---|
+| 403, not granted | no grant for your task or agent, or it expired | say so in your report; do not look for another way in |
+| 403, not the operator's task | a team member gave this task | secrets are for the operator's tasks only |
+| 403, does not verify | your `FLEET_AGENT_KEY` is missing or wrong | report it; the fleet needs a re-render |
+| `--to` refused | the path is outside `/work/.secrets` or escapes it | use a plain name under it |
+
+`kbuild` does not carry a secret to the build host: run what needs it here.
 
 ## Model and identity
 

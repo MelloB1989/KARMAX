@@ -101,8 +101,10 @@ func (f *Fleet) Ask(ctx context.Context, from, text string, timeout time.Duratio
 }
 
 // answerBlocked gives text to the ask blocked on a task, if one is, and files
-// it under the task as the answer.
+// it under the task as the answer. It does not go through deliverMsg, so it
+// is redacted here.
 func (f *Fleet) answerBlocked(task, from, agent, text string, now time.Time) bool {
+	text = f.redactSecrets(text)
 	f.askMu.Lock()
 	defer f.askMu.Unlock()
 	a := f.asks[task]
