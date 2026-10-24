@@ -330,3 +330,48 @@ func TestKnownReadsWithoutAReadVerbAreFree(t *testing.T) {
 		t.Errorf("slack.channels under slack.*: write = %s", got)
 	}
 }
+
+func TestWacliUnderscoreNamesAreClassedByTheirWords(t *testing.T) {
+	var k Karmax
+	reads := []string{
+		"whatsapp_get_chat", "whatsapp_get_contact", "whatsapp_list_calls", "whatsapp_list_chats",
+		"whatsapp_list_contacts", "whatsapp_list_groups", "whatsapp_list_triggers", "whatsapp_list_webhooks",
+		"whatsapp_search_messages",
+		// Nouns only, reads by their descriptions.
+		"whatsapp_status", "whatsapp_logs", "whatsapp_message_receipts", "whatsapp_webhook_deliveries",
+		"whatsapp_group_info", "whatsapp_call_status", "whatsapp_check_numbers", "whatsapp_resolve",
+		"whatsapp_download_media",
+	}
+	writes := []string{
+		"app.push", "calendar.add", "call.start", "comms.escalate", "comms.send", "contact.add", "contact.update",
+		"google", "notify.send", "profile.update", "propose", "recipe.write", "reminder.add", "review.resolve",
+		"self.remind", "whatsapp.monitor",
+		"whatsapp_answer_call", "whatsapp_bulk_send", "whatsapp_create_group", "whatsapp_create_trigger",
+		"whatsapp_create_webhook", "whatsapp_delete_message", "whatsapp_delete_trigger", "whatsapp_delete_webhook",
+		"whatsapp_edit_message", "whatsapp_end_call", "whatsapp_join_group", "whatsapp_leave_group",
+		"whatsapp_place_call", "whatsapp_reject_call", "whatsapp_rename_group", "whatsapp_replay_webhook_delivery",
+		"whatsapp_send_message", "whatsapp_send_story", "whatsapp_set_chat_locked", "whatsapp_set_dnd",
+		"whatsapp_set_presence", "whatsapp_set_trigger_enabled", "whatsapp_set_typing", "whatsapp_test_trigger",
+		"whatsapp_test_webhook", "whatsapp_sync",
+		// It adds and removes people, and can reset a link.
+		"whatsapp_group_participants", "whatsapp_group_invite_link",
+		// Made up: a read verb does not save a name with a write verb in it.
+		"whatsapp_set_foo", "whatsapp_list_delete", "slack.history_delete", "_", "whatsapp_",
+	}
+	for _, name := range reads {
+		if got := k.ToolClass(name); got != ToolRead {
+			t.Errorf("%s = %s, want read", name, got)
+		}
+	}
+	for _, name := range writes {
+		if got := k.ToolClass(name); got != ToolWrite {
+			t.Errorf("%s = %s, want write", name, got)
+		}
+	}
+	// The always-denied list still wins over a read verb.
+	for _, name := range []string{"whatsapp_list_secrets", "fleet_list", "job_list.run", "file.list_dir"} {
+		if got := (Karmax{Tools: map[string]string{"whatsapp_*": "read"}}).ToolClass(name); got != ToolDeny {
+			t.Errorf("%s = %s, want deny", name, got)
+		}
+	}
+}
