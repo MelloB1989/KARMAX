@@ -250,3 +250,122 @@ func TestACallerOutranksAToken(t *testing.T) {
 		t.Fatalf("member with the full token: %d, calls %v", rec.Code, f.calls)
 	}
 }
+
+// The install script registers fleetctl's MCP server with Claude Code: once,
+// whatever the runs; again when it names another fleetctl; and never another
+// server. Without claude it says what to run later. Here curl, fleetctl and
+// claude are fakes on PATH, in a home of the test's own.
+func TestTheInstallScriptRegistersTheMCPServerOnceAndReplacesAStalePath(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	_, h, _ := tailnetSetup(t)
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "install.sh")
+	if err := os.WriteFile(script, tdo(t, h, "GET", "/install.sh", ramIP, "", "").Body.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin, noClaude, state := filepath.Join(tmp, "fake"), filepath.Join(tmp, "fake-no-claude"), filepath.Join(tmp, "mcp")
+	for _, d := range []string{bin, noClaude, state} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	curl := `#!/bin/sh
+while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift ;; esac; shift; done
+printf '#!/bin/sh\necho "fleetctl $*" >>"$LOG"\n' >"$out"
+`
+	// claude keeps each server's command in $STATE/<name>.
+	claude := `#!/bin/sh
+echo "claude $*" >>"$LOG"
+case "$1 $2" in
+"mcp get")
+	[ -f "$STATE/$3" ] || { echo "No MCP server named \"$3\"." >&2; exit 1; }
+	printf '%s:\n  Scope: User config\n  Type: stdio\n  Command: %s\n  Args: mcp\n' "$3" "$(cat "$STATE/$3")" ;;
+"mcp remove")
+	[ -f "$STATE/$5" ] || exit 1
+	rm "$STATE/$5" ;;
+"mcp add")
+	[ ! -f "$STATE/$5" ] || { echo "MCP server $5 already exists in user config" >&2; exit 1; }
+	echo "$7" >"$STATE/$5" ;;
+esac
+`
+	for p, body := range map[string]string{bin + "/curl": curl, noClaude + "/curl": curl, bin + "/claude": claude} {
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := filepath.Join(tmp, "bin")
+	logf := filepath.Join(tmp, "log")
+	install := func(path string) (out, log string) {
+		t.Helper()
+		_ = os.Remove(logf)
+		sh := exec.Command("sh", script)
+		sh.Env = []string{"PATH=" + path + ":/usr/bin:/bin", "HOME=" + tmp, "FLEETCTL_DIR=" + dir, "LOG=" + logf, "STATE=" + state}
+		b, err := sh.CombinedOutput()
+		if err != nil {
+			t.Fatalf("install.sh: %v\n%s", err, b)
+		}
+		l, _ := os.ReadFile(logf)
+		return string(b), string(l)
+	}
+	registered := func() string {
+		b, _ := os.ReadFile(filepath.Join(state, "fleet"))
+		return strings.TrimSpace(string(b))
+	}
+	_ = os.WriteFile(filepath.Join(state, "other"), []byte("/opt/other\n"), 0o644)
+	fleetctl := dir + "/fleetctl"
+
+	out, log := install(bin)
+	if !strings.Contains(out, "registered the fleet MCP server with Claude Code: "+fleetctl+" mcp") || registered() != fleetctl {
+		t.Fatalf("first install: %s\nlog:\n%s", out, log)
+	}
+	if !strings.Contains(log, "fleetctl connect http://kali.tailnet-example.ts.net:7878\nfleetctl skill install --force\n") ||
+		!strings.Contains(log, "claude mcp add --scope user fleet -- "+fleetctl+" mcp\n") {
+		t.Fatalf("first install ran:\n%s", log)
+	}
+
+	out, log = install(bin)
+	if !strings.Contains(out, "already has the fleet MCP server") || strings.Contains(log, "mcp add") || strings.Contains(log, "mcp remove") {
+		t.Fatalf("second install: %s\nlog:\n%s", out, log)
+	}
+
+	_ = os.WriteFile(filepath.Join(state, "fleet"), []byte("/old/fleetctl\n"), 0o644)
+	out, log = install(bin)
+	if !strings.Contains(out, "registered the fleet MCP server") || registered() != fleetctl ||
+		!strings.Contains(log, "claude mcp remove --scope user fleet\nclaude mcp add ") {
+		t.Fatalf("install over a stale path: %s\nlog:\n%s", out, log)
+	}
+	if b, _ := os.ReadFile(filepath.Join(state, "other")); string(b) != "/opt/other\n" {
+		t.Fatalf("another server changed: %q", b)
+	}
+
+	_ = os.Remove(filepath.Join(state, "fleet"))
+	out, _ = install(noClaude)
+	if !strings.Contains(out, "claude was not found: once Claude Code is installed, run  claude mcp add --scope user fleet -- "+fleetctl+" mcp") ||
+		registered() != "" {
+		t.Fatalf("install without claude: %s", out)
+	}
+}
+
+// The Windows script does the same in PowerShell, and quotes the -- so a
+// script shim for claude still gets it.
+func TestTheWindowsInstallScriptRegistersTheMCPServer(t *testing.T) {
+	_, h, _ := tailnetSetup(t)
+	ps := tdo(t, h, "GET", "/install.ps1", ramIP, "", "").Body.String()
+	for _, want := range []string{
+		"& $exe skill install --force\n",
+		"if (Get-Command claude -ErrorAction SilentlyContinue) {",
+		"$got = (& claude mcp get fleet 2>$null | Out-String)",
+		"if ($got -match ('(?m)Command: ' + [regex]::Escape($exe) + '\\s*$')) {",
+		"& claude mcp remove --scope user fleet 2>$null | Out-Null\n    & claude mcp add --scope user fleet '--' $exe mcp | Out-Null",
+		`Write-Host "claude was not found: once Claude Code is installed, run  $add"`,
+	} {
+		if !strings.Contains(ps, want) {
+			t.Errorf("install.ps1 lacks %q", want)
+		}
+	}
+	if strings.Index(ps, "skill install") > strings.Index(ps, "claude mcp add") {
+		t.Error("install.ps1 registers the MCP server before it connects and installs the skills")
+	}
+}

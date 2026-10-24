@@ -128,7 +128,8 @@ Your keyboard:
 The operator's memory (fleetd; read-only; an agent only on the operator's tasks):
   memory recall "<query>" [--limit N] [--json]   search it
   memory suggest "<fact>" [--why "<why>"]        propose a fact; the orchestrator decides whether to save it
-  mcp                                 a stdio MCP server with memory_recall and memory_suggest:
+  mcp                                 a stdio MCP server with memory_recall, memory_suggest and the
+                                      karmax tools, those your scope may use (whoami):
                                       claude mcp add --scope user fleet -- fleetctl mcp
 
 About fleetd:
@@ -137,7 +138,8 @@ About fleetd:
   whoami                              which scope this token has
   api                                 every route and the scopes it allows
   guide | skill install [--dir D] [--print] [--force]
-                                      the guide; install it and the fleet-memory skill for Claude Code
+                                      the guide; install it for Claude Code, with the fleet-memory
+                                      skill for the operator and agents (a member's is removed)
 
 The console (fleet-console on its host, reached over ssh; or FLEET_CONSOLE_URL + FLEET_CONSOLE_TOKEN):
   console snapshot [--json]           agents, tools, load, and every source with its age

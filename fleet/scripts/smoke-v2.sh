@@ -207,6 +207,15 @@ for c in "memory recall deploys" "memory suggest x" "karmax tools" "karmax call 
   out=$(consoleTok $c 2>&1)
   check "the console token is refused: $c" "got: $out" bash -c 'grep -q "403\|may:\|not for scope" <<<"$1" && ! grep -q "21:00" <<<"$1"' _ "$out"
 done
+mcp=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"deploys"}}}' |
+  member mcp 2>&1)
+check "fleetctl mcp lists a member none of the operator's tools" "tools/list: $(jq -c 'select(.id==2)' <<<"$mcp" 2>/dev/null)" \
+  bash -c 'jq -e "select(.id==2) | .result.tools == []" <<<"$1" >/dev/null' _ "$mcp"
+check "fleetctl mcp refuses a member's memory_recall" "tools/call: $(jq -c 'select(.id==3)' <<<"$mcp" 2>/dev/null)" \
+  bash -c 'jq -e "select(.id==3) | .error.message | contains(\"not for scope member\")" <<<"$1" >/dev/null && ! grep -q "21:00" <<<"$1"' _ "$mcp"
 
 echo "== an agent off the operator's work gets none of it"
 op done agent-01 --task T-ASK --keep-session >/dev/null 2>&1

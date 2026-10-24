@@ -23,7 +23,8 @@ type WhoIs interface {
 // from whoever tailscaled says its address belongs to, with that login's
 // role in cfg; a token in it counts for nothing. It also hands people
 // fleetctl itself: GET /install.sh (macOS, Linux), /install.ps1 (Windows)
-// and the builds in cfg.Dist at /dl/.
+// and the builds in cfg.Dist at /dl/. The scripts also register fleetctl's
+// MCP server with Claude Code, when it is installed.
 func Tailnet(api http.Handler, who WhoIs, cfg *config.Tailnet) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
@@ -92,8 +93,9 @@ func baseURL(r *http.Request, cfg *config.Tailnet) string {
 }
 
 const installSh = `#!/bin/sh
-# Installs fleetctl for the fleet at {{URL}}, connects it, and installs its
-# Claude Code skill. Run: curl -fsSL {{URL}}/install.sh | sh
+# Installs fleetctl for the fleet at {{URL}}, connects it, installs its
+# Claude Code skills and registers its MCP server with Claude Code.
+# Run: curl -fsSL {{URL}}/install.sh | sh
 set -eu
 url='{{URL}}'
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -123,14 +125,38 @@ trap - EXIT
 echo "fleetctl installed in $dir"
 "$dir/fleetctl" connect "$url"
 "$dir/fleetctl" skill install --force
+# The fleet MCP server, in Claude Code's user config: left alone when it is
+# this fleetctl already, replaced when it is another path. Every claude
+# reads /dev/null, not this script.
+add="claude mcp add --scope user fleet -- $dir/fleetctl mcp"
+if command -v claude >/dev/null 2>&1; then
+	if claude mcp get fleet </dev/null 2>/dev/null | (
+		while IFS= read -r line; do
+			case $line in *"Command: $dir/fleetctl") exit 0 ;; esac
+		done
+		exit 1
+	); then
+		echo "Claude Code already has the fleet MCP server: $dir/fleetctl mcp"
+	else
+		claude mcp remove --scope user fleet </dev/null >/dev/null 2>&1 || true
+		if claude mcp add --scope user fleet -- "$dir/fleetctl" mcp </dev/null >/dev/null; then
+			echo "registered the fleet MCP server with Claude Code: $dir/fleetctl mcp"
+		else
+			echo "claude could not register the fleet MCP server; run later:  $add" >&2
+		fi
+	fi
+else
+	echo "claude was not found: once Claude Code is installed, run  $add"
+fi
 case ":$PATH:" in
 *":$dir:"*) ;;
 *) echo "$dir is not on your PATH: add  export PATH=\"$dir:\$PATH\"  to your shell's profile" ;;
 esac
 `
 
-const installPs1 = `# Installs fleetctl for the fleet at {{URL}}, connects it, and installs its
-# Claude Code skill. Run in PowerShell: irm {{URL}}/install.ps1 | iex
+const installPs1 = `# Installs fleetctl for the fleet at {{URL}}, connects it, installs its
+# Claude Code skills and registers its MCP server with Claude Code.
+# Run in PowerShell: irm {{URL}}/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 $url = '{{URL}}'
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
@@ -145,5 +171,27 @@ if (-not (($path -split ';') -contains $dir)) {
 }
 & $exe connect $url
 & $exe skill install --force
+# The fleet MCP server, in Claude Code's user config: left alone when it is
+# this fleetctl already, replaced when it is another path. '--' is quoted so
+# PowerShell passes it on to claude (an npm shim is a script).
+$add = "claude mcp add --scope user fleet -- $exe mcp"
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+  $ErrorActionPreference = 'Continue'
+  $got = (& claude mcp get fleet 2>$null | Out-String)
+  if ($got -match ('(?m)Command: ' + [regex]::Escape($exe) + '\s*$')) {
+    Write-Host "Claude Code already has the fleet MCP server: $exe mcp"
+  } else {
+    & claude mcp remove --scope user fleet 2>$null | Out-Null
+    & claude mcp add --scope user fleet '--' $exe mcp | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "registered the fleet MCP server with Claude Code: $exe mcp"
+    } else {
+      Write-Host "claude could not register the fleet MCP server; run later:  $add"
+    }
+  }
+  $ErrorActionPreference = 'Stop'
+} else {
+  Write-Host "claude was not found: once Claude Code is installed, run  $add"
+}
 Write-Host "fleetctl installed in $dir; open a new terminal to have it on your PATH"
 `

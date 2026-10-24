@@ -45,8 +45,30 @@ func mcpSession(t *testing.T, f *fakeFleetd, lines ...string) []map[string]any {
 	return got
 }
 
+// The whoami replies of each kind of caller.
+const (
+	whoOperator   = `{"scope":"full","name":"operator"}`
+	whoTailnetOp  = `{"scope":"full","name":"op@example.com"}`
+	whoAgent      = `{"scope":"relay","name":"agent"}`
+	whoMember     = `{"scope":"member","name":"ram@example.com"}`
+	whoNoOneKnown = `{"ok":true}`
+)
+
+// fleetdSaw is what fleetd was asked, sorted, but who the caller is.
+func fleetdSaw(f *fakeFleetd) []string {
+	var out []string
+	for _, r := range f.reqs {
+		if !strings.HasPrefix(r, "GET /v1/whoami ") {
+			out = append(out, r)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 func TestMCPListsAndCallsBothMemoryTools(t *testing.T) {
 	f := &fakeFleetd{reply: map[string]string{
+		"/v1/whoami":         whoOperator,
 		"/v1/memory/recall":  recallReply,
 		"/v1/memory/suggest": `{"ok":true,"to":"karmax"}`,
 	}}
@@ -85,9 +107,9 @@ func TestMCPListsAndCallsBothMemoryTools(t *testing.T) {
 	if !strings.Contains(text(r[`"s"`]["result"].(map[string]any)), "karmax") {
 		t.Fatalf("suggest = %v", r[`"s"`])
 	}
-	slices.Sort(f.reqs)
-	if f.reqs[0] != "GET /v1/memory/recall?limit=3&q=who+is+ram " || !strings.HasPrefix(f.reqs[1], "POST /v1/memory/suggest ") ||
-		reqBody(t, f.reqs[1])["text"] != "Ram prefers squash merges" {
+	saw := fleetdSaw(f)
+	if saw[0] != "GET /v1/memory/recall?limit=3&q=who+is+ram " || !strings.HasPrefix(saw[1], "POST /v1/memory/suggest ") ||
+		reqBody(t, saw[1])["text"] != "Ram prefers squash merges" {
 		t.Fatalf("fleetd saw %q", f.reqs)
 	}
 }
@@ -111,7 +133,7 @@ func text(result map[string]any) string {
 }
 
 func TestMCPReportsFailuresAsResultsAndBadCallsAsErrors(t *testing.T) {
-	f := &fakeFleetd{reply: map[string]string{}}
+	f := &fakeFleetd{reply: map[string]string{"/v1/whoami": whoOperator}}
 	got := mcpSession(t, f,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_recall","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_forget","arguments":{}}}`,
@@ -134,13 +156,14 @@ func TestMCPReportsFailuresAsResultsAndBadCallsAsErrors(t *testing.T) {
 	if _, ok := r["4"]["result"]; !ok {
 		t.Errorf("ping = %v", r["4"])
 	}
-	if len(f.reqs) != 0 {
-		t.Errorf("fleetd was asked %q", f.reqs)
+	if saw := fleetdSaw(f); len(saw) != 0 {
+		t.Errorf("fleetd was asked %q", saw)
 	}
 }
 
 func TestMCPCallsKARMAXToolsThroughFleetdAndWaitsOutAWrite(t *testing.T) {
 	f := &fakeFleetd{reply: map[string]string{
+		"/v1/whoami":       whoAgent,
 		"/v1/karmax/tools": `[{"name":"google.mail.search","description":"search mail","class":"read"},{"name":"google.mail.send","class":"write"}]`,
 		"/v1/karmax/call":  `{"tool":"google.mail.send","class":"write","approval":{"id":7,"state":"pending"}}`,
 		"/v1/approvals/7":  `{"tool":"google.mail.send","class":"write","result":{"tool":"google.mail.send","ok":true,"output":{"id":"m1"}}}`,
@@ -162,12 +185,12 @@ func TestMCPCallsKARMAXToolsThroughFleetdAndWaitsOutAWrite(t *testing.T) {
 			t.Errorf("bad karmax_call %s = %v", id, got[id])
 		}
 	}
-	slices.Sort(f.reqs)
+	saw := fleetdSaw(f)
 	want := []string{"GET /v1/approvals/7?wait=5m&from=operator ", "GET /v1/karmax/tools "}
-	if len(f.reqs) != 3 || f.reqs[0] != want[0] || f.reqs[1] != want[1] || !strings.HasPrefix(f.reqs[2], "POST /v1/karmax/call ") {
+	if len(saw) != 3 || saw[0] != want[0] || saw[1] != want[1] || !strings.HasPrefix(saw[2], "POST /v1/karmax/call ") {
 		t.Fatalf("fleetd saw %q", f.reqs)
 	}
-	body := reqBody(t, f.reqs[2])
+	body := reqBody(t, saw[2])
 	if body["tool"] != "google.mail.send" || body["reason"] != "reply to Ram" || body["timeout"] != "10m0s" ||
 		body["args"].(map[string]any)["to"] != "ram@example.com" {
 		t.Fatalf("call body = %v", body)
@@ -176,6 +199,7 @@ func TestMCPCallsKARMAXToolsThroughFleetdAndWaitsOutAWrite(t *testing.T) {
 
 func TestMCPAToolErrorIsTheModelsToRead(t *testing.T) {
 	f := &fakeFleetd{reply: map[string]string{
+		"/v1/whoami":      whoOperator,
 		"/v1/karmax/call": `{"tool":"slack.channels","class":"read","result":{"tool":"slack.channels","ok":false,"error":"slack is not connected"}}`,
 	}}
 	got := byID(mcpSession(t, f, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"karmax_call","arguments":{"tool":"slack.channels","reason":"find the channel"}}}`))
@@ -188,6 +212,10 @@ func TestMCPAToolErrorIsTheModelsToRead(t *testing.T) {
 func TestMCPAnswersWhileAWriteWaitsForApproval(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/whoami" {
+			_, _ = io.WriteString(w, whoOperator)
+			return
+		}
 		if r.URL.Path == "/v1/karmax/call" {
 			_, _ = io.WriteString(w, `{"tool":"comms.send","class":"write","approval":{"id":9,"state":"pending"}}`)
 			return
@@ -226,5 +254,58 @@ func TestMCPAnswersWhileAWriteWaitsForApproval(t *testing.T) {
 	inW.Close()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A session lists only the tools fleetd would let its caller use: the
+// operator (on a token or the tailnet) and an agent get them all, a member
+// none of the operator's, nor does anyone fleetd cannot place.
+func TestMCPListsEachScopeOnlyTheToolsFleetdGivesIt(t *testing.T) {
+	all := "memory_recall,memory_suggest,karmax_tools,karmax_call"
+	for who, want := range map[string]string{
+		whoOperator: all, whoTailnetOp: all, whoAgent: all, whoMember: "", whoNoOneKnown: "",
+	} {
+		f := &fakeFleetd{reply: map[string]string{"/v1/whoami": who}}
+		r := byID(mcpSession(t, f,
+			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		))
+		tools, ok := r["2"]["result"].(map[string]any)["tools"].([]any)
+		if !ok {
+			t.Fatalf("%s: tools/list = %v (want a list, even empty)", who, r["2"])
+		}
+		var names []string
+		for _, tool := range tools {
+			names = append(names, tool.(map[string]any)["name"].(string))
+		}
+		if strings.Join(names, ",") != want {
+			t.Errorf("%s: tools = %v, want %s", who, names, want)
+		}
+		instr := r["1"]["result"].(map[string]any)["instructions"].(string)
+		if (want == "") != !strings.Contains(instr, "memory_recall reads memory") {
+			t.Errorf("%s: instructions = %q", who, instr)
+		}
+	}
+}
+
+// A member who calls a tool they were not shown is refused here, and fleetd
+// is never asked for it.
+func TestMCPRefusesAMemberAHiddenTool(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{"/v1/whoami": whoMember}}
+	r := byID(mcpSession(t, f,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"who is ram"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"karmax_call","arguments":{"tool":"google.mail.send","reason":"x"}}}`,
+	))
+	for _, id := range []string{"1", "2"} {
+		e, ok := r[id]["error"].(map[string]any)
+		if !ok || e["code"] != float64(-32602) || !strings.Contains(e["message"].(string), "not for scope member") {
+			t.Errorf("call %s = %v", id, r[id])
+		}
+	}
+	if saw := fleetdSaw(f); len(saw) != 0 {
+		t.Errorf("fleetd was asked %q", saw)
+	}
+	if len(f.reqs) != 1 {
+		t.Errorf("whoami asked %d times, want once a session", len(f.reqs))
 	}
 }

@@ -30,8 +30,12 @@ func guideCmd(args []string) error {
 }
 
 // skillCmd: skill install [--dir D] [--print] [--force]. It writes the fleet
-// skill and the fleet-memory skill beside it; both are built into this
-// binary, so they install without fleetd.
+// skill, and the fleet-memory skill beside it for those fleetd gives the
+// operator's memory (scope full: the operator, on a token or the tailnet;
+// relay: an agent). Both are built into this binary; only who you are is
+// asked of fleetd. A member gets the fleet skill alone, and a fleet-memory
+// skill fleetctl wrote earlier is removed. When fleetd cannot say, the fleet
+// skill is written and fleet-memory left as it is.
 func skillCmd(args []string) error {
 	const use = "skill install [--dir D] [--print] [--force]"
 	if len(args) == 0 || args[0] != "install" {
@@ -50,7 +54,12 @@ func skillCmd(args []string) error {
 	if len(pos) > 0 {
 		return errors.New("usage: fleetctl " + use)
 	}
-	skills := []struct{ name, text string }{{"fleet", guide.Skill()}, {"fleet-memory", guide.MemorySkill()}}
+	skills := []struct{ name, text string }{{"fleet", guide.Skill()}}
+	scope, whoErr := whoScope()
+	memory := whoErr == nil && mayUse(scope, "memory_recall")
+	if memory {
+		skills = append(skills, struct{ name, text string }{"fleet-memory", guide.MemorySkill()})
+	}
 	if print {
 		for i, sk := range skills {
 			if i > 0 {
@@ -85,6 +94,19 @@ func skillCmd(args []string) error {
 			return err
 		}
 		fmt.Println(p)
+	}
+	switch {
+	case whoErr != nil:
+		fmt.Fprintf(os.Stderr, "fleetctl: fleetd cannot say who you are (%v): the fleet-memory skill is left as it is\n", whoErr)
+	case !memory:
+		p := filepath.Join(dir, "fleet-memory", "SKILL.md")
+		if old, err := os.ReadFile(p); err == nil && guide.IsMemorySkill(string(old)) {
+			if err := os.Remove(p); err != nil {
+				return err
+			}
+			_ = os.Remove(filepath.Dir(p)) // only if nothing else is in it
+			fmt.Printf("removed %s: the operator's memory is not for scope %s\n", p, scope)
+		}
 	}
 	return nil
 }
