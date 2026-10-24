@@ -93,14 +93,10 @@ Start several tasks without `--wait`, keep the ids, then wait for each:
     fleetctl wait --task "$a"; fleetctl result "$a"
     fleetctl wait --task "$b"; fleetctl result "$b"
 
-Two `run`s at the same instant never get the same agent. When every agent is busy, `run` exits 5 and
-prints each candidate and why it was passed over; add `--queue 30m` to have fleetd retry until one frees
-up, or do the work yourself. `fleetctl pick --repo R` shows who `run` would choose, without assigning.
-Agents prefer the one that last worked in that repo, then the least quota used, then the longest idle.
-
-Each agent runs several sessions at once, its **slots**: slot 1 is the agent's name, slot k `<agent>:k`,
-each with a task of its own. `run` spreads tasks over agents first, and never puts a member's task in the
-same container as an operator's: `pick` says when that is why a slot was passed over.
+Two `run`s at once never get the same agent. With every agent busy `run` exits 5 and says why each was
+passed over (`--queue 30m` retries until one frees up). `fleetctl pick --repo R` shows the choice: an agent
+with no busy slot first (each runs several sessions, its **slots**: `agent-02`, `agent-02:2`), then the last
+to work in that repo, the least quota used, the longest idle. Members' and operator tasks never share one.
 
 ## Choosing the model
 
