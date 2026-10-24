@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -97,5 +98,20 @@ func TestAVerifiedNameMustBeAWorkerTheConfigHas(t *testing.T) {
 		if resp := ado(t, h, "GET", "/v1/status", name, ""); resp.StatusCode != 403 {
 			t.Errorf("%s, with agent-03's key: %d, want 403", name, resp.StatusCode)
 		}
+	}
+}
+
+// whoami tells a verified agent the worker fleetd knows it as; without a key
+// it is just an agent.
+func TestWhoamiNamesAVerifiedAgentsWorker(t *testing.T) {
+	_, h := setup(t)
+	resp := ado(t, h, "GET", "/v1/whoami", "agent-03", "")
+	b := new(strings.Builder)
+	_, _ = io.Copy(b, resp.Body)
+	if !strings.Contains(b.String(), `"name":"agent-03"`) {
+		t.Fatalf("whoami as verified agent-03 = %s", b)
+	}
+	if rec := do(t, h, "GET", "/v1/whoami", "relay", ""); !strings.Contains(rec.Body.String(), `"name":"agent"`) {
+		t.Fatalf("whoami with no key = %s", rec.Body)
 	}
 }

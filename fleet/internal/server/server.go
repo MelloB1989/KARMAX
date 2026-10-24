@@ -309,6 +309,9 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 		name := ledger.Operator
 		if s == relay {
 			name = "agent"
+			if a, ok := verifiedAgent(r); ok {
+				name = a // the worker its container's key proved
+			}
 		}
 		if c := callerOf(r); c != nil {
 			name = c.Login
