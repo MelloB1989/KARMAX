@@ -13,10 +13,12 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
+	"github.com/MelloB1989/karmax/fleet/internal/memory"
 )
 
 type fake struct {
 	calls []string
+	mem   *memory.Client // when set, Recall asks it
 }
 
 func (f *fake) Status(time.Time) []daemon.Row {

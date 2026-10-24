@@ -191,7 +191,7 @@ To verify, ask KARMAX on WhatsApp to fix something in a repo, and watch
 Any Claude Code session on the machine running `fleetctl` (and the orchestrator) can hand work to the
 fleet and read it back by task id, without knowing which agent is free:
 
-    fleetctl skill install        # writes ~/.claude/skills/fleet/SKILL.md; `fleetctl guide` prints the same text
+    fleetctl skill install        # writes ~/.claude/skills/fleet/SKILL.md (and fleet-memory); `fleetctl guide` prints the same text
     fleetctl run --repo <repo> "<brief>"      # picks a free agent, prints the task id
     fleetctl wait --task <id>                 # blocks until the agent reports
     fleetctl result <id>                      # reports, branch commits, state

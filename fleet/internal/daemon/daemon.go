@@ -94,6 +94,9 @@ type Fleet struct {
 	waitEvery time.Duration
 	// git runs git in a directory; tests replace it.
 	git func(ctx context.Context, dir string, args ...string) (string, error)
+	// Memory, when set, is the operator's long-term memory, read for callers
+	// (Recall); nil is memory off.
+	Memory Recaller
 	// HostStats, when set, samples container resource use per host.
 	HostStats func(ctx context.Context, host string) ([]ledger.HostSample, error)
 	// Log receives fleetd's own diagnostics.

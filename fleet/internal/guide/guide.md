@@ -112,6 +112,16 @@ kept. Cancelling a task that is already closed is an error and does nothing.
 
 Do not poll `peek` while you wait: `wait` returns the moment the agent reports.
 
+## The operator's memory
+
+    fleetctl memory recall "ram build host" [--limit 5] [--json]    # search it, read-only
+    fleetctl memory suggest "<fact>" --why "<where it came from>"   # the orchestrator decides whether to save it
+
+Recall before work on a person, project or decision the operator has history with. Suggest durable facts,
+never secrets. An agent may use these only on a task the operator's side gave it; a member never may.
+`fleetctl mcp` serves both as MCP tools (`claude mcp add --scope user fleet -- fleetctl mcp`), and
+`fleetctl skill install` adds the fleet-memory skill that says when to use them.
+
 ## From another machine (the tailnet)
 
 fleetd also listens on the Tailscale network, where it knows who you are without a token. If your
@@ -168,9 +178,11 @@ to assign; console tokens may read.
 | `fleetctl cancel` | `POST /v1/tasks/{id}/cancel` `{from, reason}` |
 | `fleetctl done --task` | `POST /v1/done` `{task, outcome, branch, pr}` |
 | `fleetctl guide` | `GET /v1/guide` → `{text}` |
+| `fleetctl memory recall` | `GET /v1/memory/recall?q=&limit=` → `{query, memories: [{path, title, content, score}]}` |
+| `fleetctl memory suggest` | `POST /v1/memory/suggest` `{text, why}` → `{to}` |
 
 Statuses: 400 bad input; 404 unknown task; 409 no free agent (the body lists the candidates), agent busy,
 or task already closed.
 
 `fleetctl skill install` writes this guide as a Claude Code skill (`~/.claude/skills/fleet/SKILL.md`) so
-any session on this machine finds it. `fleetctl guide` prints it.
+any session on this machine finds it, and the fleet-memory skill beside it. `fleetctl guide` prints it.

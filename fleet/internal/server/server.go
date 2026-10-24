@@ -26,7 +26,9 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/guide"
+	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
+	"github.com/MelloB1989/karmax/fleet/internal/memory"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
 )
 
@@ -66,6 +68,10 @@ type Ops interface {
 	Render() (string, error)
 	Up(ctx context.Context, hosts []string) (string, error)
 	Down(ctx context.Context, hosts []string) (string, error)
+
+	Recall(ctx context.Context, query string, limit int) (*memory.Result, error)
+	Suggest(ctx context.Context, from, text, why string, now time.Time) (string, error)
+	OperatorAssigner(assigner string) bool
 }
 
 // Tokens are the bearer tokens, one per scope.
@@ -166,6 +172,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				if errors.Is(err, daemon.ErrBadInput) {
 					code = http.StatusBadRequest
 				}
+				if errors.Is(err, daemon.ErrMemoryOff) {
+					code = http.StatusNotImplemented
+				}
 				if errors.Is(err, daemon.ErrConflict) {
 					code = http.StatusConflict
 					var nf *daemon.NoFreeAgent
@@ -229,6 +238,13 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		case relay:
 			if ledger.IsPerson(in.From) {
 				return nil, forbidden{fmt.Errorf("an agent does not speak as %s: only that person does", in.From)}
+			}
+			// An agent that proved who it is speaks as itself only.
+			if name, ok := verifiedAgent(r); ok {
+				if in.From != "" && in.From != name {
+					return nil, forbidden{fmt.Errorf("this is %s's key: it does not speak as %s", name, in.From)}
+				}
+				in.From = name
 			}
 		}
 		if in.From == "" || in.To == "" || strings.TrimSpace(in.Text) == "" {
@@ -588,6 +604,44 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		n, err := ops.PruneArchives(before)
 		return map[string]int{"removed": n}, err
 	}, fullOnly...)
+	route("GET /v1/memory/recall", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		if err := operatorWork(r, ops); err != nil {
+			return nil, err
+		}
+		q := r.URL.Query().Get("q")
+		if strings.TrimSpace(q) == "" {
+			return nil, badRequest{fmt.Errorf("recall needs q, what to search for")}
+		}
+		limit, err := intParam(r, "limit")
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		defer cancel()
+		return ops.Recall(ctx, q, int(limit))
+	}, full, relay)
+	route("POST /v1/memory/suggest", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		if err := operatorWork(r, ops); err != nil {
+			return nil, err
+		}
+		var in struct{ From, Text, Why string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.Text) == "" {
+			return nil, badRequest{fmt.Errorf("suggest needs text, the fact to keep")}
+		}
+		if name, ok := verifiedAgent(r); ok && scopeOf(r) == relay {
+			in.From = name
+		}
+		if in.From == "" {
+			in.From = ledger.Operator
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		to, err := ops.Suggest(ctx, in.From, in.Text, in.Why, time.Now())
+		return map[string]any{"ok": err == nil, "to": to}, err
+	}, full, relay)
 	hostRoute := func(name string, run func(ctx context.Context, hosts []string) (string, error)) {
 		route("POST /v1/"+name, func(w http.ResponseWriter, r *http.Request) (any, error) {
 			var in struct{ Hosts []string }
@@ -608,7 +662,83 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 	hostRoute("up", ops.Up)
 	hostRoute("down", ops.Down)
 	hostRoute("render", func(ctx context.Context, _ []string) (string, error) { return ops.Render() })
-	return mux
+	return withAgent(tok, mux)
+}
+
+type agentKey struct{}
+
+// withAgent checks an agent's key (identity) on every request that carries
+// one, and refuses one that does not verify: a request either proves which
+// agent it is from or does not claim to be one.
+func withAgent(tok Tokens, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v := r.Header.Get(identity.Header)
+		if v == "" {
+			h.ServeHTTP(w, r)
+			return
+		}
+		name, ok := identity.Verify(tok.Full, v)
+		if !ok {
+			writeErr(w, http.StatusForbidden, fmt.Errorf("%s does not verify: an agent sends its own FLEET_AGENT_KEY (fleetctl render writes it)", identity.Header))
+			return
+		}
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), agentKey{}, name)))
+	})
+}
+
+// verifiedAgent is the agent (worker) a request proved it is from, with its
+// container's key. Every route that hands an agent the operator's data asks
+// it, never the name an agent sends.
+func verifiedAgent(r *http.Request) (string, bool) {
+	name, ok := r.Context().Value(agentKey{}).(string)
+	return name, ok && name != ""
+}
+
+// taskAssigner is who gave an open task, from the ledger.
+func taskAssigner(ops Ops, task string) (string, error) {
+	t, err := ops.TaskAgent(task)
+	if err != nil {
+		return "", err
+	}
+	if !t.Closed.IsZero() {
+		return "", fmt.Errorf("task %s is closed", task)
+	}
+	return t.Assigner, nil
+}
+
+// operatorWork guards the operator's personal data (memory, secrets, the
+// KARMAX gateway): the full scope may use it; an agent only while its
+// current task, per the ledger, came from the operator's side
+// (Ops.OperatorAssigner); a member and the console never.
+func operatorWork(r *http.Request, ops Ops) error {
+	switch scopeOf(r) {
+	case full:
+		return nil
+	case relay:
+	default:
+		return forbidden{fmt.Errorf("the operator's personal data is not for scope %s", scopeOf(r))}
+	}
+	name, ok := verifiedAgent(r)
+	if !ok {
+		return forbidden{fmt.Errorf("an agent proves who it is with its FLEET_AGENT_KEY (%s) to use the operator's data", identity.Header)}
+	}
+	var task string
+	for _, row := range ops.Status(time.Now()) {
+		if row.Agent == name {
+			task = row.Task
+		}
+	}
+	if task == "" {
+		return forbidden{fmt.Errorf("%s has no task: the operator's data is only for work the operator gave", name)}
+	}
+	assigner, err := taskAssigner(ops, task)
+	if err != nil {
+		return forbidden{fmt.Errorf("%s: %v", name, err)}
+	}
+	if !ops.OperatorAssigner(assigner) {
+		return forbidden{fmt.Errorf("task %s came from %s, not the operator: the operator's data is not for it", task, assigner)}
+	}
+	return nil
 }
 
 type scopeKey struct{}
