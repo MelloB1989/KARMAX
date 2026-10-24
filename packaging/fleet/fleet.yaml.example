@@ -32,6 +32,13 @@ otlp_listen: 0.0.0.0:4318    # the agents' OpenTelemetry
 #   members: ["*@example.com"]   # run tasks as themselves; see and close their own
 #   member_open: 2               # open tasks per member
 
+# The operator's long-term memory (the orchestrator's gitloom namespace): fleetd reads it for
+# `fleetctl memory recall` and the MCP server, and only the orchestrator writes it. No section: off.
+# memory:
+#   url: http://127.0.0.1:8787   # gitloom on this host
+#   key_env: GITLOOM_API_KEY     # its key, in the env file; it never leaves fleetd
+#   namespace: mira              # the orchestrator's namespace
+
 # Under code, but never for an agent to read: an empty read-only tmpfs covers each.
 hide_from_agents: [secrets]
 

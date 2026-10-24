@@ -568,14 +568,17 @@ func TestGuidePrintsTheGuide(t *testing.T) {
 func TestSkillInstallWritesTheSkill(t *testing.T) {
 	dir := t.TempDir()
 	out, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--dir", dir)
-	p := dir + "/fleet/SKILL.md"
-	if err != nil || strings.TrimSpace(out) != p {
+	p, pm := dir+"/fleet/SKILL.md", dir+"/fleet-memory/SKILL.md"
+	if err != nil || strings.TrimSpace(out) != p+"\n"+pm {
 		t.Fatalf("out = %q, %v", out, err)
 	}
 	b, _ := os.ReadFile(p)
 	st, _ := os.Stat(p)
 	if !strings.HasPrefix(string(b), "---\nname: fleet\n") || st.Mode().Perm() != 0o644 {
 		t.Fatalf("skill file %v starts %q", st.Mode(), b[:20])
+	}
+	if b, _ := os.ReadFile(pm); !strings.HasPrefix(string(b), "---\nname: fleet-memory\n") {
+		t.Fatalf("memory skill starts %q", b[:min(len(b), 30)])
 	}
 	if _, err := fleetctl(t, &fakeFleetd{}, "skill", "install", "--dir", dir); err != nil {
 		t.Fatalf("reinstall over our own skill: %v", err)
@@ -614,8 +617,10 @@ func TestSkillInstallPrintAndDefaultDir(t *testing.T) {
 	if _, err := fleetctl(t, &fakeFleetd{}, "skill", "install"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(home + "/.claude/skills/fleet/SKILL.md"); err != nil {
-		t.Fatal(err)
+	for _, p := range []string{"/.claude/skills/fleet/SKILL.md", "/.claude/skills/fleet-memory/SKILL.md"} {
+		if _, err := os.Stat(home + p); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

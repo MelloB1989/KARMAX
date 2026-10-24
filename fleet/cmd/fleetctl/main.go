@@ -86,11 +86,19 @@ Your keyboard:
   prompt <agent> <text…>              type into it, as you (fleetd)
   peek <agent> [-n 80]                its last lines (fleetd)
 
+The operator's memory (fleetd; read-only; an agent only on the operator's tasks):
+  memory recall "<query>" [--limit N] [--json]   search it
+  memory suggest "<fact>" [--why "<why>"]        propose a fact; the orchestrator decides whether to save it
+  mcp                                 a stdio MCP server with memory_recall and memory_suggest:
+                                      claude mcp add --scope user fleet -- fleetctl mcp
+
 About fleetd:
   connect http://<host>:7878          from a machine on the tailnet: save that fleetd as yours, and
                                       say who it knows you as (no token: Tailscale says)
   whoami                              which scope this token has
   api                                 every route and the scopes it allows
+  guide | skill install [--dir D] [--print] [--force]
+                                      the guide; install it and the fleet-memory skill for Claude Code
 
 The console (fleet-console on its host, reached over ssh; or FLEET_CONSOLE_URL + FLEET_CONSOLE_TOKEN):
   console snapshot [--json]           agents, tools, load, and every source with its age

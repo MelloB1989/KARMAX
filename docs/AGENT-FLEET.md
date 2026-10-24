@@ -312,7 +312,7 @@ Plus the archives (transcripts and manifests) and fleetd's own log in journald.
 Any Claude Code session on the machine running `fleetctl` (and the orchestrator) can hand work to the
 fleet and read it back by task id, without knowing which agent is free:
 
-    fleetctl skill install        # writes ~/.claude/skills/fleet/SKILL.md; `fleetctl guide` prints the same text
+    fleetctl skill install        # writes ~/.claude/skills/fleet/SKILL.md (and fleet-memory); `fleetctl guide` prints the same text
     fleetctl run --repo <repo> "<brief>"      # picks a free agent, prints the task id
     fleetctl wait --task <id>                 # blocks until the agent reports
     fleetctl result <id>                      # reports, branch commits, state
@@ -321,6 +321,36 @@ fleet and read it back by task id, without knowing which agent is free:
 
 The skill carries the whole loop (briefs, fan-out, review rules, exit codes), so a fresh session that
 sees a task it can delegate knows how.
+
+## The operator's memory, read-only
+
+The orchestrator keeps the operator's long-term memory in a gitloom namespace. fleetd lets the fleet read it
+(`memory:` in fleet.yaml; no section, no memory):
+
+    memory:
+      url: http://127.0.0.1:8787     # gitloom on fleetd's host
+      key_env: GITLOOM_API_KEY       # its key, in the env file
+      namespace: mira                # the orchestrator's namespace
+
+    fleetctl memory recall "<query>" [--limit N] [--json]   # GET /v1/memory/recall
+    fleetctl memory suggest "<fact>" [--why "..."]           # POST /v1/memory/suggest
+    claude mcp add --scope user fleet -- fleetctl mcp       # the same, as MCP tools memory_recall and memory_suggest
+
+- **Only the orchestrator writes.** A gitloom key cannot be made read-only, so it stays in fleetd, which
+  sends it only on GETs of gitloom's read routes and never returns it, in an answer or an error. A
+  suggestion is a message to the orchestrator (filed under the agent's task); it saves it with its own
+  tools, or not.
+- **Who may.** The full scope (the operator, their sessions, the orchestrator) always. An agent only while
+  its current task, in the ledger, was assigned by the operator, an operator session or the orchestrator;
+  never on a member's task. A member on the tailnet and the console never, not even to read. Secrets and
+  the KARMAX gateway follow the same rule (`operatorWork` in fleet/internal/server).
+- **Which agent.** Every agent has the same relay token, so each container also gets `FLEET_AGENT_KEY`
+  from `fleetctl render`: an HMAC of its agent's name under the full token, which no agent holds. fleetctl
+  sends it as `X-Fleet-Agent: <name>:<key>`; fleetd checks it and refuses one that does not verify. A
+  worker in the container (agent-03:2, agent-03-s2) uses its container's key. An agent with a key tells as
+  itself only. After upgrading fleetd, `fleetctl render` and recreate the agents to hand out the keys.
+- **The skill.** `fleetctl skill install` writes `~/.claude/skills/fleet-memory/SKILL.md` too: recall
+  before work the operator has history with, suggest durable facts, never secrets.
 
 ## From anyone's machine — the tailnet
 

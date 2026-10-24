@@ -29,8 +29,9 @@ func guideCmd(args []string) error {
 	})
 }
 
-// skillCmd: skill install [--dir D] [--print] [--force]. The skill is built
-// into this binary, so it installs without fleetd.
+// skillCmd: skill install [--dir D] [--print] [--force]. It writes the fleet
+// skill and the fleet-memory skill beside it; both are built into this
+// binary, so they install without fleetd.
 func skillCmd(args []string) error {
 	const use = "skill install [--dir D] [--print] [--force]"
 	if len(args) == 0 || args[0] != "install" {
@@ -49,8 +50,14 @@ func skillCmd(args []string) error {
 	if len(pos) > 0 {
 		return errors.New("usage: fleetctl " + use)
 	}
+	skills := []struct{ name, text string }{{"fleet", guide.Skill()}, {"fleet-memory", guide.MemorySkill()}}
 	if print {
-		fmt.Print(guide.Skill())
+		for i, sk := range skills {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Print(sk.text)
+		}
 		return nil
 	}
 	if dir == "" {
@@ -60,19 +67,24 @@ func skillCmd(args []string) error {
 		}
 		dir = filepath.Join(home, ".claude", "skills")
 	}
-	p := filepath.Join(dir, "fleet", "SKILL.md")
-	if old, err := os.ReadFile(p); err == nil && !force && !strings.HasPrefix(string(old), "---\n") {
-		return fmt.Errorf("%s exists and is not a skill; pass --force to replace it", p)
+	for _, sk := range skills {
+		p := filepath.Join(dir, sk.name, "SKILL.md")
+		if old, err := os.ReadFile(p); err == nil && !force && !strings.HasPrefix(string(old), "---\n") {
+			return fmt.Errorf("%s exists and is not a skill; pass --force to replace it", p)
+		}
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
+	for _, sk := range skills {
+		p := filepath.Join(dir, sk.name, "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, []byte(sk.text), 0o644); err != nil {
+			return err
+		}
+		if err := os.Chmod(p, 0o644); err != nil { // WriteFile keeps an existing file's mode
+			return err
+		}
+		fmt.Println(p)
 	}
-	if err := os.WriteFile(p, []byte(guide.Skill()), 0o644); err != nil {
-		return err
-	}
-	if err := os.Chmod(p, 0o644); err != nil { // WriteFile keeps an existing file's mode
-		return err
-	}
-	fmt.Println(p)
 	return nil
 }

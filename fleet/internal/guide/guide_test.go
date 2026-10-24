@@ -62,3 +62,25 @@ func TestTextNamesNoOperator(t *testing.T) {
 		}
 	}
 }
+
+func TestTheMemorySkillSaysWhenToRecallHowToSuggestAndNoSecrets(t *testing.T) {
+	s := MemorySkill()
+	if !strings.HasPrefix(s, "---\nname: fleet-memory\ndescription: ") {
+		t.Fatalf("skill starts %q", s[:min(len(s), 60)])
+	}
+	head, _, ok := strings.Cut(strings.TrimPrefix(s, "---\n"), "\n---\n")
+	if !ok || strings.Count(head, "\n") != 1 {
+		t.Fatalf("frontmatter is not name + one-line description:\n%s", head)
+	}
+	for _, want := range []string{"fleetctl memory recall", "fleetctl memory suggest", "--why", "memory_recall", "memory_suggest",
+		"fleetctl mcp", "claude mcp add --scope user fleet -- fleetctl mcp", "secret", "orchestrator", "before"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("memory skill lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"/home/", "192.168.", "sk-ant"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("memory skill contains %q; the repo is public", bad)
+		}
+	}
+}
