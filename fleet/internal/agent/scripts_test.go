@@ -66,7 +66,14 @@ printf ']\n'
 	t.Setenv("PATH", l.bin+":"+os.Getenv("PATH"))
 	t.Setenv("HOME", l.home)
 	t.Setenv("FLEET_WORK", l.work)
-	t.Setenv("TMUX_TMPDIR", root)
+	// tmux's socket path must fit a sockaddr (about 104 bytes): under a long
+	// TMPDIR the test's own directory does not, so tmux gets a short one.
+	sock, err := os.MkdirTemp("/tmp", "fleet-tmux-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sock) })
+	t.Setenv("TMUX_TMPDIR", sock)
 	// Inside a tmux pane (an agent running these tests) TMUX names that
 	// pane's server, and tmux would use it over TMUX_TMPDIR: kill-server
 	// would end the agent's own session.
