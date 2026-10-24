@@ -3,13 +3,17 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
 )
 
@@ -81,10 +85,31 @@ var mcpTools = []mcpTool{
 			"why":  map[string]any{"type": "string", "description": "where it came from, or why it is worth keeping"},
 		}},
 	},
+	{
+		Name: "karmax_tools",
+		Description: "List the operator's integrations KARMAX holds (mail, calendar, drive, WhatsApp, Slack, Notion, …) " +
+			"that you may call through fleetd with karmax_call, each with its class: read (runs at once) or write " +
+			"(waits for the orchestrator's approval). Agents may use them only on tasks the operator's side gave them.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	},
+	{
+		Name: "karmax_call",
+		Description: "Call one of the operator's integrations through fleetd, which holds KARMAX's token (you never do). " +
+			"A read returns its result at once. A write (anything that sends, changes, deletes or posts) waits until " +
+			"the orchestrator approves it — she may ask the operator first — then runs and returns the result; " +
+			"refused or expired, it returns why. Ask only for what the task needs, with a reason someone can decide on.",
+		InputSchema: map[string]any{"type": "object", "required": []string{"tool", "reason"}, "properties": map[string]any{
+			"tool":    map[string]any{"type": "string", "description": "the tool's name, from karmax_tools, e.g. google.mail.search"},
+			"args":    map[string]any{"type": "object", "description": "the tool's arguments, as its parameters in karmax_tools say"},
+			"reason":  map[string]any{"type": "string", "description": "why the task needs this call, for whoever approves it"},
+			"timeout": map[string]any{"type": "string", "description": "how long a write waits for a decision, e.g. 30m (the default)"},
+		}},
+	},
 }
 
 func serveMCP(in io.Reader, out io.Writer) error {
 	enc := json.NewEncoder(out)
+	var mu sync.Mutex // one message out at a time
 	reply := func(id json.RawMessage, result any, e *rpcErr) error {
 		m := map[string]any{"jsonrpc": "2.0", "id": id}
 		if e != nil {
@@ -92,8 +117,14 @@ func serveMCP(in io.Reader, out io.Writer) error {
 		} else {
 			m["result"] = result
 		}
+		mu.Lock()
+		defer mu.Unlock()
 		return enc.Encode(m)
 	}
+	// A tool call may wait a long time (a write waits for its approval), so
+	// each runs on its own and the rest of the session goes on answering.
+	var calls sync.WaitGroup
+	defer calls.Wait()
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64<<10), 8<<20)
 	for sc.Scan() {
@@ -109,6 +140,15 @@ func serveMCP(in io.Reader, out io.Writer) error {
 			continue
 		}
 		if len(m.ID) == 0 { // a notification: nothing to answer
+			continue
+		}
+		if m.Method == "tools/call" {
+			calls.Add(1)
+			go func() {
+				defer calls.Done()
+				result, e := mcpHandle(m)
+				_ = reply(m.ID, result, e)
+			}()
 			continue
 		}
 		result, e := mcpHandle(m)
@@ -134,7 +174,7 @@ func mcpHandle(m rpcMsg) (any, *rpcErr) {
 			"protocolVersion": v,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "fleet", "version": server.Version},
-			"instructions":    "The operator's long-term memory, through fleetd: memory_recall reads it; memory_suggest proposes a fact to the orchestrator, which alone saves.",
+			"instructions":    "The operator's long-term memory and integrations, through fleetd: memory_recall reads memory; memory_suggest proposes a fact to the orchestrator, which alone saves; karmax_tools lists the integrations you may call and karmax_call calls one (a write waits for the orchestrator's approval).",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -149,10 +189,14 @@ func mcpHandle(m rpcMsg) (any, *rpcErr) {
 			return nil, &rpcErr{rpcBadParam, "tools/call: " + err.Error()}
 		}
 		var a struct {
-			Query string `json:"query"`
-			Limit int    `json:"limit"`
-			Fact  string `json:"fact"`
-			Why   string `json:"why"`
+			Query   string         `json:"query"`
+			Limit   int            `json:"limit"`
+			Fact    string         `json:"fact"`
+			Why     string         `json:"why"`
+			Tool    string         `json:"tool"`
+			Args    map[string]any `json:"args"`
+			Reason  string         `json:"reason"`
+			Timeout string         `json:"timeout"`
 		}
 		if len(p.Arguments) > 0 {
 			if err := json.Unmarshal(p.Arguments, &a); err != nil {
@@ -185,6 +229,46 @@ func mcpHandle(m rpcMsg) (any, *rpcErr) {
 			}
 			msg, err := suggest(c, a.Fact, a.Why)
 			return toolResult(msg, err), nil
+		case "karmax_tools":
+			c, err := newClient()
+			if err != nil {
+				return toolResult("", err), nil
+			}
+			var tools []daemon.GatewayTool
+			if err := c.do("GET", "/v1/karmax/tools", nil, &tools); err != nil {
+				return toolResult("", err), nil
+			}
+			b, _ := json.MarshalIndent(tools, "", "  ")
+			return toolResult(string(b), nil), nil
+		case "karmax_call":
+			if strings.TrimSpace(a.Tool) == "" {
+				return toolResult("", errors.New("karmax_call needs a tool (karmax_tools lists them)")), nil
+			}
+			timeout := daemon.ApprovalTimeout
+			if a.Timeout != "" {
+				d, err := time.ParseDuration(a.Timeout)
+				if err != nil || d <= 0 {
+					return toolResult("", fmt.Errorf("timeout %q: want a duration like 30m", a.Timeout)), nil
+				}
+				timeout = d
+			}
+			c, err := newClient()
+			if err != nil {
+				return toolResult("", err), nil
+			}
+			c.timeout = 20 * time.Minute // an approved write runs inside the wait's answer
+			// stdout is the protocol: the wait's progress goes to stderr.
+			rep, err := karmaxCall(context.Background(), c, myName(), a.Tool, a.Args, a.Reason, timeout, os.Stderr, sleepCtx)
+			if err != nil {
+				return toolResult("", err), nil
+			}
+			if rep.Result == nil {
+				return toolResult("", fmt.Errorf("%s: fleetd returned no result", a.Tool)), nil
+			}
+			if !rep.Result.OK {
+				return toolResult("", fmt.Errorf("%s: %s", a.Tool, rep.Result.Error)), nil
+			}
+			return toolResult(string(rep.Result.Output), nil), nil
 		}
 		return nil, &rpcErr{rpcBadParam, fmt.Sprintf("no tool %q (tools/list names them)", p.Name)}
 	}

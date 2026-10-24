@@ -98,12 +98,14 @@ karmax:
   # api_url: http://127.0.0.1:9091   # also the KARMAX gateway's (fleetctl karmax); KARMAX_API_TOKEN in env_file
   # The gateway's policy (docs/AGENT-FLEET.md): read runs, write waits for the
   # orchestrator's approval, deny is refused. Unlisted tools are read when their
-  # name says so (…list, …search, …read), else write. shell.exec, file.*,
-  # http.request, harness.*, task.*, memory writes, secrets and fleet tools are
+  # name says so (…list, …search, …read) or KARMAX's tool is known to only read
+  # (slack.channels, keka.employees, …), else write. shell.exec, file.*,
+  # http.request, harness.*, task.*, memory writes, secrets, fleet tools and
+  # anything that runs code or starts an agent (*.exec, *.run, *.spawn,
+  # claude_code.call, codex.call, sandbox.start, orchestrator.send) are
   # always denied.
   # tools:
-  #   slack.channels: read
-  #   instagram.inbox: read
+  #   linkedin.post: deny
   #   github.*: write
   #   x.post: deny
 

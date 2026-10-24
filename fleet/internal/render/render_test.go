@@ -672,7 +672,7 @@ func TestTheOrchestratorBriefSaysHowToDecideOnTheGatewaysWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"fleetctl approve <id>", "fleetctl deny <id> --reason", "fleetctl approvals",
-		"on WhatsApp first", "you alone write memory"} {
+		"on WhatsApp first", "you alone write memory", "anything that runs code or starts"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("orchestrator brief lacks %q", want)
 		}

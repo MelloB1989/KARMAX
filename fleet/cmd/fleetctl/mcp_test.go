@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -57,33 +60,46 @@ func TestMCPListsAndCallsBothMemoryTools(t *testing.T) {
 	if len(got) != 4 {
 		t.Fatalf("replies = %v (a notification gets none)", got)
 	}
-	init := got[0]["result"].(map[string]any)
+	// Tool calls run side by side, so replies come in any order: by id.
+	r := byID(got)
+	init := r["1"]["result"].(map[string]any)
 	if init["protocolVersion"] != "2025-06-18" || init["capabilities"].(map[string]any)["tools"] == nil ||
 		init["serverInfo"].(map[string]any)["name"] != "fleet" {
 		t.Fatalf("initialize = %v", init)
 	}
 	var names []string
-	for _, tool := range got[1]["result"].(map[string]any)["tools"].([]any) {
+	for _, tool := range r["2"]["result"].(map[string]any)["tools"].([]any) {
 		tm := tool.(map[string]any)
 		names = append(names, tm["name"].(string))
 		if tm["description"] == "" || tm["inputSchema"].(map[string]any)["type"] != "object" {
 			t.Errorf("tool %v lacks a description or schema", tm)
 		}
 	}
-	if strings.Join(names, ",") != "memory_recall,memory_suggest" {
+	if strings.Join(names, ",") != "memory_recall,memory_suggest,karmax_tools,karmax_call" {
 		t.Fatalf("tools = %v", names)
 	}
-	recall := got[2]["result"].(map[string]any)
-	if got[2]["id"].(float64) != 3 || recall["isError"] == true || !strings.Contains(text(recall), "Ram runs the build host.") {
-		t.Fatalf("recall = %v", got[2])
+	recall := r["3"]["result"].(map[string]any)
+	if recall["isError"] == true || !strings.Contains(text(recall), "Ram runs the build host.") {
+		t.Fatalf("recall = %v", r["3"])
 	}
-	if got[3]["id"] != "s" || !strings.Contains(text(got[3]["result"].(map[string]any)), "karmax") {
-		t.Fatalf("suggest = %v", got[3])
+	if !strings.Contains(text(r[`"s"`]["result"].(map[string]any)), "karmax") {
+		t.Fatalf("suggest = %v", r[`"s"`])
 	}
+	slices.Sort(f.reqs)
 	if f.reqs[0] != "GET /v1/memory/recall?limit=3&q=who+is+ram " || !strings.HasPrefix(f.reqs[1], "POST /v1/memory/suggest ") ||
 		reqBody(t, f.reqs[1])["text"] != "Ram prefers squash merges" {
 		t.Fatalf("fleetd saw %q", f.reqs)
 	}
+}
+
+// byID is the replies keyed by their id's JSON (1, "s", null).
+func byID(got []map[string]any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, m := range got {
+		id, _ := json.Marshal(m["id"])
+		out[string(id)] = m
+	}
+	return out
 }
 
 func text(result map[string]any) string {
@@ -106,18 +122,109 @@ func TestMCPReportsFailuresAsResultsAndBadCallsAsErrors(t *testing.T) {
 	if len(got) != 5 {
 		t.Fatalf("replies = %v", got)
 	}
-	if r := got[0]["result"].(map[string]any); r["isError"] != true || !strings.Contains(text(r), "query") {
-		t.Errorf("recall without a query = %v", got[0])
+	r := byID(got)
+	if res := r["1"]["result"].(map[string]any); res["isError"] != true || !strings.Contains(text(res), "query") {
+		t.Errorf("recall without a query = %v", r["1"])
 	}
-	for i, code := range map[int]float64{1: -32602, 2: -32601, 3: -32700} {
-		if e, ok := got[i]["error"].(map[string]any); !ok || e["code"] != code {
-			t.Errorf("reply %d = %v, want error %v", i, got[i], code)
+	for id, code := range map[string]float64{"2": -32602, "3": -32601, "null": -32700} {
+		if e, ok := r[id]["error"].(map[string]any); !ok || e["code"] != code {
+			t.Errorf("reply %s = %v, want error %v", id, r[id], code)
 		}
 	}
-	if _, ok := got[4]["result"]; !ok {
-		t.Errorf("ping = %v", got[4])
+	if _, ok := r["4"]["result"]; !ok {
+		t.Errorf("ping = %v", r["4"])
 	}
 	if len(f.reqs) != 0 {
 		t.Errorf("fleetd was asked %q", f.reqs)
+	}
+}
+
+func TestMCPCallsKARMAXToolsThroughFleetdAndWaitsOutAWrite(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{
+		"/v1/karmax/tools": `[{"name":"google.mail.search","description":"search mail","class":"read"},{"name":"google.mail.send","class":"write"}]`,
+		"/v1/karmax/call":  `{"tool":"google.mail.send","class":"write","approval":{"id":7,"state":"pending"}}`,
+		"/v1/approvals/7":  `{"tool":"google.mail.send","class":"write","result":{"tool":"google.mail.send","ok":true,"output":{"id":"m1"}}}`,
+	}}
+	got := byID(mcpSession(t, f,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"karmax_tools","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"karmax_call","arguments":{"tool":"google.mail.send","args":{"to":"ram@example.com"},"reason":"reply to Ram","timeout":"10m"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"karmax_call","arguments":{"reason":"x"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"karmax_call","arguments":{"tool":"x.y","reason":"x","timeout":"soon"}}}`,
+	))
+	if tools := got["1"]["result"].(map[string]any); tools["isError"] == true || !strings.Contains(text(tools), `"class": "write"`) {
+		t.Fatalf("karmax_tools = %v", got["1"])
+	}
+	if call := got["2"]["result"].(map[string]any); call["isError"] == true || text(call) != `{"id":"m1"}` {
+		t.Fatalf("karmax_call = %v", got["2"])
+	}
+	for _, id := range []string{"3", "4"} {
+		if r := got[id]["result"].(map[string]any); r["isError"] != true {
+			t.Errorf("bad karmax_call %s = %v", id, got[id])
+		}
+	}
+	slices.Sort(f.reqs)
+	want := []string{"GET /v1/approvals/7?wait=5m&from=operator ", "GET /v1/karmax/tools "}
+	if len(f.reqs) != 3 || f.reqs[0] != want[0] || f.reqs[1] != want[1] || !strings.HasPrefix(f.reqs[2], "POST /v1/karmax/call ") {
+		t.Fatalf("fleetd saw %q", f.reqs)
+	}
+	body := reqBody(t, f.reqs[2])
+	if body["tool"] != "google.mail.send" || body["reason"] != "reply to Ram" || body["timeout"] != "10m0s" ||
+		body["args"].(map[string]any)["to"] != "ram@example.com" {
+		t.Fatalf("call body = %v", body)
+	}
+}
+
+func TestMCPAToolErrorIsTheModelsToRead(t *testing.T) {
+	f := &fakeFleetd{reply: map[string]string{
+		"/v1/karmax/call": `{"tool":"slack.channels","class":"read","result":{"tool":"slack.channels","ok":false,"error":"slack is not connected"}}`,
+	}}
+	got := byID(mcpSession(t, f, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"karmax_call","arguments":{"tool":"slack.channels","reason":"find the channel"}}}`))
+	if r := got["1"]["result"].(map[string]any); r["isError"] != true || !strings.Contains(text(r), "slack is not connected") {
+		t.Fatalf("karmax_call = %v", got["1"])
+	}
+}
+
+// A write waiting for its approval holds its own call, not the session.
+func TestMCPAnswersWhileAWriteWaitsForApproval(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/karmax/call" {
+			_, _ = io.WriteString(w, `{"tool":"comms.send","class":"write","approval":{"id":9,"state":"pending"}}`)
+			return
+		}
+		<-release
+		_, _ = io.WriteString(w, `{"tool":"comms.send","class":"write","result":{"tool":"comms.send","ok":true,"output":"sent"}}`)
+	}))
+	defer srv.Close()
+	t.Setenv("FLEETD_URL", srv.URL)
+	t.Setenv("FLEET_TOKEN", "tok")
+	t.Setenv("FLEET_AGENT_KEY", "")
+	t.Setenv("FLEET_CONFIG", t.TempDir()+"/none.yaml")
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- serveMCP(inR, outW); outW.Close() }()
+	lines := bufio.NewScanner(outR)
+	next := func() map[string]any {
+		t.Helper()
+		if !lines.Scan() {
+			t.Fatal("the server said nothing more")
+		}
+		var m map[string]any
+		_ = json.Unmarshal(lines.Bytes(), &m)
+		return m
+	}
+	_, _ = io.WriteString(inW, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"karmax_call","arguments":{"tool":"comms.send","reason":"tell Ram"}}}`+"\n")
+	_, _ = io.WriteString(inW, `{"jsonrpc":"2.0","id":2,"method":"ping"}`+"\n")
+	if m := next(); m["id"] != float64(2) {
+		t.Fatalf("first reply = %v, want the ping's while the write waits", m)
+	}
+	close(release)
+	if m := next(); m["id"] != float64(1) || text(m["result"].(map[string]any)) != `"sent"` {
+		t.Fatalf("the write's reply = %v", m)
+	}
+	inW.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
