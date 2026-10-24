@@ -1,6 +1,7 @@
 package guide
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -90,6 +91,43 @@ func TestTextSaysHowToUseTheKARMAXGateway(t *testing.T) {
 		"fleetctl approve", "fleetctl deny", "POST /v1/karmax/call", "/v1/approvals/{id}/approve", "never sees the token"} {
 		if !strings.Contains(Text(), want) {
 			t.Errorf("guide lacks %q", want)
+		}
+	}
+}
+
+// The image ships the fleet-memory skill as a file; it must be the very text
+// `fleetctl skill install` writes, so the two cannot drift. If this fails,
+// copy `fleetctl skill install --print`'s fleet-memory part over the file.
+func TestTheShippedMemorySkillIsWhatSkillInstallWrites(t *testing.T) {
+	got, err := os.ReadFile("../../../packaging/fleet/skills/fleet-memory/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != MemorySkill() {
+		t.Error("packaging/fleet/skills/fleet-memory/SKILL.md differs from guide.MemorySkill()")
+	}
+}
+
+func TestTheShippedAgentSkillCoversEveryToolAndFailure(t *testing.T) {
+	b, err := os.ReadFile("../../../packaging/fleet/skills/fleet-agent/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.HasPrefix(s, "---\nname: fleet-agent\ndescription: ") {
+		t.Fatalf("skill starts %q", s[:min(len(s), 60)])
+	}
+	for _, want := range []string{"fleetctl tell", "--kind progress", "fleetctl ask", "exit 4", "/work/inbox/<task>/",
+		"fleetctl karmax tools", "fleetctl karmax call", "--reason", "k:=5", "--json-args", "Reads are free", "Denied outright",
+		"fleetctl memory recall", "fleetctl secret", "fleetctl whoami", "fleetctl model", "kbuild", "--no-verify", "403", "queued",
+		"v2-files", "v2-secrets"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("fleet-agent skill lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"192.168.", "sk-ant", "gho_"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("fleet-agent skill contains %q; the repo is public", bad)
 		}
 	}
 }

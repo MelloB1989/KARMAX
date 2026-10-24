@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -687,6 +688,83 @@ func TestAgentBriefSaysHowToUseTheOperatorsIntegrations(t *testing.T) {
 	for _, want := range []string{"fleetctl karmax tools", "fleetctl karmax call", "--reason", "never\nhold KARMAX's token", "fleetd refuses"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("agent brief lacks %q", want)
+		}
+	}
+}
+
+// The one section that says what an agent has and the rules: each tool and
+// each rule the operator decided, and nothing a public repo cannot hold.
+func TestAgentBriefStatesWhatTheAgentHasAndTheRules(t *testing.T) {
+	b, err := Brief(cfg(t), "agent-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := section(b, "## What you have, and the rules")
+	for _, want := range []string{
+		"### Talking", "fleetctl tell", "--kind progress", "--kind question", "fleetctl ask", "exits 4",
+		"### Files", "/work/inbox/<task>/",
+		"### The operator's accounts", "fleetctl karmax tools", "fleetctl karmax call", "--reason", "Every read is free",
+		"Every write", "waits for\n  approval", "WhatsApp", "run code", "denied outright", "any other route",
+		"### Memory", "fleetctl memory recall", "fleetctl memory suggest", "only the orchestrator saves",
+		"### Secrets", "fleetctl secret", "Never print one, commit one",
+		"### Public repos", "pre-commit hook", "--no-verify",
+		"`fleet-agent` skill", "`fleet-memory` skill",
+	} {
+		if !strings.Contains(have, want) {
+			t.Errorf("What you have, and the rules lacks %q", want)
+		}
+	}
+	for _, old := range []string{"## The operator's integrations", "\n## Heavy work", "\n## GitHub accounts"} {
+		if strings.Contains(b, old) {
+			t.Errorf("brief still has the scattered section %q", old)
+		}
+	}
+}
+
+// The brief goes into a public repo's tests and is read by every agent: it
+// carries only fake values.
+func TestBriefsNameNoRealPersonLoginPhoneOrAddress(t *testing.T) {
+	c, err := config.Parse([]byte(nativeYAML + "build: {docker_host: \"ssh://fleetbuild@192.0.2.10\", key_env: FLEET_BUILD_KEY}\ngithub: {token_env: GH_TOKEN_FLEET, owners: {acme-org: GH_TOKEN_ACME}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, _ := Brief(c, "agent-01")
+	orch, _ := OrchestratorBrief(c)
+	phone := regexp.MustCompile(`\+\d[\d ()-]{7,}|\b\d{10,}\b`)
+	ip := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+	email := regexp.MustCompile(`[\w.+-]+@[\w.-]+`)
+	home := regexp.MustCompile(`/(home|Users)/[\w.-]+`)
+	for name, text := range map[string]string{"agent brief": agent, "orchestrator brief": orch} {
+		if m := phone.FindString(text); m != "" {
+			t.Errorf("%s has a phone number: %q", name, m)
+		}
+		for _, m := range ip.FindAllString(text, -1) {
+			if !strings.HasPrefix(m, "192.0.2.") && !strings.HasPrefix(m, "100.64.0.") {
+				t.Errorf("%s has an address that is not documentation-range: %q", name, m)
+			}
+		}
+		for _, m := range email.FindAllString(text, -1) {
+			if !strings.HasSuffix(m, "@example.com") && !strings.HasPrefix(m, "fleetbuild@") {
+				t.Errorf("%s has a login that is not @example.com: %q", name, m)
+			}
+		}
+		for _, m := range home.FindAllString(text, -1) {
+			if m != "/home/op" {
+				t.Errorf("%s has a home path that is not /home/op: %q", name, m)
+			}
+		}
+	}
+}
+
+func TestOrchestratorBriefSaysWhatReachesHerFromTheAgentsToolkit(t *testing.T) {
+	b, err := OrchestratorBrief(cfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## What your agents have, and what you decide", "`fleet-agent`", "`fleet-memory`", "**Approvals.**",
+		"Memory suggestion from <agent>", "You alone", "**Questions.**", "fleetctl approve <id>"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("orchestrator brief lacks %q", want)
 		}
 	}
 }
