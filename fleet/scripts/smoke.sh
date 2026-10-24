@@ -9,29 +9,7 @@ R=$(mktemp -d); B=$R/fleetbin
 go build -o "$B/" ./cmd/... || exit 1
 mkdir -p "$R"/{bin,home/.claude/sessions,home/.claude/fleet,home/.claude/projects/-work,work,state}
 chmod 700 "$R/state"
-cat > "$R/bin/docker" <<'EOF'
-#!/bin/bash
-case "$1" in
-  inspect) echo true ;;
-  stats) echo '{"Name":"agent-01","CPUPerc":"1.00%","MemUsage":"100MiB / 15GiB","MemPerc":"0.6%"}' ;;
-  exec) shift; env=(); while [[ "$1" == -* ]]; do if [[ "$1" == -e ]]; then env+=("$2"); shift; fi; shift; done; shift; exec env "${env[@]}" "$@" ;;
-esac
-EOF
-cat > "$R/bin/claude" <<'EOF'
-#!/bin/bash
-if [ "$1" = agents ]; then
-  printf '['; sep=; for f in "$HOME"/.claude/sessions/*.json; do [ -e "$f" ] || continue; printf '%s' "$sep"; cat "$f"; sep=,; done; printf ']\n'; exit 0
-fi
-if [ "$1" = -p ]; then
-  echo "role=$FLEET_ROLE args=$*" >> "$RELAY_LOG"; p=$(cat); printf '%s\n' "$p" >> "$RELAY_LOG"
-  # A relay is delivered when its SendMessage says so (stream-json).
-  to=$(printf '%s' "$p" | sed -n 's/.*session named "\([^"]*\)".*/\1/p' | head -n1)
-  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"SendMessage","input":{"to":"%s"}}]}}\n' "$to"
-  printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"{\\"success\\":true}"}]}}\n'
-  exit 0
-fi
-EOF
-chmod +x "$R/bin/"*
+. scripts/smoke-lib.sh; smoke_fakes "$R"
 export TMUX_TMPDIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fl.XXXX")  # sockets need a short path
 export HOME=$R/home FLEET_WORK=$R/work PATH=$R/bin:$PATH RELAY_LOG=$R/relay.log
 cat > "$R/state/fleet.yaml" <<EOF
