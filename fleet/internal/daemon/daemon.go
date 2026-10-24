@@ -305,7 +305,11 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 	next.RecordedAt = now
 	if s := o.Status; s != nil {
 		if m := firstNonEmpty(s.Model.DisplayName, s.Model.ID); m != "" {
-			next.Model = m
+			next.Model, next.ModelID = m, s.Model.ID
+		}
+		if o.ContainerUp && (s.SessionID == "" || s.SessionID == next.SessionID) {
+			idle := (next.Phase == reconcile.Standby || next.Phase == reconcile.Waiting) && next.WaitingSince.IsZero()
+			next = f.applyModel(ctx, name, b, next, next.Model != "", idle, now)
 		}
 	}
 	f.setState(next)

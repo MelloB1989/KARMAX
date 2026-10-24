@@ -53,6 +53,12 @@ func (e *NoFreeAgent) Unwrap() error { return ErrConflict }
 // the agent whose last task was in the same repo, then the lowest 5 h quota
 // use, the lowest 7 d, the longest idle.
 func (f *Fleet) Pick(repo string, now time.Time) PickReply {
+	return f.PickModel(repo, "", now)
+}
+
+// PickModel is Pick for a task that wants a model: only agents whose models:
+// list allows it are eligible.
+func (f *Fleet) PickModel(repo, model string, now time.Time) PickReply {
 	rows := f.Status(now)
 	type scored struct {
 		c        Candidate
@@ -62,6 +68,9 @@ func (f *Fleet) Pick(repo string, now time.Time) PickReply {
 	for _, r := range rows {
 		c := Candidate{Agent: r.Agent, FiveHour: r.FiveHour, SevenDay: r.SevenDay, IdleS: r.IdleS}
 		c.Why = f.ineligible(r)
+		if model != "" && !ModelAllowed(f.cfg.Agents[r.Agent].Models, model) {
+			c.Why = fmt.Sprintf("does not list %s (models: %s)", model, strings.Join(f.cfg.Agents[r.Agent].Models, ", "))
+		}
 		c.Eligible = c.Why == ""
 		s := scored{c: c}
 		if c.Eligible && repo != "" {
@@ -160,10 +169,13 @@ func (f *Fleet) ineligible(r Row) string {
 }
 
 // RunRequest is a task to hand to the fleet. JSON: brief, repo, agent, from,
-// task, queue ("30m").
+// task, queue ("30m"), model.
 type RunRequest struct {
 	Brief, Repo, Agent, From, Task string
-	Queue                          time.Duration
+	// Model is the model the task's session runs; empty: the agent's own.
+	// When the task closes and the session rotates, the agent goes back.
+	Model string
+	Queue time.Duration
 	// Limit is how many open tasks From may hold at once, this one
 	// included; 0 is no limit. The server sets it for a tailnet member.
 	Limit int
@@ -192,6 +204,12 @@ func (f *Fleet) Run(ctx context.Context, in RunRequest, now time.Time) (RunReply
 	if in.Agent != "" {
 		if err := f.known(in.Agent); err != nil {
 			return RunReply{}, fmt.Errorf("%w: %v", ErrBadInput, err)
+		}
+	}
+	if in.Model != "" {
+		var err error
+		if in.Model, err = NormalizeModel(in.Model); err != nil {
+			return RunReply{}, err
 		}
 	}
 	if in.From == "" {
@@ -248,7 +266,7 @@ func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 				ErrConflict, in.From, len(open), strings.Join(ids, ", "))
 		}
 	}
-	p := f.Pick(in.Repo, now)
+	p := f.PickModel(in.Repo, in.Model, now)
 	rep := RunReply{Agent: p.Agent, Why: p.Why}
 	if in.Agent != "" {
 		rep = RunReply{Agent: in.Agent, Why: "named"}
@@ -270,10 +288,16 @@ func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 	if err := f.db.SetTaskRepo(rep.Task, in.Repo); err != nil {
 		return RunReply{}, err
 	}
+	if err := f.db.SetTaskModel(rep.Task, in.Model); err != nil {
+		return RunReply{}, err
+	}
 	return rep, nil
 }
 
 func (f *Fleet) deliver(ctx context.Context, in RunRequest, rep RunReply, now time.Time) (RunReply, error) {
+	if in.Model != "" {
+		f.setModelNow(ctx, rep.Agent)
+	}
 	text := "Task " + rep.Task + " from " + in.From + "."
 	if in.Repo != "" {
 		text += " Repo: " + in.Repo + "."

@@ -157,6 +157,9 @@ func TestAMemberSeesAndActsOnTheirOwnTasksOnly(t *testing.T) {
 		{"POST", "/v1/assign", `{"agent":"agent-03","task":"T2"}`, 403},
 		{"POST", "/v1/rotate", `{"agent":"agent-03"}`, 403},
 		{"POST", "/v1/enable", `{"agent":"agent-03"}`, 403},
+		{"POST", "/v1/agents/agent-03/model", `{"model":"opus"}`, 403},
+		{"GET", "/v1/agents/agent-03/model", ``, 403},
+		{"POST", "/v1/run", `{"brief":"x","model":"opus"}`, 403}, // a member does not choose the model
 		{"POST", "/v1/up", ``, 403},
 		{"DELETE", "/v1/archives?older=1d", ``, 403},
 	} {

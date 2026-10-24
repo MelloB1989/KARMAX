@@ -187,11 +187,13 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `GET /v1/status` | full, relay, console, member | `fleetctl status`, `ls` | one row per agent (phase, task, idle, model, alerts), plus the orchestrator's quota |
 | `POST /v1/tell` | full, relay, console | `fleetctl tell` | deliver a message to a session; to `operator` it is stored in the inbox |
 | `POST /v1/assign` | full | `fleetctl assign`, `give` | record a task for an agent, and with a brief deliver it; a new task supersedes the agent's old one |
-| `POST /v1/run` | full, member | `fleetctl run` | pick a free agent (or the one named), record the task with its repo, deliver the brief; 409 with the candidates when none is free (`queue` retries) |
+| `POST /v1/run` | full, member | `fleetctl run` | pick a free agent (or the one named), record the task with its repo, deliver the brief; 409 with the candidates when none is free (`queue` retries); `model` runs the task on that model, and only agents whose `models` list it are candidates (not for members) |
 | `POST /v1/done` | full, member | `fleetctl done` | close a task (`agent` may be left out when `task` is named); archives and rotates the session unless `keep_session` |
 | `POST /v1/tasks/{id}/followup` | full, member | `fleetctl followup` | relay more instructions to the agent on an open task (409 when closed) |
 | `POST /v1/tasks/{id}/cancel` | full, member | `fleetctl cancel` | interrupt the agent, tell it, close the task as `cancelled` (409 when closed) |
 | `POST /v1/rotate` | full, console | `fleetctl rotate` | archive the session and start fresh; `dry_run` replies with what it would close and when |
+| `GET /v1/agents/{agent}/model` | full, console | `fleetctl model` | the agent's configured default, its override, its open task's model and the live model |
+| `POST /v1/agents/{agent}/model` | full | `fleetctl model` | `{model}` sets a persistent override, `{reset: true}` clears it; fleetd types `/model` into the idle session. Members may not change models |
 | `POST /v1/enable` | full | `fleetctl enable` | re-enable an agent disabled for a subscription problem |
 | `POST /v1/restore` | full | `fleetctl restore` | restore an archived session |
 | `GET /v1/inbox` | full, console | `fleetctl inbox` | what agents reported to the operator (`after=<id>` cursor) |

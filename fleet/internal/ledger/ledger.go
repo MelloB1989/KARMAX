@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS events_daily (
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, agent TEXT, assigned INTEGER, closed INTEGER, outcome TEXT,
   branch TEXT, pr TEXT, assigner TEXT);
+CREATE TABLE IF NOT EXISTS model_override (
+  agent TEXT PRIMARY KEY, model TEXT NOT NULL, updated INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS relays (
   id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, recipient TEXT, at INTEGER,
   size INTEGER, delivered INTEGER, text TEXT, error TEXT);
@@ -92,6 +94,7 @@ func migrate(db *sql.DB) error {
 	adds := []struct{ table, column, decl string }{
 		{"tasks", "assigner", "TEXT"},
 		{"tasks", "repo", "TEXT"},
+		{"tasks", "model", "TEXT"},
 		{"relays", "task", "TEXT"},
 	}
 	for _, a := range adds {
@@ -522,6 +525,7 @@ type Task struct {
 	Assigner string    `json:"assigner"`
 	Outcome  string    `json:"outcome,omitempty"`
 	Repo     string    `json:"repo,omitempty"`
+	Model    string    `json:"model,omitempty"` // the model the task asked for (run --model)
 	Branch   string    `json:"branch,omitempty"`
 	PR       string    `json:"pr,omitempty"`
 	Assigned time.Time `json:"assigned,omitzero"`
@@ -540,6 +544,34 @@ func (db *DB) OpenTask(id, agent, assigner string, at time.Time) error {
 // SetTaskRepo records which repo a task works in.
 func (db *DB) SetTaskRepo(id, repo string) error {
 	_, err := db.sql.Exec(`UPDATE tasks SET repo=? WHERE id=?`, nullStr(repo), id)
+	return err
+}
+
+// SetTaskModel records the model a task asked for.
+func (db *DB) SetTaskModel(id, model string) error {
+	_, err := db.sql.Exec(`UPDATE tasks SET model=? WHERE id=?`, nullStr(model), id)
+	return err
+}
+
+// ModelOverride is the model set for an agent with fleetctl model, "" if none.
+func (db *DB) ModelOverride(agent string) (string, error) {
+	var m string
+	err := db.sql.QueryRow(`SELECT model FROM model_override WHERE agent=?`, agent).Scan(&m)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return m, err
+}
+
+// SetModelOverride keeps an agent's model override across restarts; an
+// empty model clears it.
+func (db *DB) SetModelOverride(agent, model string, at time.Time) error {
+	if model == "" {
+		_, err := db.sql.Exec(`DELETE FROM model_override WHERE agent=?`, agent)
+		return err
+	}
+	_, err := db.sql.Exec(`INSERT INTO model_override(agent, model, updated) VALUES(?,?,?)
+		ON CONFLICT(agent) DO UPDATE SET model=excluded.model, updated=excluded.updated`, agent, model, at.Unix())
 	return err
 }
 
@@ -594,8 +626,8 @@ func (db *DB) Task(id string) (*Task, error) {
 	var t Task
 	var as, cl sql.NullInt64
 	err := db.sql.QueryRow(`SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
-		&t.Outcome, &t.Branch, &t.PR, &t.Repo)
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,''), COALESCE(model,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
+		&t.Outcome, &t.Branch, &t.PR, &t.Repo, &t.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -613,7 +645,7 @@ func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
 // on the tailnet asked for.
 func (db *DB) TasksBy(open bool, agent, assigner string, limit int) ([]Task, error) {
 	q := `SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,''), COALESCE(model,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)
 		AND (?='' OR assigner=?)`
 	if open {
 		q += ` AND closed IS NULL`
@@ -633,7 +665,7 @@ func (db *DB) TasksBy(open bool, agent, assigner string, limit int) ([]Task, err
 	for rows.Next() {
 		var t Task
 		var as, cl sql.NullInt64
-		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR, &t.Repo); err != nil {
+		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR, &t.Repo, &t.Model); err != nil {
 			return nil, err
 		}
 		t.Assigned, t.Closed = fromUnix(as), fromUnix(cl)
