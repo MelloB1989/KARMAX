@@ -275,3 +275,38 @@ func TestASlotsMessagesAreFiledUnderItsOwnTask(t *testing.T) {
 		t.Error("a slot agent-01 does not have may send")
 	}
 }
+
+// A slot asks, is answered and has a model of its own: none of it is its
+// sibling's.
+func TestASlotsAskAnswerAndModelAreItsOwn(t *testing.T) {
+	f, boxes, _ := newSlots(t)
+	f.Tick(context.Background(), t0)
+	ctx := context.Background()
+	for _, w := range []string{"agent-01", "agent-01:2"} {
+		if err := f.Assign(ctx, w, "t-"+w, "operator", "", t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := askOn(t, f, ctx, "agent-01:2", "t-agent-01:2", "which base?", time.Minute, t0)
+	if in, _ := f.db.Inbox(0); len(in) != 1 || in[0].From != "agent-01:2" || in[0].Task != "t-agent-01:2" {
+		t.Fatalf("the question is filed as %+v, want slot 2's on its task", in)
+	}
+	if blocked, err := f.Answer(ctx, "t-agent-01:2", "operator", "origin/main", t0); err != nil || !blocked {
+		t.Fatalf("answer = %v, %v", blocked, err)
+	}
+	if r := within(t, done); r.err != nil || r.rep.Answer != "origin/main" {
+		t.Fatalf("slot 2's ask = %+v, %v", r.rep, r.err)
+	}
+	if c := boxes["agent-01"].snapshotCalls(); len(c) != 0 {
+		t.Errorf("slot 1 heard about slot 2's question: %v", c)
+	}
+
+	if err := f.SetModel("agent-01:2", "opus", t0); err != nil {
+		t.Fatal(err)
+	}
+	two, _ := f.Model("agent-01:2")
+	one, _ := f.Model("agent-01")
+	if !strings.Contains(two.Wanted, "opus") || strings.Contains(one.Wanted, "opus") {
+		t.Errorf("models: slot 2 wants %q, slot 1 %q; the override is slot 2's alone", two.Wanted, one.Wanted)
+	}
+}
