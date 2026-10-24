@@ -475,14 +475,20 @@ the tools for them, under the operator's rules:
     fleetctl karmax tools                       # what this agent may call, each read or write
     fleetctl karmax call <tool> k=v … --reason "<why>"   # k:=<json> for numbers and lists; --json-args '{}'
 
-- **A read runs at once.** A tool is a read when fleet.yaml's `karmax.tools` says so, else when its last
-  name part starts with a read verb (`list`, `get`, `read`, `search`, `view`, `show`, `find`, `recall`,
-  `retrieve`, `monitored`, `lookup`, `query`, `history`, `status`, …): `google.mail.search`,
-  `notion.query_database`, `whatsapp.monitored`. Every read is free, so KARMAX's read-only tools whose
-  names do not say so are reads too (checked against their descriptions): `slack.channels`,
+- **A read runs at once.** A tool is a read when fleet.yaml's `karmax.tools` says so, else when a word
+  of its name after the first (words split on dots and underscores) is a read verb (`list`, `get`,
+  `read`, `search`, `view`, `show`, `find`, `recall`, `retrieve`, `monitored`, `lookup`, `query`,
+  `history`, `status`, …) and none is a write verb (`send`, `set`, `delete`, `create`, `edit`, `add`,
+  `update`, `sync`, …): `google.mail.search`, `notion.query_database`, `whatsapp.monitored`,
+  `whatsapp_list_chats`, but not `whatsapp_set_chat_locked`. Every read is free, so KARMAX's read-only
+  tools whose names do not say so are reads too (checked against their descriptions): `slack.channels`,
   `slack.user`, `google.chat.spaces`, `instagram.inbox`, `instagram.reads`, `instagram.commenters`,
   `instagram.call` (Instagram reads only), `keka.departments`, `keka.employees`, `keka.leave`,
-  `activity.recent`, `cost.report`, `karmax.capabilities`, `tools.load`.
+  `activity.recent`, `cost.report`, `karmax.capabilities`, `tools.load`, and wacli's `whatsapp_status`,
+  `whatsapp_logs`, `whatsapp_message_receipts`, `whatsapp_webhook_deliveries`, `whatsapp_group_info`,
+  `whatsapp_call_status`, `whatsapp_check_numbers`, `whatsapp_resolve`, `whatsapp_download_media`.
+  `whatsapp_group_participants` (it adds and removes people), `whatsapp_group_invite_link` (it can
+  reset the link) and `whatsapp_sync` stay writes.
 - **A write waits for the orchestrator.** Everything else is a write. fleetd files it on the ledger
   (`approvals`: id, agent, task, tool, arguments, reason, state, who decided, when) and tells the
   orchestrator at once through the relay: the tool, its arguments, the reason, the first line of the

@@ -37,18 +37,42 @@ var knownReads = map[string]bool{
 	"slack.channels": true, "slack.user": true, "google.chat.spaces": true,
 	"instagram.inbox": true, "instagram.reads": true, "instagram.commenters": true, "instagram.call": true,
 	"keka.departments": true, "keka.employees": true, "keka.leave": true,
+	// wacli's: status, a chat's media and the like. Not whatsapp_group_participants
+	// (it adds and removes people), whatsapp_group_invite_link (it can reset the
+	// link) or whatsapp_sync.
+	"whatsapp_status": true, "whatsapp_logs": true, "whatsapp_message_receipts": true,
+	"whatsapp_webhook_deliveries": true, "whatsapp_group_info": true, "whatsapp_call_status": true,
+	"whatsapp_check_numbers": true, "whatsapp_resolve": true, "whatsapp_download_media": true,
 }
 
 // deniedWords are parts of a name that deny a tool wherever they appear.
 var deniedWords = []string{"credential", "secret", "fleet"}
 
-// readVerbs name a tool that only reads, as the first word of its last part
-// (google.mail.search, notion.query_database). Every other tool writes.
+// readVerbs name a tool that only reads, as any word of its name but the
+// first (google.mail.search, notion.query_database, whatsapp_list_chats).
 var readVerbs = map[string]bool{
 	"list": true, "get": true, "read": true, "search": true, "view": true, "show": true,
 	"find": true, "recall": true, "retrieve": true, "monitored": true, "lookup": true,
 	"query": true, "history": true, "status": true, "schema": true, "describe": true,
 	"count": true,
+}
+
+// writeVerbs make a tool a write wherever they appear in its name, a read
+// verb or not (whatsapp_set_chat_locked, slack.history_delete).
+var writeVerbs = map[string]bool{
+	"send": true, "set": true, "delete": true, "create": true, "edit": true, "join": true,
+	"leave": true, "rename": true, "place": true, "answer": true, "reject": true, "end": true,
+	"test": true, "replay": true, "bulk": true, "add": true, "update": true, "post": true,
+	"remove": true, "start": true, "stop": true, "sync": true, "write": true, "upload": true,
+	"invite": true, "reply": true, "forward": true, "share": true, "move": true, "copy": true,
+	"put": true, "patch": true, "modify": true, "change": true, "mark": true, "archive": true,
+	"approve": true, "accept": true, "decline": true, "cancel": true, "revoke": true, "reset": true,
+	"enable": true, "disable": true, "lock": true, "unlock": true, "pin": true, "mute": true,
+	"block": true, "kick": true, "ban": true, "promote": true, "demote": true, "assign": true,
+	"merge": true, "close": true, "submit": true, "publish": true, "schedule": true, "book": true,
+	"pay": true, "transfer": true, "save": true, "insert": true, "upsert": true, "clear": true,
+	"purge": true, "grant": true, "subscribe": true, "unsubscribe": true, "react": true,
+	"comment": true, "notify": true, "trigger": true, "call": true, "push": true, "import": true,
 }
 
 // toolName is a KARMAX tool's name: dotted parts, nothing that would make it
@@ -89,8 +113,8 @@ func AlwaysDenied(name string) bool {
 // ToolClass is what the gateway does with a call to the named tool: the
 // always-denied list first, then the most specific karmax.tools entry (an
 // exact name, else the longest prefix*), then the known reads, then the name
-// itself — a read verb reads, anything else writes. A name that is not a
-// tool's is denied.
+// itself — a read verb in it and no write verb reads, anything else writes.
+// A name that is not a tool's is denied.
 func (k Karmax) ToolClass(name string) string {
 	if !ValidToolName(name) || AlwaysDenied(name) {
 		return ToolDeny
@@ -110,13 +134,21 @@ func (k Karmax) ToolClass(name string) string {
 	if knownReads[name] {
 		return ToolRead
 	}
-	parts := strings.Split(name, ".")
-	if len(parts) > 1 {
-		last := parts[len(parts)-1]
-		first, _, _ := strings.Cut(last, "_")
-		if readVerbs[last] || readVerbs[first] {
-			return ToolRead
+	// Words split on dots and underscores alike, so wacli's whatsapp_list_chats
+	// reads as KARMAX's own google.mail.search does; the first is the namespace.
+	words := strings.FieldsFunc(name, func(r rune) bool { return r == '.' || r == '_' })
+	read := false
+	for i, w := range words {
+		if i == 0 {
+			continue
 		}
+		if writeVerbs[w] {
+			return ToolWrite
+		}
+		read = read || readVerbs[w]
+	}
+	if read {
+		return ToolRead
 	}
 	return ToolWrite
 }
