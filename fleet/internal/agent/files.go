@@ -15,19 +15,25 @@ var ErrPath = errors.New("path refused")
 
 // The scripts take the two roots as $1 and $2 and the path as $3. The path
 // is resolved here, in the container, with its symlinks: fleetd has only
-// its name, and a link inside /work to somewhere else is no way out.
-const putScript = `d=$(readlink -m -- "$3") || exit 1
-case "$d" in "$1"|"$1"/*|"$2"|"$2"/*) ;; *) echo "$3 is $d: files go under $1 or $2 only" >&2; exit 3 ;; esac
+// its name, and a link inside /work to somewhere else is no way out. /work
+// is $FLEET_WORK where that is set, as everywhere else in the container.
+const resolve = `w=$(readlink -m -- "${FLEET_WORK:-$1}") || exit 1
+t=$(readlink -m -- "$2") || exit 1
+p=$3; case "$p" in "$1"|"$1"/*) p=$w${p#"$1"} ;; esac
+`
+
+const putScript = resolve + `d=$(readlink -m -- "$p") || exit 1
+case "$d" in "$w"|"$w"/*|"$t"|"$t"/*) ;; *) echo "$3 is $d: files go under $1 or $2 only" >&2; exit 3 ;; esac
 mkdir -p -- "$d" && exec tar -x -p --no-same-owner -C "$d"
 `
 
 // getScript archives the path itself, under its own name; a symlink is
 // archived as a link, not followed. A root is archived as its contents.
-const getScript = `r=$(readlink -m -- "$3") || exit 1
-case "$r" in "$1"|"$2") exec tar -c -C "$r" . ;; esac
-b=$(basename -- "$3")
-d=$(readlink -m -- "$(dirname -- "$3")") || exit 1
-case "$d" in "$1"|"$1"/*|"$2"|"$2"/*) ;; *) echo "$3 is under $d: files come from under $1 or $2 only" >&2; exit 3 ;; esac
+const getScript = resolve + `r=$(readlink -m -- "$p") || exit 1
+case "$r" in "$w"|"$t") exec tar -c -C "$r" . ;; esac
+b=$(basename -- "$p")
+d=$(readlink -m -- "$(dirname -- "$p")") || exit 1
+case "$d" in "$w"|"$w"/*|"$t"|"$t"/*) ;; *) echo "$3 is under $d: files come from under $1 or $2 only" >&2; exit 3 ;; esac
 [ -e "$d/$b" ] || [ -L "$d/$b" ] || { echo "$3: no such file or directory" >&2; exit 4; }
 exec tar -c -C "$d" -- "$b"
 `

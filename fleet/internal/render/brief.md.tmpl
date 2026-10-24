@@ -41,6 +41,9 @@ A relayed message starts with `[relayed from <name> — reply with: fleetctl tel
 - Commit early and often, and push your branch. Never push to `main`. Never
   rebase or force-push a branch once you have reported it: it may already be
   merged. New work goes in new commits, or on a new branch from `origin/main`.
+- Files sent to you arrive in `/work/inbox/` — a task's own in `/work/inbox/<task>/`, which the
+  brief names. To hand files back, put them in your branch or under `/work` and name the path in your
+  report: the person reading it fetches them with `fleetctl cp {{.Agent}}:<path> <dir>`.
 - Do not run `git gc`; it runs on a schedule, so eight agents never gc one repo at once.
 - A task's brief starts `Task <id> from <name>.` — report to whoever assigned it,
   {{.Orchestrator}} if the brief does not say: `fleetctl tell <name> "<report>"`.

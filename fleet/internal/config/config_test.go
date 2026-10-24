@@ -330,3 +330,14 @@ func TestKnownReadsWithoutAReadVerbAreFree(t *testing.T) {
 		t.Errorf("slack.channels under slack.*: write = %s", got)
 	}
 }
+
+func TestFilesCapDefaultsToTwoGiBAndTakesYAML(t *testing.T) {
+	c, err := Parse([]byte(example))
+	if err != nil || c.Files.MaxBytes != 2<<30 {
+		t.Fatalf("default = %d, %v", c.Files.MaxBytes, err)
+	}
+	c, err = Parse([]byte(example + "files: {max_bytes: 1048576}\n"))
+	if err != nil || c.Files.MaxBytes != 1<<20 {
+		t.Fatalf("set = %d, %v", c.Files.MaxBytes, err)
+	}
+}

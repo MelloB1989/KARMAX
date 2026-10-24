@@ -239,6 +239,9 @@ func rsyncArgv(self, src, dst string, del, dry bool, exclude []string) ([]string
 		if err != nil {
 			return "", err
 		}
+		if strings.HasSuffix(m[2], "/") && p != "/" {
+			p += "/" // rsync: the directory's contents, not the directory
+		}
 		return m[1] + ":" + p, nil
 	}
 	var err error

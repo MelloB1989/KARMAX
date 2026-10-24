@@ -145,7 +145,9 @@ func (t *tree) entry(h *tar.Header) (string, error) {
 	default:
 		return "", fmt.Errorf("archive entry %q is not a file, directory or symlink", h.Name)
 	}
-	t.seen[name] = true
+	for dir := name; dir != "."; dir = path.Dir(dir) {
+		t.seen[dir] = true // a symlink may not come over a directory made for its files
+	}
 	return name, nil
 }
 
