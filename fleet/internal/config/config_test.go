@@ -96,6 +96,11 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"hide outside code":   "hide_from_agents: [../.ssh]\nagents: {agent-01: {host: kali, token_env: T}}",
 		"hide all of code":    "hide_from_agents: [.]\nagents: {agent-01: {host: kali, token_env: T}}",
 		"orchestrator @":      "orchestrator: {host: kali, token_env: O, name: 'a@b.c'}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"memory no url":       "memory: {key_env: GITLOOM_KEY, namespace: mira}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"memory bad url":      "memory: {url: '127.0.0.1:8787', key_env: GITLOOM_KEY, namespace: mira}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"memory key inline":   "memory: {url: 'http://127.0.0.1:8787', key_env: 'gl_abc-123', namespace: mira}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"memory no namespace": "memory: {url: 'http://127.0.0.1:8787', key_env: GITLOOM_KEY}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"memory is full":      "memory: {url: 'http://127.0.0.1:8787', key_env: FLEET_TOKEN, namespace: mira}\nagents: {agent-01: {host: kali, token_env: T}}",
 	}
 	for name, body := range cases {
 		src := "home: /h\nhosts: {kali: {exec: [docker]}}\norchestrator: {host: kali, token_env: O}\n" + body
@@ -163,6 +168,24 @@ func TestNoConsoleSectionIsNil(t *testing.T) {
 	}
 	if c.Console != nil {
 		t.Fatalf("console = %+v, want nil", c.Console)
+	}
+}
+
+func TestTheMemorySectionIsOffWhenAbsent(t *testing.T) {
+	base := "home: /h\nhosts: {pc2: {exec: [docker]}}\norchestrator: {host: pc2, token_env: O}\nagents: {agent-01: {host: pc2, token_env: T}}\n"
+	c, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Memory != nil {
+		t.Fatalf("memory = %+v, want nil", c.Memory)
+	}
+	c, err = Parse([]byte(base + "memory: {url: 'http://127.0.0.1:8787', key_env: GITLOOM_KEY, namespace: mira}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := c.Memory; m == nil || m.URL != "http://127.0.0.1:8787" || m.KeyEnv != "GITLOOM_KEY" || m.Namespace != "mira" {
+		t.Fatalf("memory = %+v", c.Memory)
 	}
 }
 

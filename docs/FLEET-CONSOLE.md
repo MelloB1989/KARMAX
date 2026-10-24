@@ -214,9 +214,19 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/up` | full | `fleetctl up` | docker compose up for hosts (the plan and `--when-idle` are host-side) |
 | `POST /v1/down` | full | `fleetctl down` | docker compose down for hosts |
 | `POST /v1/render` | full | `fleetctl render` | regenerate env files, compose files and briefs |
+| `GET /v1/memory/recall` | full, relay | `fleetctl memory recall` | search the operator's long-term memory (read-only); an agent only on a task the operator's side gave it |
+| `POST /v1/memory/suggest` | full, relay | `fleetctl memory suggest` | send a fact worth keeping to the orchestrator, which alone saves it; same rule for agents |
+| `GET /v1/karmax/tools` | full, relay | `fleetctl karmax tools` | the KARMAX tools the gateway lets through, each with its class (read, write); denied tools are left out. An agent only on a task the operator's side gave it |
+| `POST /v1/karmax/call` | full, relay | `fleetctl karmax call` | call a KARMAX tool with fleetd's token: a read runs and returns its result; a write files a pending approval, tells the orchestrator, and returns it; a denied tool is a 403. Same rule for agents |
+| `GET /v1/approvals/{id}` | full, relay | `fleetctl karmax call` (its wait) | long poll (`wait`, default 5m) on the caller's own request: an approved one runs once and returns the result; denied or expired is a 403 with why |
+| `GET /v1/approvals` | full | `fleetctl approvals` | approval requests (`state`: pending by default in fleetctl, or all; `n` newest) |
+| `POST /v1/approvals/{id}/approve` | full | `fleetctl approve` | approve a pending request (409 when it is not pending; 403 on one's own) |
+| `POST /v1/approvals/{id}/deny` | full | `fleetctl deny` | deny a pending request; `reason` is required and the agent is told it |
 <!-- routes:end -->
 
 `member` is a person on the tailnet (`tailnet:` in fleet.yaml, no token: Tailscale says who they are). A member runs tasks as themselves, at most `member_open` open at once, and the task routes answer them only for their own tasks (403 otherwise); `wait` needs `task`, and `done` closes by task alone. An operator login on the tailnet has `full`.
+
+The memory and KARMAX gateway routes, and every route that reaches the operator's personal data, also check who an agent is: all agents share the relay token, so each container has a key of its own (`FLEET_AGENT_KEY`, written by `fleetctl render`) that fleetctl sends as `X-Fleet-Agent`. A key that does not verify is a 403 on any route. An agent may use the operator's data only while its current task, in the ledger, was assigned by the operator, one of their sessions or the orchestrator; never on a member's task. A member and the console never may.
 
 ## Install, upgrade, undo on PC2
 
