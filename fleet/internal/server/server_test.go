@@ -24,15 +24,34 @@ type fake struct {
 func (f *fake) Status(time.Time) []daemon.Row {
 	return []daemon.Row{{Agent: "agent-03", State: "standby", Task: "T-ram"}, {Agent: "agent-02", State: "working", Task: "T1"}}
 }
-func (f *fake) Tell(_ context.Context, from, to, text string, _ time.Time) error {
-	f.calls = append(f.calls, "tell "+from+" "+to+" "+text)
+func (f *fake) TellKind(_ context.Context, from, to, text, kind string, _ time.Time) error {
+	if kind != "" {
+		kind = " [" + kind + "]"
+	}
+	f.calls = append(f.calls, "tell "+from+" "+to+" "+text+kind)
 	return nil
+}
+func (f *fake) Ask(_ context.Context, from, text string, timeout time.Duration, _ time.Time) (daemon.AskReply, error) {
+	f.calls = append(f.calls, fmt.Sprintf("ask %s %s %s", from, text, timeout))
+	return daemon.AskReply{Task: "T1", Answer: "use the second"}, nil
+}
+func (f *fake) Answer(_ context.Context, task, from, text string, _ time.Time) (bool, error) {
+	if task == "T-missing" {
+		return false, fmt.Errorf("%w %s", daemon.ErrNoTask, task)
+	}
+	f.calls = append(f.calls, "answer "+task+" "+from+" "+text)
+	return true, nil
+}
+func (f *fake) WaitNew(_ context.Context, agent, task, reader string) (daemon.WaitResult, error) {
+	f.calls = append(f.calls, "waitnew "+task+" "+reader)
+	return daemon.WaitResult{Reason: "timeout"}, nil
 }
 func (f *fake) Assign(_ context.Context, name, task, from, brief string, _ time.Time) error {
 	f.calls = append(f.calls, "assign "+name+" "+task+" "+from+" "+brief)
 	return nil
 }
-func (f *fake) Inbox(after int64) ([]ledger.Relay, error) {
+func (f *fake) InboxOf(to string, after int64) ([]ledger.Relay, error) {
+	f.calls = append(f.calls, "inbox "+to)
 	return []ledger.Relay{{ID: after + 1, From: "agent-03", To: "operator", Text: "ready"}}, nil
 }
 func (f *fake) Wait(ctx context.Context, agent, task string, after int64) (daemon.WaitResult, error) {

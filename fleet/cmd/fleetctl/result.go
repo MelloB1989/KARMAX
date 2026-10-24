@@ -60,7 +60,7 @@ func printResult(w *os.File, r daemon.TaskResult) {
 		fmt.Fprintln(w, "no reports")
 	}
 	for _, m := range r.Reports {
-		fmt.Fprintf(w, "\n[%s] %s → %s:\n%s\n", m.At.Local().Format("2006-01-02 15:04:05"), m.From, m.To, strings.TrimRight(m.Text, "\n"))
+		fmt.Fprintf(w, "\n[%s] %s → %s%s:\n%s\n", m.At.Local().Format("2006-01-02 15:04:05"), m.From, m.To, kindTag(m.Kind), strings.TrimRight(m.Text, "\n"))
 	}
 	if len(r.Commits) > 0 {
 		fmt.Fprintf(w, "\n%d commit(s) ahead of main:\n", r.Ahead)

@@ -41,13 +41,29 @@ func (s *serve) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ctl runs fleetctl against s with the given stdin, returning stdout.
 func ctl(t *testing.T, s *serve, stdin string, args ...string) (string, error) {
 	t.Helper()
+	ctlEnv(t, s)
+	return ctlRunIn(stdin, args...)
+}
+
+// ctlEnv serves s and points fleetctl at it, as nobody in particular: no
+// agent, session or Claude Code session name in its environment.
+func ctlEnv(t *testing.T, s *serve) {
+	t.Helper()
 	srv := httptest.NewServer(s)
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 	t.Setenv("FLEETD_URL", srv.URL)
 	t.Setenv("FLEET_TOKEN", "tok")
 	t.Setenv("FLEET_NAME", "")
 	t.Setenv("FLEET_AGENT", "")
+	t.Setenv("FLEET_SESSION", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	t.Setenv("FLEET_CONFIG", t.TempDir()+"/none.yaml")
+}
+
+// ctlRun runs fleetctl against the server ctlEnv made.
+func ctlRun(args ...string) (string, error) { return ctlRunIn("", args...) }
+
+func ctlRunIn(stdin string, args ...string) (string, error) {
 	inR, inW, _ := os.Pipe()
 	go func() { _, _ = io.WriteString(inW, stdin); inW.Close() }()
 	r, w, _ := os.Pipe()
@@ -225,6 +241,8 @@ func TestRunRetriesWithOneTaskIDWhileFleetdIsAway(t *testing.T) {
 	t.Setenv("FLEET_TOKEN", "tok")
 	t.Setenv("FLEET_NAME", "")
 	t.Setenv("FLEET_AGENT", "")
+	t.Setenv("FLEET_SESSION", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	t.Setenv("FLEET_CONFIG", t.TempDir()+"/none.yaml")
 	var sent []string
 	srvBodies := func() []string { s.mu.Lock(); defer s.mu.Unlock(); return s.body }

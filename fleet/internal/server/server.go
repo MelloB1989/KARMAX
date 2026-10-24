@@ -1,8 +1,8 @@
 // Package server is fleetd's HTTP API, which fleetctl talks to.
 //
 // Three token scopes: Full (you, and the orchestrator) can do everything;
-// Relay (every agent container) can read status, tell, and report to the
-// operator; Console (fleet-console) reads everything and prompts and rotates
+// Relay (every agent container) can read status, tell, ask its assigner a
+// question and wait for the answer, and report to the operator; Console (fleet-console) reads everything and prompts and rotates
 // as the operator. Requests with none are refused, on every listener;
 // GET /v1 lists every route and the scopes it allows.
 //
@@ -35,7 +35,9 @@ import (
 // Ops is what the API drives; *daemon.Fleet is the real one.
 type Ops interface {
 	Status(now time.Time) []daemon.Row
-	Tell(ctx context.Context, from, to, text string, now time.Time) error
+	TellKind(ctx context.Context, from, to, text, kind string, now time.Time) error
+	Ask(ctx context.Context, from, text string, timeout time.Duration, now time.Time) (daemon.AskReply, error)
+	Answer(ctx context.Context, task, from, text string, now time.Time) (bool, error)
 	Assign(ctx context.Context, name, task, from, brief string, now time.Time) error
 	Followup(ctx context.Context, task, from, text string, now time.Time) error
 	Cancel(ctx context.Context, task, from, reason string, now time.Time) error
@@ -48,8 +50,9 @@ type Ops interface {
 	Model(name string) (daemon.ModelReply, error)
 	SetModel(name, model string, now time.Time) error
 	Restore(ctx context.Context, id, onto string, now time.Time) error
-	Inbox(after int64) ([]ledger.Relay, error)
+	InboxOf(to string, after int64) ([]ledger.Relay, error)
 	Wait(ctx context.Context, agent, task string, after int64) (daemon.WaitResult, error)
+	WaitNew(ctx context.Context, agent, task, reader string) (daemon.WaitResult, error)
 	Result(task string) (daemon.TaskResult, error)
 
 	Events(q daemon.EventsQuery) ([]ledger.Event, error)
@@ -236,9 +239,12 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		return out, nil
 	}, and(everyone, member)...)
 	route("POST /v1/tell", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		var in struct{ From, To, Text string }
+		var in struct{ From, To, Text, Kind string }
 		if err := body(r, &in); err != nil {
 			return nil, err
+		}
+		if !ledger.ValidKind(in.Kind) {
+			return nil, badRequest{fmt.Errorf("kind %q: want report, question or progress", in.Kind)}
 		}
 		switch scopeOf(r) {
 		case console:
@@ -260,8 +266,32 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
-		return ok, ops.Tell(ctx, in.From, in.To, in.Text, time.Now())
+		return ok, ops.TellKind(ctx, in.From, in.To, in.Text, in.Kind, time.Now())
 	}, everyone...)
+	route("POST /v1/ask", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var err error
+		var in struct{ From, Text, Timeout string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if in.From, err = provenFrom(r, in.From); err != nil {
+			return nil, err
+		}
+		if in.From == "" || strings.TrimSpace(in.Text) == "" {
+			return nil, badRequest{fmt.Errorf("ask needs from and text")}
+		}
+		timeout := daemon.DefaultAskTimeout
+		if in.Timeout != "" {
+			if timeout, err = time.ParseDuration(in.Timeout); err != nil || timeout <= 0 {
+				return nil, badRequest{fmt.Errorf("timeout %q: want a duration like 30m", in.Timeout)}
+			}
+		}
+		// It holds the request open for the answer, and may wait for nothing
+		// else: its question is the agent's own, under the agent's own task.
+		ctx, cancel := context.WithTimeout(r.Context(), timeout+time.Minute)
+		defer cancel()
+		return ops.Ask(ctx, in.From, in.Text, timeout, time.Now())
+	}, relay)
 	route("POST /v1/assign", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct{ Agent, Task, From, Brief string }
 		if err := body(r, &in); err != nil {
@@ -299,7 +329,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		}
 		limit := 0
 		if c := callerOf(r); c != nil && scopeOf(r) == member {
-			in.From, limit = c.Login, c.MaxOpen // a member runs as themselves, and only so many
+			in.From, limit = memberFrom(c, in.From), c.MaxOpen // a member runs as themselves (or a session of theirs), and only so many
 		}
 		// A queued run holds the request open for the queue time.
 		ctx, cancel := context.WithTimeout(r.Context(), queue+3*time.Minute)
@@ -347,7 +377,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 			in.From = ledger.Operator
 		}
 		if c := callerOf(r); c != nil && scopeOf(r) == member {
-			in.From = c.Login
+			in.From = memberFrom(c, in.From)
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
@@ -365,12 +395,54 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 			in.From = ledger.Operator
 		}
 		if c := callerOf(r); c != nil && scopeOf(r) == member {
-			in.From = c.Login
+			in.From = memberFrom(c, in.From)
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
 		return ok, ops.Cancel(ctx, r.PathValue("id"), in.From, in.Reason, time.Now())
 	}, and(fullOnly, member)...)
+	route("POST /v1/tasks/{id}/answer", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct{ From, Text string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.Text) == "" {
+			return nil, badRequest{fmt.Errorf("answer needs text")}
+		}
+		id := r.PathValue("id")
+		if err := own(r, ops, id); err != nil {
+			return nil, err
+		}
+		if in.From == "" && scopeOf(r) != relay {
+			in.From = ledger.Operator
+		}
+		switch c := callerOf(r); {
+		case c != nil && scopeOf(r) == member:
+			in.From = memberFrom(c, in.From)
+		case scopeOf(r) == relay:
+			// An agent answers only what it assigned: a peer's question, not a
+			// task someone else gave.
+			t, err := ops.TaskAgent(id)
+			if err != nil {
+				return nil, err
+			}
+			from, err := provenFrom(r, in.From)
+			if err != nil {
+				return nil, err
+			}
+			in.From = from
+			if ledger.IsPerson(in.From) || t.Assigner != in.From {
+				return nil, forbidden{fmt.Errorf("task %s was not assigned by %q: an agent answers only its own tasks' questions", id, in.From)}
+			}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		blocked, err := ops.Answer(ctx, id, in.From, in.Text, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "answered": blocked}, nil
+	}, and(and(fullOnly, relay), member)...)
 	route("POST /v1/rotate", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct {
 			Agent  string
@@ -425,7 +497,11 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		if err != nil {
 			return nil, err
 		}
-		msgs, err := ops.Inbox(after)
+		to := r.URL.Query().Get("to") // a session's inbox; the operator's by default
+		if to == "" {
+			to = ledger.Operator
+		}
+		msgs, err := ops.InboxOf(to, after)
 		if msgs == nil {
 			msgs = []ledger.Relay{}
 		}
@@ -457,6 +533,13 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
+		if reader := q.Get("new"); reader != "" {
+			// Only what this reader has not been handed: their cursor, kept here.
+			if c := callerOf(r); c != nil && scopeOf(r) == member {
+				reader = memberFrom(c, reader)
+			}
+			return ops.WaitNew(ctx, agent, q.Get("task"), reader)
+		}
 		return ops.Wait(ctx, agent, q.Get("task"), after)
 	}, and(readers, member)...)
 	route("GET /v1/tasks/{id}", func(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -703,6 +786,22 @@ func verifiedAgent(r *http.Request) (string, bool) {
 	return name, ok && name != ""
 }
 
+// provenFrom is the sender of an agent's request: the agent's verified name
+// when it proved one (a different body "from" is refused), else what the body
+// says, as before keys were rendered. Other scopes' names pass through.
+func provenFrom(r *http.Request, asked string) (string, error) {
+	if scopeOf(r) != relay {
+		return asked, nil
+	}
+	if name, ok := verifiedAgent(r); ok {
+		if asked != "" && asked != name {
+			return "", forbidden{fmt.Errorf("this is %s's key: it does not speak as %s", name, asked)}
+		}
+		return name, nil
+	}
+	return asked, nil
+}
+
 // taskAssigner is who gave an open task, from the ledger.
 func taskAssigner(ops Ops, task string) (string, error) {
 	t, err := ops.TaskAgent(task)
@@ -790,10 +889,25 @@ func own(r *http.Request, ops Ops, task string) error {
 	if err != nil {
 		return err
 	}
-	if t.Assigner != c.Login {
+	if !ledger.OwnedBy(t.Assigner, c.Login) {
 		return forbidden{fmt.Errorf("task %s is not yours", task)}
 	}
 	return nil
+}
+
+// memberFrom is the name a member's request is made under: their login, or a
+// session of theirs (login/session), which they may name by the session alone.
+// It is never someone else's.
+func memberFrom(c *Caller, asked string) string {
+	switch {
+	case asked == "" || asked == ledger.Operator || asked == c.Login:
+		return c.Login
+	case ledger.OwnedBy(asked, c.Login):
+		return asked
+	case strings.ContainsAny(asked, "@/"):
+		return c.Login // someone else's name, or a path: not theirs to use
+	}
+	return c.Login + "/" + asked
 }
 
 func scopeOf(r *http.Request) scope {

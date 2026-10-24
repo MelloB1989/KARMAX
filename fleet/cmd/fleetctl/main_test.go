@@ -60,6 +60,8 @@ func fleetctlIO(t *testing.T, f *fakeFleetd, stdin io.Reader, stdout io.Writer, 
 	t.Setenv("FLEET_NAME", "")
 	t.Setenv("FLEET_AGENT", "")
 	t.Setenv("FLEET_AGENT_KEY", "")
+	t.Setenv("FLEET_SESSION", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	cfg := hostYAML
 	if cfg == "" {
 		cfg = t.TempDir() + "/none.yaml" // not on a fleet host: everything goes through fleetd
@@ -365,7 +367,7 @@ func TestInboxFollowSurvivesAFleetdRestartAndResumesFromTheLastID(t *testing.T) 
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
-	err := followInbox(ctx, &client{base: srv.URL, token: "tok"}, 0, false, &errOut, sleep)
+	err := followInbox(ctx, &client{base: srv.URL, token: "tok"}, nil, 0, false, &errOut, sleep)
 	w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
@@ -395,7 +397,7 @@ func TestInboxFollowBackoffCapsAt15sAndAnExpiredTokenEnds(t *testing.T) {
 	defer down.Close()
 	var sleeps []time.Duration
 	ctx, cancel := context.WithCancel(context.Background())
-	_ = followInbox(ctx, &client{base: down.URL, token: "t"}, 0, false, io.Discard, func(_ context.Context, d time.Duration) error {
+	_ = followInbox(ctx, &client{base: down.URL, token: "t"}, nil, 0, false, io.Discard, func(_ context.Context, d time.Duration) error {
 		sleeps = append(sleeps, d)
 		if len(sleeps) == 7 {
 			cancel()
@@ -413,7 +415,7 @@ func TestInboxFollowBackoffCapsAt15sAndAnExpiredTokenEnds(t *testing.T) {
 			w.WriteHeader(code)
 			_, _ = io.WriteString(w, `{"error":"bad token"}`)
 		}))
-		err := followInbox(context.Background(), &client{base: bad.URL, token: "t"}, 0, false, io.Discard,
+		err := followInbox(context.Background(), &client{base: bad.URL, token: "t"}, nil, 0, false, io.Discard,
 			func(context.Context, time.Duration) error {
 				t.Error("retried after a refused token")
 				return context.Canceled

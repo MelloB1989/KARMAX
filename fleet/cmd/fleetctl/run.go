@@ -21,10 +21,7 @@ import (
 // --wait, wait on the task like `wait`. Which agent, the task id and the
 // delivered text are fleetd's to decide.
 func runCmd(args []string) error {
-	from := os.Getenv("FLEET_NAME") // set in every fleet container
-	if from == "" {
-		from = os.Getenv("FLEET_AGENT")
-	}
+	from := sessionName()
 	var repo, agent, task, briefFile, model string
 	var queue, timeout time.Duration
 	var wait, asJSON bool

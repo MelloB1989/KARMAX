@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -64,10 +65,15 @@ Work (fleetd):
   pick [--repo R] [--json]            who a run would pick and why the others were passed over (exit 5: none free)
   give <agent> --task <id> <brief…>   record a task and deliver its brief; the agent reports to you
   assign <agent> --task <id> [--brief <text>] [--from <name>]
-  inbox [--after <id>] [--follow] [--json]   what agents reported to the operator
-  wait [<agent>] [--task <id>] [--after N] [--timeout 30m] [--json]
+  inbox [--as NAME] [--after <id>] [--follow] [--json]   what was sent to this session and to the operator
+                                      (labelled), or only to NAME with --as
+  wait [<agent>] [--task <id>] [--after N | --new [--as NAME]] [--timeout 30m] [--json]
                       with --task the agent is optional; it returns the agent's first report after the
-                      task's latest instruction (brief, follow-up), to whomever it was sent
+                      task's latest instruction (brief, follow-up), to whomever it was sent, and ends
+                      with the exact command that waits for what comes next. --new returns only the
+                      messages NAME (this session) has not been handed yet, however often you call it
+  answer <task> <text…> [--from NAME]  answer the question the agent is blocked on (its ask returns the text);
+                                      with nothing blocked it is sent as a follow-up
   result <task> [--json]   the task's conversation (brief, reports, follow-ups) and its branch's commits
                                       until it reports, its task closes, or it stops
                                       (exit 0; 3 down/cooling/disabled; 4 timeout)
@@ -75,7 +81,13 @@ Work (fleetd):
                                       --keep-session closes the task without archiving or rotating the session
   followup <task> <text…> [--from <name>] more instructions for the agent on an open task
   cancel <task> [--from <name>] [--reason <text>] interrupt the agent and close the task as cancelled
-  tell <name> <text…> [--from <name>] message a session on another host
+  tell <name> <text…> [--from <name>] [--kind report|question|progress]  message a session on another host
+  ask <question…> [--timeout 30m]     for agents: ask whoever gave you the task, and block until the answer
+                                      arrives (printed to stdout); on timeout say so, exit 4
+
+Who you are: --from NAME, else FLEET_SESSION, else the fleet container's name, else the Claude Code
+session you run in (cc-<first 8 of CLAUDE_CODE_SESSION_ID>), else operator. A session's name is an inbox:
+reports and questions to it are filed under the task, and wait/inbox read them.
   rotate <agent> [--dry-run]          archive its session, start fresh (--dry-run says what it would close)
   restore <archive-id> [--agent <name>]
   enable <agent>                      after fixing a disabled subscription
@@ -273,16 +285,66 @@ func refused(err error) bool {
 	return errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden)
 }
 
+// inboxNames is whose inboxes `inbox` reads: the one named with --as, or by
+// default this session's and the operator's (labelled), so nothing sent to
+// "operator" is missed. A caller with no session name of its own reads the
+// operator's.
+func inboxNames(as string) []string {
+	if as != "" {
+		return []string{as}
+	}
+	if me := sessionName(); me != "operator" {
+		return []string{me, "operator"}
+	}
+	return []string{"operator"}
+}
+
+// fetchInboxes is the messages after an id in each inbox, oldest first.
+func fetchInboxes(c *client, names []string, after int64) ([]ledger.Relay, error) {
+	if len(names) == 0 {
+		names = []string{"operator"}
+	}
+	var all []ledger.Relay
+	for _, n := range names {
+		var msgs []ledger.Relay
+		if err := c.do("GET", inboxPath(n, after), nil, &msgs); err != nil {
+			return nil, err
+		}
+		all = append(all, msgs...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	return all, nil
+}
+
+// printInboxMessage is printMessage, with whose inbox it came to when
+// several are read at once.
+func printInboxMessage(m ledger.Relay, asJSON, label bool) {
+	if label && !asJSON {
+		fmt.Printf("[to %s] ", m.To)
+	}
+	printMessage(m, asJSON)
+}
+
+// inboxPath is the route to an inbox's messages after an id: the operator's
+// unless a session is named.
+func inboxPath(as string, after int64) string {
+	q := url.Values{"after": {fmt.Sprint(after)}}
+	if as != "" && as != "operator" {
+		q.Set("to", as)
+	}
+	return "/v1/inbox?" + q.Encode()
+}
+
 // followInbox prints the operator's inbox after the given id, and keeps
 // printing as it grows. A failed poll (fleetd restarting) is one line on
 // errOut and a retry, 1 s doubling to 15 s, from the last id; only a refused
 // token or ctx ends it.
-func followInbox(ctx context.Context, c *client, after int64, asJSON bool, errOut io.Writer, sleep func(context.Context, time.Duration) error) error {
+func followInbox(ctx context.Context, c *client, names []string, after int64, asJSON bool, errOut io.Writer, sleep func(context.Context, time.Duration) error) error {
 	const poll, minBack, maxBack = 2 * time.Second, time.Second, 15 * time.Second
 	back := minBack
 	for {
-		var msgs []ledger.Relay
-		if err := c.do("GET", fmt.Sprintf("/v1/inbox?after=%d", after), nil, &msgs); err != nil {
+		msgs, err := fetchInboxes(c, names, after)
+		if err != nil {
 			if refused(err) {
 				return err
 			}
@@ -295,7 +357,7 @@ func followInbox(ctx context.Context, c *client, after int64, asJSON bool, errOu
 		}
 		back = minBack
 		for _, m := range msgs {
-			printMessage(m, asJSON)
+			printInboxMessage(m, asJSON, len(names) > 1)
 			after = m.ID
 		}
 		if err := sleep(ctx, poll); err != nil {
@@ -320,6 +382,12 @@ func retryable(err error) bool {
 // mid-wait is a line on errOut and a retry, 1 s doubling to 15 s, within the
 // one timeout; only an answer (refused token, no such task) ends it early.
 func waitFor(ctx context.Context, c *client, agent, task string, after int64, timeout time.Duration, errOut io.Writer, sleep func(context.Context, time.Duration) error) (daemon.WaitResult, error) {
+	return waitAs(ctx, c, "", agent, task, after, timeout, errOut, sleep)
+}
+
+// waitAs is waitFor that, with a reader (a session's name), returns only the
+// messages that reader has not been handed: fleetd keeps their cursor.
+func waitAs(ctx context.Context, c *client, reader, agent, task string, after int64, timeout time.Duration, errOut io.Writer, sleep func(context.Context, time.Duration) error) (daemon.WaitResult, error) {
 	const minBack, maxBack = time.Second, 15 * time.Second
 	deadline := time.Now().Add(timeout)
 	back := minBack
@@ -367,6 +435,9 @@ func waitFor(ctx context.Context, c *client, agent, task string, after int64, ti
 		q := url.Values{"task": {task}, "after": {fmt.Sprint(after)}, "timeout": {left.Round(time.Millisecond).String()}}
 		if agent != "" {
 			q.Set("agent", agent)
+		}
+		if reader != "" {
+			q.Set("new", reader)
 		}
 		var r daemon.WaitResult
 		err := c.do("GET", "/v1/wait?"+q.Encode(), nil, &r)
@@ -575,7 +646,9 @@ func run(cmd string, args []string) error {
 	case "inbox":
 		var after int64
 		var follow, asJSON bool
+		var as string
 		if _, _, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			fs.StringVar(&as, "as", "", "")
 			fs.Int64Var(&after, "after", 0, "")
 			fs.BoolVar(&follow, "follow", false, "")
 			fs.BoolVar(&asJSON, "json", false, "")
@@ -589,23 +662,27 @@ func run(cmd string, args []string) error {
 		if follow {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return followInbox(ctx, c, after, asJSON, os.Stderr, sleepCtx)
+			return followInbox(ctx, c, inboxNames(as), after, asJSON, os.Stderr, sleepCtx)
 		}
-		var msgs []ledger.Relay
-		if err := c.do("GET", fmt.Sprintf("/v1/inbox?after=%d", after), nil, &msgs); err != nil {
+		names := inboxNames(as)
+		msgs, err := fetchInboxes(c, names, after)
+		if err != nil {
 			return err
 		}
 		for _, m := range msgs {
-			printMessage(m, asJSON)
+			printInboxMessage(m, asJSON, len(names) > 1)
 		}
 		return nil
 
 	case "wait":
-		var task string
+		var task, as string
 		var timeout time.Duration
-		var asJSON bool
+		var asJSON, onlyNew bool
 		after := int64(-1)
 		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			as = sessionName()
+			fs.StringVar(&as, "as", as, "")
+			fs.BoolVar(&onlyNew, "new", false, "")
 			fs.StringVar(&task, "task", "", "")
 			fs.DurationVar(&timeout, "timeout", 30*time.Minute, "")
 			fs.Int64Var(&after, "after", -1, "")
@@ -619,7 +696,10 @@ func run(cmd string, args []string) error {
 			agent = pos[0]
 		}
 		if agent == "" && task == "" {
-			return errors.New("usage: fleetctl wait [<agent>] [--task <id>] [--after N] [--timeout 30m]")
+			return errors.New("usage: fleetctl wait [<agent>] [--task <id>] [--after N | --new [--as NAME]] [--timeout 30m]")
+		}
+		if onlyNew && task == "" {
+			return errors.New("fleetctl wait --new needs a --task")
 		}
 		if task != "" && after < 0 {
 			after = 0 // the server resolves it: the answer to the latest instruction
@@ -632,7 +712,11 @@ func run(cmd string, args []string) error {
 		if who == "" {
 			who = "task " + task
 		}
-		r, err := waitFor(context.Background(), c, agent, task, after, timeout, os.Stderr, sleepCtx)
+		reader := ""
+		if onlyNew {
+			reader = as
+		}
+		r, err := waitAs(context.Background(), c, reader, agent, task, after, timeout, os.Stderr, sleepCtx)
 		if err != nil {
 			return err
 		}
@@ -642,6 +726,9 @@ func run(cmd string, args []string) error {
 			switch r.Reason {
 			case "message":
 				printMessage(*r.Message, false)
+				if task != "" {
+					fmt.Println(nextWait(task, r.Message.ID, onlyNew, as))
+				}
 			case "closed":
 				fmt.Printf("task %s closed: %s %s\n", r.Task.ID, r.Task.Outcome, r.Task.Branch)
 			case "phase":
@@ -758,26 +845,28 @@ func run(cmd string, args []string) error {
 	case "followup", "cancel":
 		return followupCmd(cmd, args)
 
+	case "ask":
+		return askCmd(args)
+	case "answer":
+		return answerCmd(args)
+
 	case "tell":
-		from := os.Getenv("FLEET_NAME") // set in every fleet container
-		if from == "" {
-			from = os.Getenv("FLEET_AGENT")
-		}
-		if from == "" {
-			from = "operator"
-		}
-		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.StringVar(&from, "from", from, "") })
+		from, kind := sessionName(), ""
+		_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) {
+			fs.StringVar(&from, "from", from, "")
+			fs.StringVar(&kind, "kind", "", "")
+		})
 		if err != nil {
 			return err
 		}
-		if err := need(pos, 2, `tell <name> "<text>"`); err != nil {
+		if err := need(pos, 2, `tell <name> "<text>" [--from NAME] [--kind report|question|progress]`); err != nil {
 			return err
 		}
 		c, err := newClient()
 		if err != nil {
 			return err
 		}
-		said, err := tell(c, from, pos[0], strings.Join(pos[1:], " "), outboxDir(), time.Sleep)
+		said, err := tellKind(c, from, pos[0], kind, strings.Join(pos[1:], " "), outboxDir(), time.Sleep)
 		if err != nil {
 			return err
 		}
@@ -962,13 +1051,31 @@ func run(cmd string, args []string) error {
 	return fmt.Errorf("unknown command %q (fleetctl help)", cmd)
 }
 
+// nextWait is the line a wait that returned a message ends with: the exact
+// command that waits for what comes after it. Waiting again without it
+// returns the same message, until the assigner sends something.
+func nextWait(task string, id int64, onlyNew bool, as string) string {
+	if onlyNew {
+		return fmt.Sprintf("next: fleetctl wait --task %s --new --as %s   (only messages you have not seen)", task, as)
+	}
+	return fmt.Sprintf("next: fleetctl wait --task %s --after %d", task, id)
+}
+
+// kindTag marks a message that is not a plain report: " [question]".
+func kindTag(kind string) string {
+	if kind == "" || kind == ledger.KindReport {
+		return ""
+	}
+	return " [" + kind + "]"
+}
+
 func printMessage(m ledger.Relay, asJSON bool) {
 	if asJSON {
 		b, _ := json.Marshal(m)
 		fmt.Println(string(b))
 		return
 	}
-	fmt.Printf("#%d %s %s: %s\n", m.ID, m.At.Local().Format("15:04:05"), m.From, m.Text)
+	fmt.Printf("#%d %s %s%s: %s\n", m.ID, m.At.Local().Format("15:04:05"), m.From, kindTag(m.Kind), m.Text)
 }
 
 func post(path string, body any) error {

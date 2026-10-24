@@ -306,14 +306,14 @@ func TestSnapshotCarriesTheCurrentSession(t *testing.T) {
 	}
 }
 
-// The operator is not an address a reply can reach; a relay from them says so
-// instead of telling the receiver to reply to "operator".
-func TestRelayFromTheOperator(t *testing.T) {
+// The operator's inbox is on the ledger: a relay from them says how to reply
+// there, and how to ask and wait.
+func TestRelayFromTheOperatorSaysHowToReply(t *testing.T) {
 	r := &fakeRunner{answer: func([]string) (string, error) { return relayStream("agent-03", true, "sent"), nil }}
 	if err := newAgent(r).Relay(context.Background(), "agent-03", "operator", "stop and push"); err != nil {
 		t.Fatal(err)
 	}
-	if in := r.stdins[0]; !strings.Contains(in, "relayed from the operator") || strings.Contains(in, "fleetctl tell operator") {
+	if in := r.stdins[0]; !strings.Contains(in, "relayed from the operator") || !strings.Contains(in, "reply with: fleetctl tell operator") || !strings.Contains(in, "fleetctl ask") {
 		t.Fatalf("prompt = %q", in)
 	}
 }

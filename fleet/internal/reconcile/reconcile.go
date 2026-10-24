@@ -168,6 +168,13 @@ type Obs struct {
 	// Owes: the agent owes its open task the next word (the ledger's last
 	// message on the task was to it), so it was still working on it.
 	Owes bool
+	// Asking: the agent has a question out under its task that nobody has
+	// answered (it is blocked in fleetctl ask, or waits for an answer): it is
+	// not idle, only waiting on someone else, and is not nudged to report or
+	// archived for it. AnsweredAt is when its latest question was answered:
+	// the idle clock counts from then.
+	Asking     bool
+	AnsweredAt time.Time
 	// Unreachable is the agent's host when it could not be asked about the
 	// container: nothing else in the observation is known. (Why is in
 	// fleetd's fleet.unreachable event.)
@@ -183,6 +190,7 @@ type Outboxed struct {
 	From string    `json:"from"`
 	To   string    `json:"to"`
 	Text string    `json:"text"`
+	Kind string    `json:"kind,omitempty"`
 	At   time.Time `json:"at"`
 }
 
@@ -555,6 +563,9 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	if o.TranscriptMTime.After(idleSince) {
 		idleSince = o.TranscriptMTime
 	}
+	if o.AnsweredAt.After(idleSince) && !o.AnsweredAt.After(o.Now) {
+		idleSince = o.AnsweredAt // what it waited for an answer does not count as idleness
+	}
 	idle := o.Now.Sub(idleSince)
 
 	if st.Phase == Cooling {
@@ -620,6 +631,9 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	case st.Task == "" && idle > th.StandbyIdle && o.TranscriptSize >= th.StandbyMinTranscript:
 		rotate(ReasonStale)
 		return st, acts
+	case st.Task != "" && o.Asking:
+		// Waiting on an answer is someone else's to give (fleetd escalates it):
+		// not idle on the task, so neither nudged nor given up on.
 	case st.Task != "" && idle > th.WaitingArchive:
 		task := st.Task
 		push("stale", fmt.Sprintf("%s idle %s on %s: archived (worktree kept), back on standby", st.Name, round(idle), task))
@@ -631,7 +645,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		push("idle_on_task", fmt.Sprintf("%s idle %s on %s", st.Name, round(idle), st.Task))
 	}
 
-	if o.Owes && st.Task != "" && !st.ReportNudged && idle >= reportNudge {
+	if o.Owes && !o.Asking && st.Task != "" && !st.ReportNudged && idle >= reportNudge {
 		st.ReportNudged = true
 		acts = append(acts, Action{Kind: Prompt, Text: reportText(st.Task)})
 		push("report_nudged", fmt.Sprintf("%s was silent %s on %s with a report owed, and was asked for it", st.Name, round(idle), st.Task))
