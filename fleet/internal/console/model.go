@@ -79,8 +79,12 @@ const (
 )
 
 type Agent struct {
-	ID   string `json:"id"`
-	Host string `json:"host"`
+	ID string `json:"id"` // the worker: agent-03, agent-03:2
+	// SlotOf is the agent the worker is a slot of; the panel shows one card
+	// per agent with a line per slot.
+	SlotOf string `json:"slot_of"`
+	Slot   int    `json:"slot"`
+	Host   string `json:"host"`
 	Live bool   `json:"live"` // on the console's host: terminals and live sources exist
 
 	// From fleetd (recorded, ~30 s).

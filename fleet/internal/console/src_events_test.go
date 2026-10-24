@@ -104,7 +104,7 @@ func TestTailSurvivesTheFileBeingMoved(t *testing.T) {
 	changes := make(chan struct{}, 100)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go e.run(ctx, execSpawn, []string{fakeDocker(t)}, "agent-01", "agent-01", time.Now, func() { changes <- struct{}{} })
+	go e.run(ctx, execSpawn, []string{fakeDocker(t)}, "agent-01", "agent-01", "", time.Now, func() { changes <- struct{}{} })
 
 	// wait until tail is up before the first line, so -n0 does not skip it
 	for deadline := time.Now().Add(5 * time.Second); e.trs["agent-01"].stale(time.Now()); {

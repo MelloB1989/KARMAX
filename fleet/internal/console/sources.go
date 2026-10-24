@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/agent"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
@@ -51,7 +52,11 @@ func NewSources(cfg *Config, run target.Runner, now func() time.Time) *Sources {
 	s.git.tr = newTracker(CadenceGit, false)
 	s.docker = newDockerSrc()
 	live, all := s.liveNames(), s.names()
-	s.status = newStatuslineSrc(live)
+	slots := map[string]int{}
+	for _, a := range cfg.Agents {
+		slots[a.Name] = a.Slot
+	}
+	s.status = newStatuslineSrc(live, slots)
 	s.events = newEventsSrc(live)
 	s.fcl = NewFleetdClient(cfg.FleetdURL, cfg.FleetdTokenFile)
 	s.fleetd = newFleetdSrc(s.fcl, now, cfg.Orchestrator, all)
@@ -119,9 +124,15 @@ func (s *Sources) Run(ctx context.Context, onChange func()) {
 		})
 	})
 	if cs := s.containers(); len(cs) > 0 {
-		// Before any stream starts: end what an earlier console left behind.
+		// Before any stream starts: end what an earlier console left behind,
+		// once per container (an agent's slots share one).
 		var sw sync.WaitGroup
+		swept := map[string]bool{}
 		for _, c := range cs {
+			if swept[c.Name] {
+				continue
+			}
+			swept[c.Name] = true
 			sw.Add(1)
 			go func() { defer sw.Done(); sweepLeftovers(ctx, c) }()
 		}
@@ -142,7 +153,9 @@ func (s *Sources) Run(ctx context.Context, onChange func()) {
 		go1(func() { s.docker.run(ctx, s.spawn, prefix, s.now, onChange) })
 		for _, a := range s.cfg.Agents {
 			if a.Live {
-				go1(func() { s.events.run(ctx, s.spawn, a.Exec, a.Container, a.Name, s.now, onChange) })
+				go1(func() {
+					s.events.run(ctx, s.spawn, a.Exec, a.Container, a.Name, agent.SlotDir(a.Slot), s.now, onChange)
+				})
 			}
 		}
 	}
@@ -231,9 +244,14 @@ func (s *Sources) Fill(snap *Snapshot) {
 	snap.Agents = snap.Agents[:0:0]
 	snap.Activity = map[string][]Bucket{}
 	confs := append([]AgentConf(nil), s.cfg.Agents...)
-	sort.Slice(confs, func(i, j int) bool { return confs[i].Name < confs[j].Name })
+	sort.Slice(confs, func(i, j int) bool {
+		if confs[i].Of() != confs[j].Of() {
+			return confs[i].Of() < confs[j].Of()
+		}
+		return confs[i].SlotNo() < confs[j].SlotNo()
+	})
 	for _, c := range confs {
-		a := Agent{ID: c.Name, Host: c.Host, Live: c.Live, Alerts: []string{}, Models: []string{}}
+		a := Agent{ID: c.Name, SlotOf: c.Of(), Slot: c.SlotNo(), Host: c.Host, Live: c.Live, Alerts: []string{}, Models: []string{}}
 		if r, ok := rows[c.Name]; ok {
 			a.Phase, a.Task, a.IdleS, a.Session = r.State, r.Task, r.IdleS, r.Session
 			if r.Alerts != nil {

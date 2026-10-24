@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -37,11 +38,12 @@ func OrchestratorBrief(c *config.Config) (string, error) {
 	type row struct {
 		Name, Host, Models string
 		Local              bool
+		Slots              int
 	}
 	var rows []row
 	for _, n := range c.AgentNames() {
 		a := c.Agents[n]
-		rows = append(rows, row{Name: n, Host: a.Host, Models: strings.Join(a.Models, ", "), Local: a.Host == c.Orchestrator.Host})
+		rows = append(rows, row{Name: n, Host: a.Host, Models: strings.Join(a.Models, ", "), Local: a.Host == c.Orchestrator.Host, Slots: max(a.Slots, 1)})
 	}
 	var b strings.Builder
 	err := orchBrief.Execute(&b, map[string]any{"Agents": rows, "Report": c.Orchestrator.Report, "Name": c.Orchestrator.Name})
@@ -87,7 +89,7 @@ func Brief(c *config.Config, name string) (string, error) {
 		"Agent": name, "Host": a.Host, "Code": c.Code, "Orchestrator": c.Orchestrator.Name,
 		"OrchestratorLocal": c.Orchestrator.Host == a.Host, "Local": local, "Remote": remote,
 		"BuildHost": buildHost(c.Build.DockerHost), "GitHubOwners": c.GitHub.OwnerNames(),
-		"GitHubPackages": c.GitHub.PackagesTokenEnv != "",
+		"GitHubPackages": c.GitHub.PackagesTokenEnv != "", "Slots": max(a.Slots, 1),
 	})
 	return b.String(), err
 }
@@ -348,6 +350,7 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 		}
 		env := common(name)
 		env["FLEET_AGENT"] = name
+		env["FLEET_SLOTS"] = strconv.Itoa(max(a.Slots, 1)) // agent-run runs one session per slot
 		env["FLEET_CLAUDE_MD"] = base64.StdEncoding.EncodeToString([]byte(b))
 		if c.Build.DockerHost != "" {
 			env["DOCKER_HOST"], env["FLEET_BUILD_IMAGE"] = c.Build.DockerHost, c.Image

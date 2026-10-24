@@ -169,6 +169,7 @@ func (o *outbox) Notify(_ context.Context, text string) error {
 const fleetYAML = `home: /h
 hosts: {kali: {exec: [docker]}, pc2: {exec: [docker, --context, pc2]}}
 orchestrator: {host: kali, token_env: O}
+slots: 1
 agents:
   agent-03: {host: kali, token_env: T3, models: [sonnet, opus]}
   agent-05: {host: pc2, token_env: T5}

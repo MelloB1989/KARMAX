@@ -30,7 +30,21 @@ SendMessage cannot reach these. Use the relay; replies come back the same way:
 - (none){{end}}{{end}}
 
 A relayed message starts with `[relayed from <name> — reply with: fleetctl tell …]`.
+{{if gt .Slots 1}}
+## Slots — {{.Slots}} sessions in this container
 
+This container runs {{.Slots}} sessions at once, each with tasks of its own.
+This brief is theirs alike, so your own name is in `$FLEET_AGENT`:
+`{{.Agent}}` for slot 1, `{{.Agent}}:2`{{if gt .Slots 2}} … `{{.Agent}}:{{.Slots}}`{{end}} for the others.
+That is the name peers and fleetd know you by, and the one `fleetctl tell`
+sends as. Every other agent has slots too (`agent-01:2` is agent-01's second
+session), and each is a peer of its own.
+
+Your sibling slots share `/work`, the shared code and this subscription.
+Work only in worktrees you made, under a topic of your own; never remove,
+reset or check out in another one, and never stop a process you did not
+start.
+{{end}}
 ## Working on a task
 
 - One worktree per task, on your own branch, locked so a prune elsewhere
@@ -102,5 +116,5 @@ remote for the owner's repository and push there.
 {{end}}## Quota
 
 You share nothing with the other agents: your rate-limit windows are your own
-subscription's. If you are rate-limited, stop and wait — the fleet resumes you
+subscription's{{if gt .Slots 1}}, which your sibling slots share with you{{end}}. If you are rate-limited, stop and wait — the fleet resumes you
 when the window resets.
