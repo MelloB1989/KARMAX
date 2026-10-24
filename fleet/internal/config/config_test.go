@@ -239,3 +239,54 @@ tailnet:
 		t.Error("no tailnet section: nobody")
 	}
 }
+
+func TestAToolIsClassedByItsEntryElseByItsName(t *testing.T) {
+	k := Karmax{Tools: map[string]string{"slack.channels": "read", "google.*": "write", "google.drive.*": "read",
+		"whatsapp.read": "deny"}}
+	for name, want := range map[string]string{
+		"google.mail.search":    "write", // google.* outranks the name
+		"google.drive.search":   "read",  // the longer prefix wins
+		"slack.channels":        "read",
+		"slack.post":            "write",
+		"whatsapp.read":         "deny",
+		"whatsapp.monitored":    "read",
+		"notion.query_database": "read",
+		"memory.retrieve":       "read",
+		"comms.send":            "write",
+		"github.issues":         "write",
+		"shell.exec":            "deny",
+		"file.read":             "deny",
+		"http.request":          "deny",
+		"harness.list":          "deny",
+		"task.list":             "deny",
+		"scheduler.add":         "deny",
+		"proposal.decide":       "deny",
+		"orgops.list":           "deny",
+		"memory.ingest":         "deny",
+		"memory.forget":         "deny",
+		"vault.get_secret":      "deny",
+		"aws.credentials_list":  "deny",
+		"fleet.status":          "deny",
+		"../shell.exec":         "deny",
+		"x?agent=root":          "deny",
+	} {
+		if got := k.ToolClass(name); got != want {
+			t.Errorf("%s = %s, want %s", name, got, want)
+		}
+	}
+}
+
+func TestNoToolsEntryOpensAnAlwaysDeniedTool(t *testing.T) {
+	for _, entry := range []string{"shell.exec: read", "memory.ingest: write", "file.read: read", "google.mail.send: maybe", "'../x': read"} {
+		if _, err := Parse([]byte(example + "karmax:\n  tools: {" + entry + "}\n")); err == nil {
+			t.Errorf("tools %s was accepted", entry)
+		}
+	}
+	c, err := Parse([]byte(example + "karmax:\n  tools: {shell.exec: deny, 'google.*': read}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Karmax.ToolClass("shell.exec") != "deny" || c.Karmax.ToolClass("google.mail.send") != "read" {
+		t.Fatalf("tools = %v", c.Karmax.Tools)
+	}
+}
