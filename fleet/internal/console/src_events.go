@@ -14,8 +14,8 @@ import (
 // its inotify mode was observed to miss a rename-and-recreate in containers.
 // It runs under `docker exec -i` and ends when its stdin closes: killing the
 // host-side docker exec does not kill tail inside the container, but it does
-// close the stream (see leak.go).
-const eventsScript = `tail -n0 -F -s 0.2 "$HOME/.claude/fleet/events.jsonl" &
+// close the stream (see leak.go). $1 is the slot's directory.
+const eventsScript = `tail -n0 -F -s 0.2 "$HOME/.claude/fleet${1:+/$1}/events.jsonl" &
 t=$!
 trap 'kill $t 2>/dev/null' EXIT HUP TERM
 cat >/dev/null`
@@ -106,9 +106,9 @@ func (e *eventsSrc) handle(agent string, line []byte, now time.Time) bool {
 	return true
 }
 
-func (e *eventsSrc) run(ctx context.Context, sp spawner, prefix []string, container, agent string, now func() time.Time, changed func()) {
+func (e *eventsSrc) run(ctx context.Context, sp spawner, prefix []string, container, agent, slotDir string, now func() time.Time, changed func()) {
 	argv := append(append([]string{}, prefix...), "exec", "-i", container)
-	argv = append(argv, withStreamEnv("1", "sh", "-c", eventsScript)...)
+	argv = append(argv, withStreamEnv("1", "sh", "-c", eventsScript, "sh", slotDir)...)
 	tr := e.trs[agent]
 	streamLines(ctx, sp, argv, tr, now, func() { tr.success(now()); changed() }, func(l []byte) {
 		if e.handle(agent, l, now()) {

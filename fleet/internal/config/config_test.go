@@ -101,10 +101,14 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"memory key inline":   "memory: {url: 'http://127.0.0.1:8787', key_env: 'gl_abc-123', namespace: mira}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"memory no namespace": "memory: {url: 'http://127.0.0.1:8787', key_env: GITLOOM_KEY}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"memory is full":      "memory: {url: 'http://127.0.0.1:8787', key_env: FLEET_TOKEN, namespace: mira}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"named like a slot":   "agents: {'agent-01:2': {host: kali, token_env: T}}",
+		"orchestrator slot":   "orchestrator: {host: kali, token_env: O, name: 'agent-01:2'}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"no slots":            "slots: -1\nagents: {agent-01: {host: kali, token_env: T}}",
+		"too many slots":      "agents: {agent-01: {host: kali, token_env: T, slots: 9}}",
 	}
 	for name, body := range cases {
 		src := "home: /h\nhosts: {kali: {exec: [docker]}}\norchestrator: {host: kali, token_env: O}\n" + body
-		if name == "no exec" || name == "orchestrator host" || name == "name clash" || name == "orchestrator @" {
+		if name == "no exec" || name == "orchestrator host" || name == "name clash" || name == "orchestrator @" || name == "orchestrator slot" {
 			src = "home: /h\n" + body
 			if name != "no exec" {
 				src = "home: /h\nhosts: {kali: {exec: [docker]}}\n" + body
@@ -115,6 +119,43 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		} else if strings.Contains(err.Error(), "sk-ant") {
 			t.Errorf("%s: error echoes a secret: %v", name, err)
 		}
+	}
+}
+
+func TestAgentsExpandIntoOneWorkerPerSlot(t *testing.T) {
+	c, err := Parse([]byte(example + "\nslots: 3\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Parse([]byte(strings.Replace(example, "token_env: CLAUDE_TOKEN_AGENT_04}", "token_env: CLAUDE_TOKEN_AGENT_04, slots: 1}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.WorkerNames(); !slices.Equal(got, []string{"agent-01", "agent-01:2", "agent-01:3", "agent-04", "agent-04:2", "agent-04:3"}) {
+		t.Errorf("slots: 3 → workers %v", got)
+	}
+	// The default is two; an agent's own slots overrides the fleet's.
+	if got := c2.WorkerNames(); !slices.Equal(got, []string{"agent-01", "agent-01:2", "agent-04"}) {
+		t.Errorf("default slots with agent-04 at 1 → workers %v", got)
+	}
+	w, ok := c.Worker("agent-04:2")
+	if !ok || w.Agent != "agent-04" || w.Slot != 2 || w.Host != "pc2" || w.Container != "agent-04" || w.Account != "agent-04" ||
+		!slices.Equal(w.Models, []string{"sonnet"}) {
+		t.Errorf("Worker(agent-04:2) = %+v, %v", w, ok)
+	}
+	if w, ok := c.Worker("agent-01"); !ok || w.Slot != 1 || w.Agent != "agent-01" {
+		t.Errorf("slot 1 keeps the agent's name: %+v, %v", w, ok)
+	}
+	for _, bad := range []string{"agent-01:1", "agent-01:4", "agent-01:02", "agent-09:2", "agent-01:x", "nobody"} {
+		if _, ok := c.Worker(bad); ok {
+			t.Errorf("Worker(%q) exists", bad)
+		}
+	}
+	if got := c.Siblings("agent-01:2"); !slices.Equal(got, []string{"agent-01", "agent-01:3"}) {
+		t.Errorf("Siblings(agent-01:2) = %v", got)
+	}
+	if got := c2.Siblings("agent-04"); len(got) != 0 {
+		t.Errorf("a one-slot agent has siblings %v", got)
 	}
 }
 

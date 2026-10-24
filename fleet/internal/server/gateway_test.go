@@ -466,3 +466,23 @@ func TestAnAgentMayUseTheGatewayOnlyOnTheOperatorsWork(t *testing.T) {
 }
 
 func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
+
+// slotRows is the fake with an agent of two slots, each on a task of its own.
+type slotRows struct{ *fake }
+
+func (slotRows) Status(time.Time) []daemon.Row {
+	return []daemon.Row{{Agent: "agent-03", SlotOf: "agent-03", Slot: 1, Task: "T-one"},
+		{Agent: "agent-03:2", SlotOf: "agent-03", Slot: 2, Task: "T-two"}}
+}
+
+// A slot's calls are filed under its own task: its verified name is the
+// worker's, agent-03:2, not its container's agent.
+func TestASlotsGatewayCallsAreFiledUnderItsOwnTask(t *testing.T) {
+	ops := slotRows{&fake{}}
+	if got := agentTask(ops, "agent-03:2"); got != "T-two" {
+		t.Errorf("agent-03:2's task = %q, want T-two", got)
+	}
+	if got := agentTask(ops, "agent-03"); got != "T-one" {
+		t.Errorf("agent-03's task = %q, want T-one", got)
+	}
+}

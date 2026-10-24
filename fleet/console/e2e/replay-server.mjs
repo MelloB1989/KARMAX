@@ -33,6 +33,25 @@ export function freshSnapshot(base, nowMs = Date.now()) {
 
 const authed = (req) => (req.headers.cookie ?? "").includes(COOKIE);
 
+/**
+ * `/login?k=…&fixture=slots`: the fixture's agents as 12 agents of 2 slots each (24 workers), each
+ * slot a copy of one of the fixture's agents, for the layout at the fleet's full size.
+ */
+export function slotsSnapshot(base, agents = 12, slots = 2) {
+  const src = base.agents;
+  const out = { ...base, agents: [], activity: {} };
+  for (let i = 0; i < agents; i++) {
+    const id = `agent-${String(i + 1).padStart(2, "0")}`;
+    for (let k = 1; k <= slots; k++) {
+      const t = src[(i * slots + k - 1) % src.length];
+      const w = k === 1 ? id : `${id}:${k}`;
+      out.agents.push({ ...t, id: w, slot_of: id, slot: k, phase: t.phase === "disabled" ? "standby" : t.phase });
+      out.activity[w] = base.activity[t.id] ?? [];
+    }
+  }
+  return out;
+}
+
 export function startReplayServer() {
   const base = JSON.parse(fs.readFileSync(path.join(DEV, "snapshot.json"), "utf8"));
   const server = http.createServer((req, res) => {
@@ -42,7 +61,8 @@ export function startReplayServer() {
         res.writeHead(403).end("bad token");
         return;
       }
-      res.writeHead(302, { "Set-Cookie": `${COOKIE}; HttpOnly; Path=/`, Location: "/" }).end();
+      const fixture = url.searchParams.get("fixture") === "slots" ? "slots" : "base";
+      res.writeHead(302, { "Set-Cookie": [`${COOKIE}; HttpOnly; Path=/`, `fleet_fixture=${fixture}; Path=/`], Location: "/" }).end();
       return;
     }
     if (!authed(req)) {
@@ -71,7 +91,7 @@ export function startReplayServer() {
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (url.pathname === "/v1/watch") return watch(ws, base);
+      if (url.pathname === "/v1/watch") return watch(ws, (req.headers.cookie ?? "").includes("fleet_fixture=slots") ? slotsSnapshot(base) : base);
       const m = url.pathname.match(/^\/v1\/term\/([^/]+)$/);
       if (m) return term(ws, decodeURIComponent(m[1]), url.searchParams.get("control") === "1");
       ws.close();

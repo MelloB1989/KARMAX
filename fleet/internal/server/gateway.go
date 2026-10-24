@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
-	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 )
 
@@ -132,11 +131,11 @@ func requester(r *http.Request, ops Ops, from string) (daemon.Requester, error) 
 	return daemon.Requester{Name: from}, nil
 }
 
-// agentTask is the open task of a worker's agent, from fleetd's roster.
+// agentTask is the open task of a worker, from fleetd's roster: each slot
+// of an agent (agent-03:2) is a row with a task of its own.
 func agentTask(ops Ops, name string) string {
-	base := identity.Base(name)
 	for _, row := range ops.Status(time.Now()) {
-		if row.Agent == base {
+		if row.Agent == name {
 			return row.Task
 		}
 	}

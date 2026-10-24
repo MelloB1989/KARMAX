@@ -76,6 +76,21 @@ html, body { background: var(--ground); overflow: hidden; }
 .roster-dense .card-head { gap: 8px; }
 .roster-dense .card-doing { display: inline; }
 .roster-dense .card-meta { display: none; }
+/* an agent with slots: who it is on the left, a line per slot on the right; two lines per card keep 12 agents x 2 slots on one 1080p screen */
+.card-slots { cursor: default; flex: 0 0 auto; display: grid; grid-template-columns: 132px minmax(0,1fr); gap: 2px 10px; padding: 6px 12px; }
+.slots-agent { display: flex; flex-direction: column; min-width: 0; font-size: 11px; line-height: 14px; }
+.card-slots .card-name { font-size: 18px; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slots-quota, .slots-box { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.roster-dense .slots-box { display: none; }
+.slots-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; justify-content: center; }
+.slot-line { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 8px; min-width: 0; height: 18px; padding: 0 6px; font-size: 12px; border-left: 2px solid var(--phase); }
+.slot-line:hover, .slot-line.selected { background: rgba(255,181,71,.10); }
+.slot-line .dot { width: 6px; height: 6px; }
+.slot-line[data-phase="working"] .dot { animation: pulsering 2.4s infinite; }
+.slot-no { color: var(--dim); flex: none; }
+.slot-doing { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot-ctx { flex: none; }
+.slot-phase { flex: none; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--phase); }
 .activity[data-count] .tick { top: 1px; bottom: 1px; }
 .activity[data-count] .track-name { font-size: 11px; line-height: var(--row-h); }
 .activity[data-count="4"] .track-name, .activity[data-count="3"] .track-name { font-size: 12px; }

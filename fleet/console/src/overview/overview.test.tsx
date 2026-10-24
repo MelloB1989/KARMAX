@@ -7,7 +7,8 @@ import { Roster } from "./Roster";
 import { ActivityTrack } from "./ActivityTrack";
 import { OpenTasks } from "./RightRail";
 import { gpuName } from "../state/hooks";
-import { bucketFraction, activityRowHeight, densityFor, orderAgents, trackMetrics } from "./roster";
+import { bucketFraction, activityRowHeight, densityFor, groupActivity, groupAgents, orderAgents, trackMetrics } from "./roster";
+import { bannersFor } from "../motion/banners";
 
 const base = fixture as unknown as Snapshot;
 const t0 = Date.parse("2026-10-11T13:57:33Z");
@@ -122,5 +123,58 @@ describe("height budget at 1080", () => {
     expect(rows).toEqual([172, 202, 222]);
     // main = 1080 - 72 - activity row: 836, 806, 786 px, never negative
     expect(rows.map((r) => 1080 - 72 - r)).toEqual([836, 806, 786]);
+  });
+});
+
+describe("slots", () => {
+  // 12 agents of 2 slots each: 24 workers, one card per agent.
+  const workers = (agents: number, slots: number): Agent[] =>
+    Array.from({ length: agents }, (_, i) => `agent-${String(i + 1).padStart(2, "0")}`).flatMap((id) =>
+      Array.from({ length: slots }, (_, k) => ({ ...working, id: k === 0 ? id : `${id}:${k + 1}`, slot_of: id, slot: k + 1 })),
+    );
+
+  it("24 workers make 12 dense cards with a selectable line per slot", () => {
+    const s = snap({}, workers(12, 2).reverse());
+    const html = renderToStaticMarkup(<Roster snapshot={s} now={t0} selected="agent-03:2" onSelect={() => {}} />);
+    expect(html).toContain("roster-dense");
+    expect(html).toContain('data-count="12"');
+    expect(html.match(/class="card card-slots/g)).toHaveLength(12);
+    expect(html.match(/class="slot-line/g)).toHaveLength(24);
+    expect(html).toContain("AGENTS · 12 / 12 UP");
+    // agent-01's slots, in order, before agent-02's; the selected line is marked
+    expect(html.indexOf('data-worker="agent-01"')).toBeLessThan(html.indexOf('data-worker="agent-01:2"'));
+    expect(html.indexOf('data-worker="agent-01:2"')).toBeLessThan(html.indexOf('data-worker="agent-02"'));
+    expect(html).toMatch(/class="slot-line selected[^"]*"[^>]*data-worker="agent-03:2"/);
+    // the strip is per agent too: 12 rows, the same height as 12 one-slot agents
+    const track = renderToStaticMarkup(<ActivityTrack snapshot={s} now={t0} />);
+    expect(track.match(/class="track-row"/g)).toHaveLength(12);
+    expect(groupAgents(s.agents)).toHaveLength(12);
+    expect(activityRowHeight(groupAgents(s.agents).length)).toBe(222);
+  });
+
+  it("a slot line says what that slot does; the card shows the account's quota once", () => {
+    const [one, two] = workers(1, 2);
+    const s = snap({ sources: { ...base.sources, fleetd: { ok: true, at: new Date(t0).toISOString() } } }, [
+      { ...one, phase: "working", task: "20261024-fix-login-a1b2", five_hour_pct: 61, statusline_at: new Date(t0).toISOString() },
+      { ...two, phase: "standby", idle_s: 300, five_hour_pct: 20, statusline_at: new Date(t0 - 3_600_000).toISOString() },
+    ]);
+    const html = renderToStaticMarkup(<Roster snapshot={s} now={t0} selected={null} onSelect={() => {}} />);
+    expect(html).toContain("20261024-fix-login-a1b2");
+    expect(html).toContain("idle 5 m");
+    expect(html).toContain("5H 61%");
+    expect(html).not.toContain("5H 20%");
+    expect(html).toContain('data-phase="working" data-slots="2"');
+  });
+
+  it("an activity row adds up its agent's slots", () => {
+    const g = { id: "agent-01", slots: workers(1, 2) };
+    const act = { "agent-01": [{ t: "2026-10-11T12:00:00Z", n: 2 }], "agent-01:2": [{ t: "2026-10-11T12:00:00Z", n: 3 }, { t: "2026-10-11T12:15:00Z", n: 1 }] };
+    expect(groupActivity(g, act)).toEqual([{ t: "2026-10-11T12:00:00Z", n: 5 }, { t: "2026-10-11T12:15:00Z", n: 1 }]);
+  });
+
+  it("a down container and a cooling account are one banner per agent, not per slot", () => {
+    const ws = workers(2, 2).map((a) => ({ ...a, phase: a.slot_of === "agent-01" ? "down" : "cooling" }));
+    const kinds = bannersFor(snap({}, ws)).map((b) => b.text.split(" · ")[0]);
+    expect(kinds).toEqual(["agent-01 DOWN", "agent-02 COOLING"]);
   });
 });

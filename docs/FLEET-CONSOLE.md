@@ -22,12 +22,22 @@ fleet itself is `AGENT-FLEET.md`.
 - **Header:** console name, host vitals (uptime, load, memory), the clock, the connection state, and the
   browser's WebGL renderer string, so a software fallback is visible.
 - **Left — roster:** one card per agent: phase, alerts, idle time, model, context / 5 h / 7 d bars, CPU and
-  memory, its last task, and for a working agent the tool it is running and for how long.
-- **Centre:** the selected agent's real terminal, scaled to fit.
+  memory, its last task, and for a working agent the tool it is running and for how long. An agent with
+  several slots (docs/AGENT-FLEET.md, "Slots") is one card too: on its left the agent's name, its host, the
+  account's 5 h / 7 d (the freshest slot's reading) and the container's CPU and memory, which its slots
+  share; on its right a line per slot — `S1`, `S2` … with that slot's phase, what it is doing (its tool,
+  else its task, else how long it has been idle) and its context. Clicking a line selects that slot. Two
+  lines a card keep 12 agents of 2 slots (24 workers) on one 1920×1080 screen without scrolling.
+- **Centre:** the selected agent's — or slot's — real terminal (its own tmux session, `main` or
+  `main-k`), scaled to fit.
 - **Right:** the orchestrator's quota, the open tasks, today's totals, and the event stream.
-- **Bottom:** a 24 h activity track per agent.
+- **Bottom:** a 24 h activity track per agent, its slots' events added together.
 
-**Focus** hides the side columns and gives the terminal the full width. **Office** is the 3D view.
+**Focus** hides the side columns and gives the terminal the full width. **Office** is the 3D view, with
+a desk per slot.
+
+A down container, a cooling account and a disabled one are each one banner per agent, named for it: its
+slots share the container and the subscription. A stuck slot is its own banner.
 
 Phases on screen:
 
@@ -109,7 +119,7 @@ Outside control:
 
 | key | does |
 |---|---|
-| `1`–`9` | select that agent |
+| `1`–`9` | select that agent (counting slots: with two slots each, `3` is agent-02's slot 1) |
 | `F`, or click the terminal | Focus: the terminal fills the width |
 | `Enter` | take control of the selected agent (always in Focus) |
 | `P` | prompt bar: type into the selected agent's session as you; `Enter` sends, `Esc` closes |

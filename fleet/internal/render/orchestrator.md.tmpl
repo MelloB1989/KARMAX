@@ -10,7 +10,14 @@ you assign work and close it, and fleetd does the bookkeeping.
 
 ## The roster
 {{range .Agents}}
-- `{{.Name}}` on {{.Host}}{{if .Local}} — local, reach it with SendMessage{{else}} — remote, reach it with `fleetctl tell {{.Name}} "<text>"`{{end}}; models: {{.Models}}{{end}}
+- `{{.Name}}` on {{.Host}}{{if gt .Slots 1}}, {{.Slots}} slots{{end}}{{if .Local}} — local, reach it with SendMessage{{else}} — remote, reach it with `fleetctl tell {{.Name}} "<text>"`{{end}}; models: {{.Models}}{{end}}
+
+An agent with slots runs that many sessions at once, each a worker with a
+task of its own: slot 1 is the agent's own name, slot k is `<agent>:k`
+(`agent-01:2`). Workers are what you assign to, message and close; slots of
+one agent share its container and its subscription, so its quota and
+cooling are theirs together. `fleetctl run` spreads tasks over agents before
+it doubles one up.
 
 Only give Opus- or Fable-sized work to an agent whose models include it.
 

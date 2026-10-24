@@ -1,10 +1,11 @@
 import { AnimatePresence, motion } from "motion/react";
 import type { Snapshot } from "../model";
-import { bucketFraction, orderAgents, trackMetrics } from "./roster";
+import { bucketFraction, groupActivity, groupAgents, trackMetrics } from "./roster";
 
+/** One row per agent: its slots' events together. */
 export function ActivityTrack({ snapshot: s, now }: { snapshot: Snapshot; now: number }) {
-  const max = Math.max(1, ...Object.values(s.activity ?? {}).flatMap((bs) => bs.map((b) => b.n)));
-  const agents = orderAgents(s.agents);
+  const agents = groupAgents(s.agents).map((g) => ({ id: g.id, buckets: groupActivity(g, s.activity) }));
+  const max = Math.max(1, ...agents.flatMap((a) => a.buckets.map((b) => b.n)));
   const { rowH, height } = trackMetrics(agents.length);
   return (
     <footer className="activity" data-count={agents.length} style={{ height, ["--row-h" as string]: `${rowH}px` }}>
@@ -17,7 +18,7 @@ export function ActivityTrack({ snapshot: s, now }: { snapshot: Snapshot; now: n
           <span className="track-name cyan">{a.id}</span>
           <div className="track">
             <AnimatePresence initial={false}>
-              {(s.activity?.[a.id] ?? []).map((b) => (
+              {a.buckets.map((b) => (
                 <motion.i
                   key={b.t}
                   className="tick"

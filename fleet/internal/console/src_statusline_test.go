@@ -21,7 +21,7 @@ func TestStatuslineUsesTheFilesMtime(t *testing.T) {
 		return append([]byte("1791700000\n"), fixture...), nil
 	}}
 	cs := map[string]target.Container{"agent-01": {Exec: []string{"docker"}, Name: "agent-01", Runner: r}}
-	s := newStatuslineSrc([]string{"agent-01"})
+	s := newStatuslineSrc([]string{"agent-01"}, nil)
 	fetched := time.Unix(mtime+3600, 0) // an hour after the file was written
 	s.poll(context.Background(), cs, fetched)
 
@@ -55,7 +55,7 @@ func TestStatuslineFailureMarksOnlyThatAgent(t *testing.T) {
 	for _, n := range []string{"agent-01", "agent-02"} {
 		cs[n] = target.Container{Exec: []string{"docker"}, Name: n, Runner: r}
 	}
-	s := newStatuslineSrc([]string{"agent-01", "agent-02"})
+	s := newStatuslineSrc([]string{"agent-01", "agent-02"}, nil)
 	now := time.Unix(1791700005, 0)
 	s.poll(context.Background(), cs, now)
 	if _, ok := s.get("agent-01"); !ok {

@@ -19,6 +19,7 @@ import (
 const poolYAML = `home: /h
 hosts: {kali: {exec: [docker]}, pc2: {exec: [docker, --context, pc2]}}
 orchestrator: {host: kali, token_env: O}
+slots: 1
 agents:
   agent-01: {host: kali, token_env: T1}
   agent-02: {host: pc2, token_env: T2}

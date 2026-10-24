@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +55,10 @@ type Config struct {
 	// containers (XDG_RUNTIME_DIR); one volume shares it per host. Spike S1
 	// confirms the path.
 	SockDir string `yaml:"sock_dir"`
+
+	// Slots is how many sessions each agent runs at once, each a worker of
+	// its own (Workers); agents.<name>.slots overrides it. Default 2.
+	Slots int `yaml:"slots"`
 
 	Hosts        map[string]Host  `yaml:"hosts"`
 	Orchestrator Orchestrator     `yaml:"orchestrator"`
@@ -194,6 +199,51 @@ type Agent struct {
 	Container string   `yaml:"container"`
 	CPUs      string   `yaml:"cpus"`
 	Memory    string   `yaml:"memory"`
+	// Slots is how many sessions the agent runs at once; 0 is the top-level
+	// slots. Each needs about 1.25 GB of the container's memory.
+	Slots int `yaml:"slots"`
+}
+
+// maxSlots bounds an agent's slots: past it one container is a host.
+const maxSlots = 8
+
+// Worker is one session slot of an agent: what fleetd observes, decides on
+// and hands tasks to. Slot 1 is the agent itself and keeps its name, so its
+// state, ledger rows and archives from before slots stay its own; slot k ≥ 2
+// is "<agent>:k". Every worker of an agent shares its container and its
+// subscription.
+type Worker struct {
+	Name      string
+	Agent     string // the agent it is a slot of
+	Slot      int    // 1-based
+	Host      string
+	Container string
+	Account   string
+	Models    []string
+	Model     string
+}
+
+// WorkerName is the name of an agent's slot.
+func WorkerName(agent string, slot int) string {
+	if slot <= 1 {
+		return agent
+	}
+	return agent + ":" + strconv.Itoa(slot)
+}
+
+// SplitWorker is the agent and slot a worker name stands for: "agent-03:2"
+// is agent-03's slot 2, any name without a slot is slot 1. It does not say
+// whether the worker exists (Worker does).
+func SplitWorker(name string) (agent string, slot int) {
+	a, k, ok := strings.Cut(name, ":")
+	if !ok {
+		return name, 1
+	}
+	n, err := strconv.Atoi(k)
+	if err != nil || n < 2 || strconv.Itoa(n) != k {
+		return name, 0
+	}
+	return a, n
 }
 
 // Build is a Docker engine agents send heavy builds to, over SSH. Docker
@@ -402,7 +452,13 @@ func (c *Config) defaults() {
 	if c.Orchestrator.Container == "" {
 		c.Orchestrator.Container = "karmax-brain"
 	}
+	if c.Slots == 0 {
+		c.Slots = 2
+	}
 	for name, a := range c.Agents {
+		if a.Slots == 0 {
+			a.Slots = c.Slots
+		}
 		if a.Container == "" {
 			a.Container = name
 		}
@@ -475,8 +531,19 @@ func (c *Config) validate() error {
 	if !c.Orchestrator.Native {
 		seenToken[c.Orchestrator.TokenEnv] = "orchestrator"
 	}
+	if c.Slots < 1 || c.Slots > maxSlots {
+		return fmt.Errorf("slots: %d: want 1 to %d", c.Slots, maxSlots)
+	}
+	if _, slot := SplitWorker(c.Orchestrator.Name); slot != 1 {
+		return fmt.Errorf("orchestrator: name %q: a name with \":\" in it is an agent's slot", c.Orchestrator.Name)
+	}
 	for _, name := range c.AgentNames() {
 		a := c.Agents[name]
+		// A worker of slot k is <agent>:k: an agent named like one would be
+		// two workers with one name.
+		if _, slot := SplitWorker(name); slot != 1 {
+			return fmt.Errorf("agent %q: names with \":\" in them are taken by agents' slots (agent-01:2)", name)
+		}
 		if !namePattern.MatchString(name) {
 			return fmt.Errorf("agent %q: names are lowercase letters, digits and dashes", name)
 		}
@@ -485,6 +552,9 @@ func (c *Config) validate() error {
 		}
 		if _, ok := c.Hosts[a.Host]; !ok {
 			return fmt.Errorf("agent %q: unknown host %q", name, a.Host)
+		}
+		if a.Slots < 1 || a.Slots > maxSlots {
+			return fmt.Errorf("agent %q: slots: %d: want 1 to %d", name, a.Slots, maxSlots)
 		}
 		if err := checkTokenEnv("agent "+name, a.TokenEnv); err != nil {
 			return err
@@ -622,6 +692,55 @@ func (c *Config) AgentsOn(host string) []string {
 	for _, n := range c.AgentNames() {
 		if c.Agents[n].Host == host {
 			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// Workers is every agent's slots, sorted by agent and then slot.
+func (c *Config) Workers() []Worker {
+	var out []Worker
+	for _, n := range c.AgentNames() {
+		a := c.Agents[n]
+		for k := 1; k <= max(a.Slots, 1); k++ {
+			out = append(out, Worker{Name: WorkerName(n, k), Agent: n, Slot: k, Host: a.Host,
+				Container: a.Container, Account: a.Account, Models: a.Models, Model: a.Model})
+		}
+	}
+	return out
+}
+
+// WorkerNames is every worker's name, in Workers' order.
+func (c *Config) WorkerNames() []string {
+	ws := c.Workers()
+	out := make([]string, len(ws))
+	for i, w := range ws {
+		out[i] = w.Name
+	}
+	return out
+}
+
+// Worker is the worker of that name.
+func (c *Config) Worker(name string) (Worker, bool) {
+	agent, slot := SplitWorker(name)
+	a, ok := c.Agents[agent]
+	if !ok || slot < 1 || slot > max(a.Slots, 1) {
+		return Worker{}, false
+	}
+	return Worker{Name: WorkerName(agent, slot), Agent: agent, Slot: slot, Host: a.Host,
+		Container: a.Container, Account: a.Account, Models: a.Models, Model: a.Model}, true
+}
+
+// Siblings is the other workers of a worker's agent, in slot order.
+func (c *Config) Siblings(name string) []string {
+	w, ok := c.Worker(name)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for k := 1; k <= max(c.Agents[w.Agent].Slots, 1); k++ {
+		if k != w.Slot {
+			out = append(out, WorkerName(w.Agent, k))
 		}
 	}
 	return out

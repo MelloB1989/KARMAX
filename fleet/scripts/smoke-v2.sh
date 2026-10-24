@@ -243,10 +243,27 @@ else
 fi
 if op status --json 2>/dev/null | grep -q '"slot'; then # v2-slots
   out=$(op status --json)
-  check "slots: agent-02 with slots: 2 is two workers" "status: $(jq -c '[.agents[].agent]' <<<"$out")" \
-    bash -c 'jq -e "[.agents[].agent] | index(\"agent-02\") and index(\"agent-02-s2\")" <<<"$1" >/dev/null' _ "$out"
+  check "slots: agent-02 with slots: 2 is two workers, agent-02 and agent-02:2" "status: $(jq -c '[.agents[].agent]' <<<"$out")" \
+    bash -c 'jq -e "[.agents[].agent] | index(\"agent-02\") and index(\"agent-02:2\")" <<<"$1" >/dev/null' _ "$out"
   check "slots: agent-01 with slots: 1 is one worker" "status: $(jq -c '[.agents[].agent]' <<<"$out")" \
-    bash -c 'jq -e "[.agents[].agent] | index(\"agent-01-s2\") | not" <<<"$1" >/dev/null' _ "$out"
+    bash -c 'jq -e "[.agents[] | select(.slot_of==\"agent-01\")] | length == 1" <<<"$1" >/dev/null' _ "$out"
+  check "slots: agent-02:2 says it is slot 2 of agent-02" "status: $(jq -c '.agents[] | select(.agent=="agent-02:2")' <<<"$out")" \
+    bash -c 'jq -e ".agents[] | select(.agent==\"agent-02:2\") | .slot_of==\"agent-02\" and .slot==2" <<<"$1" >/dev/null' _ "$out"
+  # agent-02's slot 2 as inside its container: the container's key, its own name.
+  KEY2=$(python3 -c 'import hmac,hashlib,sys; print(hmac.new(sys.argv[1].encode(), b"agent:agent-02", hashlib.sha256).hexdigest())' $FULL)
+  slot() { FLEET_CONFIG=$R/none FLEETD_URL=http://$API FLEET_TOKEN=$RELAY FLEET_AGENT=$1 FLEET_NAME=$1 FLEET_AGENT_KEY=$KEY2 "$B/fleetctl" "${@:2}"; }
+  out=$(slot agent-02:2 whoami 2>&1)
+  check "slots: a slot proves itself with its container's key" "whoami: $out" bash -c '! grep -qi "verify\|no worker" <<<"$1"' _ "$out"
+  out=$(slot agent-02:9 whoami 2>&1)
+  check "slots: the key proves no slot the config does not have" "got: $out" has "$out" "no worker"
+  op give agent-02:2 --task T-SLOT "Say where you are." >/dev/null 2>&1
+  slot agent-02:2 tell cc-smoke "slot two, on it" --kind progress >/dev/null 2>&1
+  out=$(op wait --task T-SLOT --new --as cc-smoke --timeout 10s 2>&1)
+  check "slots: a slot's message is filed under its own task" "wait said: $out" has "$out" "slot two, on it"
+  out=$(op tasks --open --json 2>/dev/null)
+  check "slots: the task is the slot's, not its agent's slot 1" "open: $(jq -c '[.[] | {id, agent}]' <<<"$out" 2>/dev/null)" \
+    bash -c 'jq -e "map(select(.id==\"T-SLOT\"))[0].agent==\"agent-02:2\"" <<<"$1" >/dev/null' _ "$out"
+  op done agent-02:2 --task T-SLOT --keep-session >/dev/null 2>&1
 else
   echo "SKIP slots: status has no slots in this build (v2-slots)"
 fi

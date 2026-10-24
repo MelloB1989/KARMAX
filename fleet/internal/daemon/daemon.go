@@ -1,5 +1,6 @@
-// Package daemon is fleetd's core: every tick it observes each agent,
-// records what it saw, decides (reconcile.Decide) and acts. It is also the
+// Package daemon is fleetd's core: every tick it observes each worker (an
+// agent's session slot; config.Worker), records what it saw, decides
+// (reconcile.Decide) and acts. It is also the
 // fleet's system of record — assignments, completions, relays, archives and
 // restores all go through here and into the ledger.
 package daemon
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -23,7 +25,8 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/vault"
 )
 
-// Box is one container, as fleetd uses it. *agent.Agent is the real one.
+// Box is one worker's slot in its container, as fleetd uses it.
+// *agent.Agent is the real one.
 type Box interface {
 	archive.Source
 	archive.Sink
@@ -65,9 +68,9 @@ type Fleet struct {
 	push   Pusher
 	notify Notifier
 
-	// One lock per agent, held for a whole tick of that agent and for every
-	// API call that changes it: an assignment must not land between a tick
-	// reading the state and writing it back.
+	// One lock per worker, held for a whole tick of that worker and for
+	// every API call that changes it: an assignment must not land between a
+	// tick reading the state and writing it back.
 	locks  map[string]*sync.Mutex
 	mu     sync.Mutex // guards states
 	runMu  sync.Mutex // Run: pick and assign are one critical section
@@ -127,7 +130,7 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 		soonEvery: 5 * time.Second, holdAfter: 75 * time.Second, sendMus: map[string]*sync.Mutex{},
 		resendFailed: map[string]time.Time{}, resendFails: map[string]int{}, outboxAlerted: map[string]bool{}, asks: map[string]*ask{},
 		vault: vault.New(filepath.Join(cfg.StateDir, vault.KeyFile))}
-	for _, name := range append(cfg.AgentNames(), cfg.Orchestrator.Name, "") {
+	for _, name := range append(cfg.WorkerNames(), cfg.Orchestrator.Name, "") {
 		f.sendMus[name] = &sync.Mutex{}
 	}
 	// What the last fleetd was sending when it stopped is sent again, once
@@ -135,18 +138,24 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 	if _, err := db.InterruptRelays(); err != nil {
 		return nil, err
 	}
-	for _, name := range cfg.AgentNames() {
-		a := cfg.Agents[name]
-		st, ok := states[name]
+	for _, w := range cfg.Workers() {
+		st, ok := states[w.Name]
 		if !ok {
-			st = reconcile.State{Name: name, Phase: reconcile.Standby}
+			st = reconcile.State{Name: w.Name, Phase: reconcile.Standby}
 		}
-		f.states[name] = st
-		f.locks[name] = &sync.Mutex{}
-		_ = db.UpsertAgent(ledger.Agent{Name: name, Host: a.Host, Account: a.Account, Models: a.Models,
-			Container: a.Container, Image: cfg.Image, Enabled: st.Phase != reconcile.Disabled, Reason: st.DisabledReason})
+		f.states[w.Name] = st
+		f.locks[w.Name] = &sync.Mutex{}
+		_ = db.UpsertAgent(ledger.Agent{Name: w.Name, Host: w.Host, Account: w.Account, Models: w.Models,
+			Container: w.Container, Image: cfg.Image, Enabled: st.Phase != reconcile.Disabled, Reason: st.DisabledReason})
 	}
 	return f, nil
+}
+
+// worker is a worker's configuration; the zero Worker for a name that is
+// none (the caller checked with known).
+func (f *Fleet) worker(name string) config.Worker {
+	w, _ := f.cfg.Worker(name)
+	return w
 }
 
 // alertEvery is how often one alert text may go out: every agent on a host
@@ -182,7 +191,7 @@ func clip(s string, n int) string {
 
 func (f *Fleet) archiveRoot() string { return f.cfg.StateDir + "/archive" }
 
-// State is an agent's current state.
+// State is a worker's current state.
 func (f *Fleet) State(name string) reconcile.State {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -209,10 +218,10 @@ func (f *Fleet) event(name, kind, session string, detail any) {
 	}
 }
 
-// Tick is one pass over every agent, run concurrently.
+// Tick is one pass over every worker, run concurrently.
 func (f *Fleet) Tick(ctx context.Context, now time.Time) {
 	var wg sync.WaitGroup
-	for _, name := range f.cfg.AgentNames() {
+	for _, name := range f.cfg.WorkerNames() {
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
@@ -259,6 +268,7 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 	lock.Lock()
 	defer lock.Unlock()
 	b := f.box(name)
+	w := f.worker(name)
 	o, err := b.Observe(ctx, now)
 	if err != nil && o.ContainerUp {
 		// Could not see inside a running container. Deciding on a blank
@@ -270,7 +280,7 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 	if err != nil {
 		// Its host did not answer whether the container runs (Observe asks
 		// that first): the agent is out of reach, not down.
-		host := f.cfg.Agents[name].Host
+		host := w.Host
 		if f.State(name).UnreachableSince.IsZero() {
 			f.Log("observe %s: %s does not answer: %v", name, host, err)
 			f.event(name, "fleet.unreachable", "", map[string]string{"host": host, "error": err.Error()})
@@ -298,7 +308,7 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 		five, okF := s.FiveHour()
 		seven, okS := s.SevenDay()
 		if okF || okS {
-			_ = f.db.AddQuota(ledger.Quota{Account: f.cfg.Agents[name].Account, At: now,
+			_ = f.db.AddQuota(ledger.Quota{Account: w.Account, At: now,
 				FiveHour: five.Used, FiveResets: five.Resets, SevenDay: seven.Used, SevenResets: seven.Resets, Source: "statusline"})
 		}
 	}
@@ -318,9 +328,14 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 		f.askMu.Unlock()
 		o.Asking = o.Asking || blocked
 	}
-	next, acts := reconcile.Decide(f.cfg.Thresholds, old, o)
+	o.Sibling = w.Slot > 1
+	next, acts := reconcile.Decide(f.cfg.Thresholds, f.sharedCooling(old, now), o)
+	next = f.sharedQuota(next)
+	if o.Sibling && o.Unreachable == "" && !o.ContainerUp {
+		next = followContainer(next, f.State(w.Agent))
+	}
 	if !old.UnreachableSince.IsZero() && next.UnreachableSince.IsZero() {
-		f.event(name, "fleet.reachable", "", map[string]string{"host": f.cfg.Agents[name].Host, "after": Dur(now.Sub(old.UnreachableSince))})
+		f.event(name, "fleet.reachable", "", map[string]string{"host": w.Host, "after": Dur(now.Sub(old.UnreachableSince))})
 	}
 	if !f.execute(ctx, name, b, old, next, acts, now) {
 		// Keep what was observed, forget what was decided: the next tick
@@ -350,6 +365,68 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 		f.deliverOutbox(ctx, name, b, o.Outbox, now)
 	}
 }
+
+// sharedCooling puts a worker in the cooling its account is in: a sibling
+// slot hit the rate limit, and every session of the subscription has.
+func (f *Fleet) sharedCooling(st reconcile.State, now time.Time) reconcile.State {
+	for _, sib := range f.cfg.Siblings(st.Name) {
+		s := f.State(sib)
+		if s.Phase != reconcile.Cooling || !s.CoolingUntil.After(now) || !s.CoolingUntil.After(st.CoolingUntil) {
+			continue
+		}
+		switch st.Phase {
+		case reconcile.Disabled, reconcile.Down, reconcile.CodeMissing:
+		default:
+			st.Phase, st.CoolingUntil = reconcile.Cooling, s.CoolingUntil
+		}
+	}
+	return st
+}
+
+// sharedQuota gives a worker its account's quota as its siblings last saw
+// it. Each session's status line has the windows as of its own last turn,
+// so an idle slot's are old: of two readings of a window, the one that
+// resets later is a newer window, and within one window use only grows.
+func (f *Fleet) sharedQuota(st reconcile.State) reconcile.State {
+	sibs := f.cfg.Siblings(st.Name)
+	if len(sibs) == 0 {
+		return st
+	}
+	q := st.Quota
+	for _, sib := range sibs {
+		o := f.State(sib).Quota
+		if o.FiveHourResets.After(q.FiveHourResets) || o.FiveHourResets.Equal(q.FiveHourResets) && o.FiveHour > q.FiveHour {
+			q.FiveHour, q.FiveHourResets = o.FiveHour, o.FiveHourResets
+		}
+		if o.SevenDayResets.After(q.SevenDayResets) || o.SevenDayResets.Equal(q.SevenDayResets) && o.SevenDay > q.SevenDay {
+			q.SevenDay, q.SevenDayResets = o.SevenDay, o.SevenDayResets
+		}
+		if o.At.After(q.At) {
+			q.At = o.At
+		}
+	}
+	st.Quota = q
+	st.Low = q.FiveHour >= f.cfg.Thresholds.Low5h
+	st.Reserved = q.SevenDay >= f.cfg.Thresholds.Reserved7d
+	return st
+}
+
+// followContainer is a sibling slot's state while its container is not
+// running: slot 1's phase (down, or restarting for its code share), and how
+// long that has gone on, so that waits on the sibling give up when slot 1's
+// would and not before.
+func followContainer(st, first reconcile.State) reconcile.State {
+	switch first.Phase {
+	case reconcile.Down, reconcile.CodeMissing:
+		st.Phase = first.Phase
+	}
+	st.StartTried, st.StartFailing, st.CodeMissingSince = first.StartTried, first.StartFailing, first.CodeMissingSince
+	return st
+}
+
+// outboxGiveUp is how long a queued message is tried before it is dropped
+// and you are told.
+const outboxGiveUp = time.Hour
 
 // deliverOutbox sends what the agent queued while fleetd did not answer, as
 // the agent's — whatever the file says it is from — and removes each once it
@@ -571,9 +648,9 @@ func (f *Fleet) execute(ctx context.Context, name string, b Box, old, next recon
 		}
 	}
 	if next.Phase == reconcile.Disabled && old.Phase != reconcile.Disabled {
-		a := f.cfg.Agents[name]
-		_ = f.db.UpsertAgent(ledger.Agent{Name: name, Host: a.Host, Account: a.Account, Models: a.Models,
-			Container: a.Container, Enabled: false, Reason: next.DisabledReason})
+		w := f.worker(name)
+		_ = f.db.UpsertAgent(ledger.Agent{Name: name, Host: w.Host, Account: w.Account, Models: w.Models,
+			Container: w.Container, Enabled: false, Reason: next.DisabledReason})
 	}
 	return true
 }
@@ -658,7 +735,7 @@ func (f *Fleet) archiveSession(ctx context.Context, name string, b Box, st recon
 	if sid == "" {
 		return nil, nil
 	}
-	a := f.cfg.Agents[name]
+	a := f.worker(name)
 	m, err := archive.Archive(ctx, b, f.archiveRoot(), archive.Info{Agent: name, Host: a.Host, Account: a.Account,
 		SessionID: sid, Name: name, Task: task, Reason: reason, At: now})
 	if errors.Is(err, agent.ErrNoTranscript) {
@@ -682,8 +759,14 @@ func (f *Fleet) archiveSession(ctx context.Context, name string, b Box, st recon
 // ErrNoTask is a wait on a task the ledger has never heard of.
 var ErrNoTask = errors.New("no task")
 
+// IsWorker reports whether a name is a worker of the config: an agent, or a
+// slot of it that exists.
+func (f *Fleet) IsWorker(name string) bool { _, ok := f.cfg.Worker(name); return ok }
+
+// known checks that a name is a worker's: an agent's, or one of its slots
+// (agent-03:2).
 func (f *Fleet) known(name string) error {
-	if _, ok := f.cfg.Agents[name]; !ok {
+	if _, ok := f.cfg.Worker(name); !ok {
 		return fmt.Errorf("no agent named %q", name)
 	}
 	return nil
@@ -818,11 +901,19 @@ func (f *Fleet) Close(name, task, outcome, branch, pr string, now time.Time) err
 	return f.db.CloseTask(task, now, outcome, branch, pr)
 }
 
-// Enable clears a disabled agent, once you have fixed its subscription.
+// Enable clears a disabled agent, once you have fixed its subscription:
+// every slot of it, since they share the subscription.
 func (f *Fleet) Enable(name string) error {
 	if err := f.known(name); err != nil {
 		return err
 	}
+	for _, n := range append([]string{name}, f.cfg.Siblings(name)...) {
+		f.enable(n)
+	}
+	return nil
+}
+
+func (f *Fleet) enable(name string) {
 	f.locks[name].Lock()
 	defer f.locks[name].Unlock()
 	st := f.State(name)
@@ -831,10 +922,9 @@ func (f *Fleet) Enable(name string) error {
 		delete(st.Alerted, "disabled")
 	}
 	f.setState(st)
-	a := f.cfg.Agents[name]
+	a := f.worker(name)
 	_ = f.db.UpsertAgent(ledger.Agent{Name: name, Host: a.Host, Account: a.Account, Models: a.Models, Container: a.Container, Enabled: true})
 	f.event(name, "fleet.enable", "", nil)
-	return nil
 }
 
 // Tell relays a message across hosts: a throwaway session in the receiver's
@@ -858,7 +948,7 @@ func (f *Fleet) inbox(name string) bool {
 	if ledger.IsPerson(name) {
 		return true
 	}
-	if _, ok := f.cfg.Agents[name]; ok || name == f.cfg.Orchestrator.Name {
+	if _, ok := f.cfg.Worker(name); ok || name == f.cfg.Orchestrator.Name {
 		return false
 	}
 	return f.db.IsSession(name)
@@ -919,7 +1009,7 @@ func (f *Fleet) send(ctx context.Context, from, to, text, task string, now time.
 // unable says why a receiver cannot take a message now, without trying: its
 // host does not answer, or its container is down. nil when it may.
 func (f *Fleet) unable(to string) error {
-	a, ok := f.cfg.Agents[to]
+	a, ok := f.cfg.Worker(to)
 	if !ok {
 		return nil
 	}
@@ -945,9 +1035,9 @@ func (f *Fleet) deliverMsg(ctx context.Context, from, to, text, task, kind strin
 	// does not clear it: a late report still belongs). Nobody else's does,
 	// and neither does a word to another agent that is not the assigner: that
 	// is a peer's chat, not a report on the task.
-	if _, ok := f.cfg.Agents[from]; ok && task == "" {
+	if _, ok := f.cfg.Worker(from); ok && task == "" {
 		task = f.reportTask(from, now)
-		if _, toAgent := f.cfg.Agents[to]; toAgent && task != "" {
+		if _, toAgent := f.cfg.Worker(to); toAgent && task != "" {
 			if t, err := f.db.Task(task); err != nil || t.Assigner != to {
 				task = ""
 			}
@@ -1202,9 +1292,12 @@ func (f *Fleet) Restore(ctx context.Context, id, onto string, now time.Time) err
 	return nil
 }
 
-// Row is one agent in the roster.
+// Row is one worker in the roster: an agent's session slot.
 type Row struct {
-	Agent       string    `json:"agent"`
+	Agent string `json:"agent"` // the worker: agent-03, agent-03:2
+	// SlotOf is the agent the worker is a slot of, and Slot its number.
+	SlotOf      string    `json:"slot_of"`
+	Slot        int       `json:"slot"`
 	Host        string    `json:"host"`
 	Account     string    `json:"account"`
 	State       string    `json:"state"`
@@ -1245,11 +1338,12 @@ func activeAlerts(st reconcile.State) []string {
 	return out
 }
 
-// Status is the roster, one row per agent, sorted.
+// Status is the roster, one row per worker, in agent and slot order.
 func (f *Fleet) Status(now time.Time) []Row {
 	var rows []Row
-	for _, name := range f.cfg.AgentNames() {
-		st, a := f.State(name), f.cfg.Agents[name]
+	for _, a := range f.cfg.Workers() {
+		name := a.Name
+		st := f.State(name)
 		idle, idleS := "", int64(0)
 		if !st.LastBusy.IsZero() && st.Phase != reconcile.Working {
 			idle, idleS = Dur(now.Sub(st.LastBusy)), int64(now.Sub(st.LastBusy).Seconds())
@@ -1267,13 +1361,12 @@ func (f *Fleet) Status(now time.Time) []Row {
 		if st.OutOfReach(now) {
 			phase = reconcile.Unreachable // shown, not stored: the phase is kept for its return
 		}
-		rows = append(rows, Row{Agent: name, Host: a.Host, Account: a.Account, State: string(phase), Task: task,
+		rows = append(rows, Row{Agent: name, SlotOf: a.Agent, Slot: a.Slot, Host: a.Host, Account: a.Account, State: string(phase), Task: task,
 			Idle: idle, IdleS: idleS, Model: st.Model, Alerts: activeAlerts(st), RecordedAt: st.RecordedAt, FiveHour: st.Quota.FiveHour, SevenDay: st.Quota.SevenDay, FiveResets: st.Quota.FiveHourResets,
 			SevenResets: st.Quota.SevenDayResets, QuotaAt: st.Quota.At, Context: st.ContextPct, Low: st.Low,
 			Reserved: st.Reserved, Models: a.Models, Session: st.SessionID, Reason: st.DisabledReason, Cooling: st.CoolingUntil,
 			Unreachable: !st.UnreachableSince.IsZero(), Rotating: st.Done})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Agent < rows[j].Agent })
 	return rows
 }
 
@@ -1336,9 +1429,12 @@ func (f *Fleet) resumeNote(ctx context.Context, name string, b Box, task string)
 			sb.WriteString(fmt.Sprintf("\n- from %s: %s", r.From, clip(strings.SplitN(strings.TrimSpace(r.Text), "\n", 2)[0], 80)))
 		}
 	}
-	if wts, err := b.Worktrees(ctx); err == nil && len(wts) > 0 {
+	if wts, err := b.Worktrees(ctx); err == nil && slices.ContainsFunc(wts, func(w agent.Worktree) bool { return w.UsedBySlot == 0 }) {
 		sb.WriteString("\n\nYour worktrees now:")
 		for _, w := range wts {
+			if w.UsedBySlot != 0 {
+				continue // a sibling slot's work in progress, not this session's
+			}
 			sb.WriteString(fmt.Sprintf("\n- %s on %s: ", w.Path, firstNonEmpty(w.Branch, "(unknown branch)")))
 			switch {
 			case w.Dirty < 0:

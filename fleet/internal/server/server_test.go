@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
+	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/memory"
@@ -19,6 +20,12 @@ import (
 type fake struct {
 	calls []string
 	mem   *memory.Client // when set, Recall asks it
+}
+
+// IsWorker: the fake's agents have two slots each.
+func (f *fake) IsWorker(name string) bool {
+	_, slot := config.SplitWorker(name)
+	return strings.HasPrefix(name, "agent-") && slot >= 1 && slot <= 2
 }
 
 func (f *fake) Status(time.Time) []daemon.Row {

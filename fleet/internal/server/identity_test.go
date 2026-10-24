@@ -44,7 +44,7 @@ func TestAnAgentKeyThatDoesNotVerifyIsRefused(t *testing.T) {
 func TestVerifiedAgentNamesTheWorkerWhoseContainerKeyItHolds(t *testing.T) {
 	var got []string
 	tok := Tokens{Full: "full", Relay: "relay"}
-	h := withAgent(tok, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := withAgent(tok, (&fake{}).IsWorker, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name, ok := verifiedAgent(r)
 		got = append(got, name+map[bool]string{true: " ok", false: " no"}[ok])
 	}))
@@ -84,4 +84,18 @@ func serve(h http.Handler, req *http.Request) *http.Response {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Result()
+}
+
+// A container's key verifies any name of its agent's; only a worker the
+// config has is accepted, wherever the verified name is used.
+func TestAVerifiedNameMustBeAWorkerTheConfigHas(t *testing.T) {
+	_, h := setup(t)
+	if resp := ado(t, h, "GET", "/v1/status", "agent-03:2", ""); resp.StatusCode != 200 {
+		t.Fatalf("slot 2 of a two-slot agent: %d", resp.StatusCode)
+	}
+	for _, name := range []string{"agent-03:9", "agent-03-s2", "agent-03:1"} {
+		if resp := ado(t, h, "GET", "/v1/status", name, ""); resp.StatusCode != 403 {
+			t.Errorf("%s, with agent-03's key: %d, want 403", name, resp.StatusCode)
+		}
+	}
 }
