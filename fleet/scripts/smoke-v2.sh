@@ -15,6 +15,7 @@ mkdir -p "$R"/{bin,fakes,home/.claude/sessions,home/.claude/fleet,home/.claude/p
 chmod 700 "$R/state"
 . scripts/smoke-lib.sh; smoke_fakes "$R"
 export TMUX_TMPDIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fl.XXXX") # sockets need a short path
+mkdir -p "$R/run"; export XDG_RUNTIME_DIR=$R/run  # the fleet's host-shared dir: the run's own, never the caller's
 export HOME=$R/home FLEET_WORK=$R/work PATH=$R/bin:$PATH RELAY_LOG=$R/relay.log
 
 API=127.0.0.1:$(free_port) TAILNET=127.0.0.1:$(free_port) GITLOOM=$(free_port) KARMAX=$(free_port) OTLP=127.0.0.1:$(free_port)

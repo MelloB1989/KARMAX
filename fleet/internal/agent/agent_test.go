@@ -498,7 +498,7 @@ func TestTheScriptsAreQuietAboutProcessesThatAreGone(t *testing.T) {
 		"snapshot": exec.Command("sh", "-c", snapshotScript),
 		"reap":     exec.Command("sh", "-c", killSessionScript, "sh", "no-such-session", "agent-99"),
 	} {
-		cmd.Env = append(os.Environ(), "HOME="+home, "FLEET_WORK="+t.TempDir())
+		cmd.Env = append(os.Environ(), "HOME="+home, "FLEET_WORK="+t.TempDir(), "XDG_RUNTIME_DIR="+t.TempDir())
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		_ = cmd.Run()

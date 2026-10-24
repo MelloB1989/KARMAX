@@ -66,6 +66,9 @@ printf ']\n'
 	t.Setenv("PATH", l.bin+":"+os.Getenv("PATH"))
 	t.Setenv("HOME", l.home)
 	t.Setenv("FLEET_WORK", l.work)
+	// The host-shared runtime dir (where the snapshot shares claude agents
+	// between workers) is each test's own, never the caller's.
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	// tmux's socket path must fit a sockaddr (about 104 bytes): under a long
 	// TMPDIR the test's own directory does not, so tmux gets a short one.
 	sock, err := os.MkdirTemp("/tmp", "fleet-tmux-")

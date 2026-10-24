@@ -106,7 +106,21 @@ tmux capture-pane -p -t "=$1:" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 
 echo ==current==
 cat "$W/current" 2>/dev/null; echo
 echo ==agents==
-claude agents --json 2>/dev/null || echo '!!FAILED'
+# Every container on a host shares the session registry, so every worker's
+# claude agents says the same; it costs seconds of CPU. Within a few seconds,
+# the first worker on the host runs it and the rest read what it wrote.
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  c="$XDG_RUNTIME_DIR/fleet-agents.json"
+  (
+    flock -w 20 9 || exit 1
+    if [ -s "$c" ] && [ -n "$(find "$c" -newermt '-10 seconds' 2>/dev/null)" ]; then cat "$c"
+    elif claude agents --json > "$c.new" 2>/dev/null; then mv "$c.new" "$c"; cat "$c"
+    else rm -f "$c.new"; exit 1
+    fi
+  ) 9>"$c.lock" || echo '!!FAILED'
+else
+  claude agents --json 2>/dev/null || echo '!!FAILED'
+fi
 echo
 echo ==owners==
 for f in "$HOME"/.claude/sessions/*.json; do

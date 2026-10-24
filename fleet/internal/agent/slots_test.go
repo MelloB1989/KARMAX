@@ -329,3 +329,44 @@ func TestHooksAndStatusLineWriteToTheirSlotsFiles(t *testing.T) {
 		t.Errorf("status files: slot 2 %q, slot 1 %q", read("slot-2/status.json"), read("status.json"))
 	}
 }
+
+// claude agents costs seconds of CPU and says the same in every container on
+// a host (they share the session registry): within a few seconds, two
+// workers' snapshots run it once. Without a host-shared runtime dir, each
+// runs its own.
+func TestTheWorkersOnAHostShareOneClaudeAgents(t *testing.T) {
+	l := newLocal(t)
+	l.startPaneOn("main", "agent-03", "s1", "FLEET_AGENT=agent-03")
+	l.startPaneOn("main-2", "agent-03:2", "s2", "FLEET_AGENT=agent-03:2", "FLEET_SLOT=2")
+	calls := filepath.Join(t.TempDir(), "calls")
+	b, err := os.ReadFile(l.bin + "/claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := strings.Replace(string(b), "#!/bin/bash\n", "#!/bin/bash\n[ \"$1\" = agents ] && echo x >> "+calls+"\n", 1)
+	if err := os.WriteFile(l.bin+"/claude", []byte(counted), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	count := func() int { b, _ := os.ReadFile(calls); return strings.Count(string(b), "x") }
+
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	for _, a := range []*Agent{l.a, l.slot2()} {
+		o, err := a.Observe(context.Background(), time.Now())
+		if err != nil || len(o.Sessions) == 0 {
+			t.Fatalf("%s: %v, sessions %v", a.Name, err, o.Sessions)
+		}
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("claude agents ran %d times for two workers on one host, want 1", n)
+	}
+
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	for _, a := range []*Agent{l.a, l.slot2()} {
+		if _, err := a.Observe(context.Background(), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := count(); n != 3 {
+		t.Fatalf("without a shared runtime dir: %d runs in all, want 3", n)
+	}
+}

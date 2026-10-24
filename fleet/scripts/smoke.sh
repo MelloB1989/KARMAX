@@ -12,6 +12,7 @@ chmod 700 "$R/state"
 . scripts/smoke-lib.sh; smoke_fakes "$R"
 API=127.0.0.1:$(free_port) OTLP=127.0.0.1:$(free_port)
 export TMUX_TMPDIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fl.XXXX")  # sockets need a short path
+mkdir -p "$R/run"; export XDG_RUNTIME_DIR=$R/run  # the fleet's host-shared dir: the run's own, never the caller's
 export HOME=$R/home FLEET_WORK=$R/work PATH=$R/bin:$PATH RELAY_LOG=$R/relay.log
 cat > "$R/state/fleet.yaml" <<EOF
 home: $R/home
