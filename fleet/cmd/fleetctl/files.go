@@ -56,7 +56,7 @@ func (c *client) open(ctx context.Context, method, path string, body io.Reader, 
 		req.Header.Set(k, v)
 	}
 	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-		ExpectContinueTimeout: 10 * time.Second}
+		ExpectContinueTimeout: 3 * time.Second}
 	resp, err := (&http.Client{Transport: tr}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fleetd unreachable at %s: %w", c.base, err)
@@ -195,7 +195,8 @@ func rshCmd(args []string) error {
 		return err
 	}
 	q := url.Values{"arg": args[1:]}.Encode()
-	resp, err := c.open(context.Background(), "POST", "/v1/agents/"+url.PathEscape(rshWorker(args[0]))+"/rsh?"+q, os.Stdin, nil)
+	resp, err := c.open(context.Background(), "POST", "/v1/agents/"+url.PathEscape(rshWorker(args[0]))+"/rsh?"+q, os.Stdin,
+		map[string]string{"Expect": "100-continue"}) // a refusal comes back without waiting on stdin
 	if err != nil {
 		return err
 	}

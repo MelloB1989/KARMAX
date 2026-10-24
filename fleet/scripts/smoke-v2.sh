@@ -280,6 +280,10 @@ if has "$usage" "  cp "; then # v2-files
   out=$(op rsh agent-01 sh -c 'cat; echo err >&2; exit 3' <<<"in" 2>"$R/rsh.err"); rc=$?
   check "rsh streams stdin and stdout and returns the exit status" "exit $rc: $out" test $rc = 3 -a "$out" = in
   check "rsh shows the command's stderr" "stderr: $(cat "$R/rsh.err")" grep -q err "$R/rsh.err"
+  out=$(op cp "$S/proj" agent-02:2:/work/inbox/slot 2>&1)
+  check "cp reaches a slot (agent-02:2) in its agent's /work" "got: $out" test "$(cat "$R/work/inbox/slot/proj/sub/a.txt" 2>/dev/null)" = deep
+  out=$(op cp agent-02:2:/work/inbox/slot/proj "$R/back2" 2>&1)
+  check "cp brings a file back from a slot" "got: $out" test "$(cat "$R/back2/proj/sub/a.txt" 2>/dev/null)" = deep
   out=$(member rsh agent-01 true 2>&1); rc=$?
   check "a member may not rsh" "exit $rc: $out" test $rc != 0
   if command -v rsync >/dev/null; then

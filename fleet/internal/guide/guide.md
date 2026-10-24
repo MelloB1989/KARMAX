@@ -113,11 +113,8 @@ models: a person on the tailnet cannot.
 
 ## Files
 
-    fleetctl run --attach ./spec.pdf --repo R "Build to the spec."   # lands in /work/inbox/<task>/, named in the brief
-    fleetctl cp ./notes.pdf agent-03 ; fleetctl cp agent-03:/work/out ./results
-
-Only `/work` and `/tmp` in the container, at most 2 GiB; symlinks are copied as links, never out of the
-tree. A member may copy only to and from an agent on their own open task. `fleetctl sync` is rsync (operator).
+    fleetctl run --attach ./spec.pdf "Build to the spec."     # /work/inbox/<task>/, named in the brief
+    fleetctl cp ./notes.pdf agent-03; fleetctl cp agent-03:/work/out ./results   # /work, /tmp; 2 GiB
 
 ## Questions, follow-ups, cancel
 
@@ -130,13 +127,11 @@ The answer is the output of the agent's `ask`, so it carries on in the same turn
 waiting (its ask timed out) the answer is sent as a follow-up; a `followup` while it waits is its answer
 too. A question nobody answers within ten minutes goes to the orchestrator, which may answer it; after
 that, one alert goes to the operator. Progress notes (`[progress]`) need no reply.
-A follow-up needs an open task. If the
-agent cannot be reached (its host is down or cut off), fleetd keeps the follow-up and prints
-`queued: …`: it reaches the agent when the agent is back. Do not send it again.
+A follow-up needs an open task. If the agent cannot be reached (its host is down or cut off), fleetd keeps
+it and prints `queued: …`: it reaches the agent when the agent is back. Do not send it again.
 
-To stop work: `fleetctl cancel <task> --reason "no longer needed"`. It presses Esc in the agent's
-session, tells the agent to stop and leave its branch, and closes the task as cancelled. The session is
-kept. Cancelling a task that is already closed is an error and does nothing.
+To stop work: `fleetctl cancel <task> --reason "no longer needed"`. It presses Esc in the agent's session, tells it
+to stop and leave its branch, and closes the task as cancelled; the session is kept. A task already closed is an error.
 
 ## Handing an agent a secret
 
@@ -150,11 +145,9 @@ secret exec OPENAI_API_KEY=openai -- <cmd>` (or `get --to`), only on your side's
 
     fleetctl ls                 # the roster: phase, task, quota use for every agent and slot
     fleetctl pick --repo R      # who would get a task, and why the others would not
-    fleetctl peek agent-02      # the agent's screen, right now
+    fleetctl peek agent-02      # the agent's screen now (do not poll it: `wait` returns when it reports)
     fleetctl tasks --open       # every task still open
     fleetctl quota              # 5-hour and 7-day windows per agent
-
-Do not poll `peek` while you wait: `wait` returns the moment the agent reports.
 
 ## The operator's memory
 
@@ -163,8 +156,8 @@ Do not poll `peek` while you wait: `wait` returns the moment the agent reports.
 
 Recall before work on a person, project or decision the operator has history with. Suggest durable facts,
 never secrets. An agent may use these only on a task the operator's side gave it; a member never may.
-`fleetctl mcp` serves both as MCP tools (`claude mcp add --scope user fleet -- fleetctl mcp`), and
-`fleetctl skill install` adds the fleet-memory skill that says when to use them; a member gets neither.
+`fleetctl mcp` serves both as MCP tools (`claude mcp add --scope user fleet -- fleetctl mcp`), and `fleetctl
+skill install` adds the fleet-memory skill that says when to use them; a member gets neither.
 
 ## From another machine (the tailnet)
 
@@ -177,12 +170,11 @@ login is on the fleet's list, install fleetctl from fleetd itself and connect it
 It installs fleetctl, runs `fleetctl connect http://<fleetd host>:7878` (which prints who fleetd knows you
 as), installs this guide as your Claude Code skill, and registers fleetctl's MCP server with Claude Code
 (`claude mcp add --scope user fleet -- <fleetctl> mcp`), offering only what your role may use.
-As a member you can `run`, `wait --task`, `result`, `followup`, `cancel` and `done --task` your own tasks,
-and `ls`, `pick`, `quota`, `tasks` and `peek` (an agent at work on your task). Tasks run as you: the agent reports to your login (or a session of yours), and `--from`
-names a session of yours (`ram@example.com/review`), never someone else. You may hold a few open tasks at once (fleetd says how many when you reach it); close one
-with `done --task` before you start another, or pass `--queue`. `--repo` names a checkout in the fleet
-host's code directory; for a repo that is not there, say in the brief where to clone it from.
-
+As a member you can `run`, `wait --task`, `result`, `followup`, `cancel` and `done --task` your own tasks, and `ls`, `pick`, `quota`, `tasks` and `peek` (an
+agent at work on your task). Tasks run as you: the agent reports to your login (or a session of yours), and `--from` names a session of yours
+(`ram@example.com/review`), never someone else. You may hold a few open tasks at once (fleetd says how many when you reach it); close one with `done --task`
+before you start another, or pass `--queue`. `--repo` names a checkout in the fleet host's code directory; for a repo that is not there, say in the brief where
+to clone it from.
 Agents work in the fleet host's checkouts: review what they push with `git fetch origin <branch>` in yours.
 
 ## The operator's integrations (KARMAX)
