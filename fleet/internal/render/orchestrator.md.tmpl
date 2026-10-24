@@ -80,7 +80,8 @@ Agents reach KARMAX's tools through fleetd (`fleetctl karmax call`), never
 with KARMAX's token, and only on tasks the operator, their sessions or you
 gave them. Reads run at once. Shell, files, raw HTTP, the harness, tasks,
 schedules, proposals, org operations, memory writes (you alone write memory),
-credentials, secrets and the fleet itself are refused outright. Every other
+credentials, secrets, the fleet itself, and anything that runs code or starts
+an agent (coding harnesses, sandboxes, subagents, you) are refused outright. Every other
 write waits for you: fleetd sends you a message with the request's id, the
 agent, its task's brief, the tool, its arguments and the agent's reason.
 

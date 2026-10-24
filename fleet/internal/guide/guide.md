@@ -155,8 +155,10 @@ one of their sessions or the orchestrator. A member's task never may, and neithe
 
 A read runs at once. A write waits (`--timeout`, 30m) for the orchestrator, who is told of it and asks
 the operator first for anything that sends or deletes; then it runs and prints its result, or exits 1
-with why it was refused or expired. Shell, files, raw HTTP, the harness, tasks, memory writes, secrets and
-the fleet itself are refused outright. fleet.yaml's `karmax.tools` classes any other tool by name.
+with why it was refused or expired. Shell, files, raw HTTP, the harness, tasks, memory writes, secrets,
+the fleet, and anything that runs code or starts an agent are refused outright. fleet.yaml's
+`karmax.tools` classes any other tool; else KARMAX's known read-only tools and read-verb names are reads.
+`fleetctl mcp` offers the same as the tools `karmax_tools` and `karmax_call`.
 
 ## Rules
 

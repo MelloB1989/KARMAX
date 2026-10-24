@@ -406,7 +406,11 @@ the tools for them, under the operator's rules:
 - **A read runs at once.** A tool is a read when fleet.yaml's `karmax.tools` says so, else when its last
   name part starts with a read verb (`list`, `get`, `read`, `search`, `view`, `show`, `find`, `recall`,
   `retrieve`, `monitored`, `lookup`, `query`, `history`, `status`, …): `google.mail.search`,
-  `notion.query_database`, `whatsapp.monitored`.
+  `notion.query_database`, `whatsapp.monitored`. Every read is free, so KARMAX's read-only tools whose
+  names do not say so are reads too (checked against their descriptions): `slack.channels`,
+  `slack.user`, `google.chat.spaces`, `instagram.inbox`, `instagram.reads`, `instagram.commenters`,
+  `instagram.call` (Instagram reads only), `keka.departments`, `keka.employees`, `keka.leave`,
+  `activity.recent`, `cost.report`, `karmax.capabilities`, `tools.load`.
 - **A write waits for the orchestrator.** Everything else is a write. fleetd files it on the ledger
   (`approvals`: id, agent, task, tool, arguments, reason, state, who decided, when) and tells the
   orchestrator at once through the relay: the tool, its arguments, the reason, the first line of the
@@ -418,8 +422,13 @@ the tools for them, under the operator's rules:
   Nobody decides on their own request, and an agent cannot decide at all (the routes are full scope).
 - **Some tools are always denied**, whatever `karmax.tools` says: `shell.exec`, `file.*`,
   `http.request`, `harness.*`, `task.*`, `scheduler.*`, `proposal.*`, `orgops*`, `memory.ingest` and
-  `memory.forget` (the orchestrator alone writes memory), anything named for credentials or secrets, and
-  anything fleet-related. They are left out of `karmax tools` and refused with nothing filed.
+  `memory.forget` (the orchestrator alone writes memory), anything named for credentials or secrets,
+  anything fleet-related, and anything that runs code or starts an agent: `claude_code.call`,
+  `codex.call`, `subagent.spawn`, `sandbox.start`, `orchestrator.send`, and every `*.exec`, `*.run` and
+  `*.spawn`. They are left out of `karmax tools` and refused with nothing filed.
+- **From an MCP client.** `fleetctl mcp` serves the same two calls as tools, `karmax_tools` and
+  `karmax_call` (`tool`, `args`, `reason`, `timeout`); a write's call waits for its approval like the
+  CLI's, while the session's other calls go on.
 - **Who may use it** is decided by fleetd, as for memory and secrets: the full scope (the operator,
   their sessions, the orchestrator) may; a member on the tailnet never may, not even to read; an agent
   may only while its current task — by the ledger's assigner, never by anything the agent sends — came
@@ -432,8 +441,7 @@ the tools for them, under the operator's rules:
     karmax:
       api_url: http://127.0.0.1:9091     # KARMAX's API; fleetd's env file holds KARMAX_API_TOKEN
       tools:                             # explicit classes override the name; prefix* entries allowed
-        slack.channels: read
-        instagram.inbox: read
+        linkedin.post: deny
         github.*: write
         x.post: deny
 
