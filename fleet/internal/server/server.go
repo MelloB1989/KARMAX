@@ -2,7 +2,8 @@
 //
 // Three token scopes: Full (you, and the orchestrator) can do everything;
 // Relay (every agent container) can read status, tell, ask its assigner a
-// question and wait for the answer, and report to the operator; Console (fleet-console) reads everything and prompts and rotates
+// question and wait for the answer, report to the operator, and read a
+// secret it is granted; Console (fleet-console) reads everything and prompts and rotates
 // as the operator. Requests with none are refused, on every listener;
 // GET /v1 lists every route and the scopes it allows.
 //
@@ -69,6 +70,13 @@ type Ops interface {
 	Archive(id string) (*daemon.ArchiveDetail, error)
 	PruneArchives(before time.Time) (int, error)
 	Render() (string, error)
+
+	SecretPut(name string, value []byte, now time.Time) error
+	Secrets(now time.Time) ([]ledger.SecretInfo, error)
+	SecretGrant(name, task, agent, by string, ttl time.Duration, now time.Time) error
+	SecretRevoke(name, task, agent string) error
+	SecretRemove(name string) error
+	SecretRead(agent, name string, now time.Time) ([]byte, error)
 	Up(ctx context.Context, hosts []string) (string, error)
 	Down(ctx context.Context, hosts []string) (string, error)
 
@@ -174,8 +182,11 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				if be, ok := err.(badRequest); ok {
 					code, err = http.StatusBadRequest, be.error
 				}
-				if errors.Is(err, daemon.ErrNoTask) {
+				if errors.Is(err, daemon.ErrNoTask) || errors.Is(err, ledger.ErrNoSecret) || errors.Is(err, daemon.ErrNoGrant) {
 					err = notFound{err}
+				}
+				if errors.Is(err, daemon.ErrForbidden) {
+					err = forbidden{err}
 				}
 				if errors.Is(err, daemon.ErrBadInput) {
 					code = http.StatusBadRequest
@@ -733,6 +744,65 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		to, err := ops.Suggest(ctx, in.From, in.Text, in.Why, time.Now())
 		return map[string]any{"ok": err == nil, "to": to}, err
 	}, full, relay)
+	// Secrets: the full scope keeps and grants them; an agent reads one it is
+	// granted, as the agent its identity says (never a name it sends), and
+	// fleetd decides the rest from the ledger (daemon.SecretRead). A value
+	// is only ever in a put's body and a read's answer.
+	route("POST /v1/secrets", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct {
+			Name  string
+			Value []byte
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20)).Decode(&in); err != nil {
+			return nil, badRequest{fmt.Errorf("bad JSON body: want name and a base64 value")} // the decoder's words may quote it
+		}
+		return ok, ops.SecretPut(in.Name, in.Value, time.Now())
+	}, fullOnly...)
+	route("GET /v1/secrets", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return ops.Secrets(time.Now())
+	}, fullOnly...)
+	route("POST /v1/secrets/{name}/grant", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct{ Task, Agent, TTL string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		var ttl time.Duration
+		if in.TTL != "" {
+			var err error
+			if ttl, err = time.ParseDuration(in.TTL); err != nil || ttl <= 0 {
+				return nil, badRequest{fmt.Errorf("ttl %q: want a duration like 2h", in.TTL)}
+			}
+		}
+		by := ledger.Operator
+		if c := callerOf(r); c != nil {
+			by = c.Login
+		}
+		return ok, ops.SecretGrant(r.PathValue("name"), in.Task, in.Agent, by, ttl, time.Now())
+	}, fullOnly...)
+	route("POST /v1/secrets/{name}/revoke", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct{ Task, Agent string }
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		return ok, ops.SecretRevoke(r.PathValue("name"), in.Task, in.Agent)
+	}, fullOnly...)
+	route("DELETE /v1/secrets/{name}", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return ok, ops.SecretRemove(r.PathValue("name"))
+	}, fullOnly...)
+	route("POST /v1/secrets/{name}/read", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		if err := operatorWork(r, ops); err != nil {
+			return nil, err
+		}
+		agent, verified := verifiedAgent(r)
+		if !verified {
+			return nil, forbidden{fmt.Errorf("a secret is read by a verified agent only: this request's agent identity does not check out")}
+		}
+		v, err := ops.SecretRead(agent, r.PathValue("name"), time.Now())
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"name": r.PathValue("name"), "value": v}, nil
+	}, relay)
 	hostRoute := func(name string, run func(ctx context.Context, hosts []string) (string, error)) {
 		route("POST /v1/"+name, func(w http.ResponseWriter, r *http.Request) (any, error) {
 			var in struct{ Hosts []string }

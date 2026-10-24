@@ -127,6 +127,25 @@ runs and prints its result; refused or expired, it exits 1 and says why. Ask
 only for what the task needs, and give a reason someone can decide on. `k=v`
 is a string; `k:=5` or `k:=true` is JSON; `--json-args '{…}'` takes them all.
 
+## Secrets granted for a task
+
+A brief may say a key is granted to you by name (never its value). Use it
+only through fleetctl, and only for that task:
+
+    fleetctl secret exec OPENAI_API_KEY=openai -- <cmd> [args]   # in cmd's environment, nothing printed
+    fleetctl secret get deploy-key --to deploy_key               # a 0600 file under /work/.secrets
+
+Never print a secret, echo it, `cat` its file or pass `--print`: what you
+print enters your context, and from there your messages and transcript.
+Never commit one, write it under the shared code, or put it in a message;
+fleetd blanks a granted value in a message as `[secret:<name>]`, but do not
+lean on that. Every read is recorded. A secret you were not granted, or one
+asked for on a task a team member ran, is refused: say so in your report
+rather than looking for another way in.{{if .BuildHost}} `kbuild` does not carry a
+secret to the build host: it cannot see `/work/.secrets`, and `secret exec`
+around `kbuild` does not pass the environment on. Run what needs the secret
+here, or ask the assigner how they want it handled.{{end}}
+
 ## Quota
 
 You share nothing with the other agents: your rate-limit windows are your own

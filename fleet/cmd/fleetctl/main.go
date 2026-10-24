@@ -106,6 +106,19 @@ The operator's integrations (KARMAX gateway; fleetd holds KARMAX's token, never 
   approve <id> | deny <id> --reason "<why>" [--by <name>]
                                       decide on one (full scope; never on your own request)
 
+Secrets (fleetd; a value is never listed, logged or put in an event):
+  secret put <name> [--file <path>]   store one, the value from stdin (one trailing newline dropped)
+                                      or the file as it is; replaces one of that name
+  secret ls [--json]                  names, grants and last read; never values
+  secret grant <name> --task T | --agent A [--ttl 2h]
+                                      let that task's agent, or that agent, read it; a task's
+                                      grant ends when the task closes, any grant at its ttl
+  secret revoke <name> --task T | --agent A | secret rm <name>
+  An agent, while granted, on a task the operator or the orchestrator gave it:
+  secret exec NAME=<secret>… -- <cmd> [args…]  run cmd with each secret in its environment
+  secret get <name> --to <file>       write it 0600 under /work/.secrets (nowhere else)
+  secret get <name> --print           to stdout: avoid, your output is the model's context
+
 Your keyboard:
   attach <agent> [--direct]           the live session's TUI (host only), through the console when
                                       the host runs one (one controller; give it back: Ctrl-])
@@ -849,6 +862,8 @@ func run(cmd string, args []string) error {
 		return askCmd(args)
 	case "answer":
 		return answerCmd(args)
+	case "secret":
+		return secretCmd(args)
 
 	case "tell":
 		from, kind := sessionName(), ""

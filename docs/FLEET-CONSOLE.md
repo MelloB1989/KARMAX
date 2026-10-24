@@ -226,6 +226,12 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `GET /v1/approvals` | full | `fleetctl approvals` | approval requests (`state`: pending by default in fleetctl, or all; `n` newest) |
 | `POST /v1/approvals/{id}/approve` | full | `fleetctl approve` | approve a pending request (409 when it is not pending; 403 on one's own) |
 | `POST /v1/approvals/{id}/deny` | full | `fleetctl deny` | deny a pending request; `reason` is required and the agent is told it |
+| `POST /v1/secrets` | full | `fleetctl secret put` | store a secret (`name`, base64 `value`), sealed with fleetd's key; replaces one of that name |
+| `GET /v1/secrets` | full | `fleetctl secret ls` | each secret's name, grants and last read; never a value |
+| `POST /v1/secrets/{name}/grant` | full | `fleetctl secret grant` | let a `task`'s agent, or an `agent`, read it, for `ttl` if set; a task's grant ends when the task closes |
+| `POST /v1/secrets/{name}/revoke` | full | `fleetctl secret revoke` | end a grant to a `task` or an `agent` (404 when there is none) |
+| `DELETE /v1/secrets/{name}` | full | `fleetctl secret rm` | drop a secret and its grants |
+| `POST /v1/secrets/{name}/read` | relay | `fleetctl secret exec`, `get` | a granted secret's value, for a verified agent whose open task the operator, an operator's session or the orchestrator assigned (403 otherwise); every read and refusal is an event |
 <!-- routes:end -->
 
 `member` is a person on the tailnet (`tailnet:` in fleet.yaml, no token: Tailscale says who they are). A member runs tasks as themselves, at most `member_open` open at once, and the task routes answer them only for their own tasks (403 otherwise); `wait` needs `task`, and `done` closes by task alone. An operator login on the tailnet has `full`.
