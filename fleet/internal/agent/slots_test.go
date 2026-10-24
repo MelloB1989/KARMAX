@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -139,9 +140,14 @@ func TestASiblingSlotsWorktreeIsNeverSafeToRemove(t *testing.T) {
 			t.Fatalf("git %v: %v %s", args, err, out)
 		}
 	}
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	git(".", "init", "-q", "--bare", origin)
 	git(".", "init", "-q", repo)
 	git(repo, "commit", "-q", "--allow-empty", "-m", "base")
-	// Clean and on no branch of its own: by git alone, nothing to lose.
+	git(repo, "remote", "add", "origin", origin)
+	git(repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+	git(repo, "fetch", "-q", "origin")
+	// Clean and pushed: by git alone, nothing to lose.
 	mine, theirs := filepath.Join(l.work, "wt", "mine"), filepath.Join(l.work, "wt", "theirs")
 	git(repo, "worktree", "add", "-q", "--detach", mine)
 	git(repo, "worktree", "add", "-q", "--detach", theirs)
@@ -193,7 +199,8 @@ func TestAgentRunStartsOnePaneAndStateDirPerSlot(t *testing.T) {
 	if err := os.WriteFile(l.bin+"/claude", []byte(`#!/bin/bash
 if [ "$1" = agents ]; then echo '[]'; exit 0; fi
 mkdir -p "$HOME/started"
-{ echo "args=$*"; env | grep '^FLEET_' | sort; } > "$HOME/started/${FLEET_SLOT:-none}"
+f="$HOME/started/${FLEET_SLOT:-none}"
+{ echo "args=$*"; env | grep '^FLEET_' | sort; } > "$f.tmp" && mv "$f.tmp" "$f"
 exec sleep 300
 `), 0o755); err != nil {
 		t.Fatal(err)
@@ -204,10 +211,14 @@ exec sleep 300
 	}
 	cmd := exec.Command("sh", "../../../packaging/fleet/agent-run")
 	cmd.Env = append(os.Environ(), "FLEET_AGENT=agent-03", "FLEET_NAME=agent-03", "FLEET_SLOTS=3", "FLEET_CODE="+code)
+	// Its own process group, ended whole: a slot's loop that outlived the
+	// test would go on starting panes once the temp dir is gone — on the
+	// default tmux server, whoever's that is.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); _ = cmd.Wait() })
 
 	started := func(slot string) map[string]string {
 		b, err := os.ReadFile(filepath.Join(l.home, "started", slot))
@@ -249,7 +260,7 @@ exec sleep 300
 
 	// The slots run one supervising loop each: slot 2's pane, killed, comes
 	// back on its own pending next; slot 1's pane stays the same process.
-	pane1, _ := exec.Command("tmux", "list-panes", "-t", "=main", "-F", "#{pane_pid}").Output()
+	pane1, _ := exec.Command("tmux", "list-panes", "-t", "=main:", "-F", "#{pane_pid}").Output()
 	s2 := &Agent{Name: "agent-03:2", Slot: 2, C: l.a.C}
 	if err := s2.Restart(context.Background(), "s-resumed"); err != nil {
 		t.Fatal(err)
@@ -260,12 +271,12 @@ exec sleep 300
 	if got := started("2")["args"]; !strings.Contains(got, "--resume s-resumed") {
 		t.Fatalf("slot 2 restarted with %q, want --resume s-resumed", got)
 	}
-	if again, _ := exec.Command("tmux", "list-panes", "-t", "=main", "-F", "#{pane_pid}").Output(); string(again) != string(pane1) {
+	if again, _ := exec.Command("tmux", "list-panes", "-t", "=main:", "-F", "#{pane_pid}").Output(); len(pane1) == 0 || string(again) != string(pane1) {
 		t.Errorf("slot 1's pane went from %s to %s when slot 2 restarted", pane1, again)
 	}
 	// Every pane keeps the fixed size, the second session included.
 	for _, p := range []string{"main", "main-2", "main-3"} {
-		if out, _ := exec.Command("tmux", "display-message", "-p", "-t", "="+p, "#{window_width}x#{window_height}").Output(); strings.TrimSpace(string(out)) != "220x50" {
+		if out, _ := exec.Command("tmux", "display-message", "-p", "-t", "="+p+":", "#{window_width}x#{window_height}").Output(); strings.TrimSpace(string(out)) != "220x50" {
 			t.Errorf("%s is %s, want 220x50", p, out)
 		}
 	}

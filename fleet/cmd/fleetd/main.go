@@ -90,9 +90,8 @@ func run(cfgPath string, once bool) error {
 	defer db.Close()
 
 	boxes := map[string]daemon.Box{}
-	for _, n := range cfg.AgentNames() {
-		a := cfg.Agents[n]
-		boxes[n] = &agent.Agent{Name: n, C: target.Container{Exec: cfg.Hosts[a.Host].Exec, Name: a.Container}}
+	for _, w := range cfg.Workers() {
+		boxes[w.Name] = &agent.Agent{Name: w.Name, Slot: w.Slot, C: target.Container{Exec: cfg.Hosts[w.Host].Exec, Name: w.Container}}
 	}
 	o := cfg.Orchestrator
 	oc := target.Container{Exec: cfg.Hosts[o.Host].Exec, Name: o.Container}
@@ -177,7 +176,7 @@ func run(cfgPath string, once bool) error {
 		serve(t.Listen, server.Tailnet(api, &tailnet.Local{Socket: t.Socket}, t), "tailnet api", net.ListenConfig{Control: freebind})
 	}
 
-	log.Printf("%d agents on %d hosts, tick %s", len(cfg.Agents), len(cfg.Hosts), cfg.Thresholds.Tick)
+	log.Printf("%d agents (%d workers) on %d hosts, tick %s", len(cfg.Agents), len(cfg.WorkerNames()), len(cfg.Hosts), cfg.Thresholds.Tick)
 	tick(ctx)
 	t := time.NewTicker(cfg.Thresholds.Tick)
 	defer t.Stop()

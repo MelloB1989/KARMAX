@@ -411,8 +411,9 @@ func TestTmuxConfPinsSizeAndHasNoPrefix(t *testing.T) {
 	if got := tm("show-options", "-wv", "-t", "=main:", "window-size"); got != "manual" {
 		t.Errorf("window-size = %q", got)
 	}
-	// A second session (an agent's second slot) is pinned the same, and
-	// takes the server down with it no more.
+	// A second session (an agent's second slot), made while that 80x24
+	// client is attached, is pinned the same — and no longer takes the
+	// server down.
 	tm("new-session", "-d", "-s", "main-2", "-x", "220", "-y", "50", "exec sleep 300")
 	if got := tm("display-message", "-p", "-t", "=main-2:", "#{window_width}x#{window_height}"); got != "220x50" {
 		t.Errorf("second session = %s, want 220x50", got)

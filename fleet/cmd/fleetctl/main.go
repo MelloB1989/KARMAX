@@ -1163,14 +1163,14 @@ func keyboard(cmd string, args []string) error {
 	if err != nil {
 		return err
 	}
-	a, ok := cfg.Agents[pos[0]]
+	a, ok := cfg.Worker(pos[0])
 	if !ok {
 		return fmt.Errorf("no agent %q", pos[0])
 	}
 	if !direct && consoleFor(a.Host) {
 		return attachViaConsole(pos[0])
 	}
-	ag := &agent.Agent{Name: pos[0], C: target.Container{Exec: cfg.Hosts[a.Host].Exec, Name: a.Container}}
+	ag := &agent.Agent{Name: a.Name, Slot: a.Slot, C: target.Container{Exec: cfg.Hosts[a.Host].Exec, Name: a.Container}}
 	argv := ag.AttachArgv()
 	c := exec.Command(argv[0], argv[1:]...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -1202,7 +1202,11 @@ func table(rows []daemon.Row, orch *outbound.Quota) error {
 		if r.Reason != "" {
 			state += " (" + r.Reason + ")"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%.0f\t%.0f\t%s\t%.0f\t%s\n", r.Agent, r.Host, state, dash(r.Task), dash(r.Idle),
+		name := r.Agent
+		if r.Slot > 1 {
+			name = "  " + name // under its agent's slot 1
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%.0f\t%.0f\t%s\t%.0f\t%s\n", name, r.Host, state, dash(r.Task), dash(r.Idle),
 			r.FiveHour, r.SevenDay, clock(r.FiveResets), r.Context, strings.Join(r.Models, ","))
 	}
 	if orch != nil {
