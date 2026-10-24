@@ -96,6 +96,8 @@ type Fleet struct {
 	git func(ctx context.Context, dir string, args ...string) (string, error)
 	// HostStats, when set, samples container resource use per host.
 	HostStats func(ctx context.Context, host string) ([]ledger.HostSample, error)
+	// Karmax, when set, is the KARMAX gateway's door to KARMAX's tools.
+	Karmax Gateway
 	// Log receives fleetd's own diagnostics.
 	Log func(format string, args ...any)
 }

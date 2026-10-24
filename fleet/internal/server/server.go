@@ -64,6 +64,15 @@ type Ops interface {
 	Render() (string, error)
 	Up(ctx context.Context, hosts []string) (string, error)
 	Down(ctx context.Context, hosts []string) (string, error)
+
+	// OperatorAssigner reports whether a task's assigner is the operator's
+	// side (the operator, the orchestrator, a tailnet operator).
+	OperatorAssigner(assigner string) bool
+	KarmaxTools(ctx context.Context) ([]daemon.GatewayTool, error)
+	KarmaxCall(ctx context.Context, who daemon.Requester, tool string, args map[string]any, reason string, timeout time.Duration, now time.Time) (daemon.CallReply, error)
+	AwaitApproval(ctx context.Context, who daemon.Requester, id int64) (daemon.CallReply, error)
+	Approvals(state string, limit int) ([]ledger.Approval, error)
+	Decide(id int64, by string, approve bool, reason string, now time.Time) (ledger.Approval, error)
 }
 
 // Tokens are the bearer tokens, one per scope.
@@ -163,6 +172,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				}
 				if errors.Is(err, daemon.ErrBadInput) {
 					code = http.StatusBadRequest
+				}
+				if errors.Is(err, daemon.ErrRefused) {
+					code = http.StatusForbidden
 				}
 				if errors.Is(err, daemon.ErrConflict) {
 					code = http.StatusConflict
@@ -584,6 +596,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 			return map[string]any{"ok": true, "output": out}, nil
 		}, fullOnly...)
 	}
+	gatewayRoutes(route, ops)
 	hostRoute("up", ops.Up)
 	hostRoute("down", ops.Down)
 	hostRoute("render", func(ctx context.Context, _ []string) (string, error) { return ops.Render() })

@@ -115,6 +115,9 @@ func run(cfgPath string, once bool) error {
 		return err
 	}
 	f.Log = log.Printf
+	if karmax.APIToken != "" {
+		f.Karmax = karmax // the gateway: agents call KARMAX's tools, never holding its token
+	}
 	f.HostStats = func(ctx context.Context, host string) ([]ledger.HostSample, error) {
 		c := target.Container{Exec: cfg.Hosts[host].Exec}
 		out, err := c.Host(ctx, "stats", "--no-stream", "--format", "{{json .}}")
