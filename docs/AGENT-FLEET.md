@@ -353,7 +353,45 @@ what it may do.
   `~/code` and pushes as the fleet's GitHub account. Credentials kept under `~/code` are hidden from
   agents with `hide_from_agents: [secrets]`: each path is covered by an empty read-only tmpfs in the
   agent containers (not in the orchestrator's). Anything else under `~/code` an agent can read, a member
-  can ask for.
+  can ask for. To give an agent a key for one task, use a secret (next section), not a file under `~/code`.
+
+## Secrets — a key for one task
+
+Every agent's env file holds the same fixed set of credentials, so before this a key meant for one
+task ended up in the shared code directory, where every agent and every member's task could read it.
+Now the operator, the operator's sessions and the orchestrator (the full scope) give the key to fleetd,
+and grant it to a task or an agent:
+
+    fleetctl secret put openai < key.txt            # stdin (one trailing newline dropped), or --file
+    fleetctl secret grant openai --task T42         # or --agent agent-02 [--ttl 2h]
+    fleetctl secret ls                              # names, grants, last read: never a value
+    fleetctl secret revoke openai --task T42 ; fleetctl secret rm openai
+
+The brief names the secret, never its value. The agent uses it without seeing it:
+`fleetctl secret exec OPENAI_API_KEY=openai -- <cmd>` runs a command with the value in its environment,
+and `fleetctl secret get deploy-key --to deploy_key` writes it to a 0600 file under `/work/.secrets` (other
+paths are refused). `--print` sends it to stdout; the agent brief says not to use it, because an agent's
+output becomes its model's context.
+
+- **At rest.** Values are sealed with AES-256-GCM, with the secret's name as associated data, in the
+  ledger's `secrets` table. The key is `secrets.key` in fleetd's state dir (0600, 32 random bytes),
+  created on first use. A key file that others can read is refused. If you lose the key you lose the
+  secrets, so back it up apart from the ledger. A value is never logged, put in an event or an error, or
+  returned by `ls`.
+- **Who may read.** Only an agent whose identity fleetd has verified (the agent-identity header, not a
+  name the agent sends), whose current task is open and its own on the ledger, and whose task was
+  assigned by the operator, the orchestrator, an operator's session (any assigner name without an @) or a
+  tailnet operator login. A task a member ran never gets one, even if granted. The grant must name that
+  task or that agent. A task's grant ends when the task closes (done, close, cancel or superseded), and
+  any grant ends at its `--ttl`. Members (the tailnet `member` scope) and the console cannot use the
+  secret routes at all, not even `ls`.
+- **Audit.** Every read is a `fleet.secret.read` event naming the agent, task and secret. A refusal is
+  `fleet.secret.denied`. Put, grant, revoke and rm are events too. `secret ls` shows the last read.
+- **Redaction.** Before fleetd stores or delivers any message (tell, report, brief, follow-up, the outbox),
+  it replaces every stored secret's value with `[secret:<name>]`. That covers secrets granted now or
+  earlier, and each long line of a multi-line key. This is one hook, `redactSecrets` in
+  `fleet/internal/daemon/secrets.go`. It is a backstop, not a licence: agents are told never to print
+  or send a value.
 
 ## Prompting an agent directly
 

@@ -76,7 +76,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer; fleetd is the only process that writes
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + secretsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ledger schema: %w", err)
 	}
@@ -559,7 +559,10 @@ func (db *DB) CloseTask(id string, at time.Time, outcome, branch, pr string) err
 		ON CONFLICT(id) DO UPDATE SET closed=excluded.closed, outcome=excluded.outcome,
 		branch=COALESCE(excluded.branch, tasks.branch), pr=COALESCE(excluded.pr, tasks.pr)`,
 		id, at.Unix(), outcome, nullStr(branch), nullStr(pr))
-	return err
+	if err != nil {
+		return err
+	}
+	return db.endTaskGrants(id)
 }
 
 // SupersedeOpen closes every task of agent that is still open, except one,
@@ -586,7 +589,7 @@ func (db *DB) SupersedeOpen(agent, except string, at time.Time) ([]string, error
 			return ids, err
 		}
 	}
-	return ids, nil
+	return ids, db.endTaskGrants(ids...)
 }
 
 // Task reads one task.

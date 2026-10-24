@@ -99,7 +99,23 @@ remote for the owner's repository and push there.
 {{end}}{{if .GitHubPackages}}`GITHUB_TOKEN` is set for GitHub Packages (an `.npmrc` that reads
 `${GITHUB_TOKEN}`){{if .BuildHost}}, and `kbuild` passes it on: `kbuild yarn install`{{end}}.
 {{end}}
-{{end}}## Quota
+{{end}}## Secrets granted for a task
+
+A brief may say a key is granted to you by name (never its value). Use it
+only through fleetctl, and only for that task:
+
+    fleetctl secret exec OPENAI_API_KEY=openai -- <cmd> [args]   # in cmd's environment, nothing printed
+    fleetctl secret get deploy-key --to deploy_key               # a 0600 file under /work/.secrets
+
+Never print a secret, echo it, `cat` its file or pass `--print`: what you
+print enters your context, and from there your messages and transcript.
+Never commit one, write it under the shared code, or put it in a message;
+fleetd blanks a granted value in a message as `[secret:<name>]`, but do not
+lean on that. Every read is recorded. A secret you were not granted, or one
+asked for on a task a team member ran, is refused: say so in your report
+rather than looking for another way in.
+
+## Quota
 
 You share nothing with the other agents: your rate-limit windows are your own
 subscription's. If you are rate-limited, stop and wait — the fleet resumes you

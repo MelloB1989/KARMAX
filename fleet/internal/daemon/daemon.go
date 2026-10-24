@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
+	"github.com/MelloB1989/karmax/fleet/internal/vault"
 )
 
 // Box is one container, as fleetd uses it. *agent.Agent is the real one.
@@ -98,6 +100,8 @@ type Fleet struct {
 	HostStats func(ctx context.Context, host string) ([]ledger.HostSample, error)
 	// Log receives fleetd's own diagnostics.
 	Log func(format string, args ...any)
+	// vault seals the secrets the operator hands agents (secrets.go).
+	vault *vault.Vault
 }
 
 // New loads the fleet's remembered state.
@@ -110,7 +114,8 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 		locks: map[string]*sync.Mutex{}, states: map[string]reconcile.State{}, Log: func(string, ...any) {},
 		waitEvery: 500 * time.Millisecond, git: runGit, relayBackoff: []time.Duration{5 * time.Second, 15 * time.Second},
 		soonEvery: 5 * time.Second, holdAfter: 75 * time.Second, sendMus: map[string]*sync.Mutex{},
-		resendFailed: map[string]time.Time{}, resendTries: map[int64]int{}}
+		resendFailed: map[string]time.Time{}, resendTries: map[int64]int{},
+		vault: vault.New(filepath.Join(cfg.StateDir, vault.KeyFile))}
 	for _, name := range append(cfg.AgentNames(), cfg.Orchestrator.Name, "") {
 		f.sendMus[name] = &sync.Mutex{}
 	}
@@ -860,6 +865,7 @@ func (f *Fleet) unable(to string) error {
 }
 
 func (f *Fleet) deliverMsg(ctx context.Context, from, to, text, task string, now time.Time, hold bool) error {
+	text = f.redactSecrets(text)
 	// The receiver is told who sent it and replies there, so the sender must
 	// be someone a reply can reach (or a person, who reads the ledger).
 	if from != f.cfg.Orchestrator.Name && !ledger.IsPerson(from) {
