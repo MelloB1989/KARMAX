@@ -1075,7 +1075,11 @@ func printMessage(m ledger.Relay, asJSON bool) {
 		fmt.Println(string(b))
 		return
 	}
-	fmt.Printf("#%d %s %s%s: %s\n", m.ID, m.At.Local().Format("15:04:05"), m.From, kindTag(m.Kind), m.Text)
+	held := ""
+	if m.Held {
+		held = " (held: not delivered yet)"
+	}
+	fmt.Printf("#%d %s %s%s%s: %s\n", m.ID, m.At.Local().Format("15:04:05"), m.From, kindTag(m.Kind), held, m.Text)
 }
 
 func post(path string, body any) error {

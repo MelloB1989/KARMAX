@@ -113,6 +113,8 @@ thresholds:                 # every default shown
   tick: 30s
   restart_failures: 3       # within restart_window → archive, start fresh, alert
   restart_window: 10m
+  host_settle: 10m          # after a host returns or boots, a pane that will not start is not a crash
+  held_alert_after: 1h      # a message held this long for its receiver: one alert (it stays held)
   standby_idle: 12h         # a standby session idle this long is archived and rotated…
   standby_min_transcript: 32768   # …if its transcript is at least this many bytes
   waiting_nudge: 2h         # idle on an open task: tell the orchestrator once

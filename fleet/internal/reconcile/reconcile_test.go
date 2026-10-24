@@ -977,3 +977,142 @@ func TestTheIdleClockCountsFromTheAnswerNotTheQuestion(t *testing.T) {
 		t.Fatalf("archived 1h after an answer: %v", kinds(acts))
 	}
 }
+
+// A host that was off for a day did not leave its agent idle for a day: the
+// task it waits on is not archived as stale because of it.
+func TestTheHostBeingAwayDoesNotCountTowardStale(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, obs("busy"))
+	// Idle for ten hours, then the host goes out of reach for twenty.
+	o := obs("idle")
+	o.Now = t0.Add(10 * time.Hour)
+	st, _ = Decide(th(), st, o)
+	st, _ = Decide(th(), st, Obs{Now: t0.Add(11 * time.Hour), Unreachable: "pc2: no route to host"})
+	back := obs("idle")
+	back.Now = t0.Add(31 * time.Hour)
+	back.TranscriptMTime = t0
+	st, acts := Decide(th(), st, back)
+	if has(acts, Rotate) != nil || st.Task != "T1" {
+		t.Fatalf("archived as stale after an outage: %v", kinds(acts))
+	}
+	// 45h since it was last busy, less the 20h away, is more than a day.
+	back.Now = t0.Add(45 * time.Hour)
+	_, acts = Decide(th(), st, back)
+	if r := has(acts, Rotate); r == nil || r.Reason != ReasonStale {
+		t.Fatalf("idle again for a day, not stale: %v", kinds(acts))
+	}
+}
+
+// The same for a container that was down.
+func TestAContainerBeingDownDoesNotCountTowardStale(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1"}, obs("busy"))
+	st, _ = Decide(th(), st, Obs{Now: t0.Add(time.Hour)}) // not running
+	back := obs("idle")
+	back.Now = t0.Add(26 * time.Hour)
+	back.TranscriptMTime = t0
+	_, acts := Decide(th(), st, back)
+	if has(acts, Rotate) != nil {
+		t.Fatalf("archived as stale after being down: %v", kinds(acts))
+	}
+}
+
+// A host that power-cycles over and over fails to start the pane each time
+// it comes back; that is never taken for a crashing session.
+func TestAHostThatPowerCyclesNeverCrashesATask(t *testing.T) {
+	st := State{Name: "agent-03", Phase: Waiting, Task: "T1", SessionID: "s1"}
+	dead := obs("")
+	dead.Sessions, dead.PaneAlive = nil, false
+	at := t0
+	for cycle := 0; cycle < 6; cycle++ {
+		at = at.Add(time.Minute)
+		var acts []Action
+		st, acts = Decide(th(), st, Obs{Now: at, Unreachable: "pc2: no route to host"})
+		at = at.Add(time.Minute)
+		for try := 0; try < 3; try++ { // up again, pane not started yet
+			dead.Now = at
+			st, acts = Decide(th(), st, dead)
+			if has(acts, Rotate) != nil || st.Task != "T1" || has(acts, Restart) == nil {
+				t.Fatalf("cycle %d try %d: %v, task %q", cycle, try, kinds(acts), st.Task)
+			}
+			at = at.Add(30 * time.Second)
+		}
+	}
+	// A boot seen only as a new boot id (it was never out of reach) is the same.
+	st = State{Name: "agent-03", Phase: Waiting, Task: "T1", SessionID: "s1"}
+	up := obs("idle")
+	up.Proc = "boot-1/7"
+	st, _ = Decide(th(), st, up)
+	for i := 0; i < 4; i++ {
+		up = obs("idle")
+		up.Now, up.Proc = t0.Add(time.Duration(i+1)*time.Minute), "boot-2/7"
+		st, _ = Decide(th(), st, up)
+		dead.Now = up.Now.Add(10 * time.Second)
+		var acts []Action
+		st, acts = Decide(th(), st, dead)
+		if has(acts, Rotate) != nil {
+			t.Fatalf("a new boot id counted as a crash: %v", kinds(acts))
+		}
+	}
+}
+
+// Once the host has settled, a session that will not start is crashing.
+func TestACrashLoopOnAHostThatHasSettledStillRotates(t *testing.T) {
+	st := State{Name: "agent-03", Phase: Waiting, Task: "T1", SessionID: "s1", HostBackAt: t0}
+	dead := obs("")
+	dead.Sessions, dead.PaneAlive = nil, false
+	var acts []Action
+	for i := 0; i < 3; i++ {
+		dead.Now = t0.Add(th().HostSettle + time.Duration(i)*time.Minute)
+		st, acts = Decide(th(), st, dead)
+	}
+	if r := has(acts, Rotate); r == nil || r.Reason != ReasonCrashed {
+		t.Fatalf("acts = %v", kinds(acts))
+	}
+}
+
+// The carry-on prompt is marked, with its task, for fleetd to add to.
+func TestTheResumePromptNamesItsTask(t *testing.T) {
+	st := State{Name: "agent-03", Phase: Working, Task: "T1", SessionID: "s1", TurnOpen: true, TurnProc: "boot-1/7", Proc: "boot-1/7"}
+	o := obs("idle")
+	o.Proc = "boot-2/7"
+	_, acts := Decide(th(), st, o)
+	if a := has(acts, Prompt); a == nil || a.Reason != PromptResume || a.Task != "T1" {
+		t.Fatalf("acts = %+v", acts)
+	}
+}
+
+// Both rules hold at once: an outage inside the wait for an answer is not
+// idleness, and neither is the wait itself — idle counts from the answer,
+// less any time away since.
+func TestAnOutageAndAQuestionBothStayOutOfTheIdleClock(t *testing.T) {
+	st, _ := Decide(th(), State{Name: "agent-03", Task: "T1", SessionID: "s1", HookIdle: true}, obs("busy"))
+	o := obs("idle")
+	o.TranscriptMTime, o.Owes, o.Asking = t0, true, true
+	// Asking for 30h, 20 of them with the host away: no nudge, no stale.
+	o.Now = t0.Add(5 * time.Hour)
+	st, acts := Decide(th(), st, o)
+	st, _ = Decide(th(), st, Obs{Now: t0.Add(6 * time.Hour), Unreachable: "pc2: no route to host"})
+	o.Now = t0.Add(26 * time.Hour)
+	st, acts = Decide(th(), st, o)
+	if len(acts) != 0 {
+		t.Fatalf("asking, host back: %v", kinds(acts))
+	}
+	// Answered at 30h; the host then goes away for 20h.
+	o.Asking = false
+	o.AnsweredAt = t0.Add(30 * time.Hour)
+	o.Now = o.AnsweredAt.Add(3 * time.Hour)
+	st, _ = Decide(th(), st, o)
+	st, _ = Decide(th(), st, Obs{Now: o.Now.Add(time.Hour), Unreachable: "pc2: no route to host"})
+	o.Now = o.Now.Add(21 * time.Hour) // 24h after the answer, 20 of them away
+	st, acts = Decide(th(), st, o)
+	if has(acts, Rotate) != nil {
+		t.Fatalf("stale after an answer and an outage: %v", kinds(acts))
+	}
+	o.Now = o.Now.Add(10 * time.Hour) // 34h after the answer, 20 away: 14h awake
+	if _, acts = Decide(th(), st, o); has(acts, Rotate) != nil {
+		t.Fatalf("14h awake since the answer is not stale: %v", kinds(acts))
+	}
+	o.Now = o.Now.Add(12 * time.Hour) // 26h awake
+	if _, acts = Decide(th(), st, o); has(acts, Rotate) == nil {
+		t.Fatalf("26h awake since the answer: %v", kinds(acts))
+	}
+}

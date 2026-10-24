@@ -120,7 +120,14 @@ trap 'tmux kill-server 2>/dev/null; exit 0' TERM INT
 started=0
 while :; do
   if ! tmux has-session -t main 2>/dev/null; then
-    if [ "$started" -gt 0 ] && [ $(( $(date +%s) - started )) -lt 30 ]; then
+    # A host that has just booted is still bringing its mounts and network
+    # up: a pane that dies in its first minutes says nothing about the
+    # session, so it does not count (a power-cycling host must not lose its
+    # session). /proc/uptime is the host's.
+    up=$(cut -d. -f1 /proc/uptime 2>/dev/null); up=${up:-99999}
+    if [ "$started" -gt 0 ] && [ "$up" -lt "${FLEET_BOOT_GRACE:-300}" ]; then
+      :
+    elif [ "$started" -gt 0 ] && [ $(( $(date +%s) - started )) -lt 30 ]; then
       quick=$((quick + 1))
     elif [ "$started" -gt 0 ]; then
       quick=0

@@ -267,13 +267,28 @@ func TestWorktreesScriptForReal(t *testing.T) {
 	_ = os.MkdirAll(broken, 0o755)
 	_ = os.WriteFile(filepath.Join(broken, ".git"), []byte("gitdir: /nonexistent/x\n"), 0o644)
 
+	// The ones the brief tells agents to make for kbuild, under the shared
+	// code, are in the manifest too — and only this agent's.
+	code := t.TempDir()
+	t.Setenv("FLEET_CODE", code)
+	kb, theirs := filepath.Join(code, ".worktrees", "agent-03", "kb"), filepath.Join(code, ".worktrees", "agent-04", "kb")
+	git(repo, "worktree", "add", "-q", "--lock", "-b", "fleet/agent-03/kb", kb)
+	git(repo, "worktree", "add", "-q", "--lock", "-b", "fleet/agent-04/kb", theirs)
+	_ = os.WriteFile(filepath.Join(kb, "wip.txt"), []byte("x"), 0o644)
+
 	wts, err := l.a.Worktrees(ctx)
-	if err != nil || len(wts) != 6 {
+	if err != nil || len(wts) != 7 {
 		t.Fatalf("worktrees %+v, %v", wts, err)
 	}
 	byPath := map[string]Worktree{}
 	for _, w := range wts {
 		byPath[w.Path] = w
+	}
+	if w, ok := byPath[kb]; !ok || w.Dirty != 1 || w.Branch != "fleet/agent-03/kb" || !strings.Contains(w.Status, "wip.txt") {
+		t.Fatalf("the worktree under <code>/.worktrees is not reported: %+v", wts)
+	}
+	if _, ok := byPath[theirs]; ok {
+		t.Fatalf("another agent's worktree is reported: %+v", wts)
 	}
 	if !byPath[clean].Safe() || byPath[dirty].Safe() || byPath[dirty].Unpushed != 1 || byPath[dirty].Dirty != 1 {
 		t.Fatalf("worktrees = %+v", wts)

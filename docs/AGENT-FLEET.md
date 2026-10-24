@@ -222,14 +222,35 @@ was restarting or rotating — is tried twice more, 5 s and 15 s later. A follow
 relay has not gone through in 75 s — is **held**: fleetd answers `queued` (HTTP 202; fleetctl prints
 the line and exits 0), keeps the message on the ledger, and sends it, in order with anything held
 before it, when the receiver is back, headed by a note saying when it was sent. A message to a
-receiver with one still held waits behind it. A pending message that fails five tries (30 s apart)
-while its receiver is up is dropped, and you are told. A held message whose task closes is dropped
-— except the cancel notice. A brief is never held: a `run` whose brief does not get through closes
+receiver with one still held waits behind it. A held message has no age limit and no limit on tries:
+it stays until it is delivered or its task closes (the cancel notice, written as the task closes,
+still goes). Tries back off — 30 s, doubled after each failure in a row, up to 5 min — and a receiver
+whose host is out of reach or whose container is down is not tried at all. When one has been held
+longer than `held_alert_after` (default 1 h) you get one alert, and `fleetctl result` and
+`fleetctl inbox` mark it `(held: not delivered yet)`. A brief is never held: a `run` whose brief does not get through closes
 the task `undelivered` and fails, so its caller places it again. In the other direction,
 `fleetctl tell` in an agent's container retries for a few seconds and then queues the message in
 `/work/.fleet/outbox/`; fleetd reads the outbox with each look at the container, delivers it as the
-agent's, and removes it. A `run` repeated with the same `--task` (its answer was lost) returns the
+agent's, and removes it. An item that cannot be sent stays in the outbox, however long (one to a name
+fleetd does not know is dropped, and you are told). A `run` repeated with the same `--task` (its answer was lost) returns the
 agent that already has it instead of giving the task to a second one.
+
+**A power cut does not close a task.** PC2 has been power-cycled dozens of times in a night, and every
+open task must come back where it was. Three clocks would otherwise mistake a host that was off for
+an agent that failed, so none of them runs while the host is out of reach or the container is down:
+the 12 h / 24 h idle clocks (fleetd adds the time away to a per-state `idle_away` and idle ignores
+it), and crash rotation. For `host_settle` (default 10 min) after a host returns, or after its boot id
+changes, a pane that will not start is restarted without being counted toward `restart_failures`, and
+the count is cleared; inside the container `agent-run` likewise does not count a pane's quick deaths
+in the first `FLEET_BOOT_GRACE` seconds (default 300) of the host's uptime. A session that really
+crashes still rotates once the host has settled.
+
+A session that was working on a task when it was cut short is told, once, to carry on. Besides the
+base text, fleetd adds what it already has: the task and the first lines of its brief, the messages
+that arrived while it was down (they are sent next), each worktree's branch and `git status --short`
+summary, and that background commands it started were killed and must be run again if still needed.
+Worktrees are found under `/work/wt` and under `<code>/.worktrees/<agent>/`, so both appear in
+archive manifests.
 
 ### Archive — copy, verify, then stop
 
