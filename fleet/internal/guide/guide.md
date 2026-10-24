@@ -111,6 +111,14 @@ session shows now. `fleetctl model <agent> opus` sets an override that outlasts 
 mid-turn, and once per change; a fresh session is asked again. Only the operator's token may change
 models: a person on the tailnet cannot.
 
+## Files
+
+    fleetctl run --attach ./spec.pdf --repo R "Build to the spec."   # lands in /work/inbox/<task>/, named in the brief
+    fleetctl cp ./notes.pdf agent-03 ; fleetctl cp agent-03:/work/out ./results
+
+Only `/work` and `/tmp` in the container, at most 2 GiB; symlinks are copied as links, never out of the
+tree. A member may copy only to and from an agent on their own open task. `fleetctl sync` is rsync (operator).
+
 ## Questions, follow-ups, cancel
 
 An agent that is stuck or missing context asks you with `fleetctl ask`, which blocks it until you answer.

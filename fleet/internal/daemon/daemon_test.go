@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/observe"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
+	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 var t0 = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
@@ -1166,4 +1168,10 @@ func TestARowWithATaskIsNotStandby(t *testing.T) {
 			t.Fatalf("row = %+v", r)
 		}
 	}
+}
+
+func (b *box) PutFiles(context.Context, string, io.Reader) error { return errors.New("not faked") }
+func (b *box) GetFiles(context.Context, string, io.Writer) error { return errors.New("not faked") }
+func (b *box) Rsh(context.Context, []string, io.Reader, io.Writer) (target.Result, error) {
+	return target.Result{}, errors.New("not faked")
 }

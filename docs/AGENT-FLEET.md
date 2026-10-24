@@ -576,6 +576,44 @@ the tools for them, under the operator's rules:
         github.*: write
         x.post: deny
 
+## Files to and from an agent
+
+An agent's `/work` is a private volume, and fleetctl users on other machines have no Docker access, so
+files travel through fleetd:
+
+    fleetctl cp ./notes.pdf ./data agent-03            # into /work/inbox/ (a directory is copied whole)
+    fleetctl cp ./logs agent-03:/work/scratch          # into another directory
+    fleetctl cp agent-03:/work/wt/topic/out ./results  # out of the container, into ./results
+    fleetctl run --attach ./spec.pdf --attach ./data "Build to the spec."
+    fleetctl sync ./site agent-03:/work/site           # rsync; or: sync agent-03:/work/site ./site
+
+The transport is a tar stream over HTTP (`PUT` and `GET /v1/agents/{agent}/files?path=`). fleetd pipes
+it into `tar -x` or out of `tar -c` run in the container through the host's exec prefix, and never
+holds an archive in memory. Rules, enforced by fleetd, by the container-side script and again by
+fleetctl on whatever it unpacks:
+
+- Inside the container only `/work` and `/tmp` (a path that leads out through a symlink is refused too).
+- File modes are kept, minus setuid, setgid and sticky; owners are dropped.
+- Only files, directories and symlinks. A symlink must be relative and point inside the copied tree;
+  an absolute link or one that climbs out is refused (copying a tree that holds one fails, naming it),
+  and no entry is written through a link the archive made. Nothing is followed on the way in or out.
+- One transfer is at most `files.max_bytes` of tar (`files:` in fleet.yaml, default 2 GiB); past it the
+  stream is cut with a clear error (HTTP 413). Files unpacked before that stay.
+
+`run --attach` places the task (`attach: true` on `POST /v1/run`), copies the files into
+`/work/inbox/<task>/`, and only then delivers the brief (`POST /v1/tasks/{id}/brief`), with one more
+sentence naming that directory. If the copy fails the task is closed as `undelivered`. The task id must
+be letters, digits, `.`, `_` and `-`.
+
+Access: the operator's token and tailnet operators may copy to and from any agent. A tailnet member
+only to and from an agent at work on one of their own open tasks (the same ownership rule as `peek`).
+Agents (relay scope) and the console may not.
+
+`fleetctl sync` runs `rsync -a -e "fleetctl rsh"`. `fleetctl rsh <agent> <cmd…>` is a stream both ways
+through `POST /v1/agents/{agent}/rsh` that runs the command in the container, and it is full scope
+only. It needs `rsync` in the image (the Dockerfile installs it), so it works once the new image is
+deployed, and rsync on the machine that runs `sync`.
+
 ## Prompting an agent directly
 
 The live panel, the 3D office and the keyboard handover (`Ctrl+]`) are described in [FLEET-CONSOLE.md](FLEET-CONSOLE.md); `attach` below goes through the console when the host runs one.

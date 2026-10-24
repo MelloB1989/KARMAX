@@ -19,8 +19,68 @@ type Runner interface {
 	Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
 }
 
+// Streamer is a Runner that can also stream: stdout goes to a writer as the
+// command writes it, and stderr is returned (its tail) with the exit status,
+// instead of the whole output being held. Exec is one; a fake in a test may be.
+type Streamer interface {
+	Stream(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) (Result, error)
+}
+
+// Result is how a streamed command ended.
+type Result struct {
+	// Exit is the command's exit status; -1 when it did not run to one.
+	Exit int
+	// Stderr is the last of what it wrote to stderr.
+	Stderr string
+}
+
+// stderrTail is how much of a streamed command's stderr is kept.
+const stderrTail = 2048
+
 // Exec runs commands on this machine.
 type Exec struct{}
+
+// Stream runs argv, copying stdin to it and its stdout to stdout, as they
+// come. A command that ran and exited non-zero is a Result with that status
+// and a nil error; the caller decides what that means.
+func (Exec) Stream(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) (Result, error) {
+	cmd := HardenCtx(exec.CommandContext(ctx, argv[0], argv[1:]...))
+	cmd.Stdin, cmd.Stdout = stdin, stdout
+	tail := &tailWriter{max: stderrTail}
+	cmd.Stderr = tail
+	err := cmd.Run()
+	res := Result{Stderr: strings.TrimSpace(tail.String())}
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &ee) && ctx.Err() == nil:
+		res.Exit = ee.ExitCode()
+		err = nil
+	default:
+		res.Exit = -1
+		if ce := ctx.Err(); ce != nil && !errors.Is(err, ce) {
+			err = fmt.Errorf("%w: %w", ce, err)
+		}
+		err = fmt.Errorf("%s: %w", strings.Join(argv[:min(len(argv), 6)], " "), err)
+	}
+	return res, err
+}
+
+// tailWriter keeps the last max bytes written to it.
+type tailWriter struct {
+	max int
+	buf []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = t.buf[len(t.buf)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (t *tailWriter) String() string { return string(t.buf) }
 
 // Run runs argv and returns its stdout; a failure carries stderr.
 func (Exec) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -99,6 +159,16 @@ func (c Container) RunInEnv(ctx context.Context, env []string, stdin io.Reader, 
 		flags = append(flags, "-e", e)
 	}
 	return c.runner().Run(ctx, c.argv(flags, cmd), stdin)
+}
+
+// Stream runs a command inside the container with stdin, its stdout going to
+// stdout as it is written. The runner must be a Streamer.
+func (c Container) Stream(ctx context.Context, stdin io.Reader, stdout io.Writer, cmd ...string) (Result, error) {
+	s, ok := c.runner().(Streamer)
+	if !ok {
+		return Result{Exit: -1}, errors.New("this host's runner cannot stream")
+	}
+	return s.Stream(ctx, c.argv([]string{"-i"}, cmd), stdin, stdout)
 }
 
 // Sh runs a shell script inside the container, with args as $1….

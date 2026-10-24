@@ -62,10 +62,11 @@ Roster and records (fleetd):
   archive ls [--since 7d] [--json] | archive show <id> | archive prune --older 180d
 
 Work (fleetd):
-  run <brief…|-> [--repo R] [--agent A] [--model M] [--task ID] [--from NAME] [--queue 30m] [--wait] [--timeout 2h] [--json] [--brief-file F]
+  run <brief…|-> [--repo R] [--agent A] [--model M] [--task ID] [--from NAME] [--queue 30m] [--attach P]… [--wait] [--timeout 2h] [--json] [--brief-file F]
                                       pick a free agent, record the task, deliver the brief; prints the
                                       task id and agent. Brief "-" reads stdin. --wait then waits for the
-                                      report (exit 0; 3 down/cooling/disabled; 4 timeout); no free agent: exit 5
+                                      report (exit 0; 3 down/cooling/disabled; 4 timeout); no free agent: exit 5.
+                                      --attach (repeatable) copies files into /work/inbox/<task>/ before the brief
   pick [--repo R] [--json]            who a run would pick and why the others were passed over (exit 5: none free)
   give <agent> --task <id> <brief…>   record a task and deliver its brief; the agent reports to you
   assign <agent> --task <id> [--brief <text>] [--from <name>]
@@ -88,6 +89,12 @@ Work (fleetd):
   tell <name> <text…> [--from <name>] [--kind report|question|progress]  message a session on another host
   ask <question…> [--timeout 30m]     for agents: ask whoever gave you the task, and block until the answer
                                       arrives (printed to stdout); on timeout say so, exit 4
+  cp <local>... <agent>[:<dir>]       copy files and directories into an agent's container (default /work/inbox/);
+  cp <agent>:<path> [<localdir>]      or out of it. Under /work or /tmp only; symlinks are copied as links and
+                                      never out of the tree; member scope: only an agent on a task of yours
+  sync [--delete] [--dry-run] [--exclude P] <localdir> <agent>:<dir>   (or the reverse) rsync through fleetd
+                                      (full scope; needs rsync here and in the image)
+  rsh <agent> <cmd…>                  run a command in the container, stdin and stdout streamed (rsync -e; full scope)
 
 Who you are: --from NAME, else FLEET_SESSION, else the fleet container's name, else the Claude Code
 session you run in (cc-<first 8 of CLAUDE_CODE_SESSION_ID>), else operator. A session's name is an inbox:
@@ -881,6 +888,12 @@ func run(cmd string, args []string) error {
 		return runCmd(args)
 	case "pick":
 		return pickCmd(args)
+	case "cp":
+		return cpCmd(args)
+	case "rsh":
+		return rshCmd(args)
+	case "sync":
+		return syncCmd(args)
 	case "followup", "cancel":
 		return followupCmd(cmd, args)
 
