@@ -22,10 +22,10 @@ type fake struct {
 	mem   *memory.Client // when set, Recall asks it
 }
 
-// IsWorker: the fake's agents have two slots each.
+// IsWorker: the fake's agents (agent-NN) have two slots each.
 func (f *fake) IsWorker(name string) bool {
-	_, slot := config.SplitWorker(name)
-	return strings.HasPrefix(name, "agent-") && slot >= 1 && slot <= 2
+	agent, slot := config.SplitWorker(name)
+	return len(agent) == len("agent-NN") && strings.HasPrefix(agent, "agent-") && slot >= 1 && slot <= 2
 }
 
 func (f *fake) Status(time.Time) []daemon.Row {
