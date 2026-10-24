@@ -182,6 +182,9 @@ type Obs struct {
 	// Outbox is what fleetctl tell queued in the container while fleetd did
 	// not answer, oldest first. fleetd delivers it; it decides nothing.
 	Outbox []Outboxed
+	// Sibling: the worker is an agent's slot 2 or later. The container is
+	// slot 1's to start and to report on: a sibling only follows it.
+	Sibling bool
 }
 
 // Outboxed is one message an agent queued for fleetd (fleetctl tell).
@@ -419,6 +422,14 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 	st.UnreachableSince = time.Time{}
 	delete(st.Alerted, "unreachable")
 
+	if !o.ContainerUp && o.Sibling {
+		// Slot 1 starts the container, and says it is down; fleetd shows
+		// its siblings in the phase it has.
+		if st.Phase != CodeMissing {
+			st.Phase = Down
+		}
+		return st, acts
+	}
 	if !o.ContainerUp {
 		if o.ContainerFailed != "" {
 			// Docker could not start the container (after a power cut: a

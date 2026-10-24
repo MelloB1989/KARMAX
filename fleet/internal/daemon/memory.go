@@ -41,7 +41,7 @@ func (f *Fleet) Suggest(ctx context.Context, from, text, why string, now time.Ti
 		return "", fmt.Errorf("%w: a suggestion needs text", ErrBadInput)
 	}
 	head := "Memory suggestion from " + from
-	if _, ok := f.cfg.Agents[from]; ok {
+	if _, ok := f.cfg.Worker(from); ok {
 		if task := f.reportTask(from, now); task != "" {
 			head += " (task " + task + ")"
 		}

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/MelloB1989/karmax/fleet/internal/agent"
 )
 
 // Config is console.yaml: written by `fleetctl render` for the console's
@@ -24,14 +26,32 @@ type Config struct {
 	Agents          []AgentConf `yaml:"agents"`
 }
 
-// AgentConf is one roster agent as the console sees it.
+// AgentConf is one roster worker as the console sees it: an agent's
+// session slot (config.Worker).
 type AgentConf struct {
-	Name      string   `yaml:"name"`
+	Name string `yaml:"name"`
+	// Agent is the agent it is a slot of ("" is Name), Slot its number (0 is 1).
+	Agent     string   `yaml:"agent,omitempty"`
+	Slot      int      `yaml:"slot,omitempty"`
 	Host      string   `yaml:"host"`
 	Container string   `yaml:"container"`
 	Exec      []string `yaml:"exec"` // the docker prefix on the console's host, e.g. [docker]
 	Live      bool     `yaml:"live"` // Host is the console's host
 }
+
+// Of is the agent the worker is a slot of.
+func (a AgentConf) Of() string {
+	if a.Agent == "" {
+		return a.Name
+	}
+	return a.Agent
+}
+
+// SlotNo is the worker's slot, 1 for an agent's own.
+func (a AgentConf) SlotNo() int { return max(a.Slot, 1) }
+
+// pane is the tmux session the worker's claude runs in, as an exact target.
+func (a AgentConf) pane() string { return "=" + agent.PaneOf(a.Slot) }
 
 // LoadConfig reads, expands ~, fills defaults and validates; every error
 // names its key.

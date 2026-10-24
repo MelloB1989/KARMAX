@@ -55,7 +55,11 @@ export const PHASES = ["standby", "working", "waiting", "cooling", "disabled", "
 export type Phase = (typeof PHASES)[number];
 
 export interface Agent {
+  /** The worker: an agent's session slot, agent-03 or agent-03:2. */
   id: string;
+  /** The agent it is a slot of, and its slot (1 is the agent's own). Absent from an older console: the id, slot 1. */
+  slot_of?: string;
+  slot?: number;
   host: string;
   live: boolean;
 

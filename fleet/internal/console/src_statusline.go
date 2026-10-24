@@ -8,13 +8,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/agent"
 	"github.com/MelloB1989/karmax/fleet/internal/observe"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 // statusScript prints the status file's mtime, then the file. Same path
-// fleetd reads (agent.snapshotScript).
-const statusScript = `f="$HOME/.claude/fleet/status.json"; stat -c %Y "$f" && cat "$f"`
+// fleetd reads (agent.snapshotScript); $1 is the slot's directory.
+const statusScript = `f="$HOME/.claude/fleet${1:+/$1}/status.json"; stat -c %Y "$f" && cat "$f"`
 
 // StatusLine is one agent's last status-line snapshot.
 type StatusLine struct {
@@ -32,10 +33,11 @@ type statuslineSrc struct {
 	by    map[string]StatusLine
 	trs   map[string]*tracker
 	names []string
+	slots map[string]int // worker → its slot
 }
 
-func newStatuslineSrc(live []string) *statuslineSrc {
-	s := &statuslineSrc{by: map[string]StatusLine{}, trs: map[string]*tracker{}, names: live}
+func newStatuslineSrc(live []string, slots map[string]int) *statuslineSrc {
+	s := &statuslineSrc{by: map[string]StatusLine{}, trs: map[string]*tracker{}, names: live, slots: slots}
 	for _, n := range live {
 		s.trs[n] = newTracker(CadenceStatusline, false)
 	}
@@ -72,7 +74,7 @@ func (s *statuslineSrc) poll(ctx context.Context, cs map[string]target.Container
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out, err := cs[n].Sh(ctx, statusScript)
+			out, err := cs[n].Sh(ctx, statusScript, agent.SlotDir(s.slots[n]))
 			var sl StatusLine
 			if err == nil {
 				sl, err = parseStatusOut(out)

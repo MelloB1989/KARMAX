@@ -29,9 +29,11 @@ func ConsoleConfig(c *config.Config) (*console.Config, error) {
 		Orchestrator:    c.Orchestrator.Name,
 		Repos:           k.Repos,
 	}
-	for _, n := range c.AgentNames() {
-		a := c.Agents[n]
-		ac := console.AgentConf{Name: n, Host: a.Host, Container: a.Container, Live: a.Host == k.Host}
+	for _, w := range c.Workers() {
+		ac := console.AgentConf{Name: w.Name, Host: w.Host, Container: w.Container, Live: w.Host == k.Host}
+		if w.Slot > 1 {
+			ac.Agent, ac.Slot = w.Agent, w.Slot
+		}
 		if ac.Live {
 			// The console runs on this host: its docker is the local one,
 			// whatever prefix the fleetd host uses to reach it.

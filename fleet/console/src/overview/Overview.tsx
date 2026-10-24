@@ -10,7 +10,7 @@ import { Roster } from "./Roster";
 import { CenterTerminal } from "./CenterTerminal";
 import { RightRail } from "./RightRail";
 import { ActivityTrack } from "./ActivityTrack";
-import { activityRowHeight, isRemote, orderAgents } from "./roster";
+import { activityRowHeight, groupAgents, isRemote, orderAgents } from "./roster";
 import { controlReducer, wantsControl } from "../focus/controlState";
 import { PromptBar } from "../focus/PromptBar";
 import { RotateRing } from "../focus/RotateRing";
@@ -127,7 +127,7 @@ export function Overview() {
             <Collapse side="right" hidden={focus}>
               <RightRail snapshot={snapshot} now={now} />
             </Collapse>
-            <Collapse side="bottom" hidden={focus} size={activityRowHeight(snapshot.agents?.length ?? 0)}>
+            <Collapse side="bottom" hidden={focus} size={activityRowHeight(groupAgents(snapshot.agents).length)}>
               <ActivityTrack snapshot={snapshot} now={now} />
             </Collapse>
             {bar && (

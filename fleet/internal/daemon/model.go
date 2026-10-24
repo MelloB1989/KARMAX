@@ -85,7 +85,7 @@ type ModelReply struct {
 // wantedModel is the model an agent's session should run: its open task's,
 // else its override, else the fleet.yaml default; "" for the CLI's own.
 func (f *Fleet) wantedModel(name string, st reconcile.State) ModelReply {
-	r := ModelReply{Agent: name, Default: f.cfg.Agents[name].Model, Live: st.Model}
+	r := ModelReply{Agent: name, Default: f.worker(name).Model, Live: st.Model}
 	var err error
 	if r.Override, err = f.db.ModelOverride(name); err != nil {
 		f.Log("ledger: model override of %s: %v", name, err)

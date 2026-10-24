@@ -33,7 +33,7 @@ type AskReply struct {
 // question stays on the ledger after a timeout; if nobody answers it, it is
 // escalated (escalate).
 func (f *Fleet) Ask(ctx context.Context, from, text string, timeout time.Duration, now time.Time) (AskReply, error) {
-	if _, ok := f.cfg.Agents[from]; !ok {
+	if _, ok := f.cfg.Worker(from); !ok {
 		return AskReply{}, fmt.Errorf("%w: only an agent asks; %q is not one", ErrBadInput, from)
 	}
 	if strings.TrimSpace(text) == "" {
@@ -188,7 +188,7 @@ func (f *Fleet) escalates(assigner string) bool {
 	if assigner == ledger.Operator {
 		return true
 	}
-	if _, ok := f.cfg.Agents[assigner]; ok || assigner == f.cfg.Orchestrator.Name {
+	if _, ok := f.cfg.Worker(assigner); ok || assigner == f.cfg.Orchestrator.Name {
 		return false
 	}
 	return !strings.Contains(assigner, "@") || strings.Contains(assigner, "/")

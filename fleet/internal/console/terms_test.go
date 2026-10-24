@@ -96,6 +96,27 @@ func TestWatchStreamsWhatTheSessionPrints(t *testing.T) {
 	waitFor(t, 2*time.Second, "hello on the screen", func() bool { return b.has("hello") })
 }
 
+// A slot's terminal is its own pane: watching agent a1's slot 2 shows
+// main-2, never slot 1's main.
+func TestWatchingASlotShowsItsOwnPane(t *testing.T) {
+	terms, tm := tmuxEnv(t)
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", "main-2", "-x", "220", "-y", "50", "cat").CombinedOutput(); err != nil {
+		t.Fatalf("tmux new-session: %v %s", err, out)
+	}
+	terms.cfg.Agents = append(terms.cfg.Agents, AgentConf{Name: "a1:2", Agent: "a1", Slot: 2, Live: true})
+	b := &syncBuf{}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = terms.Watch(ctx, "a1:2", b.out, b.frame) }()
+	waitFor(t, 2*time.Second, "hello", func() bool { return b.hasFrame("hello") })
+	tm("send-keys", "-t", "=main:", "SLOT-ONE", "Enter")
+	tm("send-keys", "-t", "=main-2:", "SLOT-TWO", "Enter")
+	waitFor(t, 2*time.Second, "slot 2's screen", func() bool { return b.has("SLOT-TWO") })
+	if b.has("SLOT-ONE") {
+		t.Fatal("slot 2's terminal shows slot 1's pane")
+	}
+}
+
 func TestWatchSecondSubscriberGetsFullRedraw(t *testing.T) {
 	terms, tm := tmuxEnv(t)
 	first, _, _ := watchIn(t, terms)

@@ -1,22 +1,35 @@
 #!/bin/sh
-# agent-run — keeps one interactive `claude --name $FLEET_AGENT` alive in the
-# tmux session "main", under tini. See docs/AGENT-FLEET.md, "The agent container".
+# agent-run — keeps FLEET_SLOTS interactive claude sessions alive, one per
+# slot, under tini. See docs/AGENT-FLEET.md, "The agent container" and
+# "Slots".
 #
-# /work/.fleet/next says what the next pane starts on, and is consumed:
+# Slot 1 is the agent itself: `claude --name $FLEET_AGENT` in the tmux session
+# "main", its files in /work/.fleet and ~/.claude/fleet. Slot k >= 2 is the
+# worker "$FLEET_AGENT:k": tmux session "main-k", its files in
+# /work/.fleet/slot-k and ~/.claude/fleet/slot-k. Each slot's claude carries
+# FLEET_AGENT and FLEET_NAME (its worker), FLEET_SLOT and FLEET_STATE (its
+# state directory), so its hooks, status line and fleetctl know their slot.
+#
+# A slot's next (in its state directory) says what its next pane starts on,
+# and is consumed:
 #   a session id  -> --resume it        (fleetd restarting, restoring)
 #   empty         -> a fresh session    (fleetd rotating)
-#   absent        -> resume the current one (/work/.fleet/current), else fresh
+#   absent        -> resume the current one (current, beside it), else fresh
 # fleetd never types into the pane to do any of this: it writes next and
-# kills the pane, and this loop starts the next one.
+# kills the pane, and the slot's loop starts the next one.
 set -u
 : "${FLEET_AGENT:?FLEET_AGENT is not set}"
+AGENT=$FLEET_AGENT
+SLOTS=${FLEET_SLOTS:-1}
+case "$SLOTS" in ''|*[!0-9]*|0) SLOTS=1 ;; esac
 W="${FLEET_WORK:-/work}/.fleet"
 C="$HOME/.claude"
 
-event() { # a line in the hook log, so fleetd records what this loop did
-  # (the third argument is a detail). With HOME unwritable the log cannot
-  # live under it: it goes to $W/events.jsonl, which fleetd reads too.
-  d="$C/fleet"; [ -w "$d" ] || d="$W"
+event() { # a line in slot 1's hook log, so fleetd records what this loop did
+  # (the third argument is a detail; the fourth a slot's own log, else
+  # slot 1's). With HOME unwritable the log cannot live under it: it goes to
+  # $W/events.jsonl, which fleetd reads too.
+  d="${4:-$C/fleet}"; [ -w "$C/fleet" ] || d="$W"
   mkdir -p "$d" 2>/dev/null
   jq -nc --arg e "$1" --arg s "$2" --arg d "${3:-}" \
     '{t: (now|floor), event: $e, session: $s} + (if $d != "" then {detail: $d} else {} end)' >> "$d/events.jsonl" 2>/dev/null
@@ -50,7 +63,7 @@ while ! home_writable; do
   sleep "${FLEET_HOME_RETRY:-30}"
 done
 
-mkdir -p "$W" /work/wt "$C/fleet" "$C/sessions"
+mkdir -p "$W" "${FLEET_WORK:-/work}/wt" "$C/fleet" "$C/sessions"
 
 # Fleet-managed settings, refreshed on every start so an image update reaches
 # an existing volume. The agent's brief arrives in its env (rendered by
@@ -89,43 +102,66 @@ jq --arg code "${FLEET_CODE:-$HOME/code}" '. * {
     projects: {"/work": {hasTrustDialogAccepted: true}, ($code): {hasTrustDialogAccepted: true}}
   }' "$HOME/.claude.json" > "$HOME/.claude.json.tmp" && mv "$HOME/.claude.json.tmp" "$HOME/.claude.json"
 
-quick=0
-start() {
-  if [ -f "$W/next" ]; then
-    sid=$(cat "$W/next"); rm -f "$W/next"; quick=0
+# supervise k keeps slot k's pane alive. It runs in a subshell of its own,
+# so its variables are its own.
+supervise() {
+  k=$1
+  if [ "$k" -le 1 ]; then
+    name=$AGENT pane=main sw=$W hooks="$C/fleet"
   else
-    sid=$(cat "$W/current" 2>/dev/null)
-    # Three panes in a row that died within 30s: the session will not come
-    # back, so start fresh rather than loop on it. fleetd sees the event.
-    if [ "$quick" -ge 3 ]; then
-      event "agent-run.fresh_after_crashes" "$sid"; sid=""; quick=0
-    elif [ -n "$sid" ] && ! ls "$C"/projects/*/"$sid".jsonl >/dev/null 2>&1; then
-      sid="" # never had a turn: nothing to resume
+    name="$AGENT:$k" pane="main-$k" sw="$W/slot-$k" hooks="$C/fleet/slot-$k"
+  fi
+  mkdir -p "$sw" "$hooks"
+  # Telemetry says which worker it is from.
+  otel=""
+  [ -n "${OTEL_RESOURCE_ATTRIBUTES:-}" ] && otel="fleet.agent=$name,fleet.host=${FLEET_HOST:-}"
+  quick=0 started=0
+  while :; do
+    # =pane: an exact match. tmux takes "main" for "main-2" when there is
+    # no session "main", and slot 1 would never start again.
+    if ! tmux has-session -t "=$pane" 2>/dev/null; then
+      if [ "$started" -gt 0 ] && [ $(( $(date +%s) - started )) -lt 30 ]; then
+        quick=$((quick + 1))
+      elif [ "$started" -gt 0 ]; then
+        quick=0
+      fi
+      if [ -f "$sw/next" ]; then
+        sid=$(cat "$sw/next"); rm -f "$sw/next"; quick=0
+      else
+        sid=$(cat "$sw/current" 2>/dev/null)
+        # Three panes in a row that died within 30s: the session will not
+        # come back, so start fresh rather than loop on it. fleetd sees the
+        # event.
+        if [ "$quick" -ge 3 ]; then
+          event "agent-run.fresh_after_crashes" "$sid" "" "$hooks"; sid=""; quick=0
+        elif [ -n "$sid" ] && ! ls "$C"/projects/*/"$sid".jsonl >/dev/null 2>&1; then
+          sid="" # never had a turn: nothing to resume
+        fi
+      fi
+      if [ -n "$sid" ]; then
+        flag="--resume $sid"
+      else
+        sid=$(cat /proc/sys/kernel/random/uuid); flag="--session-id $sid"
+      fi
+      printf '%s\n' "$sid" > "$sw/current"
+      model=""
+      [ -n "${FLEET_MODEL:-}" ] && model="--model $FLEET_MODEL"
+      started=$(date +%s)
+      # -e: a session's environment is the tmux server's, which the first
+      # slot to start made; each slot's own names go in explicitly.
+      tmux new-session -d -s "$pane" -x 220 -y 50 -c /work \
+        -e "FLEET_AGENT=$name" -e "FLEET_NAME=$name" -e "FLEET_SLOT=$k" -e "FLEET_STATE=$sw" \
+        ${otel:+-e "OTEL_RESOURCE_ATTRIBUTES=$otel"} \
+        "exec claude --name '$name' --dangerously-skip-permissions $flag $model"
     fi
-  fi
-  if [ -n "$sid" ]; then
-    flag="--resume $sid"
-  else
-    sid=$(cat /proc/sys/kernel/random/uuid); flag="--session-id $sid"
-  fi
-  printf '%s\n' "$sid" > "$W/current"
-  model=""
-  [ -n "${FLEET_MODEL:-}" ] && model="--model $FLEET_MODEL"
-  started=$(date +%s)
-  tmux new-session -d -s main -x 220 -y 50 -c /work \
-    "exec claude --name $FLEET_AGENT --dangerously-skip-permissions $flag $model"
+    sleep 2
+  done
 }
 
-trap 'tmux kill-server 2>/dev/null; exit 0' TERM INT
-started=0
-while :; do
-  if ! tmux has-session -t main 2>/dev/null; then
-    if [ "$started" -gt 0 ] && [ $(( $(date +%s) - started )) -lt 30 ]; then
-      quick=$((quick + 1))
-    elif [ "$started" -gt 0 ]; then
-      quick=0
-    fi
-    start
-  fi
-  sleep 2
+trap 'kill $(jobs -p) 2>/dev/null; tmux kill-server 2>/dev/null; exit 0' TERM INT
+k=1
+while [ "$k" -le "$SLOTS" ]; do
+  supervise "$k" &
+  k=$((k + 1))
 done
+wait

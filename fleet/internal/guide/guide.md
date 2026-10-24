@@ -98,6 +98,12 @@ prints each candidate and why it was passed over; add `--queue 30m` to have flee
 up, or do the work yourself. `fleetctl pick --repo R` shows who `run` would choose, without assigning.
 Agents prefer the one that last worked in that repo, then the least quota used, then the longest idle.
 
+Each agent runs several sessions at once, its **slots** (two by default): slot 1 answers to the agent's
+name, slot k to `<agent>:k`, and each takes a task of its own. A task id, `wait`, `result`, `followup`,
+`cancel` and `peek agent-02:2` work per slot as they do per agent. `run` spreads tasks over agents
+before it gives one agent a second, and never puts a member's task in the same container as an
+operator's (slots share the container): `pick` says when that is why a slot was passed over.
+
 ## Choosing the model
 
 `fleetctl run --model opus "…"` runs that one task's session on the model (sonnet, opus, haiku or a full
@@ -132,7 +138,7 @@ kept. Cancelling a task that is already closed is an error and does nothing.
 
 ## Looking around
 
-    fleetctl ls                 # the roster: phase, task, quota use for every agent
+    fleetctl ls                 # the roster: phase, task, quota use for every agent and slot
     fleetctl pick --repo R      # who would get a task, and why the others would not
     fleetctl peek agent-02      # the agent's screen, right now
     fleetctl tasks --open       # every task still open

@@ -49,34 +49,55 @@ func (e *NoFreeAgent) Error() string {
 
 func (e *NoFreeAgent) Unwrap() error { return ErrConflict }
 
-// Pick chooses the agent a new task should go to. Eligible: not disabled,
-// down, cooling, working, holding an open task, low or reserved. Best first:
-// the agent whose last task was in the same repo, then the lowest 5 h quota
-// use, the lowest 7 d, the longest idle.
-func (f *Fleet) Pick(repo string, now time.Time) PickReply {
-	return f.PickModel(repo, "", now)
+// Pick chooses the worker a new task should go to, with no regard to who
+// gives it or the model it wants (PickFor).
+func (f *Fleet) Pick(repo string, now time.Time) PickReply { return f.PickFor(repo, "", "", now) }
+
+// PickModel is Pick for a task that wants a model: only workers whose
+// agent's models: list allows it are eligible.
+func (f *Fleet) PickModel(repo, model string, now time.Time) PickReply {
+	return f.PickFor(repo, "", model, now)
 }
 
-// PickModel is Pick for a task that wants a model: only agents whose models:
-// list allows it are eligible.
-func (f *Fleet) PickModel(repo, model string, now time.Time) PickReply {
+// PickFor chooses the worker a task from `from` that wants `model` should go
+// to. Eligible: not disabled, down, cooling, working, holding an open task,
+// low or reserved; its agent's models: list allows the model; and, for a
+// task with a known side, no sibling slot holds a task from the other side
+// (OperatorAssigner). Best first: a worker on an agent with no busy slot (tasks
+// spread over containers before they share one), then the agent whose last
+// task was in the same repo, then the lowest 5 h quota use, the lowest 7 d,
+// the longest idle.
+func (f *Fleet) PickFor(repo, from, model string, now time.Time) PickReply {
 	rows := f.Status(now)
 	type scored struct {
 		c        Candidate
+		busy     int // the agent's other slots that hold a task or work
 		affinity bool
+	}
+	held := map[string][]string{} // agent → the assigners of its slots' open tasks
+	busy := map[string]int{}
+	for _, r := range rows {
+		if as := f.openAssigners(r); len(as) > 0 {
+			held[r.SlotOf] = append(held[r.SlotOf], as...)
+			busy[r.SlotOf]++
+		} else if r.State == string(reconcile.Working) {
+			busy[r.SlotOf]++
+		}
 	}
 	var all []scored
 	for _, r := range rows {
 		c := Candidate{Agent: r.Agent, FiveHour: r.FiveHour, SevenDay: r.SevenDay, IdleS: r.IdleS}
 		c.Why = f.ineligible(r)
-		if model != "" && !ModelAllowed(f.cfg.Agents[r.Agent].Models, model) {
-			c.Why = fmt.Sprintf("does not list %s (models: %s)", model, strings.Join(f.cfg.Agents[r.Agent].Models, ", "))
+		if models := f.worker(r.Agent).Models; c.Why == "" && model != "" && !ModelAllowed(models, model) {
+			c.Why = fmt.Sprintf("does not list %s (models: %s)", model, strings.Join(models, ", "))
+		}
+		if c.Why == "" && from != "" {
+			c.Why = f.otherSide(from, held[r.SlotOf])
 		}
 		c.Eligible = c.Why == ""
-		s := scored{c: c}
+		s := scored{c: c, busy: busy[r.SlotOf]}
 		if c.Eligible && repo != "" {
-			last, _ := f.db.LastRepo(r.Agent)
-			s.affinity = last == repo
+			s.affinity = f.lastRepo(r.SlotOf) == repo
 		}
 		all = append(all, s)
 	}
@@ -87,6 +108,8 @@ func (f *Fleet) PickModel(repo, model string, now time.Time) PickReply {
 			return a.c.Eligible
 		case !a.c.Eligible:
 			return a.c.Agent < b.c.Agent
+		case (a.busy == 0) != (b.busy == 0):
+			return a.busy == 0
 		case a.affinity != b.affinity:
 			return a.affinity
 		case a.c.FiveHour != b.c.FiveHour:
@@ -111,6 +134,9 @@ func (f *Fleet) PickModel(repo, model string, now time.Time) PickReply {
 	if top.affinity {
 		why = "last task was in " + repo + "; " + why
 	}
+	if top.busy > 0 {
+		why = fmt.Sprintf("every free agent has a busy slot; %s", why)
+	}
 	reply.Why = why
 	reply.Candidates[0].Why = why
 	for i := 1; i < len(reply.Candidates); i++ {
@@ -119,6 +145,57 @@ func (f *Fleet) PickModel(repo, model string, now time.Time) PickReply {
 		}
 	}
 	return reply
+}
+
+// openAssigners is who gave a worker the tasks it holds open: its current
+// one and the ledger's.
+func (f *Fleet) openAssigners(r Row) []string {
+	var out []string
+	open, _ := f.db.Tasks(true, r.Agent, 0)
+	for _, t := range open {
+		out = append(out, t.Assigner)
+	}
+	if r.Task != "" && len(open) == 0 {
+		if t, err := f.db.Task(r.Task); err == nil {
+			out = append(out, t.Assigner)
+		} else {
+			out = append(out, "") // assigned since: its side is unknown, so it is neither
+		}
+	}
+	return out
+}
+
+// otherSide is why a task from `from` may not share a container with the
+// tasks its slots hold: one container has one key and one /work for all its
+// slots, so slots are no boundary between a member's task and the
+// operator's. "" when none of them is from the other side.
+func (f *Fleet) otherSide(from string, held []string) string {
+	mine := f.OperatorAssigner(from)
+	for _, a := range held {
+		if a == "" || f.OperatorAssigner(a) == mine {
+			continue
+		}
+		if mine {
+			return "a sibling slot holds a member's task (" + a + "); slots share a container, so an operator's task waits for another agent"
+		}
+		return "a sibling slot holds an operator's task; slots share a container, so a member's task waits for another agent"
+	}
+	return ""
+}
+
+// lastRepo is the repo of the agent's last task, in any of its slots: they
+// share its container's worktrees.
+func (f *Fleet) lastRepo(agent string) string {
+	var last string
+	var at time.Time
+	for _, w := range append([]string{agent}, f.cfg.Siblings(agent)...) {
+		ts, err := f.db.Tasks(false, w, 1)
+		if err != nil || len(ts) == 0 || ts[0].Repo == "" || !ts[0].Assigned.After(at) {
+			continue
+		}
+		last, at = ts[0].Repo, ts[0].Assigned
+	}
+	return last
 }
 
 // ineligible is why an agent cannot take a task now, "" when it can. The
@@ -267,7 +344,7 @@ func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 				ErrConflict, in.From, len(open), strings.Join(ids, ", "))
 		}
 	}
-	p := f.PickModel(in.Repo, in.Model, now)
+	p := f.PickFor(in.Repo, in.From, in.Model, now)
 	rep := RunReply{Agent: p.Agent, Why: p.Why}
 	if in.Agent != "" {
 		rep = RunReply{Agent: in.Agent, Why: "named"}
