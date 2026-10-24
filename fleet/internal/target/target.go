@@ -45,9 +45,22 @@ type Exec struct{}
 // and a nil error; the caller decides what that means.
 func (Exec) Stream(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) (Result, error) {
 	cmd := HardenCtx(exec.CommandContext(ctx, argv[0], argv[1:]...))
-	cmd.Stdin, cmd.Stdout = stdin, stdout
+	cmd.Stdout = stdout
 	tail := &tailWriter{max: stderrTail}
 	cmd.Stderr = tail
+	// stdin goes through a pipe of ours, not cmd.Stdin: with a reader there,
+	// Wait does not return until the reader does, and a peer that has gone
+	// quiet without closing would hold a finished command for ever.
+	if stdin != nil {
+		w, perr := cmd.StdinPipe()
+		if perr != nil {
+			return Result{Exit: -1}, perr
+		}
+		go func() {
+			_, _ = io.Copy(w, stdin)
+			_ = w.Close()
+		}()
+	}
 	err := cmd.Run()
 	res := Result{Stderr: strings.TrimSpace(tail.String())}
 	var ee *exec.ExitError

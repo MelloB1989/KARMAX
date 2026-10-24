@@ -1,6 +1,7 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -205,5 +206,48 @@ func TestStateTellsAMissingContainerFromAnUnreachableHost(t *testing.T) {
 		if (err != nil) != tc.wantErr || s.Running || s.Failed != "" {
 			t.Errorf("%q: state %+v, err %v; want err=%v", tc.err, s, err, tc.wantErr)
 		}
+	}
+}
+
+// A command that ends while its stdin is still open (a peer that sends no more
+// and does not close) returns when it ends: nothing waits on the stdin copy.
+func TestStreamReturnsWhenTheCommandEndsWithStdinStillOpen(t *testing.T) {
+	pr, pw := io.Pipe() // nobody writes or closes it until the test is over
+	defer pw.Close()
+	var out bytes.Buffer
+	done := make(chan Result, 1)
+	go func() {
+		res, err := Exec{}.Stream(context.Background(), []string{"sh", "-c", "echo bye; exit 3"}, pr, &out)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- res
+	}()
+	select {
+	case res := <-done:
+		if res.Exit != 3 || out.String() != "bye\n" {
+			t.Errorf("exit %d, out %q", res.Exit, out.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stream waited on a stdin nobody was closing")
+	}
+}
+
+// The other way: the command waits on stdin and the stream is cancelled.
+func TestStreamEndsWhenItsContextIsCancelledWhileTheCommandWaitsOnStdin(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := Exec{}.Stream(ctx, []string{"cat"}, pr, io.Discard)
+		done <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stream did not end when cancelled")
 	}
 }

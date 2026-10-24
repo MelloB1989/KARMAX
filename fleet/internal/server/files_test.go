@@ -42,8 +42,11 @@ func (f *fake) GetFiles(_ context.Context, agent, path string, w io.Writer) erro
 	return err
 }
 
-func (f *fake) Rsh(_ context.Context, agent string, argv []string, stdin io.Reader, stdout io.Writer) (target.Result, error) {
+func (f *fake) Rsh(ctx context.Context, agent string, argv []string, stdin io.Reader, stdout io.Writer) (target.Result, error) {
 	f.calls = append(f.calls, fmt.Sprintf("rsh %s %q", agent, argv))
+	if agent == "agent-real" { // a real command, as the exec target runs it
+		return target.Exec{}.Stream(ctx, argv, stdin, stdout)
+	}
 	_, err := io.Copy(stdout, stdin)
 	return target.Result{Exit: 3, Stderr: "oops"}, err
 }
@@ -191,5 +194,41 @@ func TestAWorkerNameWithItsSlotReachesTheFilesRoute(t *testing.T) {
 	}
 	if got := f.calls[len(f.calls)-1]; got != "put agent-03:2 /work/inbox/T9 X" {
 		t.Errorf("call = %q", got)
+	}
+}
+
+// The command ends while the caller's request is still open: the response ends
+// with its exit status, and nothing waits for the caller to close its side.
+func TestRshEndsWithTheCommandWhileTheRequestBodyIsStillOpen(t *testing.T) {
+	_, h := setup(t)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/agents/agent-real/rsh?arg=sh&arg=-c&arg=echo+bye%3B+exit+3", pr)
+	req.Header.Set("Authorization", "Bearer full")
+	type result struct {
+		body    string
+		trailer http.Header
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		done <- result{string(b), resp.Trailer, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil || r.body != "bye\n" || r.trailer.Get("X-Fleet-Exit") != "3" {
+			t.Errorf("%+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the response waited for the request body to close")
 	}
 }
