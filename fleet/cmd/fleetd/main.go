@@ -24,6 +24,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
+	"github.com/MelloB1989/karmax/fleet/internal/memory"
 	"github.com/MelloB1989/karmax/fleet/internal/otlp"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
@@ -117,6 +118,13 @@ func run(cfgPath string, once bool) error {
 	f.Log = log.Printf
 	if karmax.APIToken != "" {
 		f.Karmax = karmax // the gateway: agents call KARMAX's tools, never holding its token
+	}
+	if m := cfg.Memory; m != nil {
+		if key := env[m.KeyEnv]; key != "" {
+			f.Memory = &memory.Client{URL: m.URL, Key: key, Namespace: m.Namespace}
+		} else {
+			log.Printf("memory: %s is not set in %s; memory is off", m.KeyEnv, cfg.EnvFile)
+		}
 	}
 	f.HostStats = func(ctx context.Context, host string) ([]ledger.HostSample, error) {
 		c := target.Container{Exec: cfg.Hosts[host].Exec}

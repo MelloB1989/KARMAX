@@ -34,6 +34,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/hostctl"
+	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
 	"github.com/MelloB1989/karmax/fleet/internal/recreate"
@@ -161,10 +162,19 @@ func loadConfig() (*config.Config, error) {
 type client struct {
 	base, token string
 	timeout     time.Duration // 0: six minutes
+	// agent, in an agent's container, proves which agent calls (identity).
+	agent string
 }
 
 func newClient() (*client, error) {
 	c := &client{base: os.Getenv("FLEETD_URL"), token: os.Getenv("FLEET_TOKEN")}
+	if key := os.Getenv("FLEET_AGENT_KEY"); key != "" {
+		name := os.Getenv("FLEET_NAME") // the worker; its container's key
+		if name == "" {
+			name = os.Getenv("FLEET_AGENT")
+		}
+		c.agent = identity.Value(name, key)
+	}
 	if _, err := os.Stat(configPath()); errors.Is(err, os.ErrNotExist) && c.token == "" {
 		// Not a fleet host: the tailnet says who this is.
 		if c.base == "" {
@@ -205,6 +215,9 @@ func (c *client) do(method, path string, in, out any) error {
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.agent != "" {
+		req.Header.Set(identity.Header, c.agent)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	timeout := c.timeout
@@ -639,6 +652,10 @@ func run(cmd string, args []string) error {
 	case "guide":
 		return guideCmd(args)
 
+	case "memory":
+		return memoryCmd(args)
+	case "mcp":
+		return mcpCmd(args)
 	case "skill":
 		return skillCmd(args)
 
