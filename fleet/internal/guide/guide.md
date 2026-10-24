@@ -156,8 +156,7 @@ Do not poll `peek` while you wait: `wait` returns the moment the agent reports.
 Recall before work on a person, project or decision the operator has history with. Suggest durable facts,
 never secrets. An agent may use these only on a task the operator's side gave it; a member never may.
 `fleetctl mcp` serves both as MCP tools (`claude mcp add --scope user fleet -- fleetctl mcp`), and
-`fleetctl skill install` adds the fleet-memory skill that says when to use them. Both follow who fleetd
-says you are (`fleetctl whoami`): a member is offered neither the tools nor the skill.
+`fleetctl skill install` adds the fleet-memory skill that says when to use them; a member gets neither.
 
 ## From another machine (the tailnet)
 
@@ -168,20 +167,15 @@ login is on the fleet's list, install fleetctl from fleetd itself and connect it
     irm http://<fleetd host>:7878/install.ps1 | iex             # Windows, in PowerShell
 
 It installs fleetctl, runs `fleetctl connect http://<fleetd host>:7878` (which prints who fleetd knows you
-as), installs this guide as your Claude Code skill (an operator also gets the fleet-memory skill), and,
-if `claude` is on your PATH, registers fleetctl's MCP server in your Claude Code user config
-(`claude mcp add --scope user fleet -- <fleetctl> mcp`; rerunning it changes nothing, and a fleet server
-at another path is replaced). Without `claude` it prints that command to run once Claude Code is
-installed. The MCP server offers only the tools your role may use: a member gets none of the operator's
-memory or integrations. As a member you can `run`, `wait --task`,
-`result`, `followup`, `cancel` and `done --task` your own tasks, and `ls`, `pick`, `quota`, `tasks` and
-`peek` (an agent at work on your task). Tasks run as you: the agent reports to your login (or a session of yours), and `--from`
+as), installs this guide as your Claude Code skill, and registers fleetctl's MCP server with Claude Code
+(`claude mcp add --scope user fleet -- <fleetctl> mcp`), offering only what your role may use.
+As a member you can `run`, `wait --task`, `result`, `followup`, `cancel` and `done --task` your own tasks,
+and `ls`, `pick`, `quota`, `tasks` and `peek` (an agent at work on your task). Tasks run as you: the agent reports to your login (or a session of yours), and `--from`
 names a session of yours (`ram@example.com/review`), never someone else. You may hold a few open tasks at once (fleetd says how many when you reach it); close one
 with `done --task` before you start another, or pass `--queue`. `--repo` names a checkout in the fleet
 host's code directory; for a repo that is not there, say in the brief where to clone it from.
 
-The agents work in the fleet host's checkouts, not your machine's: review what they push in your own
-clone, `git fetch origin <branch> && git log -p main..FETCH_HEAD`.
+Agents work in the fleet host's checkouts: review what they push with `git fetch origin <branch>` in yours.
 
 ## The operator's integrations (KARMAX)
 
@@ -253,5 +247,4 @@ write); 404 unknown task; 409 no free agent (the body lists the candidates), age
 or task already closed.
 
 `fleetctl skill install` writes this guide as a Claude Code skill (`~/.claude/skills/fleet/SKILL.md`) so
-any session on this machine finds it, and, for the operator and agents, the fleet-memory skill beside
-it; for a member it removes a fleet-memory skill it wrote before. `fleetctl guide` prints it.
+any session on this machine finds it (and, except for a member, the fleet-memory skill). `fleetctl guide` prints it.
