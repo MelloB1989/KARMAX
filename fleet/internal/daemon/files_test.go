@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,17 +54,7 @@ func (x *fakeExec) Stream(ctx context.Context, argv []string, stdin io.Reader, s
 	for j, a := range cmd {
 		cmd[j] = x.path(a)
 	}
-	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-	c.Stdin, c.Stdout = stdin, stdout
-	var errb bytes.Buffer
-	c.Stderr = &errb
-	err := c.Run()
-	res := target.Result{Stderr: strings.TrimSpace(errb.String())}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		res.Exit, err = ee.ExitCode(), nil
-	}
-	return res, err
+	return target.Exec{}.Stream(ctx, cmd, stdin, stdout)
 }
 
 // fileBox is a test box whose files and commands go through fakeExec.

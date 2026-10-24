@@ -246,6 +246,10 @@ else
   echo "SKIP secrets: fleetctl secret is not in this build (v2-secrets-2)"
 fi
 if has "$usage" "  cp "; then # v2-files
+  # openhold makes a stdin that stays open and silent, as a peer that has gone
+  # quiet without closing: $HOLD is a fifo, $HOLDPID the process holding it.
+  # (Not <(sleep): a command substitution waits for everything holding its pipe.)
+  openhold() { HOLD=$R/hold.$RANDOM; mkfifo "$HOLD"; ( exec sleep 100 > "$HOLD" ) 2>/dev/null & HOLDPID=$!; }
   # The fake docker runs the container's commands on this machine with
   # FLEET_WORK set, so /work in a path is $R/work here.
   S=$R/filesrc; mkdir -p "$S/proj/sub"
@@ -284,15 +288,25 @@ if has "$usage" "  cp "; then # v2-files
   check "cp reaches a slot (agent-02:2) in its agent's /work" "got: $out" test "$(cat "$R/work/inbox/slot/proj/sub/a.txt" 2>/dev/null)" = deep
   out=$(op cp agent-02:2:/work/inbox/slot/proj "$R/back2" 2>&1)
   check "cp brings a file back from a slot" "got: $out" test "$(cat "$R/back2/proj/sub/a.txt" 2>/dev/null)" = deep
+  openhold
+  out=$(timeout 20 "$B/fleetctl" rsh agent-01 sh -c 'echo bye; exit 3' 2>&1 < "$HOLD"; echo "rc=$?"); kill $HOLDPID 2>/dev/null
+  check "rsh returns when the command ends, with the caller's stdin still open" "got: $out" test "$out" = "$(printf 'bye\nrc=3')"
   out=$(member rsh agent-01 true 2>&1); rc=$?
   check "a member may not rsh" "exit $rc: $out" test $rc != 0
   if command -v rsync >/dev/null; then
-    mkdir -p "$R/syncback"; out=$(op sync "$S/proj/" agent-01:/work/synced 2>&1)
-    check "sync copies a directory in by rsync" "got: $out" test "$(cat "$R/work/synced/sub/a.txt" 2>/dev/null)" = deep
-    out=$(op sync agent-01:/work/synced/ "$R/syncback" 2>&1)
+    # rsync --server runs on this machine (the fake docker), where /work is
+    # not the smoke's: sync through /tmp, which means the same everywhere.
+    SD=/tmp/smoke-sync-$$; rm -rf "$SD"; mkdir -p "$R/syncback"
+    out=$(op sync "$S/proj/" agent-01:$SD 2>&1)
+    check "sync copies a directory in by rsync" "got: $out" test "$(cat "$SD/sub/a.txt" 2>/dev/null)" = deep
+    out=$(op sync agent-01:$SD/ "$R/syncback" 2>&1)
     check "sync copies it back" "got: $out" test "$(cat "$R/syncback/sub/a.txt" 2>/dev/null)" = deep
+    openhold
+    out=$(timeout 30 "$B/fleetctl" sync agent-01:/tmp/smoke-sync-missing-$$/ "$R/syncback" 2>&1 < "$HOLD"); rc=$?; kill $HOLDPID 2>/dev/null
+    check "sync from a missing directory fails, and does not hang" "exit $rc: $out" bash -c 'test $1 != 0 -a $1 != 124' _ $rc
     out=$(op sync "$S/proj/" agent-01:/etc 2>&1); rc=$?
     check "sync refuses a destination outside /work and /tmp" "exit $rc: $out" test $rc != 0
+    rm -rf "$SD"
   else
     echo "SKIP sync: rsync is not installed here"
   fi
