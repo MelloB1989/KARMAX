@@ -293,6 +293,13 @@ type Thresholds struct {
 	// session may go unanswered before the orchestrator is asked, and how
 	// much longer before you get an alert.
 	QuestionEscalate time.Duration `yaml:"question_escalate"`
+	// HeldAlertAfter is how long a message may be held for a receiver that
+	// cannot take it before you are told, once. Default 1h.
+	HeldAlertAfter time.Duration `yaml:"held_alert_after"`
+	// HostSettle is how long after a host returns from out of reach, or
+	// boots, a session that will not start is not counted as crashing.
+	// Default 10m.
+	HostSettle time.Duration `yaml:"host_settle"`
 	// Retention.
 	EventsRaw   time.Duration `yaml:"events_raw"`
 	QuotaRaw    time.Duration `yaml:"quota_raw"`
@@ -421,6 +428,8 @@ func (c *Config) defaults() {
 	dur(&th.WaitingArchive, 24*time.Hour)
 	dur(&th.CoolingDefault, time.Hour)
 	dur(&th.QuestionEscalate, 10*time.Minute)
+	dur(&th.HeldAlertAfter, time.Hour)
+	dur(&th.HostSettle, 10*time.Minute)
 	dur(&th.EventsRaw, 90*24*time.Hour)
 	dur(&th.QuotaRaw, 7*24*time.Hour)
 	dur(&th.RelayText, 30*24*time.Hour)

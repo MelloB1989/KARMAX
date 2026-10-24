@@ -912,43 +912,6 @@ func TestABriefCutShortByARestartIsSentAgain(t *testing.T) {
 	}
 }
 
-// A resend that fails is tried again a little later, a few times, but not
-// forever: then you are told the message is lost.
-func TestABriefThatCannotBeResentIsReported(t *testing.T) {
-	f, boxes, out := newFleet(t)
-	b := boxes["agent-03"]
-	b.relayErr = errors.New("no session named agent-03")
-	_ = f.db.OpenTask("T1", "agent-03", "karmax", t0)
-	_, _ = f.db.BeginRelay(ledger.Relay{From: "karmax", To: "agent-03", Task: "T1", Text: "the brief", At: t0})
-	f, err := New(f.cfg, f.db, func(name string) Box { return boxes[name] }, out, out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	relays := func() int {
-		n := 0
-		for _, c := range b.calls {
-			if strings.HasPrefix(c, "relay ") {
-				n++
-			}
-		}
-		return n
-	}
-	f.Tick(context.Background(), t0.Add(time.Minute))
-	f.Tick(context.Background(), t0.Add(time.Minute+10*time.Second))
-	if n := relays(); n != 1 || len(out.alerts) != 0 {
-		t.Fatalf("tried %d times, alerts %q; want once, and a pause before the next", n, out.alerts)
-	}
-	for i := 2; i <= resendTries+2; i++ {
-		f.Tick(context.Background(), t0.Add(time.Duration(i)*time.Minute))
-	}
-	if n := relays(); n != resendTries {
-		t.Fatalf("tried %d times: %q", n, b.calls)
-	}
-	if len(out.alerts) != 1 || !strings.Contains(out.alerts[0], "T1") || !strings.Contains(out.alerts[0], "agent-03") {
-		t.Fatalf("alerts = %q", out.alerts)
-	}
-}
-
 // A relay is on the ledger before it is sent.
 func TestTellRecordsTheRelayBeforeSendingIt(t *testing.T) {
 	f, boxes, _ := newFleet(t)

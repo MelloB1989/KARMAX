@@ -84,9 +84,12 @@ type Fleet struct {
 	// a receiver at a time.
 	sendMus map[string]*sync.Mutex
 	// resendFailed is when a receiver's pending messages last failed to go
-	// out (resend waits resendEvery); resendTries counts each message's tries.
+	// out (resend waits resendEvery, longer after each failure in a row:
+	// resendFails counts them).
 	resendFailed map[string]time.Time
-	resendTries  map[int64]int
+	resendFails  map[string]int
+	// outboxAlerted keys the queued messages you were told cannot be sent.
+	outboxAlerted map[string]bool
 	// soonEvery is how often an agent whose task is done is looked at until
 	// it has rotated (0: only at the tick).
 	soonEvery time.Duration
@@ -118,7 +121,7 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 		locks: map[string]*sync.Mutex{}, states: map[string]reconcile.State{}, Log: func(string, ...any) {},
 		waitEvery: 500 * time.Millisecond, git: runGit, relayBackoff: []time.Duration{5 * time.Second, 15 * time.Second},
 		soonEvery: 5 * time.Second, holdAfter: 75 * time.Second, sendMus: map[string]*sync.Mutex{},
-		resendFailed: map[string]time.Time{}, resendTries: map[int64]int{}, asks: map[string]*ask{}}
+		resendFailed: map[string]time.Time{}, resendFails: map[string]int{}, outboxAlerted: map[string]bool{}, asks: map[string]*ask{}}
 	for _, name := range append(cfg.AgentNames(), cfg.Orchestrator.Name, "") {
 		f.sendMus[name] = &sync.Mutex{}
 	}
@@ -235,6 +238,7 @@ func (f *Fleet) Tick(ctx context.Context, now time.Time) {
 	}
 	wg.Wait()
 	f.escalate(ctx, now)
+	f.alertHeld(ctx, now)
 	if now.Sub(f.lastRetain) > 24*time.Hour {
 		th := f.cfg.Thresholds
 		if err := f.db.Retain(now, ledger.Retention{EventsRaw: th.EventsRaw, QuotaRaw: th.QuotaRaw,
@@ -342,14 +346,11 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 	}
 }
 
-// outboxGiveUp is how long a queued message is tried before it is dropped
-// and you are told.
-const outboxGiveUp = time.Hour
-
 // deliverOutbox sends what the agent queued while fleetd did not answer, as
 // the agent's — whatever the file says it is from — and removes each once it
-// is sent. One that cannot go now is tried next tick, for outboxGiveUp; one
-// to nobody fleetd knows is dropped.
+// is sent. One that cannot go now stays and is tried next tick, however long
+// that takes (you are told once, after Thresholds.HeldAlertAfter); one to
+// nobody fleetd knows is dropped, and you are told.
 func (f *Fleet) deliverOutbox(ctx context.Context, name string, b Box, msgs []reconcile.Outboxed, now time.Time) {
 	var gone []string
 	for _, m := range msgs {
@@ -360,19 +361,21 @@ func (f *Fleet) deliverOutbox(ctx context.Context, name string, b Box, msgs []re
 		err := f.deliverMsg(ctx, name, m.To, m.Text, "", m.Kind, at, true)
 		var held *Held
 		f.event(name, "fleet.outbox", "", map[string]any{"to": m.To, "queued_at": at, "delivered": err == nil, "held": errors.As(err, &held)})
+		key := name + "/" + m.File
 		switch {
 		case err == nil, held != nil: // held: on the ledger now, and fleetd's to send
 			gone = append(gone, m.File)
-		case m.To != f.cfg.Orchestrator.Name && !f.inbox(m.To) && f.known(m.To) != nil, now.Sub(at) > outboxGiveUp:
+			delete(f.outboxAlerted, key)
+		case m.To != f.cfg.Orchestrator.Name && !f.inbox(m.To) && f.known(m.To) != nil:
 			gone = append(gone, m.File)
-			text := fmt.Sprintf("%s's message to %s, queued while fleetd was away, could not be delivered: %v", name, m.To, err)
-			f.Log("%s", text)
-			if f.notify != nil {
-				_ = f.notify.Notify(ctx, text)
-			}
-			f.event(name, "fleet.alert", "", map[string]string{"text": text})
+			delete(f.outboxAlerted, key)
+			f.alert(ctx, name, fmt.Sprintf("%s's message to %s, queued while fleetd was away, could not be delivered: %v", name, m.To, err))
 		default:
 			f.Log("outbox %s → %s: %v; trying again next tick", name, m.To, err)
+			if now.Sub(at) >= f.cfg.Thresholds.HeldAlertAfter && !f.outboxAlerted[key] {
+				f.outboxAlerted[key] = true
+				f.alert(ctx, name, fmt.Sprintf("%s's message to %s has been queued %s and cannot be sent yet (%v); it stays queued", name, m.To, Dur(now.Sub(at)), err))
+			}
 		}
 	}
 	if len(gone) > 0 {
@@ -382,8 +385,36 @@ func (f *Fleet) deliverOutbox(ctx context.Context, name string, b Box, msgs []re
 	}
 }
 
-// resendWindow is how old a message cut short may be and still be resent.
-const resendWindow = 24 * time.Hour
+// alert tells you, on your phone, and records it.
+func (f *Fleet) alert(ctx context.Context, name, text string) {
+	f.Log("%s", text)
+	if f.notify != nil {
+		if err := f.notify.Notify(ctx, text); err != nil {
+			f.Log("alert %s: %v", name, err)
+		}
+	}
+	f.event(name, "fleet.alert", "", map[string]string{"text": text})
+}
+
+// alertHeld tells you, once per message, of one held for a receiver longer
+// than Thresholds.HeldAlertAfter. It stays held: nothing is dropped.
+func (f *Fleet) alertHeld(ctx context.Context, now time.Time) {
+	long, err := f.db.HeldBefore(now.Add(-f.cfg.Thresholds.HeldAlertAfter))
+	if err != nil {
+		f.Log("ledger: held relays: %v", err)
+		return
+	}
+	for _, r := range long {
+		what := "a message from " + r.From
+		if r.Task != "" {
+			what = "the message on task " + r.Task + " from " + r.From
+		}
+		f.alert(ctx, r.To, fmt.Sprintf("%s to %s has been held %s: %s cannot take it yet; it is delivered when it can", what, r.To, Dur(now.Sub(r.At)), r.To))
+		if e := f.db.AlertedRelay(r.ID); e != nil {
+			f.Log("ledger: alerted relay %d: %v", r.ID, e)
+		}
+	}
+}
 
 // resendNote heads a message sent again because fleetd stopped while it was
 // on its way: it may have arrived after all. heldNote heads one fleetd kept
@@ -394,11 +425,11 @@ const (
 )
 
 // resendEvery is how long a receiver whose pending messages did not go out
-// is left before they are tried again; resendTries is how many tries a
-// message gets before it is dropped and you are told.
+// is left before they are tried again, doubled for each failure in a row up
+// to resendMax: a receiver that is down is not tried every tick.
 const (
 	resendEvery = 30 * time.Second
-	resendTries = 5
+	resendMax   = 5 * time.Minute
 )
 
 // resend sends the receiver what is pending for it — what a previous fleetd
@@ -412,20 +443,21 @@ func (f *Fleet) resend(ctx context.Context, name string, b Box, now time.Time) {
 	}
 	defer mu.Unlock()
 	f.mu.Lock()
-	failed := f.resendFailed[name]
+	failed, fails := f.resendFailed[name], f.resendFails[name]
 	f.mu.Unlock()
-	if now.Sub(failed) < resendEvery {
+	if now.Sub(failed) < min(resendEvery<<min(fails, 4), resendMax) {
 		return
 	}
 	_ = f.flush(ctx, name, b, now)
 }
 
 // flush sends the receiver's pending messages, oldest first, each tried once,
-// until one does not get through: its error is returned. One that has had
-// resendTries is dropped instead, and you are told. The caller holds the
+// until one does not get through: its error is returned. A message stays
+// pending, however old, until it is delivered or its task closes (Pending);
+// you are told when one has waited long (alertHeld). The caller holds the
 // receiver's send lock.
 func (f *Fleet) flush(ctx context.Context, name string, b Box, now time.Time) error {
-	pend, err := f.db.Pending(name, now.Add(-resendWindow))
+	pend, err := f.db.Pending(name, time.Time{})
 	if err != nil {
 		f.Log("ledger: pending relays to %s: %v", name, err)
 		return nil
@@ -439,48 +471,34 @@ func (f *Fleet) flush(ctx context.Context, name string, b Box, now time.Time) er
 		err := b.Relay(rctx, name, r.From, note+r.Text)
 		cancel()
 		f.event(name, "fleet.resent", "", map[string]any{"relay": r.ID, "task": r.Task, "from": r.From, "delivered": err == nil, "held": r.Error == ledger.Held})
+		down := f.unable(name) != nil
 		f.mu.Lock()
 		if err == nil {
-			delete(f.resendTries, r.ID)
+			delete(f.resendFails, name)
 			delete(f.resendFailed, name)
 		} else {
-			f.resendTries[r.ID]++
+			// A failure while the receiver is known to be unreachable or
+			// down says nothing about the message: it only waits.
+			if !down {
+				f.resendFails[name]++
+			}
 			f.resendFailed[name] = now
 		}
-		tries := f.resendTries[r.ID]
 		f.mu.Unlock()
 		if err == nil {
 			if e := f.db.EndRelay(r.ID, nil); e != nil {
 				f.Log("ledger: end relay %d: %v", r.ID, e)
+			} else if e := f.db.StampDelivered(r.ID, now); e != nil {
+				f.Log("ledger: stamp relay %d: %v", r.ID, e)
 			}
 			continue
 		}
-		if tries < resendTries {
-			if r.Error == ledger.Interrupted {
-				if e := f.db.HoldRelay(r.ID); e != nil { // tried again, like a held one
-					f.Log("ledger: hold relay %d: %v", r.ID, e)
-				}
-			}
-			return err
-		}
-		if e := f.db.EndRelay(r.ID, err); e != nil {
-			f.Log("ledger: end relay %d: %v", r.ID, e)
-		}
-		f.mu.Lock()
-		delete(f.resendTries, r.ID)
-		f.mu.Unlock()
-		what := "a message from " + r.From
-		if r.Task != "" {
-			what = "the message on task " + r.Task + " from " + r.From
-		}
-		text := fmt.Sprintf("%s to %s could not be delivered after %d tries (%v): send it again", what, name, tries, err)
-		f.Log("%s", text)
-		if f.notify != nil {
-			if err := f.notify.Notify(ctx, text); err != nil {
-				f.Log("alert %s: %v", name, err)
+		if r.Error == ledger.Interrupted {
+			if e := f.db.HoldRelay(r.ID); e != nil { // tried again, like a held one
+				f.Log("ledger: hold relay %d: %v", r.ID, e)
 			}
 		}
-		f.event(name, "fleet.alert", "", map[string]string{"text": text})
+		return err
 	}
 	return nil
 }
@@ -527,6 +545,9 @@ func (f *Fleet) execute(ctx context.Context, name string, b Box, old, next recon
 			err = b.Prompt(ctx, "/compact")
 			f.event(name, "fleet.compact", a.Session, nil)
 		case reconcile.Prompt:
+			if a.Reason == reconcile.PromptResume {
+				a.Text += f.resumeNote(ctx, name, b, a.Task)
+			}
 			err = b.Prompt(ctx, a.Text)
 			f.event(name, "fleet.prompt", "", map[string]string{"text": a.Text})
 		case reconcile.Push:
@@ -1286,3 +1307,46 @@ func (f *Fleet) Config() *config.Config { return f.cfg }
 
 // ArchiveRoot is where archives live.
 func (f *Fleet) ArchiveRoot() string { return f.archiveRoot() }
+
+// resumeNote is what fleetd adds to the carry-on prompt of a session that
+// was restarted on a task: what the task is, what is waiting to be delivered
+// to it, and what its worktrees look like — from what fleetd already has.
+// Each piece that cannot be had is left out.
+func (f *Fleet) resumeNote(ctx context.Context, name string, b Box, task string) string {
+	var sb strings.Builder
+	if th, err := f.db.TaskThread(task); err == nil {
+		for _, m := range th {
+			if m.From == name {
+				continue
+			}
+			lines := strings.Split(strings.TrimSpace(m.Text), "\n")
+			sb.WriteString("\n\nTask " + task + " began with:\n> " + clip(strings.Join(lines[:min(len(lines), 3)], "\n> "), 400))
+			break
+		}
+	}
+	if pend, err := f.db.Pending(name, time.Time{}); err == nil && len(pend) > 0 {
+		sb.WriteString(fmt.Sprintf("\n\n%d message(s) arrived while you were down and come next, oldest first:", len(pend)))
+		for _, r := range pend[:min(len(pend), 5)] {
+			sb.WriteString(fmt.Sprintf("\n- from %s: %s", r.From, clip(strings.SplitN(strings.TrimSpace(r.Text), "\n", 2)[0], 80)))
+		}
+	}
+	if wts, err := b.Worktrees(ctx); err == nil && len(wts) > 0 {
+		sb.WriteString("\n\nYour worktrees now:")
+		for _, w := range wts {
+			sb.WriteString(fmt.Sprintf("\n- %s on %s: ", w.Path, firstNonEmpty(w.Branch, "(unknown branch)")))
+			switch {
+			case w.Dirty < 0:
+				sb.WriteString("git could not read it")
+			case w.Dirty == 0:
+				sb.WriteString("clean")
+			default:
+				sb.WriteString(fmt.Sprintf("%d changed (git status --short: %s)", w.Dirty, strings.ReplaceAll(strings.TrimSpace(w.Status), "\n", "; ")))
+			}
+			if w.Unpushed > 0 {
+				sb.WriteString(fmt.Sprintf(", %d commit(s) not pushed", w.Unpushed))
+			}
+		}
+	}
+	sb.WriteString("\n\nBackground commands you started were killed with the old session: run again any you still need.")
+	return sb.String()
+}
