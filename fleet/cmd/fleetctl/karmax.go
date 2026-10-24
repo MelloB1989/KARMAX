@@ -151,6 +151,7 @@ func karmaxCall(ctx context.Context, c *client, from, tool string, args map[stri
 		tool, a.ID, clock(a.Expires))
 	const minBack, maxBack = time.Second, 15 * time.Second
 	back := minBack
+	var notice restartNotice
 	path := fmt.Sprintf("/v1/approvals/%d?wait=5m&from=%s", a.ID, url.QueryEscape(from))
 	for {
 		var got daemon.CallReply
@@ -159,7 +160,7 @@ func karmaxCall(ctx context.Context, c *client, from, tool string, args map[stri
 		case err == nil && got.Result != nil:
 			return got, nil
 		case err == nil: // still pending: wait again
-			back = minBack
+			back, notice = minBack, restartNotice{}
 			continue
 		case !retryable(err):
 			var se *statusError
@@ -168,7 +169,7 @@ func karmaxCall(ctx context.Context, c *client, from, tool string, args map[stri
 			}
 			return got, err
 		}
-		fmt.Fprintln(errOut, "fleetd unreachable, retrying")
+		notice.say(errOut)
 		if err := sleep(ctx, back); err != nil {
 			return got, err
 		}

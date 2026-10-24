@@ -45,6 +45,9 @@ import (
 
 const usage = `fleetctl — the agent fleet (docs/AGENT-FLEET.md)
 
+Flags may come before or after the arguments; "--" ends them. wait, ask, inbox --follow and the
+wait on a write's approval ride out a fleetd restart: they say so once on stderr and try again.
+
 Roster and records (fleetd):
   status [--json]                     one row per agent, for the orchestrator
   ls [--json]                         the same, as a table
@@ -350,27 +353,39 @@ func inboxPath(as string, after int64) string {
 	return "/v1/inbox?" + q.Encode()
 }
 
+// restartNotice says once on errOut that fleetd is not answering and the call
+// will be tried again, however many tries the outage takes.
+type restartNotice struct{ said bool }
+
+func (n *restartNotice) say(errOut io.Writer) {
+	if !n.said {
+		fmt.Fprintln(errOut, "fleetd unreachable, retrying")
+		n.said = true
+	}
+}
+
 // followInbox prints the operator's inbox after the given id, and keeps
 // printing as it grows. A failed poll (fleetd restarting) is one line on
-// errOut and a retry, 1 s doubling to 15 s, from the last id; only a refused
-// token or ctx ends it.
+// errOut (once) and a retry, 1 s doubling to 15 s, from the last id; only an
+// answer fleetd means (a refused token) or ctx ends it.
 func followInbox(ctx context.Context, c *client, names []string, after int64, asJSON bool, errOut io.Writer, sleep func(context.Context, time.Duration) error) error {
 	const poll, minBack, maxBack = 2 * time.Second, time.Second, 15 * time.Second
 	back := minBack
+	var notice restartNotice
 	for {
 		msgs, err := fetchInboxes(c, names, after)
 		if err != nil {
-			if refused(err) {
+			if !retryable(err) {
 				return err
 			}
-			fmt.Fprintln(errOut, "fleetd unreachable, retrying")
+			notice.say(errOut)
 			if err := sleep(ctx, back); err != nil {
 				return nil
 			}
 			back = min(back*2, maxBack)
 			continue
 		}
-		back = minBack
+		back, notice = minBack, restartNotice{}
 		for _, m := range msgs {
 			printInboxMessage(m, asJSON, len(names) > 1)
 			after = m.ID
@@ -406,6 +421,7 @@ func waitAs(ctx context.Context, c *client, reader, agent, task string, after in
 	const minBack, maxBack = time.Second, 15 * time.Second
 	deadline := time.Now().Add(timeout)
 	back := minBack
+	var notice restartNotice
 	retry := func(err error) (bool, error) { // true: try again
 		if !retryable(err) {
 			return false, err
@@ -413,7 +429,7 @@ func waitAs(ctx context.Context, c *client, reader, agent, task string, after in
 		if !time.Now().Add(back).Before(deadline) {
 			return false, nil // no time left for another try: the wait timed out
 		}
-		fmt.Fprintln(errOut, "fleetd unreachable, retrying")
+		notice.say(errOut)
 		if err := sleep(ctx, back); err != nil {
 			return false, err
 		}
@@ -474,7 +490,10 @@ func printJSON(v any) error {
 	return enc.Encode(v)
 }
 
-// flags parses a subcommand's flags, allowing them after positional args.
+// flags parses a subcommand's flags, allowing them before, between or after
+// the positional args (Go's flag package stops at the first positional). A
+// "--" ends the flags: what follows is positional as it stands, even if it
+// starts with a dash. A lone "-" is positional (run's stdin brief).
 func flags(name string, args []string, def func(*flag.FlagSet)) (*flag.FlagSet, []string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	def(fs)
@@ -483,7 +502,11 @@ func flags(name string, args []string, def func(*flag.FlagSet)) (*flag.FlagSet, 
 		if err := fs.Parse(args); err != nil {
 			return nil, nil, err
 		}
-		args = fs.Args()
+		rest := fs.Args()
+		if used := len(args) - len(rest); used > 0 && args[used-1] == "--" {
+			return fs, append(pos, rest...), nil
+		}
+		args = rest
 		if len(args) > 0 {
 			pos = append(pos, args[0])
 			args = args[1:]
@@ -891,10 +914,14 @@ func run(cmd string, args []string) error {
 		return nil
 
 	case "enable":
-		if err := need(args, 1, cmd+" <agent>"); err != nil {
+		_, pos, err := flags(cmd, args, func(*flag.FlagSet) {})
+		if err != nil {
 			return err
 		}
-		return post("/v1/"+cmd, map[string]string{"agent": args[0]})
+		if err := need(pos, 1, cmd+" <agent>"); err != nil {
+			return err
+		}
+		return post("/v1/"+cmd, map[string]string{"agent": pos[0]})
 
 	case "model":
 		return modelCmd(args)
@@ -1051,10 +1078,14 @@ func run(cmd string, args []string) error {
 		return nil
 
 	case "prompt":
-		if err := need(args, 2, `prompt <agent> "<text>"`); err != nil {
+		_, pos, err := flags(cmd, args, func(*flag.FlagSet) {})
+		if err != nil {
 			return err
 		}
-		return post("/v1/prompt", map[string]string{"agent": args[0], "text": strings.Join(args[1:], " ")})
+		if err := need(pos, 2, `prompt <agent> "<text>"`); err != nil {
+			return err
+		}
+		return post("/v1/prompt", map[string]string{"agent": pos[0], "text": strings.Join(pos[1:], " ")})
 
 	case "render":
 		return hostCmd(cmd, args)
@@ -1165,7 +1196,11 @@ func archiveCmd(args []string) error {
 			return w.Flush()
 		})
 	case "show":
-		if err := need(args, 2, "archive show <id>"); err != nil {
+		_, pos, err := flags("archive show", args[1:], func(*flag.FlagSet) {})
+		if err != nil {
+			return err
+		}
+		if err := need(pos, 1, "archive show <id>"); err != nil {
 			return err
 		}
 		c, err := newClient()
@@ -1173,7 +1208,7 @@ func archiveCmd(args []string) error {
 			return err
 		}
 		var raw json.RawMessage
-		if err := c.do("GET", "/v1/archives/"+args[1], nil, &raw); err != nil {
+		if err := c.do("GET", "/v1/archives/"+url.PathEscape(pos[0]), nil, &raw); err != nil {
 			return err
 		}
 		_, err = os.Stdout.Write(append(raw, '\n'))

@@ -20,7 +20,7 @@ var gateway = []scope{full, relay}
 
 // gatewayRoutes are the KARMAX gateway's: the tools an agent may call, a
 // call, the wait on a write's approval, and the orchestrator's decisions.
-func gatewayRoutes(route func(string, func(http.ResponseWriter, *http.Request) (any, error), ...scope), ops Ops) {
+func gatewayRoutes(route func(string, func(http.ResponseWriter, *http.Request) (any, error), ...scope), long func(func(http.ResponseWriter, *http.Request) (any, error)) func(http.ResponseWriter, *http.Request) (any, error), ops Ops) {
 	route("GET /v1/karmax/tools", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		if err := operatorWork(r, ops); err != nil {
 			return nil, err
@@ -55,7 +55,7 @@ func gatewayRoutes(route func(string, func(http.ResponseWriter, *http.Request) (
 		defer cancel()
 		return ops.KarmaxCall(ctx, who, in.Tool, in.Args, in.Reason, timeout, time.Now())
 	}, gateway...)
-	route("GET /v1/approvals/{id}", func(w http.ResponseWriter, r *http.Request) (any, error) {
+	route("GET /v1/approvals/{id}", long(func(w http.ResponseWriter, r *http.Request) (any, error) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil {
 			return nil, badRequest{fmt.Errorf("approval %q: want its number", r.PathValue("id"))}
@@ -74,7 +74,7 @@ func gatewayRoutes(route func(string, func(http.ResponseWriter, *http.Request) (
 		ctx, cancel := context.WithTimeout(r.Context(), min(wait, 30*time.Minute))
 		defer cancel()
 		return ops.AwaitApproval(ctx, who, id)
-	}, gateway...)
+	}), gateway...)
 	route("GET /v1/approvals", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		n, err := intParam(r, "n")
 		if err != nil {

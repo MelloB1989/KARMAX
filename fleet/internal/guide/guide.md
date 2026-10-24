@@ -37,7 +37,7 @@ brief.
     fleetctl result 20261012-fix-the-redirect-after-3f2a          # reports, branch commits, state
 
 `fleetctl run --wait` does the first two steps in one command. `run` takes the brief as arguments, as `-`
-(read stdin, byte for byte: use it for anything with quotes, newlines or code) or `--brief-file F`.
+(read stdin, byte for byte: use it for anything with quotes, newlines or code) or `--brief-file F`. Flags go before or after arguments; `--` ends them. `wait` and `inbox --follow` ride out a fleetd restart.
 Useful flags: `--repo R`, `--agent A` (a particular agent, if it is free), `--task ID`, `--from NAME`
 (who the agent should report to; defaults to you), `--queue 30m`, `--timeout 2h`, `--json`.
 

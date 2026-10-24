@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
@@ -141,7 +142,61 @@ type Route struct {
 
 // Handler is the API. orch, when set, reports the orchestrator's own quota.
 func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
+	h, _ := DrainingHandler(ops, tok, orch)
+	return h
+}
+
+// errDraining is fleetd shutting down: a long poll it ends is answered 503,
+// and fleetctl waits for fleetd to be back and asks again.
+var errDraining = errors.New("fleetd is shutting down; try again in a moment")
+
+// DrainingHandler is Handler with a drain: once it is called, every long
+// poll in flight (wait, ask, the wait on an approval) ends with a 503 at
+// once, and ones that come later get it too. fleetd calls it before it closes
+// the ledger, so no poll is answered from a ledger that is gone.
+func DrainingHandler(ops Ops, tok Tokens, orch func() *outbound.Quota) (http.Handler, func()) {
+	drain := make(chan struct{})
+	var once sync.Once
+	return handler(ops, tok, orch, drain), func() { once.Do(func() { close(drain) }) }
+}
+
+// unanswered is a long poll's result that says nothing: it ran out of time
+// or was cut short. One that carries an answer is delivered even as fleetd
+// drains, since handing it over may have moved a cursor.
+func unanswered(v any, err error) bool {
+	switch v := v.(type) {
+	case daemon.WaitResult:
+		return err != nil || v.Reason == "timeout"
+	case daemon.AskReply:
+		return err != nil || v.TimedOut
+	case daemon.CallReply:
+		return err != nil || v.Result == nil
+	}
+	return err != nil
+}
+
+func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan struct{}) http.Handler {
 	mux := http.NewServeMux()
+	// long is a handler that holds its request open: fleetd draining cuts it
+	// short with errDraining unless it already has its answer.
+	long := func(h func(w http.ResponseWriter, r *http.Request) (any, error)) func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return func(w http.ResponseWriter, r *http.Request) (any, error) {
+			ctx, cancel := context.WithCancelCause(r.Context())
+			defer cancel(nil)
+			go func() {
+				select {
+				case <-drain:
+					cancel(errDraining)
+				case <-ctx.Done():
+				}
+			}()
+			v, err := h(w, r.WithContext(ctx))
+			if errors.Is(context.Cause(ctx), errDraining) && unanswered(v, err) {
+				return nil, errDraining
+			}
+			return v, err
+		}
+	}
 	started := time.Now()
 	var index []Route
 	may := map[scope][]string{}
@@ -196,6 +251,9 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 				}
 				if errors.Is(err, daemon.ErrMemoryOff) {
 					code = http.StatusNotImplemented
+				}
+				if errors.Is(err, errDraining) {
+					code = http.StatusServiceUnavailable
 				}
 				if errors.Is(err, daemon.ErrConflict) {
 					code = http.StatusConflict
@@ -279,7 +337,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		defer cancel()
 		return ok, ops.TellKind(ctx, in.From, in.To, in.Text, in.Kind, time.Now())
 	}, everyone...)
-	route("POST /v1/ask", func(w http.ResponseWriter, r *http.Request) (any, error) {
+	route("POST /v1/ask", long(func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var err error
 		var in struct{ From, Text, Timeout string }
 		if err := body(r, &in); err != nil {
@@ -302,7 +360,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), timeout+time.Minute)
 		defer cancel()
 		return ops.Ask(ctx, in.From, in.Text, timeout, time.Now())
-	}, relay)
+	}), relay)
 	route("POST /v1/assign", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct{ Agent, Task, From, Brief string }
 		if err := body(r, &in); err != nil {
@@ -518,7 +576,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		}
 		return msgs, err
 	}, readers...)
-	route("GET /v1/wait", func(w http.ResponseWriter, r *http.Request) (any, error) {
+	route("GET /v1/wait", long(func(w http.ResponseWriter, r *http.Request) (any, error) {
 		q := r.URL.Query()
 		after, err := intParam(r, "after")
 		if err != nil {
@@ -552,7 +610,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 			return ops.WaitNew(ctx, agent, q.Get("task"), reader)
 		}
 		return ops.Wait(ctx, agent, q.Get("task"), after)
-	}, and(readers, member)...)
+	}), and(readers, member)...)
 	route("GET /v1/tasks/{id}", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		if err := own(r, ops, r.PathValue("id")); err != nil {
 			return nil, err
@@ -820,7 +878,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 			return map[string]any{"ok": true, "output": out}, nil
 		}, fullOnly...)
 	}
-	gatewayRoutes(route, ops)
+	gatewayRoutes(route, long, ops)
 	hostRoute("up", ops.Up)
 	hostRoute("down", ops.Down)
 	hostRoute("render", func(ctx context.Context, _ []string) (string, error) { return ops.Render() })
