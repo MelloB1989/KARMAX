@@ -98,27 +98,34 @@ func (f *Fleet) GetFiles(ctx context.Context, name, path string, w io.Writer) er
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	pr, pw := io.Pipe()
+	var stopped atomic.Bool // set before the command is cancelled by us
 	ran := make(chan error, 1)
 	go func() {
 		err := f.box(name).GetFiles(ctx, path, pw)
+		if stopped.Load() {
+			err = nil // killed because the stream was refused: not its own failure
+		}
 		pw.CloseWithError(err)
 		ran <- err
 	}()
 	serr := filexfer.Sanitize(w, filexfer.Limit(pr, f.maxBytes()))
 	if serr != nil {
+		stopped.Store(true)
 		cancel() // stop the command: nobody reads what it writes
+	} else {
+		_, _ = io.Copy(io.Discard, io.LimitReader(pr, 1<<20)) // tar's padding after its end mark
 	}
 	pr.Close()
 	rerr := <-ran
 	switch {
-	case serr != nil && errors.Is(serr, filexfer.ErrTooLarge):
+	case serr == nil:
+		return fileErr(rerr)
+	case errors.Is(serr, filexfer.ErrTooLarge):
 		return serr
-	case rerr != nil && !errors.Is(rerr, io.ErrClosedPipe) && !errors.Is(rerr, context.Canceled):
+	case rerr != nil:
 		return fileErr(rerr) // the command's own account first: it is why the stream broke
-	case serr != nil:
-		return fmt.Errorf("%w: %v", ErrBadInput, serr)
 	}
-	return nil
+	return fmt.Errorf("%w: %v", ErrBadInput, serr)
 }
 
 // Rsh runs a command in an agent's container with stdin and stdout streamed

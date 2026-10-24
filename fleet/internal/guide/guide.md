@@ -113,16 +113,11 @@ models: a person on the tailnet cannot.
 
 ## Files
 
-Hand an agent files, or take its output back, without Docker:
+    fleetctl run --attach ./spec.pdf --repo R "Build to the spec."   # lands in /work/inbox/<task>/, named in the brief
+    fleetctl cp ./notes.pdf agent-03 ; fleetctl cp agent-03:/work/out ./results
 
-    fleetctl run --attach ./spec.pdf --attach ./data --repo R "Build to the spec."
-    fleetctl cp ./notes.pdf ./data agent-03            # into /work/inbox/
-    fleetctl cp agent-03:/work/wt/topic/out ./results  # out of it
-
-`--attach` puts the files in `/work/inbox/<task>/` before the brief is delivered, and the brief names
-that directory. Only `/work` and `/tmp` in the container; symlinks are copied as links and never out of
-the tree; at most 2 GiB by default. A member may copy only to and from an agent at work on their own
-open task. `fleetctl sync <dir> <agent>:<dir>` (operator only) is the same by rsync.
+Only `/work` and `/tmp` in the container, at most 2 GiB; symlinks are copied as links, never out of the
+tree. A member may copy only to and from an agent on their own open task. `fleetctl sync` is rsync (operator).
 
 ## Questions, follow-ups, cancel
 
@@ -231,7 +226,6 @@ to assign; console tokens may read.
 |---|---|
 | `fleetctl run` | `POST /v1/run` `{brief, repo, agent, from, task, queue, model}` → `{task, agent, why}` |
 | `fleetctl pick` | `GET /v1/pick?repo=` |
-| `fleetctl cp` | `PUT` / `GET /v1/agents/{agent}/files?path=` (a tar stream); `fleetctl run --attach` also `POST /v1/run` `{attach: true}` then `POST /v1/tasks/{id}/brief` `{brief, repo, from}` |
 | `fleetctl model` | `GET /v1/agents/{agent}/model`; `POST` `{model}` or `{reset}` (operator token only) |
 | `fleetctl result` | `GET /v1/tasks/{id}` |
 | `fleetctl wait` | `GET /v1/wait?task=&after=&timeout=` (agent optional with a task; `new=<name>` for unseen messages only) |
