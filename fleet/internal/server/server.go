@@ -43,6 +43,8 @@ type Ops interface {
 	Close(name, task, outcome, branch, pr string, now time.Time) error
 	Rotate(name string, dryRun bool, now time.Time) (daemon.RotatePlan, error)
 	Enable(name string) error
+	Model(name string) (daemon.ModelReply, error)
+	SetModel(name, model string, now time.Time) error
 	Restore(ctx context.Context, id, onto string, now time.Time) error
 	Inbox(after int64) ([]ledger.Relay, error)
 	Wait(ctx context.Context, agent, task string, after int64) (daemon.WaitResult, error)
@@ -253,13 +255,16 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 	}, fullOnly...)
 	route("POST /v1/run", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct {
-			Brief, Repo, Agent, From, Task, Queue string
+			Brief, Repo, Agent, From, Task, Queue, Model string
 		}
 		if err := body(r, &in); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(in.Brief) == "" {
 			return nil, badRequest{fmt.Errorf("run needs a brief")}
+		}
+		if in.Model != "" && scopeOf(r) == member {
+			return nil, forbidden{fmt.Errorf("a member may not choose the model")}
 		}
 		var queue time.Duration
 		if in.Queue != "" {
@@ -276,7 +281,7 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), queue+3*time.Minute)
 		defer cancel()
 		return ops.Run(ctx, daemon.RunRequest{Brief: in.Brief, Repo: in.Repo, Agent: in.Agent, From: in.From,
-			Task: in.Task, Queue: queue, Limit: limit}, time.Now())
+			Task: in.Task, Model: in.Model, Queue: queue, Limit: limit}, time.Now())
 	}, and(fullOnly, member)...)
 	route("GET /v1/pick", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		return ops.Pick(r.URL.Query().Get("repo"), time.Now()), nil
@@ -362,6 +367,22 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 			return nil, err
 		}
 		return ok, ops.Enable(in.Agent)
+	}, fullOnly...)
+	route("GET /v1/agents/{agent}/model", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		return ops.Model(r.PathValue("agent"))
+	}, readers...)
+	route("POST /v1/agents/{agent}/model", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct {
+			Model string
+			Reset bool
+		}
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		if in.Reset == (in.Model != "") {
+			return nil, badRequest{fmt.Errorf("model needs a model, or reset")}
+		}
+		return ok, ops.SetModel(r.PathValue("agent"), in.Model, time.Now())
 	}, fullOnly...)
 	route("POST /v1/restore", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var in struct{ Archive, Agent string }

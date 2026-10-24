@@ -94,6 +94,15 @@ type State struct {
 	// wrote this state: the console shows both next to what it saw live.
 	Model      string    `json:"model,omitempty"`
 	RecordedAt time.Time `json:"recorded_at,omitzero"`
+	// ModelID is the model's id as the status line gave it (Model is its
+	// display name), for telling whether a session runs the model wanted.
+	ModelID string `json:"model_id,omitempty"`
+	// ModelAsked is the model fleetd last typed /model for, ModelAskedKey the
+	// session and process it was typed into, and ModelAskedAt when: one ask
+	// per change, and a fresh session or process is asked again.
+	ModelAsked    string    `json:"model_asked,omitempty"`
+	ModelAskedKey string    `json:"model_asked_key,omitempty"`
+	ModelAskedAt  time.Time `json:"model_asked_at,omitzero"`
 
 	ContextPct float64 `json:"context_pct,omitempty"`
 	CostUSD    float64 `json:"cost_usd,omitempty"`
@@ -602,6 +611,7 @@ func Decide(th config.Thresholds, st State, o Obs) (State, []Action) {
 		st.Task, st.Done, st.Phase, st.SessionID = "", false, Standby, "" // the next one is learned when seen
 		st.TurnOpen, st.HookIdle, st.DoneAt = false, false, time.Time{}
 		st.NudgedAt, st.CompactedAt, st.LastBusy = time.Time{}, 0, o.Now
+		st.Model, st.ModelID = "", "" // the last session's, not the fresh one's
 	}
 	switch {
 	case st.Done:

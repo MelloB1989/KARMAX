@@ -25,13 +25,14 @@ func runCmd(args []string) error {
 	if from == "" {
 		from = os.Getenv("FLEET_AGENT")
 	}
-	var repo, agent, task, briefFile string
+	var repo, agent, task, briefFile, model string
 	var queue, timeout time.Duration
 	var wait, asJSON bool
 	_, pos, err := flags("run", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&repo, "repo", "", "")
 		fs.StringVar(&agent, "agent", "", "")
 		fs.StringVar(&task, "task", "", "")
+		fs.StringVar(&model, "model", "", "")
 		fs.StringVar(&from, "from", from, "")
 		fs.StringVar(&briefFile, "brief-file", "", "")
 		fs.DurationVar(&queue, "queue", 0, "")
@@ -42,7 +43,7 @@ func runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	const usage = `run <brief…|-> [--repo R] [--agent A] [--task ID] [--from NAME] [--queue 30m] [--wait] [--timeout 2h] [--json] [--brief-file F]`
+	const usage = `run <brief…|-> [--repo R] [--agent A] [--model M] [--task ID] [--from NAME] [--queue 30m] [--wait] [--timeout 2h] [--json] [--brief-file F]`
 	var brief string
 	switch {
 	case briefFile != "":
@@ -73,6 +74,9 @@ func runCmd(args []string) error {
 		task = daemon.TaskID(brief, time.Now())
 	}
 	req := map[string]string{"brief": brief, "repo": repo, "agent": agent, "from": from, "task": task}
+	if model != "" {
+		req["model"] = model
+	}
 	if queue > 0 {
 		req["queue"] = queue.String()
 		c.timeout = queue + 6*time.Minute
@@ -190,4 +194,50 @@ func printCandidates(cs []daemon.Candidate) {
 			daemon.Dur(time.Duration(c.IdleS)*time.Second), c.Why)
 	}
 	_ = w.Flush()
+}
+
+// modelCmd is `model <agent> [<model>|--reset]`: GET or POST
+// /v1/agents/<agent>/model.
+func modelCmd(args []string) error {
+	var reset, asJSON bool
+	_, pos, err := flags("model", args, func(fs *flag.FlagSet) {
+		fs.BoolVar(&reset, "reset", false, "")
+		fs.BoolVar(&asJSON, "json", false, "")
+	})
+	if err != nil {
+		return err
+	}
+	const usage = "model <agent> [<model>|--reset] [--json]"
+	if len(pos) < 1 || len(pos) > 2 || (reset && len(pos) == 2) {
+		return fmt.Errorf("usage: fleetctl %s", usage)
+	}
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	path := "/v1/agents/" + url.PathEscape(pos[0]) + "/model"
+	if reset || len(pos) == 2 {
+		req := map[string]any{"reset": reset}
+		if len(pos) == 2 {
+			req["model"] = pos[1]
+		}
+		if err := c.do("POST", path, req, nil); err != nil {
+			return err
+		}
+	}
+	var rep daemon.ModelReply
+	if err := c.do("GET", path, nil, &rep); err != nil {
+		return err
+	}
+	if asJSON {
+		return printJSON(rep)
+	}
+	or := func(s string) string {
+		if s == "" {
+			return "-"
+		}
+		return s
+	}
+	fmt.Printf("%s: default %s, override %s, task %s; live %s\n", rep.Agent, or(rep.Default), or(rep.Override), or(rep.Task), or(rep.Live))
+	return nil
 }

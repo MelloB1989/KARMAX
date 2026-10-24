@@ -56,7 +56,7 @@ Roster and records (fleetd):
   archive ls [--since 7d] [--json] | archive show <id> | archive prune --older 180d
 
 Work (fleetd):
-  run <brief…|-> [--repo R] [--agent A] [--task ID] [--from NAME] [--queue 30m] [--wait] [--timeout 2h] [--json] [--brief-file F]
+  run <brief…|-> [--repo R] [--agent A] [--model M] [--task ID] [--from NAME] [--queue 30m] [--wait] [--timeout 2h] [--json] [--brief-file F]
                                       pick a free agent, record the task, deliver the brief; prints the
                                       task id and agent. Brief "-" reads stdin. --wait then waits for the
                                       report (exit 0; 3 down/cooling/disabled; 4 timeout); no free agent: exit 5
@@ -78,6 +78,10 @@ Work (fleetd):
   rotate <agent> [--dry-run]          archive its session, start fresh (--dry-run says what it would close)
   restore <archive-id> [--agent <name>]
   enable <agent>                      after fixing a disabled subscription
+  model <agent> [<model>|--reset]     show the model an agent is set to run (default, override, live); with a
+                                      model (sonnet, opus, haiku or a full id) set a persistent override that
+                                      survives fleetd restarts; --reset clears it. run --model M gives one task's
+                                      session that model, and the agent goes back when the task closes
 
 Your keyboard:
   attach <agent> [--direct]           the live session's TUI (host only), through the console when
@@ -743,6 +747,9 @@ func run(cmd string, args []string) error {
 			return err
 		}
 		return post("/v1/"+cmd, map[string]string{"agent": args[0]})
+
+	case "model":
+		return modelCmd(args)
 
 	case "rotate":
 		var dry bool

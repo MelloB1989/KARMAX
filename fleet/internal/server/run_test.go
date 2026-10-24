@@ -27,6 +27,9 @@ func (f *fake) Run(_ context.Context, in daemon.RunRequest, _ time.Time) (daemon
 	if in.Limit > 0 {
 		call += fmt.Sprintf(" limit=%d", in.Limit)
 	}
+	if in.Model != "" {
+		call += " model=" + in.Model
+	}
 	f.calls = append(f.calls, call)
 	switch {
 	case in.Brief == "nobody free":
@@ -58,6 +61,36 @@ func TestRunAndPickScopes(t *testing.T) {
 		if rec := do(t, h, c.method, c.path, c.token, c.body); rec.Code != c.want {
 			t.Errorf("%s %s as %q: %d (%s), want %d", c.method, c.path, c.token, rec.Code, strings.TrimSpace(rec.Body.String()), c.want)
 		}
+	}
+}
+
+func TestModelRouteScopes(t *testing.T) {
+	f, h := setup(t)
+	for _, c := range []struct {
+		method, path, token, body string
+		want                      int
+	}{
+		{"GET", "/v1/agents/agent-03/model", "full", "", 200},
+		{"GET", "/v1/agents/agent-03/model", "console", "", 200},
+		{"GET", "/v1/agents/agent-03/model", "relay", "", 403},
+		{"POST", "/v1/agents/agent-03/model", "full", `{"model":"opus"}`, 200},
+		{"POST", "/v1/agents/agent-03/model", "full", `{"reset":true}`, 200},
+		{"POST", "/v1/agents/agent-03/model", "full", `{}`, 400},
+		{"POST", "/v1/agents/agent-03/model", "full", `{"model":"opus","reset":true}`, 400},
+		{"POST", "/v1/agents/agent-03/model", "console", `{"model":"opus"}`, 403},
+		{"POST", "/v1/agents/agent-03/model", "relay", `{"model":"opus"}`, 403},
+		{"POST", "/v1/agents/agent-03/model", "", `{"model":"opus"}`, 401},
+	} {
+		if rec := do(t, h, c.method, c.path, c.token, c.body); rec.Code != c.want {
+			t.Errorf("%s %s as %q: %d (%s), want %d", c.method, c.path, c.token, rec.Code, strings.TrimSpace(rec.Body.String()), c.want)
+		}
+	}
+	do(t, h, "POST", "/v1/run", "full", `{"brief":"x","model":"opus"}`)
+	if got := strings.Join(f.calls, "|"); !strings.Contains(got, " model=opus") {
+		t.Errorf("run did not carry the model: %s", got)
+	}
+	if got := strings.Join(f.calls, "|"); !strings.Contains(got, "setmodel agent-03 opus") || !strings.Contains(got, "setmodel agent-03 |") {
+		t.Errorf("calls = %s", got)
 	}
 }
 

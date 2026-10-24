@@ -134,6 +134,14 @@ walled off from the host.
 - Your `/login` on Kali changes only your `~/.claude/.credentials.json`. Containers never see it.
 - The orchestrator has its own subscription the same way — `karmax-brain` is a container with its own env file.
 - `models` exists because plans differ; the orchestrator's `CLAUDE.md` says which agents may take Opus/Fable work.
+  `fleetctl run --model M` considers only agents whose `models` list M.
+- **Which model an agent runs.** `model:` in `fleet.yaml` is its default: agent-run passes it as `--model`
+  when a session starts. `fleetctl model <agent> <model>` sets an override without recreating the
+  container (`--reset` clears it); it is kept in the ledger, so it survives fleetd restarts. `run --model`
+  sets one task's model, and the agent goes back to its override or default when the task closes and the
+  session rotates. fleetd applies the wanted model by typing `/model <m>` into the session when it is
+  idle (never mid-turn), once per change, and checks the status line afterwards; a fresh session, process
+  or resume is asked again, and a session that still shows another model after two minutes is alerted once.
 - **Messaging across subscriptions** is socket-level, not account-level. S1 runs the two ends on two
   accounts to prove it.
 

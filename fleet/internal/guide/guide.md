@@ -78,6 +78,19 @@ prints each candidate and why it was passed over; add `--queue 30m` to have flee
 up, or do the work yourself. `fleetctl pick --repo R` shows who `run` would choose, without assigning.
 Agents prefer the one that last worked in that repo, then the least quota used, then the longest idle.
 
+## Choosing the model
+
+`fleetctl run --model opus "…"` runs that one task's session on the model (sonnet, opus, haiku or a full
+model id). Only agents whose `models:` list in `fleet.yaml` allows it are candidates; the others are
+listed with why they were passed over. fleetd types `/model` into the session before the brief goes in,
+and when the task closes and the session rotates the agent goes back to its own model.
+
+`fleetctl model <agent>` shows an agent's default (from `fleet.yaml`), its override and the model its
+session shows now. `fleetctl model <agent> opus` sets an override that outlasts fleetd restarts, and
+`fleetctl model <agent> --reset` clears it. fleetd applies a change when the session is idle, never
+mid-turn, and once per change; a fresh session is asked again. Only the operator's token may change
+models: a person on the tailnet cannot.
+
 ## Questions, follow-ups, cancel
 
 An agent that is blocked on a decision sends you a report like any other: `wait` returns it and `result`
@@ -146,8 +159,9 @@ to assign; console tokens may read.
 
 | command | route |
 |---|---|
-| `fleetctl run` | `POST /v1/run` `{brief, repo, agent, from, task, queue}` → `{task, agent, why}` |
+| `fleetctl run` | `POST /v1/run` `{brief, repo, agent, from, task, queue, model}` → `{task, agent, why}` |
 | `fleetctl pick` | `GET /v1/pick?repo=` |
+| `fleetctl model` | `GET /v1/agents/{agent}/model`; `POST` `{model}` or `{reset}` (operator token only) |
 | `fleetctl result` | `GET /v1/tasks/{id}` |
 | `fleetctl wait` | `GET /v1/wait?task=&after=&timeout=` (agent optional with a task) |
 | `fleetctl followup` | `POST /v1/tasks/{id}/followup` `{from, text}` |

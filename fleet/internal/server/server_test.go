@@ -82,6 +82,14 @@ func (f *fake) Rotate(name string, dry bool, _ time.Time) (daemon.RotatePlan, er
 	f.calls = append(f.calls, "rotate "+name+map[bool]string{true: " dry"}[dry])
 	return daemon.RotatePlan{Closes: "T9", When: "next idle tick"}, nil
 }
+func (f *fake) Model(name string) (daemon.ModelReply, error) {
+	f.calls = append(f.calls, "model "+name)
+	return daemon.ModelReply{Agent: name}, nil
+}
+func (f *fake) SetModel(name, model string, _ time.Time) error {
+	f.calls = append(f.calls, "setmodel "+name+" "+model)
+	return nil
+}
 func (f *fake) Enable(name string) error { f.calls = append(f.calls, "enable "+name); return nil }
 func (f *fake) Restore(_ context.Context, id, onto string, _ time.Time) error {
 	f.calls = append(f.calls, "restore "+id+" "+onto)
