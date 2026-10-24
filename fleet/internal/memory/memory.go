@@ -31,14 +31,40 @@ type Client struct {
 
 // Memory is one memory a search found.
 type Memory struct {
-	Path    string    `json:"path"`
-	Title   string    `json:"title,omitempty"`
-	Topic   string    `json:"topic,omitempty"`
-	Tier    string    `json:"tier,omitempty"`
-	Content string    `json:"content"`
-	Score   float64   `json:"score,omitempty"`
-	Updated time.Time `json:"updated_at,omitzero"`
+	Path    string   `json:"path"`
+	Title   string   `json:"title,omitempty"`
+	Topic   string   `json:"topic,omitempty"`
+	Tier    string   `json:"tier,omitempty"`
+	Content string   `json:"content"`
+	Score   float64  `json:"score,omitempty"`
+	Updated wireTime `json:"updated_at,omitzero"`
 }
+
+// wireTime is a memory's time as gitloom sends it: unix seconds, or RFC 3339
+// (time_format=iso). It encodes as RFC 3339.
+type wireTime time.Time
+
+func (w *wireTime) UnmarshalJSON(b []byte) error {
+	if s := string(b); s == "null" || s == `""` || s == "0" {
+		*w = wireTime{}
+		return nil
+	}
+	if n, err := strconv.ParseInt(string(b), 10, 64); err == nil {
+		*w = wireTime(time.Unix(n, 0).UTC())
+		return nil
+	}
+	var t time.Time
+	if err := json.Unmarshal(b, &t); err != nil {
+		return err
+	}
+	*w = wireTime(t.UTC())
+	return nil
+}
+
+func (w wireTime) MarshalJSON() ([]byte, error) { return json.Marshal(time.Time(w)) }
+
+// IsZero lets omitzero leave out a time gitloom did not give.
+func (w wireTime) IsZero() bool { return time.Time(w).IsZero() }
 
 // Result is a search's answer.
 type Result struct {
@@ -102,7 +128,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		return c.scrub(fmt.Errorf("memory: gitloom said %s", msg))
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("memory: gitloom's answer is not JSON (%d bytes)", len(raw))
+		return c.scrub(fmt.Errorf("memory: gitloom's answer (%d bytes) does not read: %w", len(raw), err))
 	}
 	return nil
 }

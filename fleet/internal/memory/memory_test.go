@@ -2,12 +2,14 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const key = "gl_test_key_0123456789"
@@ -108,6 +110,24 @@ func TestTheKeyNeverReachesTheCaller(t *testing.T) {
 				t.Fatalf("the key reached the caller: %q", all)
 			}
 		})
+	}
+}
+
+// gitloom sends a memory's times as unix seconds unless asked for
+// time_format=iso; both read, and the time comes out the same.
+func TestAMemorysTimeReadsAsUnixSecondsOrRFC3339(t *testing.T) {
+	for _, at := range []string{`1790000000`, `"2026-09-21T14:13:20Z"`} {
+		var m Memory
+		if err := json.Unmarshal([]byte(`{"path":"p.md","content":"c","score":1,"updated_at":`+at+`}`), &m); err != nil {
+			t.Fatalf("%s: %v", at, err)
+		}
+		if got := time.Time(m.Updated); !got.Equal(time.Unix(1790000000, 0)) {
+			t.Fatalf("%s: updated %v", at, got)
+		}
+	}
+	b, _ := json.Marshal(Memory{Path: "p.md"})
+	if strings.Contains(string(b), "updated_at") {
+		t.Fatalf("a memory with no time says one: %s", b)
 	}
 }
 
