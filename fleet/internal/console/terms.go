@@ -86,9 +86,9 @@ func (t *Terms) container(c AgentConf) target.Container {
 // argv is the attach command, run with the stream marker id so the client
 // can be found, and detached, from inside the container.
 func (t *Terms) argv(c AgentConf, readonly bool, id string) []string {
-	cmd := []string{"tmux", "attach", "-t", "main"}
+	cmd := []string{"tmux", "attach", "-t", c.pane()}
 	if readonly {
-		cmd = []string{"tmux", "attach", "-r", "-t", "main"}
+		cmd = []string{"tmux", "attach", "-r", "-t", c.pane()}
 	}
 	return t.container(c).InteractiveArgv(withStreamEnv(id, cmd...)...)
 }
@@ -334,14 +334,14 @@ func (w *termWatch) run(f *os.File, cmd *exec.Cmd, id string) {
 }
 
 // redraw makes tmux repaint the read-only client's whole screen. There is
-// one read-only client per agent (ours), so the flag finds it; the client
+// one read-only client per worker's pane (ours), so the flag finds it; the client
 // pid is not comparable through docker exec.
 func (w *termWatch) redraw() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c := w.t.container(w.conf)
 	for range 10 { // the client may still be attaching
-		out, err := c.Run(ctx, "tmux", "list-clients", "-t", "main", "-F", "#{client_tty} #{client_readonly}")
+		out, err := c.Run(ctx, "tmux", "list-clients", "-t", w.conf.pane(), "-F", "#{client_tty} #{client_readonly}")
 		if err == nil {
 			found := false
 			for _, l := range strings.Split(string(out), "\n") {

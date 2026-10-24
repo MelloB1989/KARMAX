@@ -109,3 +109,16 @@ func TestTellSaysWhenFleetdHoldsTheMessage(t *testing.T) {
 		t.Fatalf("outbox: %v", ents)
 	}
 }
+
+func TestASlotQueuesInItsOwnOutbox(t *testing.T) {
+	t.Setenv("FLEET_AGENT", "agent-03:2")
+	t.Setenv("FLEET_WORK", "/w")
+	t.Setenv("FLEET_STATE", "/w/.fleet/slot-2")
+	if got := outboxDir(); got != "/w/.fleet/slot-2/outbox" {
+		t.Errorf("slot 2's outbox = %q", got)
+	}
+	t.Setenv("FLEET_STATE", "")
+	if got := outboxDir(); got != "/w/.fleet/outbox" {
+		t.Errorf("without FLEET_STATE = %q", got)
+	}
+}

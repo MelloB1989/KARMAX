@@ -66,9 +66,10 @@ addresses. Not phase 1.
 One process tree per agent, under tini:
 
 ```
-agent-run                       # fleet's own loop, ~40 lines of sh
+agent-run                       # fleet's own loop, one per slot (see Slots)
 └ tmux server
-  └ window "main": claude --name agent-NN --dangerously-skip-permissions [--resume <sid>]
+  ├ session "main":   claude --name agent-NN   --dangerously-skip-permissions [--resume <sid>]
+  └ session "main-2": claude --name agent-NN:2 …           # slot 2, and so on
 ```
 
 - **cwd `/work`** — the agent's desk, on its private volume. Worktrees go under `/work/wt/`, made by
@@ -118,6 +119,58 @@ every later access retries. And a container whose bind Docker could not make at 
 device`, exit 128) is left stopped: the restart policy never retries a failed start. fleetd starts it
 again, once a minute, while Docker's `State.Error` is set — a container someone stopped has none, and
 one `fleetctl down` removed is not there — and alerts if that goes on for 10 minutes.
+
+### Slots — several sessions per agent
+
+One agent — one container, one subscription — runs several sessions at once, each with tasks of its
+own. Each is a **slot**, and each slot is a **worker**: fleetd observes it, decides on it, picks it
+for tasks and archives its sessions exactly as it does an agent. `slots:` at the top of
+`fleet.yaml` sets how many (default 2); `agents.<name>.slots` overrides it for one agent; 1 is the
+old one-session agent, 8 the most.
+
+| | slot 1 | slot k ≥ 2 |
+|---|---|---|
+| worker name (`claude --name`, SendMessage, `fleetctl`, the ledger, archives) | `agent-03` | `agent-03:k` |
+| tmux session | `main` | `main-k` |
+| state dir (`next`, `current`, `outbox/`) | `/work/.fleet` | `/work/.fleet/slot-k` |
+| status line, hook log | `~/.claude/fleet/status.json`, `events.jsonl` | the same names in `~/.claude/fleet/slot-k/` |
+
+Slot 1 keeps the agent's own name and files, so every state row, ledger row and archive from before
+slots stays its own. `:` is safe in every place the name goes: Claude Code treats a `to` as an
+address only when it starts `uds:`, `bridge:` or `did:`; Go's router, the archive paths and the
+ledger take it as text. No configured agent may have `:` in its name, so none can be named like a
+worker. `agent-run` (FLEET_SLOTS=N in the container env, from `fleet.yaml`) checks the code mount and
+HOME once for the container, then runs one supervising loop per slot. Each slot's claude carries
+`FLEET_AGENT` and `FLEET_NAME` (its worker), `FLEET_SLOT` and `FLEET_STATE` (its state dir), so its
+hooks, status line, `fleetctl tell` and its outbox are its own. Every tmux target is an exact match
+(`=main:`): tmux would otherwise take `main` for `main-2` while slot 1's session is gone.
+
+What slots share, and how fleetd treats it:
+
+- **The container.** Starting a container Docker left stopped, and saying it is down, is slot 1's;
+  its siblings show slot 1's phase (`down`, `code_missing`) and recover when it does.
+- **The subscription.** Quota and cooling are the account's: a sibling's newer reading of a window
+  is every slot's, and a rate limit cools every slot until it resets. `fleetctl enable` re-enables all
+  of an agent's slots.
+- **Sessions are told apart by `FLEET_AGENT`** in each claude's environment, so a sibling's session
+  is never a stray of another slot: never archived, stopped or resumed by it.
+- **`/work` and the shared code.** A worktree another slot's current session has named in its
+  transcript is that slot's (`used_by_slot`): a rotation never removes it.
+- **One key, one `/work`: slots are not an isolation boundary.** A member's task (a tailnet login
+  that is not an operator) and an operator-side task (the operator, their sessions, the orchestrator,
+  a tailnet operator) never share a container: a worker is not eligible while a sibling holds a task
+  from the other side, and the 409 says so.
+
+The pick spreads first: a worker on an agent whose slots are all free ranks before a worker on an
+agent that already has a busy slot; repo affinity (any slot's last task), quota and idle time decide
+after that.
+
+**Sizing.** Each slot is a claude process and what it runs: allow about **1.25 GB of container
+memory per slot** (`agents.<name>.memory`), so 2.5 GB for the default two. tmux 3.5a crashed when a
+second session's window was born under a global `window-size manual`; the image's `tmux.conf` now
+sets it per window and resizes each new window to 220×50, so a slot started while someone watches
+another keeps the fixed size. A changed `slots:` takes a new image (`agent-run`, the hooks,
+`tmux.conf`) and recreated agents.
 
 Every container on a host joins one `fleet-anchor` PID namespace. Not `--pid host`: that would also
 make your own Kali sessions messageable, but every agent runs in bypass mode as your UID and could

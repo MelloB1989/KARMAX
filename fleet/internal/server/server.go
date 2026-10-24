@@ -36,6 +36,9 @@ import (
 // Ops is what the API drives; *daemon.Fleet is the real one.
 type Ops interface {
 	Status(now time.Time) []daemon.Row
+	// IsWorker reports whether a name is a worker of fleet.yaml: an agent,
+	// or one of its slots that exists (agent-03:2 with slots: 2).
+	IsWorker(name string) bool
 	TellKind(ctx context.Context, from, to, text, kind string, now time.Time) error
 	Ask(ctx context.Context, from, text string, timeout time.Duration, now time.Time) (daemon.AskReply, error)
 	Answer(ctx context.Context, task, from, text string, now time.Time) (bool, error)
@@ -824,15 +827,17 @@ func Handler(ops Ops, tok Tokens, orch func() *outbound.Quota) http.Handler {
 	hostRoute("up", ops.Up)
 	hostRoute("down", ops.Down)
 	hostRoute("render", func(ctx context.Context, _ []string) (string, error) { return ops.Render() })
-	return withAgent(tok, mux)
+	return withAgent(tok, ops.IsWorker, mux)
 }
 
 type agentKey struct{}
 
 // withAgent checks an agent's key (identity) on every request that carries
 // one, and refuses one that does not verify: a request either proves which
-// agent it is from or does not claim to be one.
-func withAgent(tok Tokens, h http.Handler) http.Handler {
+// agent it is from or does not claim to be one. The key is its container's,
+// so it verifies any name of that agent's: the name must also be a worker
+// fleet.yaml has (no agent-03:9 when agent-03 has two slots).
+func withAgent(tok Tokens, isWorker func(string) bool, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v := r.Header.Get(identity.Header)
 		if v == "" {
@@ -842,6 +847,10 @@ func withAgent(tok Tokens, h http.Handler) http.Handler {
 		name, ok := identity.Verify(tok.Full, v)
 		if !ok {
 			writeErr(w, http.StatusForbidden, fmt.Errorf("%s does not verify: an agent sends its own FLEET_AGENT_KEY (fleetctl render writes it)", identity.Header))
+			return
+		}
+		if !isWorker(name) {
+			writeErr(w, http.StatusForbidden, fmt.Errorf("%s verifies, but %s is no worker of fleet.yaml: a slot is <agent>:k for k up to its slots", identity.Header, name))
 			return
 		}
 		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), agentKey{}, name)))

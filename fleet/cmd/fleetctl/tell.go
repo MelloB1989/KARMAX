@@ -13,10 +13,15 @@ import (
 var tellBackoff = []time.Duration{2 * time.Second, 5 * time.Second}
 
 // outboxDir is where a fleet container queues the messages fleetd could not
-// take: $FLEET_WORK/.fleet/outbox. Outside a fleet container there is none.
+// take: the slot's state directory's outbox (FLEET_STATE, which agent-run
+// sets for each slot), else $FLEET_WORK/.fleet/outbox. Outside a fleet
+// container there is none.
 func outboxDir() string {
 	if os.Getenv("FLEET_AGENT") == "" {
 		return ""
+	}
+	if s := os.Getenv("FLEET_STATE"); s != "" {
+		return filepath.Join(s, "outbox")
 	}
 	w := os.Getenv("FLEET_WORK")
 	if w == "" {

@@ -521,8 +521,8 @@ func TestRenderWritesConsoleConfigForItsHost(t *testing.T) {
 	if cc.Host != "pc2" || cc.Listen != "127.0.0.1:7880" || cc.FleetdURL != "http://192.168.1.2:7879" {
 		t.Errorf("config = %+v", cc)
 	}
-	if len(cc.Agents) != 3 {
-		t.Fatalf("agents = %+v, want the whole roster", cc.Agents)
+	if len(cc.Agents) != 6 {
+		t.Fatalf("agents = %+v, want the whole roster: every slot of every agent", cc.Agents)
 	}
 	byName := map[string]console.AgentConf{}
 	for _, a := range cc.Agents {
@@ -530,6 +530,9 @@ func TestRenderWritesConsoleConfigForItsHost(t *testing.T) {
 	}
 	if a := byName["agent-04"]; !a.Live || !slices.Equal(a.Exec, []string{"docker"}) || a.Container == "" {
 		t.Errorf("agent-04 (on the console's host) = %+v, want live with [docker]", a)
+	}
+	if a := byName["agent-04:2"]; !a.Live || a.Agent != "agent-04" || a.Slot != 2 || a.Container != byName["agent-04"].Container {
+		t.Errorf("agent-04:2 = %+v, want slot 2 of agent-04, in its container", a)
 	}
 	for _, n := range []string{"agent-01", "agent-02"} {
 		if a := byName[n]; a.Live || a.Host != "kali" || len(a.Exec) != 0 {
@@ -766,5 +769,40 @@ func TestOrchestratorBriefSaysWhatReachesHerFromTheAgentsToolkit(t *testing.T) {
 		if !strings.Contains(b, want) {
 			t.Errorf("orchestrator brief lacks %q", want)
 		}
+	}
+}
+
+// The container runs one session per slot (agent-run reads FLEET_SLOTS),
+// and its brief tells each session how to find its own name.
+func TestRenderGivesEachAgentItsSlots(t *testing.T) {
+	c := cfg(t)
+	a := c.Agents["agent-02"]
+	a.Slots = 1
+	c.Agents["agent-02"] = a
+	doc, err := Compose(c, "kali", "/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d composeDoc
+	if err := yaml.Unmarshal(doc, &d); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Services["agent-01"].Environment["FLEET_SLOTS"]; got != "2" {
+		t.Errorf("agent-01 FLEET_SLOTS = %q, want the default 2", got)
+	}
+	if got := d.Services["agent-02"].Environment["FLEET_SLOTS"]; got != "1" {
+		t.Errorf("agent-02 FLEET_SLOTS = %q, want its own 1", got)
+	}
+	two, _ := Brief(c, "agent-01")
+	one, _ := Brief(c, "agent-02")
+	if !strings.Contains(two, "$FLEET_AGENT") || !strings.Contains(two, "`agent-01:2`") || !strings.Contains(two, "sibling slots") {
+		t.Errorf("a two-slot agent's brief does not explain its slots:\n%s", two)
+	}
+	if strings.Contains(one, "## Slots") {
+		t.Error("a one-slot agent's brief talks of slots")
+	}
+	orch, _ := OrchestratorBrief(c)
+	if !strings.Contains(orch, "`agent-01` on kali, 2 slots") || !strings.Contains(orch, "<agent>:k") {
+		t.Errorf("the orchestrator's roster does not show slots:\n%s", orch)
 	}
 }

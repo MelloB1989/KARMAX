@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -151,19 +152,19 @@ func TestRestartWritesNextAndKillsThePane(t *testing.T) {
 		t.Fatal(err)
 	}
 	script, args := lastScript(r)
-	if !strings.Contains(script, `/.fleet"`) || !strings.Contains(script, `$W/next`) || !strings.Contains(script, "kill-session") || !slices.Equal(args, []string{"resume", "s1"}) {
+	if !strings.Contains(script, `/.fleet${2:+/$2}"`) || !strings.Contains(script, `$W/next`) || !strings.Contains(script, "kill-session") || !slices.Equal(args, []string{"main", "", "resume", "s1"}) {
 		t.Fatalf("script %q args %q", script, args)
 	}
 	if err := a.Fresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, args := lastScript(r); !slices.Equal(args, []string{"fresh", ""}) {
+	if _, args := lastScript(r); !slices.Equal(args, []string{"main", "", "fresh", ""}) {
 		t.Fatalf("fresh args %q", args)
 	}
 	if err := a.Restart(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, args := lastScript(r); !slices.Equal(args, []string{"continue", ""}) {
+	if _, args := lastScript(r); !slices.Equal(args, []string{"main", "", "continue", ""}) {
 		t.Fatalf("unknown-session restart args %q", args)
 	}
 }
@@ -173,11 +174,42 @@ func TestPromptTypesLiterallyThenEnter(t *testing.T) {
 	if err := newAgent(r).Prompt(context.Background(), "fix it; rm -rf $HOME"); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "main", "-l", "--", "fix it; rm -rf $HOME"}) {
+	if !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "=main:", "-l", "--", "fix it; rm -rf $HOME"}) {
 		t.Fatalf("argv = %q", r.calls[0])
 	}
-	if !slices.Equal(r.calls[1][3:], []string{"tmux", "send-keys", "-t", "main", "Enter"}) {
+	if !slices.Equal(r.calls[1][3:], []string{"tmux", "send-keys", "-t", "=main:", "Enter"}) {
 		t.Fatalf("argv = %q", r.calls[1])
+	}
+}
+
+// A slot's actions reach its own pane and directory, never slot 1's.
+func TestASlotsActionsGoToItsOwnPaneAndDirectory(t *testing.T) {
+	r := &fakeRunner{}
+	a := newAgent(r)
+	a.Name, a.Slot = "agent-03:2", 2
+	ctx := context.Background()
+	if err := a.Prompt(ctx, "go on"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Interrupt(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Peek(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range r.calls {
+		if i := slices.Index(c, "-t"); i < 0 || c[i+1] != "=main-2:" {
+			t.Errorf("call %q: want the target =main-2:", c)
+		}
+	}
+	if err := a.Restart(ctx, "s7"); err != nil {
+		t.Fatal(err)
+	}
+	if _, args := lastScript(r); !slices.Equal(args, []string{"main-2", "slot-2", "resume", "s7"}) {
+		t.Errorf("restart args %q", args)
+	}
+	if got := a.AttachArgv(); !slices.Contains(got, "=main-2") {
+		t.Errorf("attach %q", got)
 	}
 }
 
@@ -186,7 +218,7 @@ func TestInterruptSendsEscapeToThePane(t *testing.T) {
 	if err := newAgent(r).Interrupt(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.calls) != 1 || !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "main", "Escape"}) {
+	if len(r.calls) != 1 || !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "=main:", "Escape"}) {
 		t.Fatalf("calls = %q", r.calls)
 	}
 }
@@ -323,7 +355,7 @@ func TestPromptStartingWithDashIsText(t *testing.T) {
 	if err := newAgent(r).Prompt(context.Background(), "-1 is not a flag"); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "main", "-l", "--", "-1 is not a flag"}) {
+	if !slices.Equal(r.calls[0][3:], []string{"tmux", "send-keys", "-t", "=main:", "-l", "--", "-1 is not a flag"}) {
 		t.Fatalf("call = %v: text must follow --", r.calls[0])
 	}
 }
@@ -420,6 +452,14 @@ func TestKillSessionProcsOnRealProcesses(t *testing.T) {
 			t.Skip("cannot start setsid sleep:", err)
 		}
 		t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+		// Until it has exec'd, the child's environ is still the test's: under
+		// load the script would look before it is there.
+		for i := 0; i < 200; i++ {
+			if b, _ := os.ReadFile("/proc/" + strconv.Itoa(c.Process.Pid) + "/environ"); strings.Contains(string(b), env[0]) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		return c
 	}
 	mine := start("CLAUDE_CODE_SESSION_ID=s-gone", "FLEET_AGENT=agent-03")

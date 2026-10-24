@@ -1,3 +1,4 @@
+import { slotOf } from "./roster";
 import type { Agent } from "../model";
 import { wantsControl, type ControlState } from "../focus/controlState";
 
@@ -26,7 +27,7 @@ export function CenterHead({
       <span className={`live-dot${remote ? " off" : ""}`} />
       <span className="live-tag">{remote ? "RECORDED" : "LIVE"}</span>
       <span>
-        {agent.id} <span className="dim">· tmux main · {agent.term.cols}×{agent.term.rows}</span>
+        {agent.id} <span className="dim">· tmux {slotOf(agent) > 1 ? `main-${slotOf(agent)}` : "main"} · {agent.term.cols}×{agent.term.rows}</span>
       </span>
       <span className="grow" />
       {focus && (

@@ -34,7 +34,7 @@ test.afterEach(() => {
   expect(errors, "no console errors").toEqual([]);
 });
 
-async function open(page: Page, opts: { noWebgl?: boolean } = {}) {
+async function open(page: Page, opts: { noWebgl?: boolean; fixture?: string } = {}) {
   if (opts.noWebgl) {
     // xterm falls back to its DOM renderer, whose rows can be read as text
     await page.addInitScript(() => {
@@ -45,7 +45,7 @@ async function open(page: Page, opts: { noWebgl?: boolean } = {}) {
       } as typeof get;
     });
   }
-  await page.goto(url("/login?k=e2e-token"));
+  await page.goto(url(`/login?k=e2e-token${opts.fixture ? `&fixture=${opts.fixture}` : ""}`));
 }
 
 test("the boot log is gone within 3 s", async ({ page }) => {
@@ -123,4 +123,26 @@ test("O opens the office and every desk screen has pixels", async ({ page }) => 
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.waitForTimeout(2500);
   await shot(page, "office-720");
+});
+
+test("12 agents of 2 slots fit on one 1920x1080 screen, a card per agent and a line per slot", async ({ page }) => {
+  await open(page, { fixture: "slots" });
+  await expect(page.locator(".card-slots")).toHaveCount(12);
+  const lines = page.locator(".slot-line");
+  await expect(lines).toHaveCount(24);
+  await page.waitForTimeout(800); // the columns' entrance has settled
+  const fit = await page.evaluate(() => {
+    const roster = document.querySelector(".roster") as HTMLElement;
+    const r = roster.getBoundingClientRect();
+    const last = [...document.querySelectorAll(".slot-line")].pop()!.getBoundingClientRect();
+    return { overflow: roster.scrollHeight - roster.clientHeight, lastBottom: last.bottom, rosterBottom: r.bottom, vh: window.innerHeight };
+  });
+  expect(fit.overflow, "the roster does not scroll").toBeLessThanOrEqual(1);
+  expect(fit.lastBottom).toBeLessThanOrEqual(fit.rosterBottom);
+  expect(fit.lastBottom).toBeLessThanOrEqual(fit.vh);
+  // a slot line selects that slot's terminal
+  const slot2 = page.locator('.slot-line[data-worker="agent-02:2"]');
+  await slot2.click();
+  await expect(slot2).toHaveClass(/selected/);
+  await shot(page, "slots-24");
 });
