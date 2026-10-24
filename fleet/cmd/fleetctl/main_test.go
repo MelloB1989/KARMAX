@@ -41,12 +41,25 @@ var hostYAML string
 // fleetctl runs one command against a fake fleetd and returns its stdout.
 func fleetctl(t *testing.T, f *fakeFleetd, args ...string) (string, error) {
 	t.Helper()
+	return fleetctlIO(t, f, nil, nil, args...)
+}
+
+// fleetctlIO is fleetctl with stdin and stdout of the test's own (mcp); nil
+// keeps the defaults, stdout captured.
+func fleetctlIO(t *testing.T, f *fakeFleetd, stdin io.Reader, stdout io.Writer, args ...string) (string, error) {
+	t.Helper()
+	if stdin != nil {
+		oldIn, oldOut := mcpIn, mcpOut
+		mcpIn, mcpOut = stdin, stdout
+		defer func() { mcpIn, mcpOut = oldIn, oldOut }()
+	}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
 	t.Setenv("FLEETD_URL", srv.URL)
 	t.Setenv("FLEET_TOKEN", "tok")
 	t.Setenv("FLEET_NAME", "")
 	t.Setenv("FLEET_AGENT", "")
+	t.Setenv("FLEET_AGENT_KEY", "")
 	cfg := hostYAML
 	if cfg == "" {
 		cfg = t.TempDir() + "/none.yaml" // not on a fleet host: everything goes through fleetd
