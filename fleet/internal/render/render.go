@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/MelloB1989/karmax/fleet/internal/config"
+	"github.com/MelloB1989/karmax/fleet/internal/identity"
 )
 
 //go:embed brief.md.tmpl
@@ -149,6 +150,8 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 		kv := map[string]string{
 			"CLAUDE_CODE_OAUTH_TOKEN": env[c.Agents[n].TokenEnv],
 			"FLEET_TOKEN":             env[c.RelayTokenEnv],
+			// Says which agent this is (identity): the relay token cannot.
+			"FLEET_AGENT_KEY": identity.Key(env[c.TokenEnv], n),
 		}
 		// The telemetry receiver takes the relay token; the header holds a
 		// secret, so it lives here and not in the compose file.

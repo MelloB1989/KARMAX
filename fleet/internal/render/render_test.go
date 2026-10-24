@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MelloB1989/karmax/fleet/internal/identity"
+
 	"gopkg.in/yaml.v3"
 
 	"github.com/MelloB1989/karmax/fleet/internal/config"
@@ -85,6 +87,25 @@ func TestRenderWritesPrivateEnvFiles(t *testing.T) {
 	brain := readEnv(t, filepath.Join(dir, "agents/karmax-brain.env"))
 	if brain["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-K" || brain["FLEET_TOKEN"] != "full" || brain["KARMAX_API_TOKEN"] != "api" {
 		t.Errorf("brain env = %v", brain)
+	}
+}
+
+// Each agent gets a key of its own, which only the full token makes: fleetd
+// tells agents apart with it, and none can make another's.
+func TestEachAgentGetsItsOwnKeyAndNeverTheFullToken(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "render")
+	if err := Render(cfg(t), env, dir); err != nil {
+		t.Fatal(err)
+	}
+	a1 := readEnv(t, filepath.Join(dir, "agents/agent-01.env"))
+	a4 := readEnv(t, filepath.Join(dir, "agents/agent-04.env"))
+	if a1["FLEET_AGENT_KEY"] != identity.Key("full", "agent-01") || a4["FLEET_AGENT_KEY"] != identity.Key("full", "agent-04") {
+		t.Fatalf("agent keys = %q, %q", a1["FLEET_AGENT_KEY"], a4["FLEET_AGENT_KEY"])
+	}
+	for _, e := range []map[string]string{a1, a4} {
+		if slices.Contains(mapValues(e), "full") {
+			t.Fatalf("an agent's env holds the full token: %v", e)
+		}
 	}
 }
 

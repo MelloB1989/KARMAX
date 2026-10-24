@@ -71,6 +71,20 @@ type Config struct {
 	// HideFromAgents are paths under Code the agents do not see: each is
 	// covered by an empty read-only tmpfs in their containers.
 	HideFromAgents []string `yaml:"hide_from_agents"`
+	// Memory is the operator's long-term memory that fleetd reads for its
+	// callers; nil means none.
+	Memory *Memory `yaml:"memory"`
+}
+
+// Memory is the gitloom namespace the orchestrator keeps. fleetd holds its
+// key and only reads with it: agents and sessions recall, and suggest what
+// to save to the orchestrator, which alone writes.
+type Memory struct {
+	// URL is gitloom on fleetd's host, e.g. http://127.0.0.1:8787.
+	URL string `yaml:"url"`
+	// KeyEnv names gitloom's key in the env file.
+	KeyEnv    string `yaml:"key_env"`
+	Namespace string `yaml:"namespace"`
 }
 
 // Tailnet is fleetd's API for people on the Tailscale network. Who calls is
@@ -516,6 +530,21 @@ func (c *Config) validate() error {
 			if at := strings.Index(l, "@"); at < 1 || at == len(l)-1 || strings.Contains(l[at+1:], "*") || strings.Contains(l[:at], "*") && l[:at] != "*" {
 				return fmt.Errorf("tailnet: %q is not a Tailscale login (you@example.com) or *@example.com", l)
 			}
+		}
+	}
+	if m := c.Memory; m != nil {
+		if !strings.HasPrefix(m.URL, "http://") && !strings.HasPrefix(m.URL, "https://") {
+			return fmt.Errorf("memory: url %q is not an http(s) URL", m.URL)
+		}
+		if m.KeyEnv == "" || !envName.MatchString(m.KeyEnv) {
+			return fmt.Errorf("memory: key_env must be an env var NAME (e.g. GITLOOM_API_KEY), not a key")
+		}
+		// The key reaches nobody: one that is a fleet token's env var would.
+		if m.KeyEnv == c.TokenEnv || m.KeyEnv == c.RelayTokenEnv {
+			return fmt.Errorf("memory: key_env %s is also a fleet token's env var — gitloom's key needs one of its own", m.KeyEnv)
+		}
+		if strings.TrimSpace(m.Namespace) == "" {
+			return fmt.Errorf("memory: namespace is required (the orchestrator's gitloom namespace)")
 		}
 	}
 	for _, p := range c.HideFromAgents {
