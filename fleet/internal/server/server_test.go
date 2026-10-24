@@ -34,6 +34,9 @@ func (f *fake) Ask(_ context.Context, from, text string, timeout time.Duration, 
 	return daemon.AskReply{Task: "T1", Answer: "use the second"}, nil
 }
 func (f *fake) Answer(_ context.Context, task, from, text string, _ time.Time) (bool, error) {
+	if task == "T-missing" {
+		return false, fmt.Errorf("%w %s", daemon.ErrNoTask, task)
+	}
 	f.calls = append(f.calls, "answer "+task+" "+from+" "+text)
 	return true, nil
 }

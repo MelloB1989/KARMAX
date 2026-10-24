@@ -23,9 +23,7 @@ func askOn(t *testing.T, f *Fleet, ctx context.Context, agent, task, q string, t
 		f.askMu.Lock()
 		_, blocked := f.asks[task]
 		f.askMu.Unlock()
-		if blocked {
-			// registered; the question is filed right behind it
-			time.Sleep(20 * time.Millisecond)
+		if blocked && questionFiled(f, task) {
 			return done
 		}
 		select {
@@ -37,6 +35,27 @@ func askOn(t *testing.T, f *Fleet, ctx context.Context, agent, task, q string, t
 			t.Fatal("the ask never blocked")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// questionFiled reports whether the task has an unanswered question on the ledger.
+func questionFiled(f *Fleet, task string) bool {
+	qs, _ := f.db.Unanswered()
+	for _, q := range qs {
+		if q.Task == task {
+			return true
+		}
+	}
+	return false
+}
+
+// eventually polls until cond holds, for up to five seconds.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for end := time.Now().Add(5 * time.Second); !cond(); time.Sleep(2 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("never happened: %s", what)
+		}
 	}
 }
 
@@ -160,6 +179,7 @@ func TestAQuestionToTheOrchestratorIsRelayedWithHowToAnswerIt(t *testing.T) {
 	ctx := context.Background()
 	runT1(t, f, "karmax")
 	done := askOn(t, f, ctx, "agent-01", "T1", "rebase or merge?", time.Minute, t0)
+	eventually(t, "the question reaching the orchestrator", func() bool { return len(boxes["karmax"].snapshotCalls()) > 0 })
 	calls := boxes["karmax"].snapshotCalls()
 	if len(calls) != 1 || !strings.Contains(calls[0], "rebase or merge?") || !strings.Contains(calls[0], `fleetctl answer T1 "<text>"`) {
 		t.Fatalf("orchestrator was sent %q", calls)
