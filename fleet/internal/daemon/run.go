@@ -167,6 +167,9 @@ type RunRequest struct {
 	// Limit is how many open tasks From may hold at once, this one
 	// included; 0 is no limit. The server sets it for a tailnet member.
 	Limit int
+	// Attach says files are about to be copied into the task's inbox: the
+	// task is placed, but its brief waits for Brief.
+	Attach bool
 }
 
 // RunReply is where a run went.
@@ -186,6 +189,9 @@ func (f *Fleet) Run(ctx context.Context, in RunRequest, now time.Time) (RunReply
 	if strings.TrimSpace(in.Brief) == "" {
 		return RunReply{}, fmt.Errorf("%w: run needs a brief", ErrBadInput)
 	}
+	if in.Attach && !inboxName.MatchString(in.Task) {
+		return RunReply{}, fmt.Errorf("%w: --attach needs a task id of letters, digits, '.', '_' and '-' (it names the inbox directory)", ErrBadInput)
+	}
 	if strings.Contains(in.Repo, "..") || strings.HasPrefix(in.Repo, "/") {
 		return RunReply{}, fmt.Errorf("%w: repo %q: want a name relative to the code directory", ErrBadInput, in.Repo)
 	}
@@ -203,6 +209,9 @@ func (f *Fleet) Run(ctx context.Context, in RunRequest, now time.Time) (RunReply
 		rep, err := f.place(in, now.Add(time.Since(start)))
 		if err == nil && rep.placed {
 			return rep, nil // a retry of a run that landed: its brief is the agent's already
+		}
+		if err == nil && in.Attach {
+			return rep, nil
 		}
 		if err == nil {
 			return f.deliver(ctx, in, rep, now)
@@ -277,6 +286,9 @@ func (f *Fleet) deliver(ctx context.Context, in RunRequest, rep RunReply, now ti
 	text := "Task " + rep.Task + " from " + in.From + "."
 	if in.Repo != "" {
 		text += " Repo: " + in.Repo + "."
+	}
+	if in.Attach {
+		text += " Files sent with it are in " + Inbox(rep.Task) + "."
 	}
 	text += " " + in.Brief
 	if err := f.tell(ctx, in.From, rep.Agent, text, rep.Task, now); err != nil {
