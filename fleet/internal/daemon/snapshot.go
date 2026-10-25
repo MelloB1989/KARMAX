@@ -73,10 +73,6 @@ func (f *Fleet) Changed() <-chan struct{} {
 	return f.watch.changed
 }
 
-// KnockCount is how many untagged devices asked for access. Device access
-// gives it its count; until then there are none.
-func (f *Fleet) KnockCount() int { return 0 }
-
 // touch says the fleet changed: a new snapshot now, or within the second
 // when one was just made.
 func (f *Fleet) touch() {
