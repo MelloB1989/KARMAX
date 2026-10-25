@@ -3,6 +3,7 @@ package otlp
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,5 +162,53 @@ func TestOTLPAcceptsAPercentEncodedBearer(t *testing.T) {
 		if c := send(bad); c != http.StatusUnauthorized {
 			t.Errorf("%q: status %d, want 401", bad, c)
 		}
+	}
+}
+
+// toolLogs carries a tool decision and two results, each with the tool's
+// parameters (OTEL_LOG_TOOL_DETAILS): a long Bash command, and an Edit's.
+var toolLogs = `{"resourceLogs":[{"resource":{"attributes":[{"key":"fleet.agent","value":{"stringValue":"agent-03"}}]},
+ "scopeLogs":[{"logRecords":[
+  {"timeUnixNano":"1791427771000000000","attributes":[
+    {"key":"event.name","value":{"stringValue":"tool_decision"}},{"key":"tool_name","value":{"stringValue":"Bash"}},
+    {"key":"decision","value":{"stringValue":"accept"}},{"key":"session.id","value":{"stringValue":"s1"}}]},
+  {"timeUnixNano":"1791427772000000000","attributes":[
+    {"key":"event.name","value":{"stringValue":"tool_result"}},{"key":"tool_name","value":{"stringValue":"Bash"}},
+    {"key":"success","value":{"stringValue":"true"}},{"key":"session.id","value":{"stringValue":"s1"}},
+    {"key":"tool_parameters","value":{"stringValue":"{\"bash_command\":\"git\",\"full_command\":\"git push origin ` + strings.Repeat("x", 200) + `\",\"description\":\"push the branch\"}"}}]},
+  {"timeUnixNano":"1791427773000000000","attributes":[
+    {"key":"event.name","value":{"stringValue":"tool_result"}},{"key":"tool_name","value":{"stringValue":"Edit"}},
+    {"key":"session.id","value":{"stringValue":"s1"}},
+    {"key":"tool_parameters","value":{"stringValue":"{\"file_path\":\"/home/op/code/app/secret.go\"}"}},
+    {"key":"tool_input","value":{"stringValue":"{\"old_string\":\"a\"}"}}]}
+ ]}]}]}`
+
+func TestToolEventsKeepTheToolAndABashCommandsStartOnly(t *testing.T) {
+	s := &sink{}
+	if rec := post(t, Handler(s, ""), "/v1/logs", toolLogs, "", false); rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if len(s.events) != 3 || s.events[0].Kind != "otel.tool_decision" || s.events[1].Kind != "otel.tool_result" {
+		t.Fatalf("events = %+v", s.events)
+	}
+	for _, e := range s.events {
+		if e.Session != "s1" || !strings.Contains(e.Detail, `"tool_name"`) {
+			t.Errorf("event = %+v", e)
+		}
+		for _, leak := range []string{"tool_parameters", "tool_input", "full_command", "description", "file_path", "secret.go", "old_string"} {
+			if strings.Contains(e.Detail, leak) {
+				t.Errorf("%s keeps %s: %s", e.Kind, leak, e.Detail)
+			}
+		}
+	}
+	var d map[string]string
+	if err := json.Unmarshal([]byte(s.events[1].Detail), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d["command"] != ("git push origin " + strings.Repeat("x", 200))[:120] || d["success"] != "true" {
+		t.Errorf("bash detail = %v", d)
+	}
+	if strings.Contains(s.events[2].Detail, "command") {
+		t.Errorf("an Edit has a command: %s", s.events[2].Detail)
 	}
 }
