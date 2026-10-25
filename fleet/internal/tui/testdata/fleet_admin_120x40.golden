@@ -9,13 +9,13 @@
 │ ┃  zᶻᶻ S1 standby   idle 22m          ctx  26%             ┃  zᶻᶻ S1 standby   idle 34m          ctx  42%            │
 │ ┃  zᶻᶻ S2 standby   idle 23m          ctx  39%             ┃  zᶻᶻ S2 standby   idle 35m          ctx  55%            │
 │                                                                                                                      │
-│ ┃ agent-03 · pc2            5h 12% 7d 4% · cpu 15% · 1.2G  ┃ agent-09 · kali sandbox   5h 17% 7d 6% · cpu 22% · 1.9G │
+│ ┃ agent-03 · pc2            5h 12% 7d 4% · cpu 15% · 1.2G  ┃ agent-09 · kali sandbox   5h 17% 7d 6% · cpu 22% · 1.0G │
 │ ┃  ❆⠁  S1 cooling   cools till 21:29  ctx  52%             ┃  ⚙⠋⠏ S1 working   port-api-7a8b     ctx  68% Bash 21s   │
 │ ┃  zᶻᶻ S2 standby   idle 25m          ctx  65%                                                                       │
-│                                                            ┃ agent-10 · kali sandbox    5h 0% 7d 0% · cpu 39% · 1.9G │
+│                                                            ┃ agent-10 · kali sandbox    5h 0% 7d 0% · cpu 39% · 1.0G │
 │ ┃ agent-04 · pc2           5h 51% 7d 17% · cpu 49% · 1.3G  ┃  zᶻᶻ S1 standby   idle 37m          ctx  11%            │
 │ ┃   ?  S1 waiting   access-3c4d       ctx   8%                                                                       │
-│ ┃  zᶻᶻ S2 standby   idle 27m          ctx  21%             ┃ agent-11 · kali sandbox    5h 0% 7d 0% · cpu 56% · 2.0G │
+│ ┃  zᶻᶻ S2 standby   idle 27m          ctx  21%             ┃ agent-11 · kali sandbox    5h 0% 7d 0% · cpu 56% · 1.0G │
 │                                                            ┃  zᶻᶻ S1 standby   idle 38m          ctx  24%            │
 │ ┃ agent-05 · pc2           5h 43% 7d 14% · cpu 83% · 1.5G                                                            │
 │ ┃  zᶻᶻ S1 standby   idle 28m          ctx  34%             ┃ agent-12 · kali            5h 5% 7d 2% · cpu 73% · 2.1G │

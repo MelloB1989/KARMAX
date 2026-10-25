@@ -133,7 +133,7 @@ func (f *Fake) snapshot() *Snapshot {
 			}
 			w := Worker{Agent: name, SlotOf: a.agent, Slot: k, Host: a.host, Container: cont, Account: a.account,
 				Models: []string{"sonnet", "opus"}, Model: "opus", Sandbox: a.sandbox, Alerts: []string{},
-				FiveHour: a.five + float64(f.step), SevenDay: a.five / 3, FiveResets: now.Add(time.Duration(90+i*7) * time.Minute),
+				FiveHour: math.Min(a.five+float64(f.step%8), 100), SevenDay: a.five / 3, FiveResets: now.Add(time.Duration(90+i*7) * time.Minute),
 				QuotaAt: now.Add(-time.Minute), Context: float64((i*13 + f.step) % 70), RecordedAt: now.Add(-3 * time.Second)}
 			switch {
 			case a.state == "down":
@@ -167,6 +167,7 @@ func (f *Fake) snapshot() *Snapshot {
 			Mem: int64(900+i*60) << 20, MemLimit: 2560 << 20, At: now}
 		if a.sandbox {
 			c.MemLimit = 1536 << 20
+			c.Mem = min(c.Mem, c.MemLimit*7/10)
 		}
 		c.CPUHist, c.MemHist = series(now, 60, 10*time.Second, float64(i), 40, 30), series(now, 60, 10*time.Second, float64(i)+1, 1000, 200)
 		h.Containers = append(h.Containers, c)
