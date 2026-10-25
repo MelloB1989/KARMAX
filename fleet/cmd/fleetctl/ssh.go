@@ -96,11 +96,21 @@ func attach(worker string, mode fleetapi.TermMode, force bool, stdin io.Reader, 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	how, err := c.term(ctx, termRun{worker: worker, mode: mode, force: force, in: stdin, out: stdout, size: size, winch: winch(ctx, size)})
+	if out >= 0 && term.IsTerminal(out) {
+		// Ctrl-] cuts the session before the tmux inside can hand the
+		// terminal back: leave its alternate screen, colors, scroll region
+		// and hidden cursor behind here.
+		fmt.Fprint(stdout, screenReset)
+	}
 	if how != "" {
 		fmt.Fprintf(stderr, "\r\n%s\r\n", how)
 	}
 	return err
 }
+
+// screenReset puts a terminal back as a shell expects it: attributes off,
+// the whole screen scrolling, the cursor shown, the main screen.
+const screenReset = "\x1b[0m\x1b[r\x1b[?25h\x1b[?1049l"
 
 func fdOf(v any) int {
 	if f, ok := v.(*os.File); ok {
