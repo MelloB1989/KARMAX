@@ -507,3 +507,32 @@ func TestTheScriptsAreQuietAboutProcessesThatAreGone(t *testing.T) {
 		}
 	}
 }
+
+// The session registry keeps the file of every session that ever died
+// without cleaning up — hundreds, on a host that has run for weeks — and
+// every worker on the host reads it every tick. A dead session's owner is
+// never needed (claude agents lists only live ones), so the snapshot names
+// no owner for it: reading one costs a handful of processes, and hundreds
+// of them, times every worker, kept a 4-core host's CPU at 100%.
+func TestTheSnapshotLooksOnlyAtLiveSessionsOwners(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(home+"/.claude/sessions", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	live := exec.Command("sleep", "300")
+	live.Env = append(os.Environ(), "FLEET_AGENT=agent-03")
+	if err := live.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = live.Process.Kill(); _ = live.Wait() })
+	for _, pid := range []int{live.Process.Pid, 999999999} {
+		_ = os.WriteFile(home+"/.claude/sessions/"+strconv.Itoa(pid)+".json", []byte(`{}`), 0o600)
+	}
+	cmd := exec.Command("sh", "-c", snapshotScript)
+	cmd.Env = append(os.Environ(), "HOME="+home, "FLEET_WORK="+t.TempDir(), "XDG_RUNTIME_DIR="+t.TempDir())
+	out, _ := cmd.Output()
+	got := strings.TrimSpace(sections(out)["owners"])
+	if want := strconv.Itoa(live.Process.Pid) + " agent-03"; got != want {
+		t.Fatalf("owners = %q, want %q: the live session only", got, want)
+	}
+}

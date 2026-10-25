@@ -126,6 +126,9 @@ echo ==owners==
 for f in "$HOME"/.claude/sessions/*.json; do
   [ -e "$f" ] || continue
   p=${f##*/}; p=${p%.json}
+  # A dead session's file stays behind, hundreds over weeks: a builtin test
+  # skips it, where reading it costs five processes, every worker, every tick.
+  [ -r "/proc/$p/environ" ] || continue
   e=$(tr '\0' '\n' 2>/dev/null < /proc/$p/environ) # stderr first: the shell opens the file
   a=$(printf '%s\n' "$e" | sed -n 's/^FLEET_AGENT=//p')
   r=$(printf '%s\n' "$e" | sed -n 's/^FLEET_ROLE=//p')
