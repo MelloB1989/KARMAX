@@ -5,10 +5,10 @@
 │ ▸21:03:00 agent-01    fleet.report         20261025-tui-frame-1a2b    frame and tabs render at 80x24                 │
 │  21:00:00 agent-04    fleet.question       20261025-access-3c4d       Should a lend to an admin device be refused?   │
 │  20:57:00 agent-09    fleet.report         20261025-port-api-7a8b     synced your repo into /work/code/api           │
-│  20:54:00 agent-07    fleet.alert          agent-07 is down: container is not running                                │
+│  20:54:00 agent-07    fleet.alert                                     agent-07 is down: container is not running     │
 │  20:51:00 agent-06    fleet.task.closed    20261025-fix-login-9c0d    outcome=done                                   │
-│  20:48:00 agent-05:2  fleet.term           duration_s=95 mode=watch who=your-mac                                     │
-│  20:45:00 fleetd      fleet.access.knock   device=pal-desktop.tail9abc.ts.net login=pal@example.com                  │
+│  20:48:00 agent-05:2  fleet.term                                      duration_s=95 mode=watch who=your-mac          │
+│  20:45:00 fleetd      fleet.access.knock                              device=pal-desktop.tail9abc.ts.net login=pal@… │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

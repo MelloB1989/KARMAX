@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"slices"
 	"strings"
 
@@ -248,20 +249,22 @@ func emptyWhy(me fleetapi.Me) string {
 func (f *fleetTab) cards(c *Ctx, w, h int) string {
 	gs := groups(c.Snap)
 	boxes := containers(c.Snap)
-	for _, dense := range []bool{false, true} {
+	// Roomiest first: bars and a gap between cards, then no bars, then no
+	// gap either (dense).
+	for _, mode := range []struct{ bars, gap bool }{{true, true}, {false, true}, {false, false}} {
 		minW, maxW := cardNormalW, cardNormalX
-		if dense {
+		if !mode.bars {
 			minW, maxW = cardDenseW, cardDenseX
 		}
 		minCols := max(1, (w+maxW-1)/maxW)
 		for cols := minCols; cols <= max(minCols, (w+colGap)/(minW+colGap)); cols++ {
 			cw := (w - colGap*(cols-1)) / cols
-			if cw < minW && !(dense && cols == 1) {
+			if cw < minW && cols > 1 {
 				break
 			}
 			var blocks [][]string
 			for _, g := range gs {
-				blocks = append(blocks, card(c, g, boxes, cw, dense))
+				blocks = append(blocks, card(c, g, boxes, cw, mode.bars, mode.gap))
 			}
 			if colsOut, ok := pack(blocks, cols, h); ok {
 				f.off = 0
@@ -277,7 +280,7 @@ func (f *fleetTab) cards(c *Ctx, w, h int) string {
 	var lines []string
 	selAt := 0
 	for _, g := range gs {
-		for i, l := range card(c, g, boxes, w, true) {
+		for i, l := range card(c, g, boxes, w, false, false) {
 			if i > 0 && g.slots[i-1].Agent == c.Selected {
 				selAt = len(lines)
 			}
@@ -387,9 +390,10 @@ func lead(slots []fleetapi.Worker) fleetapi.Worker {
 	return best
 }
 
-// card is one agent's lines, w wide: a header, a line per slot, and (not
-// dense) a blank line after.
-func card(c *Ctx, g group, boxes map[string]fleetapi.Container, w int, dense bool) []string {
+// card is one agent's lines, w wide: a header, a line per slot (with the
+// 5-hour bar when bars), and a blank line after when gap. Without bars the
+// account's windows are in the header.
+func card(c *Ctx, g group, boxes map[string]fleetapi.Container, w int, bars, gap bool) []string {
 	t := c.Theme
 	ld := lead(g.slots)
 	edgeColor, _ := t.Phase(ld.State, ld.Alerts)
@@ -403,18 +407,27 @@ func card(c *Ctx, g group, boxes map[string]fleetapi.Container, w int, dense boo
 	if alerts := len(ld.Alerts); alerts > 0 && ld.State != "down" {
 		head += " " + t.Danger.Render("▲ "+strings.Join(ld.Alerts, ", "))
 	}
-	var right string
+	var right []string
+	if !bars && ld.State != "down" {
+		right = append(right, t.Muted.Render("5h ")+paint(quotaColor(t, ld.FiveHour), fmt.Sprintf("%.0f%%", ld.FiveHour))+
+			t.Muted.Render(" 7d ")+paint(quotaColor(t, ld.SevenDay), fmt.Sprintf("%.0f%%", ld.SevenDay)))
+	}
 	if box, ok := boxes[ld.Container]; ok && box.Running {
-		right = t.Muted.Render(fmt.Sprintf("cpu %.0f%% · %s", box.CPU, Bytes(box.Mem)))
+		r := fmt.Sprintf("cpu %.0f%% · %s", box.CPU, Bytes(box.Mem))
 		if box.MemLimit > 0 && iw >= 60 {
-			right += t.Muted.Render(" / " + Bytes(box.MemLimit))
+			r += " / " + Bytes(box.MemLimit)
 		}
+		right = append(right, t.Muted.Render(r))
 	}
-	lines := []string{edge + " " + spread(head, right, iw)}
+	// The header's right side gives way to the name: drop from the end.
+	for len(right) > 0 && lipgloss.Width(head)+lipgloss.Width(strings.Join(right, t.Muted.Render(" · ")))+2 > iw {
+		right = right[:len(right)-1]
+	}
+	lines := []string{edge + " " + spread(head, strings.Join(right, t.Muted.Render(" · ")), iw)}
 	for _, s := range g.slots {
-		lines = append(lines, edge+slotLine(c, s, iw+1, dense))
+		lines = append(lines, edge+slotLine(c, s, iw+1, !bars))
 	}
-	if !dense {
+	if gap {
 		lines = append(lines, "")
 	}
 	return lines
@@ -594,4 +607,15 @@ func taskSlug(id string) string {
 		return id[9:]
 	}
 	return id
+}
+
+// quotaColor is a window's use: plain while low, amber from 70 %, red from 90 %.
+func quotaColor(t *Theme, pct float64) color.Color {
+	switch {
+	case pct >= 90:
+		return t.Alert
+	case pct >= 70:
+		return t.Amber
+	}
+	return t.Text
 }

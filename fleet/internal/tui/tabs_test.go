@@ -278,13 +278,13 @@ func TestSpacePausesTheEvents(t *testing.T) {
 func TestDenseModeWhenAgentsDoNotFit(t *testing.T) {
 	a, f := testApp(t, fleetapi.RoleAdmin, 200, 60, false)
 	snap(t, a, f)
-	if v := ansi.Strip(view(a)); !strings.Contains(v, "5h ") {
+	if v := ansi.Strip(view(a)); !strings.Contains(v, "5h ███") {
 		t.Errorf("200x60 has room for the bars:\n%s", v)
 	}
 	a.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	v := ansi.Strip(view(a))
-	if strings.Contains(v, "5h ") {
-		t.Errorf("120x40 is dense, yet shows bars:\n%s", v)
+	if strings.Contains(v, "5h ███") || !strings.Contains(v, "5h 34% 7d 11%") {
+		t.Errorf("120x40 has no room for bars, so the windows go in the header:\n%s", v)
 	}
 	if !strings.Contains(v, "agent-12") {
 		t.Errorf("dense 120x40 does not show every agent:\n%s", v)

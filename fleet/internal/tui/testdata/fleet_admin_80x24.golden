@@ -1,22 +1,22 @@
 ╭─ KARMAX ▸ fleetctl ──── admin · operator ── 20 workers · 3 working ── 21:04 ─╮
 │  1 Fleet  2 Screens 3 Tasks 4 Events 5 Quota 6 Hosts 7 Access ●1      ● live │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ ┃ agent-01 · pc2                                      cpu 37% · 1020M / 2.5G │
+│ ┃ agent-01 · pc2                      5h 34% 7d 11% · cpu 37% · 1020M / 2.5G │
 │ ┃▸ ◉‿◉ S1 working   tui-frame-1a2b               opus    ctx   0% Grep 5s    │
 │ ┃  zzz S2 standby   idle 21m                     opus    ctx  13%            │
-│ ┃ agent-02 · pc2                                       cpu 71% · 1.1G / 2.5G │
+│ ┃ agent-02 · pc2                       5h 99% 7d 33% · cpu 71% · 1.1G / 2.5G │
 │ ┃  zzz S1 standby   idle 22m                     opus    ctx  26%            │
 │ ┃  zzz S2 standby   idle 23m                     opus    ctx  39%            │
-│ ┃ agent-03 · pc2                                       cpu 15% · 1.2G / 2.5G │
+│ ┃ agent-03 · pc2                        5h 12% 7d 4% · cpu 15% · 1.2G / 2.5G │
 │ ┃  ❄·· S1 cooling   cools till 21:29             opus    ctx  52%            │
 │ ┃  zzz S2 standby   idle 25m                     opus    ctx  65%            │
-│ ┃ agent-04 · pc2                                       cpu 49% · 1.3G / 2.5G │
+│ ┃ agent-04 · pc2                       5h 51% 7d 17% · cpu 49% · 1.3G / 2.5G │
 │ ┃  ?·· S1 waiting   access-3c4d                  opus    ctx   8%            │
 │ ┃  zzz S2 standby   idle 27m                     opus    ctx  21%            │
-│ ┃ agent-05 · pc2                                       cpu 83% · 1.5G / 2.5G │
+│ ┃ agent-05 · pc2                       5h 43% 7d 14% · cpu 83% · 1.5G / 2.5G │
 │ ┃  zzz S1 standby   idle 28m                     opus    ctx  34%            │
 │ ┃  ⚙·· S2 working   term-5e6f                    opus    ctx  47% Bash 14s   │
-│ ┃ agent-06 · pc2                                       cpu 27% · 1.6G / 2.5G │
+│ ┃ agent-06 · pc2                         5h 8% 7d 3% · cpu 27% · 1.6G / 2.5G │
 │ ┃  zzz S1 standby   idle 30m                     opus    ctx  60%            │
 │   ↓ 14 more                                                                  │
 ├──────────────────────────────────────────────────────────────────────────────┤

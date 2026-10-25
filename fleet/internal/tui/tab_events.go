@@ -196,8 +196,8 @@ func (e *eventsTab) View(c *Ctx, w, h int) string {
 		row := mark + t.Muted.Render(ev.At.Format("15:04:05")) + " " +
 			lipgloss.NewStyle().Foreground(t.Text).Render(Fit(agent, agentW)) + " " +
 			paint(kindColor(t, ev.Kind), Fit(ev.Kind, kindW)) + " "
-		if task := eventTask(ev); task != "" && w >= 110 {
-			row += t.Muted.Render(Fit(task, 26)) + " "
+		if w >= 110 {
+			row += t.Muted.Render(Fit(eventTask(ev), 26)) + " "
 		}
 		row += lipgloss.NewStyle().Foreground(t.Text).Render(eventText(ev))
 		lines = append(lines, Fit(row, w))
