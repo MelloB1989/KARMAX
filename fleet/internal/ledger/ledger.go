@@ -85,7 +85,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer; fleetd is the only process that writes
-	if _, err := db.Exec(schema + secretsSchema); err != nil {
+	if _, err := db.Exec(schema + secretsSchema + accessSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ledger schema: %w", err)
 	}
@@ -107,6 +107,7 @@ func migrate(db *sql.DB) error {
 		{"relays", "escalated", "INTEGER"},
 		{"relays", "alerted", "INTEGER"},
 		{"relays", "delivered_at", "INTEGER"},
+		{"tasks", "admin_work", "INTEGER"},
 	}
 	for _, a := range adds {
 		var n int
@@ -541,14 +542,24 @@ type Task struct {
 	PR       string    `json:"pr,omitempty"`
 	Assigned time.Time `json:"assigned,omitzero"`
 	Closed   time.Time `json:"closed,omitzero"`
+	// AdminWork is a task assigned with the full scope (the full token or an
+	// admin device) to an ordinary agent: its agent may use the operator's
+	// memory, gateway and secrets. Never a guest's, never a sandbox's.
+	AdminWork bool `json:"admin_work"`
 }
 
 // OpenTask records an assignment.
 func (db *DB) OpenTask(id, agent, assigner string, at time.Time) error {
 	_, err := db.sql.Exec(`INSERT INTO tasks(id, agent, assigned, assigner) VALUES(?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET agent=excluded.agent, assigned=excluded.assigned,
-		assigner=excluded.assigner, closed=NULL, outcome=NULL`,
+		assigner=excluded.assigner, closed=NULL, outcome=NULL, admin_work=NULL`,
 		id, agent, at.Unix(), nullStr(assigner))
+	return err
+}
+
+// SetTaskAdminWork records whether a task is admin work (Task.AdminWork).
+func (db *DB) SetTaskAdminWork(id string, admin bool) error {
+	_, err := db.sql.Exec(`UPDATE tasks SET admin_work=? WHERE id=?`, admin, id)
 	return err
 }
 
@@ -640,8 +651,8 @@ func (db *DB) Task(id string) (*Task, error) {
 	var t Task
 	var as, cl sql.NullInt64
 	err := db.sql.QueryRow(`SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,''), COALESCE(model,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
-		&t.Outcome, &t.Branch, &t.PR, &t.Repo, &t.Model)
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,''), COALESCE(model,''), COALESCE(admin_work,0) FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl,
+		&t.Outcome, &t.Branch, &t.PR, &t.Repo, &t.Model, &t.AdminWork)
 	if err != nil {
 		return nil, err
 	}
@@ -659,7 +670,7 @@ func (db *DB) Tasks(open bool, agent string, limit int) ([]Task, error) {
 // on the tailnet asked for, from any of their sessions (OwnerOf).
 func (db *DB) TasksBy(open bool, agent, assigner string, limit int) ([]Task, error) {
 	q := `SELECT id, COALESCE(agent,''), COALESCE(assigner,''), assigned, closed, COALESCE(outcome,''),
-		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,''), COALESCE(model,'') FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)
+		COALESCE(branch,''), COALESCE(pr,''), COALESCE(repo,''), COALESCE(model,''), COALESCE(admin_work,0) FROM tasks WHERE agent IS NOT NULL AND (?='' OR agent=?)
 		AND (?='' OR assigner=? OR assigner LIKE ? ESCAPE '\')`
 	if open {
 		q += ` AND closed IS NULL`
@@ -679,7 +690,7 @@ func (db *DB) TasksBy(open bool, agent, assigner string, limit int) ([]Task, err
 	for rows.Next() {
 		var t Task
 		var as, cl sql.NullInt64
-		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR, &t.Repo, &t.Model); err != nil {
+		if err := rows.Scan(&t.ID, &t.Agent, &t.Assigner, &as, &cl, &t.Outcome, &t.Branch, &t.PR, &t.Repo, &t.Model, &t.AdminWork); err != nil {
 			return nil, err
 		}
 		t.Assigned, t.Closed = fromUnix(as), fromUnix(cl)

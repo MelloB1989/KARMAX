@@ -27,7 +27,7 @@ func fakeTailscaled(t *testing.T) (string, *atomic.Int32) {
 		}
 		switch r.URL.Query().Get("addr") {
 		case "100.64.0.2:50123", "100.64.0.2:50124":
-			_, _ = w.Write([]byte(`{"Node":{"Name":"ram-laptop.tailnet-example.ts.net.","Tags":null},
+			_, _ = w.Write([]byte(`{"Node":{"Name":"ram-laptop.tailnet-example.ts.net.","StableID":"nRAM1CNTRL","Tags":null},
 				"UserProfile":{"LoginName":"ram@example.com","DisplayName":"Ram P"}}`))
 		case "100.64.0.5:4000":
 			_, _ = w.Write([]byte(`{"Node":{"Name":"router.tailnet-example.ts.net.","Tags":["tag:app-connector"]},
@@ -45,7 +45,7 @@ func TestWhoIsNamesThePersonBehindAnAddress(t *testing.T) {
 	sock, calls := fakeTailscaled(t)
 	l := &Local{Socket: sock}
 	w, err := l.WhoIs(context.Background(), "100.64.0.2:50123")
-	if err != nil || w != (Who{Login: "ram@example.com", Name: "Ram P", Node: "ram-laptop.tailnet-example.ts.net"}) {
+	if err != nil || w != (Who{Login: "ram@example.com", Name: "Ram P", Node: "ram-laptop.tailnet-example.ts.net", StableID: "nRAM1CNTRL"}) {
 		t.Fatalf("who %+v err %v", w, err)
 	}
 	// The same machine again, another connection: remembered, not asked.

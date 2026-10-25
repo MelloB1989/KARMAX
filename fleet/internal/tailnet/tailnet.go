@@ -21,6 +21,9 @@ type Who struct {
 	Login string `json:"login"` // you@example.com; empty for a tagged device
 	Name  string `json:"name"`  // display name
 	Node  string `json:"node"`  // the machine, e.g. laptop.tailnet.ts.net
+	// StableID is the node's Tailscale id, which a rename does not change:
+	// what a device tag binds.
+	StableID string `json:"stable_id"`
 }
 
 // ErrNotPeer is an address tailscaled does not know: not a tailnet peer.
@@ -82,15 +85,17 @@ func (l *Local) WhoIs(ctx context.Context, addr string) (Who, error) {
 	}
 	var r struct {
 		Node struct {
-			Name string
-			Tags []string
+			Name     string
+			StableID string
+			Tags     []string
 		}
 		UserProfile struct{ LoginName, DisplayName string }
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return Who{}, fmt.Errorf("tailscaled whois %s: %w", ip, err)
 	}
-	w := Who{Login: r.UserProfile.LoginName, Name: r.UserProfile.DisplayName, Node: strings.TrimSuffix(r.Node.Name, ".")}
+	w := Who{Login: r.UserProfile.LoginName, Name: r.UserProfile.DisplayName, Node: strings.TrimSuffix(r.Node.Name, "."),
+		StableID: r.Node.StableID}
 	// A tagged device belongs to no person ("tagged-devices"): a subnet
 	// router or a server, whose traffic may be anyone's.
 	if len(r.Node.Tags) > 0 {
