@@ -13,6 +13,17 @@ reference. Look a command up here instead of guessing.
 Check that it works with `fleetctl whoami` or `fleetctl status`. Never send a
 test message: a tell to the orchestrator wakes it for a real turn.
 
+## If you are a sandbox
+
+`FLEET_SANDBOX=1` in your environment (and `fleetctl whoami` saying scope
+`sandbox`) means you are a sandbox lent to a guest. You have no GitHub access
+and none of the operator's code or accounts. Code comes in with `fleetctl sync`
+from the person who briefs you, into `/work/code`. Leave results there (or in
+`/work/out`) and tell them the exact `fleetctl sync <you>:/work/... ./` to fetch
+them. Of this reference only `whoami`, `tell` and `ask` are yours, and only to
+whoever gave you your current task: fleetd refuses everything else (status,
+peers, memory, the gateway, secrets, files), so do not try them.
+
 ## Talking
 
 Report to whoever gave you the task (the brief starts `Task <id> from <name>.`);

@@ -657,6 +657,48 @@ The 3/5 split is a starting point — change `fleet.yaml`, nothing else.
 `gc.auto=0` in the image's gitconfig; `git gc` runs from a Kali cron, so eight agents never gc one
 `.git` at once.
 
+## Sandbox agents — lent to guests
+
+`sandbox: true` on an agent in `fleet.yaml` makes it one the operator can lend to a guest device
+(`fleetctl access lend`). Defaults: `slots: 1`, `memory: 1536m`. The point is that nothing of the
+operator's is in its container, so `fleetctl render` gives it, compared with an ordinary agent:
+
+- its own `<agent>-code` volume at `/work/code` (`FLEET_CODE`), not the code directory, and none of
+  `fleet-peers`, `fleet-socks` or the hidden-path tmpfs;
+- its own PID namespace (`init: true`), not the anchor's;
+- no `DOCKER_HOST`, build key, GitHub tokens, git identity, SSH aliases or KARMAX address;
+- one fleet credential: `FLEET_SANDBOX_KEY`, HMAC-SHA256 of its name under the full token, which fleetd
+  takes as scope `sandbox` (whoami, its own task, and tell or ask its task's assigner) and as its
+  telemetry token. No relay token and no agent key;
+- the `fleet-sandbox` network: a bridge on `sandbox.subnet` (default `172.31.250.0/24`), no traffic
+  between its containers.
+
+Its brief and the fleet-agent skill tell it what it is: code comes in with `fleetctl sync` into
+`/work/code`, and results go back the same way. Picks pass a sandbox over unless the run is a guest's
+it is lent to; an admin may still name it with `--agent`. A question on a guest's task is told to the
+guest again after `question_escalate`, never to the orchestrator.
+
+### The network rules — install once per host, with sudo
+
+`fleetctl render` writes, for each host that runs a sandbox, `sandbox-net.<host>.sh` and
+`fleet-sandbox-net.<host>.service` beside its compose file. The rules let the subnet reach fleetd's
+relay and telemetry ports (on fleetd's host, the host itself; elsewhere, the address `fleetd_url`
+names), drop everything else to the host, and drop forwarded traffic to 10/8, 172.16/12, 192.168/16,
+100.64/10 and 169.254/16; the internet is allowed. They live in chains of their own
+(`FLEET-SANDBOX-IN`, `FLEET-SANDBOX-FWD`, from `INPUT` and `DOCKER-USER`), flushed and added again on
+each run. On each such host, as root:
+
+    install -m 0755 sandbox-net.<host>.sh /usr/local/sbin/fleet-sandbox-net.sh
+    install -m 0644 fleet-sandbox-net.<host>.service /etc/systemd/system/fleet-sandbox-net.service
+    systemctl daemon-reload && systemctl enable --now fleet-sandbox-net
+
+Install them again after a render that changes `fleetd_url`, `otlp_url` or the subnet. The unit runs after
+Docker and again whenever Docker restarts. fleetd needs no root to check them: each hour it runs a probe
+inside every sandbox (ssh on the host and on fleetd's address must not answer within 3 s; fleetd's
+`/healthz` must). A sandbox that fails is disabled (`sandbox network unguarded`) and you are told once; it
+comes back by itself when the probe passes. The image makes `/work/code` the agent's, so rebuild it
+(`fleetctl image build`) before the first sandbox starts.
+
 ## Packaging — `packaging/fleet/` (assets only)
 
 `Dockerfile` (debian:trixie-slim, tini, tmux, git, gh, jq, ripgrep, Go, Node 22, Bun, Python, pinned
