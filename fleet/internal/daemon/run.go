@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
 )
@@ -255,11 +257,18 @@ type RunRequest struct {
 	Model string
 	Queue time.Duration
 	// Limit is how many open tasks From may hold at once, this one
-	// included; 0 is no limit. The server sets it for a tailnet member.
+	// included; 0 is no limit. The server sets it for a tailnet guest.
 	Limit int
+	// AdminWork is a run with the full scope (the full token or an admin
+	// device): its task may use the operator's data, unless its agent is a
+	// sandbox or it is run for a login (ledger.Task.AdminWork, adminWork).
+	AdminWork bool `json:"-"`
 	// Attach says files are about to be copied into the task's inbox: the
 	// task is placed, but its brief waits for Brief.
 	Attach bool
+	// Among, when set, is the only agents the run may go to: a guest's lent
+	// ones. The server sets it for a guest.
+	Among []string
 }
 
 // RunReply is where a run went.
@@ -354,6 +363,12 @@ func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 		}
 	}
 	p := f.PickFor(in.Repo, in.From, in.Model, now)
+	if len(in.Among) > 0 {
+		if in.Agent != "" && !slices.Contains(in.Among, identity.Base(in.Agent)) {
+			return RunReply{}, fmt.Errorf("%w: %s is not one of your agents", ErrForbidden, in.Agent)
+		}
+		p = among1(p, in.Among)
+	}
 	rep := RunReply{Agent: p.Agent, Why: p.Why}
 	if in.Agent != "" {
 		rep = RunReply{Agent: in.Agent, Why: "named"}
@@ -370,6 +385,9 @@ func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 		rep.Task = TaskID(in.Brief, now)
 	}
 	if err := f.assign(rep.Agent, rep.Task, in.From, now); err != nil {
+		return RunReply{}, err
+	}
+	if err := f.db.SetTaskAdminWork(rep.Task, in.AdminWork && f.adminWork(rep.Agent, in.From)); err != nil {
 		return RunReply{}, err
 	}
 	if err := f.db.SetTaskRepo(rep.Task, in.Repo); err != nil {

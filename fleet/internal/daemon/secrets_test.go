@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 )
 
@@ -176,15 +175,14 @@ func TestOnlyAnAgentOnTheOperatorsWorkReadsAGrantedSecret(t *testing.T) {
 		{"operator", true},
 		{"karmax", true},              // the orchestrator
 		{"relay-from-operator", true}, // an operator's session: only the full scope names an assigner
-		{"op@example.com", true},      // a tailnet operator, by login
-		{"ram@example.com", false},    // a member
+		{"op@example.com", false},     // a login is a person's request passed on, never admin work
+		{"ram@example.com", false},    // a guest
 		{"stranger@example.com", false},
 	}
 	for _, c := range cases {
 		t.Run(c.assigner, func(t *testing.T) {
 			f, _, _ := newFleet(t)
 			f.cfg.Orchestrator.Name = "karmax"
-			f.cfg.Tailnet = &config.Tailnet{Operators: []string{"op@example.com"}, Members: []string{"ram@example.com"}}
 			putSecret(t, f, "openai", apiKey)
 			assignAs(t, f, "agent-03", "T1", c.assigner)
 			if err := f.SecretGrant("openai", "", "agent-03", "operator", 0, t0); err != nil {

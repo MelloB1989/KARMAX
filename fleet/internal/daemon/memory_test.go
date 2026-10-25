@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/memory"
 )
 
@@ -58,12 +57,14 @@ func TestASuggestionReachesTheOrchestratorWithWhoAndTheTask(t *testing.T) {
 	}
 }
 
-func TestOperatorSideAssignersAreTheOperatorSessionsAndTailnetOperators(t *testing.T) {
+// The operator's side is a name without an @: the operator, their sessions
+// and the orchestrator. A login is a person's, never the operator's side,
+// whoever passes it on.
+func TestOperatorSideAssignersAreTheOperatorAndTheirSessions(t *testing.T) {
 	f, _, _ := newFleet(t)
-	f.cfg.Tailnet = &config.Tailnet{Operators: []string{"op@example.com"}, Members: []string{"ram@example.com"}}
 	for assigner, want := range map[string]bool{
-		"operator": true, "karmax": true, "relay-from-operator": true, "op@example.com": true,
-		"ram@example.com": false, "sam@example.com": false, "": false,
+		"operator": true, "karmax": true, "relay-from-operator": true, "op@example.com": false,
+		"ram@example.com": false, "ram@example.com/cc-1": false, "": false,
 	} {
 		if got := f.OperatorAssigner(assigner); got != want {
 			t.Errorf("OperatorAssigner(%q) = %v, want %v", assigner, got, want)

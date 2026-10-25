@@ -89,9 +89,6 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"console is relay":    "console: {host: kali, fleetd_url: 'http://f:7879', token_env: FLEET_RELAY_TOKEN}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"console url":         "console: {host: kali, fleetd_url: 'f:7879', token_env: C}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"tailnet no port":     "tailnet: {listen: 100.64.0.1}\nagents: {agent-01: {host: kali, token_env: T}}",
-		"tailnet bare *":      "tailnet: {listen: '100.64.0.1:7878', members: ['*']}\nagents: {agent-01: {host: kali, token_env: T}}",
-		"tailnet any domain":  "tailnet: {listen: '100.64.0.1:7878', members: ['*@*']}\nagents: {agent-01: {host: kali, token_env: T}}",
-		"tailnet not a login": "tailnet: {listen: '100.64.0.1:7878', operators: [op]}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"hide absolute":       "hide_from_agents: [/etc]\nagents: {agent-01: {host: kali, token_env: T}}",
 		"hide outside code":   "hide_from_agents: [../.ssh]\nagents: {agent-01: {host: kali, token_env: T}}",
 		"hide all of code":    "hide_from_agents: [.]\nagents: {agent-01: {host: kali, token_env: T}}",
@@ -246,38 +243,28 @@ func TestGitHubOwners(t *testing.T) {
 	}
 }
 
-// A tailnet login is an operator, a member, or nobody; *@domain is every
-// login of that domain and no other.
-func TestTailnetRoles(t *testing.T) {
+func TestTailnetDefaults(t *testing.T) {
 	c, err := Parse([]byte(example + `
 tailnet:
   listen: 100.64.0.1:7878
-  operators: [Op@Example.com]
-  members: ["*@example.com", guest@other.org]
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	tn := c.Tailnet
-	if tn.MemberOpen != 2 || tn.Socket != "/var/run/tailscale/tailscaled.sock" || tn.Dist != "/home/op/.karmax/fleet/dist" {
+	if tn.GuestOpen != 2 || tn.Socket != "/var/run/tailscale/tailscaled.sock" || tn.Dist != "/home/op/.karmax/fleet/dist" {
 		t.Errorf("defaults: %+v", tn)
 	}
-	for login, want := range map[string]string{
-		"op@example.com":    "operator",
-		"ram@example.com":   "member",
-		"guest@other.org":   "member",
-		"someone@other.org": "",
-		"x@evilexample.com": "",
-		"tagged-devices":    "",
-		"":                  "",
-	} {
-		if got := tn.Role(login); got != want {
-			t.Errorf("Role(%q) = %q, want %q", login, got, want)
+}
+
+// Who may use the fleet is a device's tag now: a fleet.yaml that still
+// lists logins fails to load, and says what replaced them.
+func TestTheOldTailnetKeysFailToLoad(t *testing.T) {
+	for _, k := range []string{"operators: [op@example.com]", `members: ["*@example.com"]`, "member_open: 3", "operators: []"} {
+		_, err := Parse([]byte(example + "\ntailnet:\n  listen: 100.64.0.1:7878\n  " + k + "\n"))
+		if err == nil || !strings.Contains(err.Error(), "tailnet.operators/members are gone: tag devices with `fleetctl access`") {
+			t.Errorf("%s: %v", k, err)
 		}
-	}
-	var none *Tailnet
-	if none.Role("op@example.com") != "" {
-		t.Error("no tailnet section: nobody")
 	}
 }
 
