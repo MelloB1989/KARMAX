@@ -1,0 +1,42 @@
+╭─ KARMAX ▸ fleetctl ──────────────────────────────────────────────────────────────── admin · operator ── 20 workers · 3 working ── 21:04 ─╮
+│  1 Fleet   2 Screens   3 Tasks   4 Events   5 Quota   6 Hosts   7 Access ●1                                                       ● live │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ┃ agent-01 · pc2                             cpu 37% · 1020M / 2.5G  ┃ agent-07 · pc2                                                    │
+│ ┃▸ ◉‿◉ S1 working   tui-frame-1a2b      5h ███░░░░░  34% Grep 5s     ┃  ✕·· S1 down      container is not r… 5h ░░░░░░░░   0%            │
+│ ┃  zzz S2 standby   idle 21m            5h ███░░░░░  34%             ┃  ✕·· S2 down      container is not r… 5h ░░░░░░░░   0%            │
+│                                                                                                                                          │
+│ ┃ agent-02 · pc2                              cpu 71% · 1.1G / 2.5G  ┃ agent-08 · pc2                               cpu 5% · 1.8G / 2.5G │
+│ ┃  zzz S1 standby   idle 22m            5h ████████  99%             ┃  zzz S1 standby   idle 34m            5h ██░░░░░░  22%            │
+│ ┃  zzz S2 standby   idle 23m            5h ████████  99%             ┃  zzz S2 standby   idle 35m            5h ██░░░░░░  22%            │
+│                                                                                                                                          │
+│ ┃ agent-03 · pc2                              cpu 15% · 1.2G / 2.5G  ┃ agent-09 · kali sandbox                     cpu 22% · 1.9G / 1.5G │
+│ ┃  ❄·· S1 cooling   cools till 21:29    5h █░░░░░░░  12%             ┃  ⚙·· S1 working   port-api-7a8b       5h █░░░░░░░  17% Bash 21s   │
+│ ┃  zzz S2 standby   idle 25m            5h █░░░░░░░  12%                                                                                 │
+│                                                                      ┃ agent-10 · kali sandbox                     cpu 39% · 1.9G / 1.5G │
+│ ┃ agent-04 · pc2                              cpu 49% · 1.3G / 2.5G  ┃  zzz S1 standby   idle 37m            5h ░░░░░░░░   0%            │
+│ ┃  ?·· S1 waiting   access-3c4d         5h ████░░░░  51%                                                                                 │
+│ ┃  zzz S2 standby   idle 27m            5h ████░░░░  51%             ┃ agent-11 · kali sandbox                     cpu 56% · 2.0G / 1.5G │
+│                                                                      ┃  zzz S1 standby   idle 38m            5h ░░░░░░░░   0%            │
+│ ┃ agent-05 · pc2                              cpu 83% · 1.5G / 2.5G                                                                      │
+│ ┃  zzz S1 standby   idle 28m            5h ███░░░░░  43%             ┃ agent-12 · kali                             cpu 73% · 2.1G / 2.5G │
+│ ┃  ⚙·· S2 working   term-5e6f           5h ███░░░░░  43% Bash 14s    ┃  zzz S1 standby   idle 39m            5h ░░░░░░░░   5%            │
+│                                                                                                                                          │
+│ ┃ agent-06 · pc2                              cpu 27% · 1.6G / 2.5G                                                                      │
+│ ┃  zzz S1 standby   idle 30m            5h █░░░░░░░   8%                                                                                 │
+│ ┃  zzz S2 standby   idle 31m            5h █░░░░░░░   8%                                                                                 │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│ ─ Working · last 30m ───────── Today · since 00:00 ─ Running out · 5h windows ────────── Events · latest ─────────────────────────────── │
+│                                    7 tasks closed  acct-02             99%  out 21:13  21:03 report · agent-01                           │
+│                 ▆▆                                   █████████████ in 9m · +6%/h             frame and tabs render at 80x24              │
+│         ▃       ██            $41.37 spent                                             21:00 question · agent-04                         │
+│       ▁▁█▁     ▁██▁                                                                          Should a lend to an admin device be refuse… │
+│       ████     ████            1.28M tokens out                                        20:57 report · agent-09                           │
+│      ▇████▇▇  ▇████▇▇▇  ▇▇▇                                                                  synced your repo into /work/code/api        │
+│   ▅▅▅███████▅▅████████▅▅███                                                                                                              │
+│ ▂▂█████████████████████████                                                                                                              │
+│ ███████████████████████████                                                                                                              │
+│ −30m         now 3 · peak 6                                                                                                              │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ↑↓ select · ⏎ detail · s ssh · t type · m model · d done · c cancel · ? help · q quit                            made by MelloB · v0.3.0 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

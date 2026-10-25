@@ -80,7 +80,7 @@ func newApp(ctx context.Context, opts Options) *App {
 		opts.Now = time.Now
 	}
 	a := &App{opts: opts, ctx: ctx, tabs: defaultTabs(), booting: !opts.NoAnim}
-	a.c = Ctx{Client: opts.Client, Theme: NewTheme(true), Now: opts.Now(), NoAnim: opts.NoAnim}
+	a.c = Ctx{Client: opts.Client, Theme: NewTheme(true), Now: opts.Now(), NoAnim: opts.NoAnim, Working: &Samples{}}
 	a.c.Attach = func(worker string, mode fleetapi.TermMode) tea.Cmd {
 		if a.opts.Attach == nil {
 			return toast("ssh is not available in this build", true)
@@ -238,6 +238,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.watch(a.since)
 		}
 		a.c.Snap, a.since, a.err, a.back = m.Snap, m.Snap.Seq, nil, 0
+		a.c.Working.Add(a.c.Now, float64(working(m.Snap)))
 		return a, tea.Batch(a.watch(a.since), a.current().Update(m, &a.c), a.tick())
 
 	case WatchErrMsg:
@@ -391,17 +392,11 @@ func (a *App) top(w int) string {
 	// there is no room, then who you are.
 	var me, counts string
 	if s := a.c.Snap; s != nil {
-		working := 0
-		for _, w := range s.Workers {
-			if w.State == "working" {
-				working++
-			}
-		}
 		noun := "workers"
 		if len(s.Workers) == 1 {
 			noun = "worker"
 		}
-		counts = t.Muted.Render(fmt.Sprintf("%d %s · ", len(s.Workers), noun)) + paint(t.Amber, fmt.Sprintf("%d working", working))
+		counts = t.Muted.Render(fmt.Sprintf("%d %s · ", len(s.Workers), noun)) + paint(t.Amber, fmt.Sprintf("%d working", working(s)))
 		role := lipgloss.NewStyle().Foreground(t.Amber).Bold(true)
 		if s.Me.Role == fleetapi.RoleGuest {
 			role = role.Foreground(t.Violet)
