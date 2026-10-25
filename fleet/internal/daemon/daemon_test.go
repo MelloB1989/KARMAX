@@ -218,7 +218,8 @@ const transcript = `{"type":"user","sessionId":"s-agent-03","cwd":"/work","times
 
 func TestTickRecordsEventsQuotaAndState(t *testing.T) {
 	f, boxes, _ := newFleet(t)
-	st, _ := observe.ParseStatus([]byte(`{"session_id":"s-agent-03","rate_limits":{"five_hour":{"used_percentage":30,"resets_at":1791430000}}}`))
+	resets := itoa(int(t0.Add(3 * time.Hour).Unix())) // a window still open at t0
+	st, _ := observe.ParseStatus([]byte(`{"session_id":"s-agent-03","rate_limits":{"five_hour":{"used_percentage":30,"resets_at":` + resets + `}}}`))
 	boxes["agent-03"].obs.Status = st
 	boxes["agent-03"].obs.Events = []observe.Event{{T: t0.Unix(), Event: "Stop", Session: "s-agent-03"}}
 

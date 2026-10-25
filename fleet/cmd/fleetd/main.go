@@ -232,6 +232,9 @@ func writeDashboard(d outbound.Dashboard, f *daemon.Fleet, db *ledger.DB, orch *
 		return nil
 	}
 	quota, _ := db.LatestQuota()
+	for k, q := range quota {
+		quota[k] = q.Aged(now)
+	}
 	usage, _ := db.UsageBy("agent", now.Add(-7*24*time.Hour))
 	all, _ := db.Events("", now.Add(-24*time.Hour))
 	var events []ledger.Event

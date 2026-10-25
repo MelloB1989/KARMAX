@@ -453,7 +453,7 @@ func (f *Fleet) accounts(now time.Time) []fleetapi.Account {
 	}
 	out := []fleetapi.Account{}
 	for _, n := range names {
-		q := latest[n]
+		q := latest[n].Aged(now)
 		a := fleetapi.Account{Name: n, Agents: byAccount[n], Orchestrator: n == orch, FiveHour: q.FiveHour,
 			SevenDay: q.SevenDay, FiveResets: q.FiveResets, SevenResets: q.SevenResets, At: q.At, History: []fleetapi.Point{}}
 		if a.Agents == nil {

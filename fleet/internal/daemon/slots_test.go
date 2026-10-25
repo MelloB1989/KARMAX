@@ -12,6 +12,7 @@ import (
 
 	"github.com/MelloB1989/karmax/fleet/internal/agent"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
+	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/observe"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
@@ -194,6 +195,50 @@ func TestCoolingAndQuotaAreTheAccountsSharedBySiblings(t *testing.T) {
 		if strings.HasPrefix(c.Agent, "agent-01") && c.Eligible {
 			t.Errorf("%s is eligible while its account cools", c.Agent)
 		}
+	}
+}
+
+// The account's quota on the ledger, which fleetctl quota and the TUI show,
+// is the account's merged over its slots as the roster's is: an idle slot's
+// older reading of the window never stands for the account, whichever slot
+// ticked last. A window whose reset has passed with no turn since is shown
+// reset, not with the use it had.
+func TestTheLedgersQuotaIsTheAccountsNotOneSlots(t *testing.T) {
+	f, boxes, _ := newSlots(t)
+	resets := t0.Add(3 * time.Hour)
+	busy, _ := observe.ParseStatus([]byte(`{"rate_limits":{"five_hour":{"used_percentage":85,"resets_at":` + itoa(int(resets.Unix())) + `}}}`))
+	stale, _ := observe.ParseStatus([]byte(`{"rate_limits":{"five_hour":{"used_percentage":40,"resets_at":` + itoa(int(resets.Unix())) + `}}}`))
+	boxes["agent-01"].obs.Status = busy
+	boxes["agent-01:2"].obs.Status = stale
+	for i := range 3 {
+		f.Tick(context.Background(), t0.Add(time.Duration(i)*time.Second))
+	}
+	acct := func(now time.Time) fleetapi.Account {
+		for _, a := range f.accounts(now) {
+			if a.Name == "agent-01" {
+				return a
+			}
+		}
+		t.Fatal("no account agent-01")
+		return fleetapi.Account{}
+	}
+	if a := acct(t0.Add(3 * time.Second)); a.FiveHour != 85 || !a.FiveResets.Equal(resets) {
+		t.Errorf("account = %.0f%% resets %v, want the busy slot's 85%% at %v", a.FiveHour, a.FiveResets, resets)
+	}
+	samples, _ := f.db.QuotaSince(t0.Add(-time.Minute))
+	for _, q := range samples {
+		if q.Account == "agent-01" && q.FiveHour != 85 {
+			t.Errorf("a sample of %.0f%% at %v: the idle slot's reading stood for the account", q.FiveHour, q.At)
+		}
+	}
+
+	if a := acct(resets.Add(time.Minute)); a.FiveHour != 0 || !a.FiveResets.IsZero() {
+		t.Errorf("after its reset the window shows %.0f%% resets %v, want reset", a.FiveHour, a.FiveResets)
+	}
+	_ = f.db.AddQuota(ledger.Quota{Account: "agent-02", At: time.Now().Add(-time.Hour), FiveHour: 96,
+		FiveResets: time.Now().Add(-time.Minute), SevenDay: 30, SevenResets: time.Now().Add(48 * time.Hour)})
+	if q, _ := f.Quota(); q["agent-02"].FiveHour != 0 || q["agent-02"].SevenDay != 30 {
+		t.Errorf("GET /v1/quota: %+v, want the 5-hour window reset and the 7-day kept", q["agent-02"])
 	}
 }
 

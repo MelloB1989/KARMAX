@@ -266,6 +266,18 @@ type Quota struct {
 	Source                  string // statusline | stopfailure | harness
 }
 
+// Aged is q as of now: a window whose reset has passed is a new one that no
+// turn has reported yet, so it is shown reset, not with the use it had.
+func (q Quota) Aged(now time.Time) Quota {
+	if !q.FiveResets.IsZero() && !now.Before(q.FiveResets) {
+		q.FiveHour, q.FiveResets = 0, time.Time{}
+	}
+	if !q.SevenResets.IsZero() && !now.Before(q.SevenResets) {
+		q.SevenDay, q.SevenResets = 0, time.Time{}
+	}
+	return q
+}
+
 // AddQuota records a sample.
 func (db *DB) AddQuota(q Quota) error {
 	_, err := db.sql.Exec(`INSERT INTO quota(account, at, five_hour, five_resets, seven_day, seven_resets, source)

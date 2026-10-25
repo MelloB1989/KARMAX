@@ -68,7 +68,15 @@ func (f *Fleet) History(agent string, n int) ([]ledger.Session, error) {
 }
 
 // Quota is each account's latest windows.
-func (f *Fleet) Quota() (map[string]ledger.Quota, error) { return f.db.LatestQuota() }
+// Quota is each account's latest windows, aged at their reset.
+func (f *Fleet) Quota() (map[string]ledger.Quota, error) {
+	qs, err := f.db.LatestQuota()
+	now := time.Now()
+	for k, q := range qs {
+		qs[k] = q.Aged(now)
+	}
+	return qs, err
+}
 
 // Tasks lists tasks, newest first, of one assigner when given. n defaults
 // to everything when open, else 50.

@@ -283,6 +283,7 @@ func (f *Fleet) Tick(ctx context.Context, now time.Time) {
 		}(h)
 	}
 	wg.Wait()
+	f.recordQuota(now)
 	f.forgetTools(now)
 	f.escalate(ctx, now)
 	f.alertHeld(ctx, now)
@@ -343,15 +344,6 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 			f.Log("ack events %s: %v", name, err)
 		}
 	}
-	if s := o.Status; s != nil {
-		five, okF := s.FiveHour()
-		seven, okS := s.SevenDay()
-		if okF || okS {
-			_ = f.db.AddQuota(ledger.Quota{Account: w.Account, At: now,
-				FiveHour: five.Used, FiveResets: five.Resets, SevenDay: seven.Used, SevenResets: seven.Resets, Source: "statusline"})
-		}
-	}
-
 	old := f.State(name)
 	if old.Task != "" {
 		if o.Owes, err = f.db.Owes(old.Task); err != nil {
@@ -433,21 +425,53 @@ func (f *Fleet) sharedQuota(st reconcile.State) reconcile.State {
 	}
 	q := st.Quota
 	for _, sib := range sibs {
-		o := f.State(sib).Quota
-		if o.FiveHourResets.After(q.FiveHourResets) || o.FiveHourResets.Equal(q.FiveHourResets) && o.FiveHour > q.FiveHour {
-			q.FiveHour, q.FiveHourResets = o.FiveHour, o.FiveHourResets
-		}
-		if o.SevenDayResets.After(q.SevenDayResets) || o.SevenDayResets.Equal(q.SevenDayResets) && o.SevenDay > q.SevenDay {
-			q.SevenDay, q.SevenDayResets = o.SevenDay, o.SevenDayResets
-		}
-		if o.At.After(q.At) {
-			q.At = o.At
-		}
+		q = newerQuota(q, f.State(sib).Quota)
 	}
 	st.Quota = q
 	st.Low = q.FiveHour >= f.cfg.Thresholds.Low5h
 	st.Reserved = q.SevenDay >= f.cfg.Thresholds.Reserved7d
 	return st
+}
+
+// newerQuota is q with what o knows that q does not, window by window.
+func newerQuota(q, o reconcile.Quota) reconcile.Quota {
+	if o.FiveHourResets.After(q.FiveHourResets) || o.FiveHourResets.Equal(q.FiveHourResets) && o.FiveHour > q.FiveHour {
+		q.FiveHour, q.FiveHourResets = o.FiveHour, o.FiveHourResets
+	}
+	if o.SevenDayResets.After(q.SevenDayResets) || o.SevenDayResets.Equal(q.SevenDayResets) && o.SevenDay > q.SevenDay {
+		q.SevenDay, q.SevenDayResets = o.SevenDay, o.SevenDayResets
+	}
+	if o.At.After(q.At) {
+		q.At = o.At
+	}
+	return q
+}
+
+// recordQuota writes, once every worker has been looked at, one sample per
+// account that a status line reported this tick: its windows merged over
+// every worker on it (newerQuota). One worker's own reading may be an idle
+// session's, from its last turn, and must not stand for the account.
+func (f *Fleet) recordQuota(now time.Time) {
+	byAccount := map[string]reconcile.Quota{}
+	var accounts []string
+	for _, name := range f.cfg.WorkerNames() {
+		w, _ := f.cfg.Worker(name)
+		q, seen := byAccount[w.Account]
+		if !seen {
+			accounts = append(accounts, w.Account)
+		}
+		byAccount[w.Account] = newerQuota(q, f.State(name).Quota)
+	}
+	for _, acct := range accounts {
+		q := byAccount[acct]
+		if q.At.Before(now) {
+			continue // no status line this tick: nothing new to record
+		}
+		if err := f.db.AddQuota(ledger.Quota{Account: acct, At: now, FiveHour: q.FiveHour, FiveResets: q.FiveHourResets,
+			SevenDay: q.SevenDay, SevenResets: q.SevenDayResets, Source: "statusline"}); err != nil {
+			f.Log("ledger: quota %s: %v", acct, err)
+		}
+	}
 }
 
 // followContainer is a sibling slot's state while its container is not
