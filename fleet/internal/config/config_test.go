@@ -438,3 +438,32 @@ func TestASandboxAgentsWorkersAreSandboxes(t *testing.T) {
 		t.Fatalf("worker = %+v (%v)", w, ok)
 	}
 }
+
+// A sandbox runs one session in a small container unless fleet.yaml says
+// otherwise, on the fixed subnet its network rules name.
+func TestASandboxDefaultsToOneSlotAndASmallContainer(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(example, "models: [sonnet, opus]}", "models: [sonnet, opus], sandbox: true}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := c.Agents["agent-01"]; a.Slots != 1 || a.Memory != "1536m" {
+		t.Errorf("sandbox = %+v, want slots 1 and memory 1536m", a)
+	}
+	if a := c.Agents["agent-04"]; a.Slots != 2 || a.Memory != "" {
+		t.Errorf("ordinary agent = %+v: the sandbox defaults are the sandbox's only", a)
+	}
+	if c.SandboxNet.Subnet != "172.31.250.0/24" {
+		t.Errorf("subnet = %q", c.SandboxNet.Subnet)
+	}
+	c, err = Parse([]byte(strings.Replace(example, "models: [sonnet, opus]}", "models: [sonnet, opus], sandbox: true, slots: 2, memory: 3g}", 1) +
+		"sandbox: {subnet: 192.0.2.0/24}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := c.Agents["agent-01"]; a.Slots != 2 || a.Memory != "3g" || c.SandboxNet.Subnet != "192.0.2.0/24" {
+		t.Errorf("set = %+v, subnet %q", a, c.SandboxNet.Subnet)
+	}
+	if _, err := Parse([]byte(example + "sandbox: {subnet: 192.0.2.0}\n")); err == nil || !strings.Contains(err.Error(), "subnet") {
+		t.Errorf("a subnet that is no CIDR: %v", err)
+	}
+}

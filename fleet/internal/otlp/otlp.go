@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 )
 
@@ -31,26 +32,33 @@ type Sink interface {
 
 // Handler serves /v1/logs and /v1/metrics. A non-empty token is required as
 // a bearer token (set through OTEL_EXPORTER_OTLP_HEADERS in the agents).
-func Handler(s Sink, token string) http.Handler {
+func Handler(s Sink, token string) http.Handler { return HandlerFor(s, token, nil) }
+
+// HandlerFor is Handler that also takes a sandbox agent's key: sandbox says
+// whose a bearer is. What comes under a key is that agent's, whatever the
+// export's fleet.agent says (a slot of the agent's own is kept).
+func HandlerFor(s Sink, token string, sandbox func(bearer string) (agent string, ok bool)) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/logs", func(w http.ResponseWriter, r *http.Request) {
 		var req logsRequest
-		if !decode(w, r, token, &req) {
+		as, authed := decode(w, r, token, sandbox, &req)
+		if !authed {
 			return
 		}
-		ingestLogs(s, &req)
+		ingestLogs(s, &req, as)
 		ok(w)
 	})
 	mux.HandleFunc("POST /v1/metrics", func(w http.ResponseWriter, r *http.Request) {
 		var req metricsRequest
-		if !decode(w, r, token, &req) {
+		as, authed := decode(w, r, token, sandbox, &req)
+		if !authed {
 			return
 		}
-		ingestMetrics(s, &req)
+		ingestMetrics(s, &req, as)
 		ok(w)
 	})
 	mux.HandleFunc("POST /v1/traces", func(w http.ResponseWriter, r *http.Request) {
-		if authorized(r, token) {
+		if _, authed := authorized(r, token, sandbox); authed {
 			ok(w)
 			return
 		}
@@ -59,21 +67,37 @@ func Handler(s Sink, token string) http.Handler {
 	return mux
 }
 
-func authorized(r *http.Request, token string) bool {
-	if token == "" {
-		return true
-	}
+// authorized reports whether a request may send telemetry, and, when it
+// came with a sandbox's key, that sandbox agent.
+func authorized(r *http.Request, token string, sandbox func(string) (string, bool)) (as string, ok bool) {
 	h := r.Header.Get("Authorization")
 	// Claude Code's exporter sends OTEL_EXPORTER_OTLP_HEADERS undecoded, so
 	// the header arrives as "Bearer%20<token>"; spec-compliant SDKs decode it.
 	// Accept both, and a token that itself holds a '%' as written.
 	for _, v := range []string{h, unescape(h)} {
 		got := strings.TrimPrefix(v, "Bearer ")
-		if got != v && subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
-			return true
+		if got == v {
+			continue
+		}
+		if sandbox != nil {
+			if a, ok := sandbox(got); ok {
+				return a, true
+			}
+		}
+		if token != "" && subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
+			return "", true
 		}
 	}
-	return false
+	return "", token == ""
+}
+
+// agentOf is whose an export is: its fleet.agent, unless it came under a
+// sandbox's key, which names the agent itself.
+func agentOf(attr, as string) string {
+	if as == "" || identity.Base(attr) == as {
+		return attr
+	}
+	return as
 }
 
 func unescape(s string) string {
@@ -83,30 +107,31 @@ func unescape(s string) string {
 	return s
 }
 
-func decode(w http.ResponseWriter, r *http.Request, token string, v any) bool {
-	if !authorized(r, token) {
+func decode(w http.ResponseWriter, r *http.Request, token string, sandbox func(string) (string, bool), v any) (string, bool) {
+	as, ok := authorized(r, token, sandbox)
+	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return false
+		return "", false
 	}
 	var body io.Reader = http.MaxBytesReader(w, r.Body, 16<<20)
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(body)
 		if err != nil {
 			http.Error(w, "bad gzip", http.StatusBadRequest)
-			return false
+			return "", false
 		}
 		defer gz.Close()
 		body = io.LimitReader(gz, 64<<20)
 	}
 	if !strings.Contains(r.Header.Get("Content-Type"), "json") {
 		http.Error(w, "only OTLP/HTTP JSON is accepted (OTEL_EXPORTER_OTLP_PROTOCOL=http/json)", http.StatusUnsupportedMediaType)
-		return false
+		return "", false
 	}
 	if err := json.NewDecoder(body).Decode(v); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
-		return false
+		return "", false
 	}
-	return true
+	return as, true
 }
 
 func ok(w http.ResponseWriter) {
@@ -204,9 +229,9 @@ type logsRequest struct {
 	} `json:"resourceLogs"`
 }
 
-func ingestLogs(s Sink, req *logsRequest) {
+func ingestLogs(s Sink, req *logsRequest, as string) {
 	for _, rl := range req.ResourceLogs {
-		agent := rl.Resource.Attributes.get("fleet.agent")
+		agent := agentOf(rl.Resource.Attributes.get("fleet.agent"), as)
 		if agent == "" {
 			continue
 		}
@@ -322,9 +347,9 @@ var counters = map[string]bool{
 	"pull_request.count": true, "active_time.total": true,
 }
 
-func ingestMetrics(s Sink, req *metricsRequest) {
+func ingestMetrics(s Sink, req *metricsRequest, as string) {
 	for _, rm := range req.ResourceMetrics {
-		agent := rm.Resource.Attributes.get("fleet.agent")
+		agent := agentOf(rm.Resource.Attributes.get("fleet.agent"), as)
 		if agent == "" {
 			continue
 		}

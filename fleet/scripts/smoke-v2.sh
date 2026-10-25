@@ -415,6 +415,73 @@ else
   echo "SKIP watch: GET /v1/watch is not in this build (fleet/agent-06/watch)"
 fi
 
+# --- sandbox (task 2 of the TUI and access plan) -----------------------------
+# A sandbox's container holds nothing of the operator's: render one and look
+# for what must not be there. Then fleetd takes its key for whoami, and its
+# key reaches nothing else here.
+SB=$R/sandbox; mkdir -p "$SB"; chmod 700 "$SB"
+cat > "$SB/fleet.yaml" <<EOF
+home: /home/op
+env_file: $SB/env
+state_dir: $SB/state
+relay_listen: 0.0.0.0:7879
+hosts:
+  kali: {exec: [docker], fleetd_url: "http://host.docker.internal:7879", otlp_url: "http://host.docker.internal:4318", karmax_url: "http://host.docker.internal:9091"}
+  pc2: {exec: [docker, --context, pc2], fleetd_url: "http://192.0.2.10:7879"}
+orchestrator: {host: kali, native: true}
+build: {docker_host: "ssh://fleetbuild@192.0.2.20", key_env: FLEET_BUILD_KEY}
+github: {token_env: GH_TOKEN_FLEET}
+git: {name: "Example coding agent", email: build@example.com}
+agents:
+  agent-01: {host: kali, token_env: CLAUDE_TOKEN_AGENT_01}
+  agent-09: {host: kali, token_env: CLAUDE_TOKEN_AGENT_09, sandbox: true}
+  agent-10: {host: pc2, token_env: CLAUDE_TOKEN_AGENT_10, sandbox: true}
+EOF
+printf 'FLEET_TOKEN=%s\nFLEET_RELAY_TOKEN=%s\nCLAUDE_TOKEN_AGENT_01=a1\nCLAUDE_TOKEN_AGENT_09=a9\nCLAUDE_TOKEN_AGENT_10=a10\nFLEET_BUILD_KEY=bk\nGH_TOKEN_FLEET=gho_smoke\n' $FULL $RELAY > "$SB/env"
+chmod 600 "$SB/env"
+FLEET_CONFIG=$SB/fleet.yaml "$B/fleetctl" render --out "$SB/r" > "$SB/render.out" 2>&1
+if grep -q FLEET_SANDBOX_KEY "$SB/r/agents/agent-09.env" 2>/dev/null; then
+  keys=$(grep -o '^[A-Z_]*=' "$SB/r/agents/agent-09.env" | tr -d = | sort | tr '\n' ' ')
+  check "sandbox: its env file holds its login, its key and telemetry, nothing else" "keys: $keys" \
+    test "$keys" = "CLAUDE_CODE_OAUTH_TOKEN FLEET_SANDBOX_KEY OTEL_EXPORTER_OTLP_HEADERS "
+  # agent-09's service: from its key to the next service's.
+  svc=$(awk '/^    agent-09:$/{on=1; print; next} on && /^    [a-z]/{exit} on' "$SB/r/compose.kali.yaml")
+  check "sandbox: its service is in the compose file" "compose: $(head -c 300 "$SB/r/compose.kali.yaml")" has "$svc" "container_name: agent-09"
+  for bad in /home/op/code DOCKER_HOST GH_TOKEN GIT_AUTHOR KARMAX_API_URL fleet-peers fleet-socks "pid:" FLEET_TOKEN FLEET_AGENT_KEY; do
+    check "sandbox: no $bad in its service" "found it" bash -c '! grep -q -- "$1" <<<"$2"' _ "$bad" "$svc"
+  done
+  for want in "agent-09-code:/work/code" "FLEET_CODE: /work/code" "init: true" "- fleet-sandbox"; do
+    check "sandbox: its service has $want" "service: $svc" has "$svc" "$want"
+  done
+  check "sandbox: the host's rules let it reach fleetd's relay port" "rules: $(cat "$SB/r/sandbox-net.kali.sh" 2>&1)" \
+    grep -q -- '--dport 7879 .* -j ACCEPT' "$SB/r/sandbox-net.kali.sh"
+  check "sandbox: pc2's rules let it reach fleetd's address on its port" "rules: $(cat "$SB/r/sandbox-net.pc2.sh" 2>&1)" \
+    grep -q -- '-d 192.0.2.10 -p tcp --dport 7879' "$SB/r/sandbox-net.pc2.sh"
+  check "sandbox: a unit keeps the rules" "missing" test -s "$SB/r/fleet-sandbox-net.kali.service"
+
+  # fleetd with agent-03 a sandbox: its key is whoami, and refused the rest.
+  sed -i 's|^  agent-02: {host: kali, token_env: CLAUDE_TOKEN_AGENT_02, slots: 2}$|&\n  agent-03: {host: kali, token_env: CLAUDE_TOKEN_AGENT_03, sandbox: true}|' "$R/state/fleet.yaml"
+  echo CLAUDE_TOKEN_AGENT_03=a3 >> "$R/env"
+  kill $FPID; wait $FPID 2>/dev/null; start_fleetd; up
+  SKEY=$(python3 -c 'import hmac,hashlib,sys; print(hmac.new(sys.argv[1].encode(), b"sandbox:agent-03", hashlib.sha256).hexdigest())' $FULL)
+  sandbox() { FLEET_CONFIG=$R/none FLEETD_URL=http://$API FLEET_SANDBOX_KEY=$SKEY FLEET_AGENT=agent-03 FLEET_NAME=agent-03 "$B/fleetctl" "$@"; }
+  out=$(sandbox whoami 2>&1)
+  check "sandbox: fleetd takes its key for whoami" "whoami: $out" bash -c 'grep -q sandbox <<<"$1" && grep -q agent-03 <<<"$1"' _ "$out"
+  out=$(sandbox status 2>&1); rc=$?
+  check "sandbox: its key is refused status" "exit $rc: $out" bash -c 'test $1 != 0 && grep -q "may:" <<<"$2"' _ $rc "$out"
+  out=$(sandbox tell operator "hello" 2>&1); rc=$?
+  check "sandbox: with no task it tells no one" "exit $rc: $out" test $rc != 0
+  out=$(sandbox memory recall deploys 2>&1); rc=$?
+  check "sandbox: its key gets no memory" "exit $rc: $out" test $rc != 0
+  out=$(FLEET_CONFIG=$R/none FLEETD_URL=http://$API FLEET_SANDBOX_KEY=0000 "$B/fleetctl" whoami 2>&1); rc=$?
+  check "sandbox: a made-up key is no one" "exit $rc: $out" test $rc != 0
+  out=$(op pick --json 2>/dev/null)
+  check "sandbox: a pick passes it over" "pick: $out" \
+    bash -c 'jq -e ".candidates[] | select(.agent==\"agent-03\") | .eligible == false" <<<"$1" >/dev/null' _ "$out"
+else
+  echo "SKIP sandbox: render has no sandbox agents in this build ($(head -c 200 "$SB/render.out"))"
+fi
+
 # ---------------------------------------------------------------------------
 if [ -s "$R/fakes/violations" ]; then
   fail "the fakes saw only the routes fleetd may call" "$(cat "$R/fakes/violations")"

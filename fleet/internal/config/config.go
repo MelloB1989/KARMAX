@@ -80,6 +80,17 @@ type Config struct {
 	// Memory is the operator's long-term memory that fleetd reads for its
 	// callers; nil means none.
 	Memory *Memory `yaml:"memory"`
+	// SandboxNet is the network sandbox agents run on.
+	SandboxNet SandboxNet `yaml:"sandbox"`
+}
+
+// SandboxNet is fleet-sandbox, the Docker bridge sandbox agents run on: it
+// reaches the internet and fleetd's relay and telemetry ports, and nothing
+// else (the rules fleetctl render writes beside each host's compose file).
+type SandboxNet struct {
+	// Subnet is the bridge's fixed subnet, which the rules match; default
+	// 172.31.250.0/24.
+	Subnet string `yaml:"subnet"`
 }
 
 // Memory is the gitloom namespace the orchestrator keeps. fleetd holds its
@@ -470,7 +481,16 @@ func (c *Config) defaults() {
 	if c.Slots == 0 {
 		c.Slots = 2
 	}
+	if c.SandboxNet.Subnet == "" {
+		c.SandboxNet.Subnet = "172.31.250.0/24"
+	}
 	for name, a := range c.Agents {
+		if a.Sandbox && a.Slots == 0 {
+			a.Slots = 1 // lent whole to one guest's work at a time
+		}
+		if a.Sandbox && a.Memory == "" {
+			a.Memory = "1536m"
+		}
 		if a.Slots == 0 {
 			a.Slots = c.Slots
 		}
@@ -551,6 +571,9 @@ func (c *Config) validate() error {
 	}
 	if _, slot := SplitWorker(c.Orchestrator.Name); slot != 1 {
 		return fmt.Errorf("orchestrator: name %q: a name with \":\" in it is an agent's slot", c.Orchestrator.Name)
+	}
+	if _, _, err := net.ParseCIDR(c.SandboxNet.Subnet); err != nil {
+		return fmt.Errorf("sandbox: subnet %q: want a CIDR like 172.31.250.0/24", c.SandboxNet.Subnet)
 	}
 	for _, name := range c.AgentNames() {
 		a := c.Agents[name]

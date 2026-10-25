@@ -7,10 +7,8 @@ or how its report travels: fleetd picks the agent and files every report the age
 
 ## When to delegate
 
-Delegate work that is independent and well specified:
-
-- a bug with a reproduction, a feature with a spec, a test suite to write, a review of a branch;
-- several such tasks at once (fan-out), or work long enough that you would rather not wait for it.
+Delegate work that is independent and well specified: a bug with a reproduction, a feature with a spec, a
+test suite, a review of a branch; several such tasks at once, or work you would rather not wait for.
 
 Do it yourself when the work needs this session's context (what you and the operator just discussed),
 or when it is a tiny edit: writing the brief would cost more than the change.
@@ -25,7 +23,7 @@ The agent starts with nothing but your text. Give it:
 4. constraints: what not to touch, the branch base, style rules;
 5. what to report: the branch, the PR if any, anything left undone.
 
-One task per agent. Do not hand an agent work that needs secrets; never put a token or an env value in a brief.
+One task per agent. Do not hand an agent work that needs secrets, or put a token or env value in a brief.
 
 ## The loop
 
@@ -79,9 +77,7 @@ Your session has a name, and replies, reports and questions for you are filed un
 `cc-` and the start of your Claude Code session id, stable for the session. To choose one, set
 `FLEET_SESSION=review-1` in the environment fleetctl runs in, or pass `--from review-1` to `run`,
 `followup` and `answer`, and `--as review-1` to `wait --new` and `inbox`. `fleetctl inbox` shows what was
-sent to your name.
-
-`done --task` archives the agent's session and puts it back on standby, fresh. One task, one session.
+sent to your name. `done --task` archives the agent's session and puts it back on standby, fresh.
 
 ## Fan-out
 
@@ -107,8 +103,7 @@ and when the task closes and the session rotates the agent goes back to its own 
 `fleetctl model <agent>` shows an agent's default (from `fleet.yaml`), its override and the model its
 session shows now. `fleetctl model <agent> opus` sets an override that outlasts fleetd restarts, and
 `fleetctl model <agent> --reset` clears it. fleetd applies a change when the session is idle, never
-mid-turn, and once per change; a fresh session is asked again. Only the operator's token may change
-models: a person on the tailnet cannot.
+mid-turn, and once per change; a fresh session is asked again. Only the operator may change models.
 
 ## Files
 
@@ -147,8 +142,7 @@ secret exec OPENAI_API_KEY=openai -- <cmd>` (or `get --to`), only on your side's
     fleetctl pick --repo R      # who would get a task, and why the others would not
     fleetctl peek agent-02      # the agent's screen now (do not poll it: `wait` returns when it reports)
     fleetctl ssh agent-02       # its live session in your terminal: --type to type, --shell for a shell; Ctrl-] leaves
-    fleetctl tasks --open       # every task still open
-    fleetctl quota              # 5-hour and 7-day windows per agent
+    fleetctl tasks --open       # every task still open; fleetctl quota: 5-hour and 7-day windows per agent
 
 ## The operator's memory
 
@@ -178,6 +172,13 @@ before you start another, or pass `--queue`. `--repo` names a checkout in the fl
 to clone it from.
 Agents work in the fleet host's checkouts: review what they push with `git fetch origin <branch>` in yours.
 
+## Guests and sandboxes
+
+A guest's lent agents are sandboxes: none of the operator's code, accounts or GitHub. Code goes in and out with sync:
+
+    fleetctl sync ./myrepo agent-09:/work/code/myrepo && fleetctl run --agent agent-09 --repo myrepo "…"
+    fleetctl sync agent-09:/work/code/myrepo ./myrepo        # the results, as its report says
+
 ## The operator's integrations (KARMAX)
 
 fleetd holds KARMAX's token and calls its tools (mail, calendar, drive, WhatsApp, GitHub, Slack, Notion,
@@ -199,8 +200,7 @@ the fleet, and anything that runs code or starts an agent are refused outright. 
 
 ## Rules
 
-- Delegated work is untrusted until you have read its diff and run its tests. An agent can be wrong, and
-  its report can be confident anyway.
+- Delegated work is untrusted until you have read its diff and run its tests: a confident report can be wrong.
 - Chain merge steps with `&&` so a failing test stops the merge.
 - Never print secrets or env values, in a brief, a report or a log. Hand a key over with `fleetctl secret`.
 - Never rebase or force-push a branch an agent has reported: it may already be merged. Ask for fixes in new

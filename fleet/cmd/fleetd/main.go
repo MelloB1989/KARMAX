@@ -23,6 +23,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/agent"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
+	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/memory"
 	"github.com/MelloB1989/karmax/fleet/internal/otlp"
@@ -77,6 +78,11 @@ func run(cfgPath string, once bool) error {
 	tokens := server.Tokens{Full: env[cfg.TokenEnv], Relay: env[cfg.RelayTokenEnv]}
 	if cfg.Console != nil {
 		tokens.Console = env[cfg.Console.TokenEnv]
+	}
+	for _, n := range cfg.AgentNames() {
+		if cfg.Agents[n].Sandbox {
+			tokens.Sandboxes = append(tokens.Sandboxes, n) // each holds its sandbox key, not the relay token
+		}
 	}
 	if err := checkTokens(tokens, cfg); err != nil {
 		return err
@@ -186,8 +192,11 @@ func run(cfgPath string, once bool) error {
 	serve(cfg.Listen, api, "api", net.ListenConfig{})
 	serve(cfg.RelayListen, api, "relay api", net.ListenConfig{})
 	// Telemetry goes to the ledger through the fleet: each event moves the
-	// watch stream, and a tool event is its worker's activity.
-	serve(cfg.OTLPListen, otlp.Handler(f.Recorder(), tokens.Relay), "otlp", net.ListenConfig{})
+	// watch stream, and a tool event is its worker's activity. A sandbox
+	// sends under its own key, and its telemetry is that agent's.
+	serve(cfg.OTLPListen, otlp.HandlerFor(f.Recorder(), tokens.Relay, func(bearer string) (string, bool) {
+		return identity.SandboxOf(tokens.Full, bearer, tokens.Sandboxes)
+	}), "otlp", net.ListenConfig{})
 	if t := cfg.Tailnet; t != nil {
 		// Who calls is who tailscaled says. The address is tailscale0's,
 		// which a boot may not have given it yet: bound regardless.

@@ -148,6 +148,10 @@ func (f *Fleet) escalate(ctx context.Context, now time.Time) {
 	window := f.cfg.Thresholds.QuestionEscalate
 	orch := f.cfg.Orchestrator.Name
 	for _, q := range qs {
+		if f.guest(q.Assigner) {
+			f.retell(ctx, q, window, now)
+			continue
+		}
 		if !f.escalates(q.Assigner) {
 			continue
 		}
@@ -194,6 +198,44 @@ func (f *Fleet) escalates(assigner string) bool {
 		return false
 	}
 	return !strings.Contains(assigner, "@") || strings.Contains(assigner, "/")
+}
+
+// guest reports whether an assigner is a person on the tailnet who is not the
+// operator's side (or a session of theirs): a guest, whose questions are
+// theirs alone to answer.
+func (f *Fleet) guest(assigner string) bool {
+	return strings.Contains(assigner, "@") && !f.OperatorAssigner(assigner)
+}
+
+// retell tells a guest a question once more when it has waited a window: it
+// never goes to the orchestrator or pages the operator, who does not answer
+// for a guest. It is filed under the task as the agent's question, so the
+// agent is still asking, and marked escalated, so it is told once.
+func (f *Fleet) retell(ctx context.Context, q ledger.Question, window time.Duration, now time.Time) {
+	if !q.Escalated.IsZero() || now.Sub(q.At) < window {
+		return
+	}
+	text := fmt.Sprintf("Task %s: %s still waits for your answer (asked %s ago): %s\n\nAnswer with: fleetctl answer %s \"<text>\"",
+		q.Task, q.Agent, Dur(now.Sub(q.At)), q.Text, q.Task)
+	if err := f.deliverMsg(ctx, q.Agent, q.Assigner, text, q.Task, ledger.KindQuestion, now, true); err != nil {
+		var held *Held
+		if !errors.As(err, &held) {
+			f.Log("retell question %d of %s: %v; trying again next tick", q.ID, q.Task, err)
+			return
+		}
+	}
+	// Both the question and its re-telling: the re-telling is now the task's
+	// latest question, the one escalate looks at next.
+	if th, err := f.db.TaskThread(q.Task); err == nil {
+		for _, m := range th {
+			if m.ID >= q.ID && m.Kind == ledger.KindQuestion {
+				if err := f.db.MarkEscalated(m.ID, now); err != nil {
+					f.Log("ledger: mark escalated: %v", err)
+				}
+			}
+		}
+	}
+	f.event(q.Agent, "fleet.retell", "", map[string]string{"task": q.Task, "to": q.Assigner})
 }
 
 // escalation is the message the orchestrator gets: the task, the question and

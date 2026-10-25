@@ -184,6 +184,10 @@ Three token scopes: `full` (you and the orchestrator), `relay` (agents), and `co
 the operator: every read, plus `prompt` and `rotate`). A 403 names what the token may do. `fleetctl whoami`
 says which scope you hold; `GET /healthz` returns only the version and uptime and needs no token.
 
+A sandbox agent holds no relay token: its one credential is its sandbox key (`FLEET_SANDBOX_KEY`), scope
+`sandbox`. With it the agent may ask who it is, read and wait on its own task, and tell or ask the one who gave
+it that task; a tell to anyone else, and every other route, is 403.
+
 The table is the API index, `GET /v1` — what `fleetctl api` prints. A test
 (`TestGuideRoutesMatchIndex` in `fleet/internal/server`) fails when this table and the index differ, so it is
 the index written out, not a separate list. To refresh it after a route changes: run
@@ -193,10 +197,10 @@ the index written out, not a separate list. To refresh it after a route changes:
 | route | scopes | fleetctl | what |
 |---|---|---|---|
 | `GET /v1` | full, relay, console, member | `fleetctl api` | the index of every route and the scopes that may call it |
-| `GET /v1/whoami` | full, relay, console, member | `fleetctl whoami` | which scope and name this token has (on the tailnet: your login) |
+| `GET /v1/whoami` | full, relay, console, member, sandbox | `fleetctl whoami` | which scope and name this token has (on the tailnet: your login) |
 | `GET /v1/status` | full, relay, console, member | `fleetctl status`, `ls` | one row per agent (phase, task, idle, model, alerts), plus the orchestrator's quota |
-| `POST /v1/tell` | full, relay, console | `fleetctl tell` | deliver a message to a session; to `operator`, a person or a session that assigned a task it is stored in the inbox; `kind` is `report` (default), `question` or `progress` |
-| `POST /v1/ask` | relay | `fleetctl ask` | an agent files a question under its task to its assigner and blocks until the answer arrives (`answer`) or `timeout` (default 30m) passes (`timed_out`); it waits for nothing else; while fleetd shuts down it answers 503 (the question stays filed, and is not asked again) |
+| `POST /v1/tell` | full, relay, console, sandbox | `fleetctl tell` | deliver a message to a session; to `operator`, a person or a session that assigned a task it is stored in the inbox; `kind` is `report` (default), `question` or `progress` |
+| `POST /v1/ask` | relay, sandbox | `fleetctl ask` | an agent files a question under its task to its assigner and blocks until the answer arrives (`answer`) or `timeout` (default 30m) passes (`timed_out`); it waits for nothing else; while fleetd shuts down it answers 503 (the question stays filed, and is not asked again) |
 | `POST /v1/tasks/{id}/answer` | full, relay, member | `fleetctl answer` | answer the question the task's agent is blocked on: the text is the output of its ask; with nothing blocked it is a follow-up. An agent (relay) may answer only a task it assigned |
 | `POST /v1/assign` | full | `fleetctl assign`, `give` | record a task for an agent, and with a brief deliver it; a new task supersedes the agent's old one |
 | `POST /v1/run` | full, member | `fleetctl run` | pick a free agent (or the one named), record the task with its repo, deliver the brief; 409 with the candidates when none is free (`queue` retries); `model` runs the task on that model, and only agents whose `models` list it are candidates (not for members) |
@@ -213,13 +217,13 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/enable` | full | `fleetctl enable` | re-enable an agent disabled for a subscription problem |
 | `POST /v1/restore` | full | `fleetctl restore` | restore an archived session |
 | `GET /v1/inbox` | full, console | `fleetctl inbox` | what agents reported to the operator, or to the session named by `to` (`after=<id>` cursor) |
-| `GET /v1/wait` | full, console, member | `fleetctl wait` | long poll: returns when the agent reports, its task closes, or it stops; with `task` (`agent` then optional) it returns the agent's first report after the task's latest instruction (brief, follow-up), to whomever it was sent, unless `after` is set; with `new=<reader>` (and a task) it returns the oldest message that reader has not been handed and moves their cursor past it, so a repeated wait never returns the same message twice; while fleetd shuts down it answers 503 at once, and `fleetctl wait` tries again when fleetd is back |
+| `GET /v1/wait` | full, console, member, sandbox | `fleetctl wait` | long poll: returns when the agent reports, its task closes, or it stops; with `task` (`agent` then optional) it returns the agent's first report after the task's latest instruction (brief, follow-up), to whomever it was sent, unless `after` is set; with `new=<reader>` (and a task) it returns the oldest message that reader has not been handed and moves their cursor past it, so a repeated wait never returns the same message twice; while fleetd shuts down it answers 503 at once, and `fleetctl wait` tries again when fleetd is back |
 | `GET /v1/guide` | full, console, member | `fleetctl guide` | the guide to putting the fleet to work (`{"text": …}`), also installed as a skill by `fleetctl skill install` |
 | `GET /v1/events` | full, console | `fleetctl events` | an agent's recorded events |
 | `GET /v1/usage` | full, console | `fleetctl usage` | tokens and cost, by agent or model |
 | `GET /v1/history` | full, console | `fleetctl history` | an agent's past tasks |
 | `GET /v1/quota` | full, console, member | `fleetctl quota` | each subscription's 5 h and 7 d windows |
-| `GET /v1/tasks/{id}` | full, console, member | `fleetctl result` | a task with its conversation (brief, reports, follow-ups, oldest first, each with from/to) and the commits on its branch; 404 unknown |
+| `GET /v1/tasks/{id}` | full, console, member, sandbox | `fleetctl result` | a task with its conversation (brief, reports, follow-ups, oldest first, each with from/to) and the commits on its branch; 404 unknown |
 | `GET /v1/tasks` | full, console, member | `fleetctl tasks` | tasks, open or all; a member's own |
 | `GET /v1/activity` | full, console | `fleetctl activity` | event counts per agent in time buckets |
 | `GET /v1/today` | full, console | `fleetctl today` | tasks closed and spend since local midnight |

@@ -236,6 +236,18 @@ func newClient() (*client, error) {
 		}
 		c.agent = identity.Value(name, key)
 	}
+	// A sandbox's one credential is its sandbox key: its token, and with its
+	// worker's name the proof of which slot calls.
+	if key := os.Getenv("FLEET_SANDBOX_KEY"); key != "" && c.token == "" {
+		name := os.Getenv("FLEET_NAME")
+		if name == "" {
+			name = os.Getenv("FLEET_AGENT")
+		}
+		c.token = key
+		if name != "" {
+			c.agent = identity.Value(name, key)
+		}
+	}
 	if _, err := os.Stat(configPath()); errors.Is(err, os.ErrNotExist) && c.token == "" {
 		// Not a fleet host: the tailnet says who this is.
 		if c.base == "" {

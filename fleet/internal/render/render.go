@@ -29,9 +29,13 @@ var briefTmpl string
 //go:embed orchestrator.md.tmpl
 var orchTmpl string
 
+//go:embed sandbox.md.tmpl
+var sandboxTmpl string
+
 var (
-	brief     = template.Must(template.New("brief").Parse(briefTmpl))
-	orchBrief = template.Must(template.New("orchestrator").Parse(orchTmpl))
+	brief        = template.Must(template.New("brief").Parse(briefTmpl))
+	orchBrief    = template.Must(template.New("orchestrator").Parse(orchTmpl))
+	sandboxBrief = template.Must(template.New("sandbox").Parse(sandboxTmpl))
 )
 
 // OrchestratorBrief is the fleet's paragraph for the orchestrator.
@@ -74,9 +78,15 @@ func Brief(c *config.Config, name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no agent %q", name)
 	}
+	if a.Sandbox {
+		var b strings.Builder
+		err := sandboxBrief.Execute(&b, map[string]any{"Agent": name, "Host": a.Host, "Slots": max(a.Slots, 1)})
+		return b.String(), err
+	}
 	var local, remote []string
 	for _, n := range c.AgentNames() {
-		if n == name {
+		// A sandbox is no peer: it hears from its guest only.
+		if n == name || c.Agents[n].Sandbox {
 			continue
 		}
 		if c.Agents[n].Host == a.Host {
@@ -149,6 +159,12 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 	}
 
 	for _, n := range c.AgentNames() {
+		if c.Agents[n].Sandbox {
+			if err := writeEnv(filepath.Join(dir, "agents", n+".env"), sandboxEnv(c, env, n)); err != nil {
+				return err
+			}
+			continue
+		}
 		kv := map[string]string{
 			"CLAUDE_CODE_OAUTH_TOKEN": env[c.Agents[n].TokenEnv],
 			"FLEET_TOKEN":             env[c.RelayTokenEnv],
@@ -204,6 +220,9 @@ func Render(c *config.Config, env map[string]string, dir string) error {
 	}
 
 	for _, h := range c.HostNames() {
+		if err := writeSandboxNet(c, h, dir); err != nil {
+			return err
+		}
 		file := filepath.Join(dir, "compose."+h+".yaml")
 		if !Runs(c, h) {
 			// Nothing to run there: no file, and none left from an earlier
@@ -284,12 +303,14 @@ type service struct {
 	CPUs          string            `yaml:"cpus,omitempty"`
 	MemLimit      string            `yaml:"mem_limit,omitempty"`
 	StopGrace     string            `yaml:"stop_grace_period,omitempty"`
+	Networks      []string          `yaml:"networks,omitempty"`
 }
 
 type composeDoc struct {
 	Name     string             `yaml:"name"`
 	Services map[string]service `yaml:"services"`
 	Volumes  map[string]any     `yaml:"volumes"`
+	Networks map[string]any     `yaml:"networks,omitempty"`
 }
 
 // Runs reports whether a host has any container to run: an agent, or the
@@ -350,6 +371,10 @@ func Compose(c *config.Config, host, dir string) ([]byte, error) {
 		b, err := Brief(c, name)
 		if err != nil {
 			return nil, err
+		}
+		if a.Sandbox {
+			sandboxService(c, &doc, name, common(name), b, dir)
+			continue
 		}
 		env := common(name)
 		env["FLEET_AGENT"] = name
