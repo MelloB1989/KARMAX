@@ -13,8 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/access"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
+	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
+	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/tailnet"
 )
 
@@ -33,25 +37,75 @@ func (w fakeWho) WhoIs(_ context.Context, addr string) (tailnet.Who, error) {
 }
 
 const (
-	ramIP     = "100.64.0.2" // a member
-	opIP      = "100.64.0.3" // an operator
-	outIP     = "100.64.0.4" // on the tailnet, not on the list
+	ramIP     = "100.64.0.2" // a guest device, lent agent-03
+	opIP      = "100.64.0.3" // an admin device
+	outIP     = "100.64.0.4" // on the tailnet, not tagged
 	taggedIP  = "100.64.0.5" // a subnet router
 	strangeIP = "192.0.2.26" // not on the tailnet
+	friendIP  = "100.64.0.6" // a guest device, lent agent-09 only
+	evilIP    = "100.64.0.7" // named like the admin device, another StableID
 )
 
+// devices is the tailnet's tags, kept in a real ledger. broken is a store
+// that cannot be read.
+type devices struct {
+	db     *ledger.DB
+	broken bool
+}
+
+func (d *devices) ResolveDevice(w tailnet.Who, _ time.Time) (fleetapi.Device, error) {
+	if d.broken {
+		return fleetapi.Device{}, errors.New("database is locked")
+	}
+	return access.Resolve(d.db, w)
+}
+func (d *devices) Knocked(w tailnet.Who, now time.Time) error {
+	return access.Knocked(d.db, w, now, nil)
+}
+
+var tailnetWho = fakeWho{
+	ramIP:    {Login: "ram@example.com", Name: "Ram", Node: "ram-laptop.tail1234.ts.net", StableID: "nRAM"},
+	opIP:     {Login: "op@example.com", Node: "op-laptop.tail1234.ts.net", StableID: "nOP"},
+	outIP:    {Login: "stranger@other.org", Node: "stranger-laptop.tail9abc.ts.net", StableID: "nOUT"},
+	taggedIP: {Node: "subnet-router", StableID: "nROUTER"},
+	friendIP: {Login: "friend@example.com", Node: "friend-laptop.tail1234.ts.net", StableID: "nFRIEND"},
+	evilIP:   {Login: "op@example.com", Node: "op-laptop.tail1234.ts.net", StableID: "nEVIL"},
+}
+
+// tagDevices tags the test's devices: op's admin, ram's a guest lent agent-03
+// (as if a sandbox), friend's a guest lent agent-09.
+func tagDevices(t *testing.T) *devices {
+	t.Helper()
+	db, err := ledger.Open(filepath.Join(t.TempDir(), "fleet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	for ip, d := range map[string]fleetapi.Device{
+		opIP:     {Role: fleetapi.RoleAdmin},
+		ramIP:    {Role: fleetapi.RoleGuest, Agents: []string{"agent-03"}},
+		friendIP: {Role: fleetapi.RoleGuest, Agents: []string{"agent-09"}},
+	} {
+		w := tailnetWho[ip]
+		d.StableID, d.Name, d.Login, d.TaggedAt, d.TaggedBy = w.StableID, w.Node, w.Login, time.Now(), "operator"
+		if err := db.Tag(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &devices{db: db}
+}
+
 func tailnetSetup(t *testing.T) (*fake, http.Handler, *config.Tailnet) {
+	f, h, cfg, _ := tailnetDevices(t)
+	return f, h, cfg
+}
+
+func tailnetDevices(t *testing.T) (*fake, http.Handler, *config.Tailnet, *devices) {
 	t.Helper()
 	f, api := setup(t)
-	cfg := &config.Tailnet{Listen: "100.64.0.1:7878", Operators: []string{"op@example.com"},
-		Members: []string{"*@example.com"}, MemberOpen: 2, Dist: t.TempDir()}
-	who := fakeWho{
-		ramIP:    {Login: "ram@example.com", Name: "Ram", Node: "ram-laptop"},
-		opIP:     {Login: "op@example.com", Node: "op-laptop"},
-		outIP:    {Login: "stranger@other.org", Node: "stranger-laptop"},
-		taggedIP: {Node: "subnet-router"},
-	}
-	return f, Tailnet(api, who, cfg), cfg
+	cfg := &config.Tailnet{Listen: "100.64.0.1:7878", GuestOpen: 2, Dist: t.TempDir()}
+	d := tagDevices(t)
+	return f, Tailnet(api, tailnetWho, d, cfg), cfg, d
 }
 
 // tdo is a request from ip; token, when set, is sent too (and ignored).
@@ -73,7 +127,7 @@ func TestTheTailnetKnowsWhoIsCalling(t *testing.T) {
 	for _, c := range []struct {
 		ip, scope, name string
 	}{
-		{ramIP, "member", "ram@example.com"},
+		{ramIP, "guest", "ram@example.com"},
 		{opIP, "full", "op@example.com"},
 	} {
 		rec := tdo(t, h, "GET", "/v1/whoami", c.ip, "", "")
@@ -87,7 +141,8 @@ func TestTheTailnetKnowsWhoIsCalling(t *testing.T) {
 		code int
 		says string
 	}{
-		{outIP, 403, "stranger@other.org may not use this fleet"},
+		{outIP, 403, "this device (stranger-laptop.tail9abc.ts.net, stranger@other.org) may not use this fleet yet"},
+		{evilIP, 403, "may not use this fleet yet"},
 		{taggedIP, 403, "tagged device"},
 		{strangeIP, 403, "not on the tailnet"},
 		{"100.99.99.99", 503, "cannot tell who you are"},
@@ -97,15 +152,15 @@ func TestTheTailnetKnowsWhoIsCalling(t *testing.T) {
 			t.Errorf("%s: %d %s", c.ip, rec.Code, rec.Body)
 		}
 	}
-	// A token does not lift a member: the tailnet is who, not what you hold.
+	// A token does not lift a guest: the tailnet is who, not what you hold.
 	if rec := tdo(t, h, "POST", "/v1/assign", ramIP, "full", `{"agent":"agent-03","task":"T1"}`); rec.Code != 403 {
-		t.Errorf("member with the full token assigned: %d", rec.Code)
+		t.Errorf("a guest with the full token assigned: %d", rec.Code)
 	}
 }
 
-// A member runs as themselves, however the request names its sender, and
-// within their limit; an operator on the tailnet is the operator.
-func TestAMemberRunsAsThemselves(t *testing.T) {
+// A guest runs as themselves, however the request names its sender, within
+// their limit and among their lent agents; an admin device is the operator.
+func TestAGuestRunsAsThemselves(t *testing.T) {
 	f, h, _ := tailnetSetup(t)
 	if rec := tdo(t, h, "POST", "/v1/run", ramIP, "", `{"brief":"fix it","from":"operator"}`); rec.Code != 200 {
 		t.Fatalf("run: %d %s", rec.Code, rec.Body)
@@ -113,14 +168,14 @@ func TestAMemberRunsAsThemselves(t *testing.T) {
 	if rec := tdo(t, h, "POST", "/v1/run", opIP, "", `{"brief":"fix it","from":"karmax"}`); rec.Code != 200 {
 		t.Fatalf("operator run: %d %s", rec.Code, rec.Body)
 	}
-	want := `run brief="fix it" repo="" agent="" from="ram@example.com" task="" queue=0s limit=2|` +
+	want := `run brief="fix it" repo="" agent="" from="ram@example.com" task="" queue=0s limit=2 among=agent-03|` +
 		`run brief="fix it" repo="" agent="" from="karmax" task="" queue=0s`
 	if got := strings.Join(f.calls, "|"); got != want {
 		t.Fatalf("calls = %s", got)
 	}
 }
 
-func TestAMemberSeesAndActsOnTheirOwnTasksOnly(t *testing.T) {
+func TestAGuestSeesAndActsOnTheirOwnTasksOnly(t *testing.T) {
 	f, h, _ := tailnetSetup(t)
 	for _, c := range []struct {
 		method, path, body string
@@ -148,9 +203,8 @@ func TestAMemberSeesAndActsOnTheirOwnTasksOnly(t *testing.T) {
 		{"GET", "/v1/guide", "", 200},
 		{"GET", "/v1/quota", "", 200},
 		{"GET", "/v1", "", 200},
-		// The operator's: inbox, events, typing into sessions, the hosts.
+		// The operator's: inbox, history, typing into sessions, the hosts.
 		{"GET", "/v1/inbox", "", 403},
-		{"GET", "/v1/events", "", 403},
 		{"GET", "/v1/history", "", 403},
 		{"POST", "/v1/prompt", `{"agent":"agent-03","text":"x"}`, 403},
 		{"POST", "/v1/tell", `{"from":"ram@example.com","to":"agent-03","text":"x"}`, 403},
@@ -159,7 +213,7 @@ func TestAMemberSeesAndActsOnTheirOwnTasksOnly(t *testing.T) {
 		{"POST", "/v1/enable", `{"agent":"agent-03"}`, 403},
 		{"POST", "/v1/agents/agent-03/model", `{"model":"opus"}`, 403},
 		{"GET", "/v1/agents/agent-03/model", ``, 403},
-		{"POST", "/v1/run", `{"brief":"x","model":"opus"}`, 403}, // a member does not choose the model
+		{"POST", "/v1/run", `{"brief":"x","agent":"agent-02"}`, 403}, // not lent
 		{"POST", "/v1/up", ``, 403},
 		{"DELETE", "/v1/archives?older=1d", ``, 403},
 	} {
@@ -187,7 +241,7 @@ func TestAMemberSeesAndActsOnTheirOwnTasksOnly(t *testing.T) {
 			}
 		}
 	}
-	// The operator on the tailnet is not held to anyone's tasks.
+	// An admin device is not held to anyone's tasks.
 	if rec := tdo(t, h, "GET", "/v1/tasks/T1", opIP, "", ""); rec.Code != 200 {
 		t.Errorf("operator: %d", rec.Code)
 	}
@@ -232,8 +286,12 @@ func TestTheTailnetServesFleetctl(t *testing.T) {
 			t.Errorf("%s: %d", p, rec.Code)
 		}
 	}
-	if rec := tdo(t, h, "GET", "/install.sh", outIP, "", ""); rec.Code != 403 {
-		t.Errorf("install.sh for someone not on the list: %d", rec.Code)
+	// A device not tagged may install fleetctl, to knock with it.
+	if rec := tdo(t, h, "GET", "/install.sh", outIP, "", ""); rec.Code != 200 {
+		t.Errorf("install.sh for an untagged device: %d", rec.Code)
+	}
+	if rec := tdo(t, h, "GET", "/install.sh", taggedIP, "", ""); rec.Code != 403 {
+		t.Errorf("install.sh for a tagged Tailscale device: %d", rec.Code)
 	}
 }
 
@@ -243,11 +301,11 @@ func TestACallerOutranksAToken(t *testing.T) {
 	f, api := setup(t)
 	req := httptest.NewRequest("POST", "/v1/assign", strings.NewReader(`{"agent":"agent-03","task":"T2"}`))
 	req.Header.Set("Authorization", "Bearer full")
-	req = req.WithContext(context.WithValue(req.Context(), callerKey{}, &Caller{Login: "ram@example.com", Role: "member"}))
+	req = req.WithContext(context.WithValue(req.Context(), callerKey{}, &Caller{Login: "ram@example.com", Role: "guest"}))
 	rec := httptest.NewRecorder()
 	api.ServeHTTP(rec, req)
 	if rec.Code != 403 || len(f.calls) != 0 {
-		t.Fatalf("member with the full token: %d, calls %v", rec.Code, f.calls)
+		t.Fatalf("a guest with the full token: %d, calls %v", rec.Code, f.calls)
 	}
 }
 

@@ -30,8 +30,6 @@ func (f *fake) Suggest(_ context.Context, from, text, why string, _ time.Time) (
 	return "karmax", nil
 }
 
-func (f *fake) OperatorAssigner(a string) bool { return a != "" && !strings.Contains(a, "@") }
-
 func TestTheOperatorAndTheOrchestratorRecallAndSuggest(t *testing.T) {
 	f, h := setup(t)
 	rec := do(t, h, "GET", "/v1/memory/recall?q=who+is+ram&limit=3", "full", "")

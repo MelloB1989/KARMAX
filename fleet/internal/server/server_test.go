@@ -19,7 +19,8 @@ import (
 
 type fake struct {
 	calls []string
-	mem   *memory.Client // when set, Recall asks it
+	runs  []daemon.RunRequest // as Run was asked
+	mem   *memory.Client      // when set, Recall asks it
 }
 
 // IsWorker: the fake's agents (agent-NN) have two slots each.
@@ -141,11 +142,18 @@ func (f *fake) Tasks(open bool, agent, assigner string, n int) ([]ledger.Task, e
 		call += " by=" + assigner
 	}
 	f.calls = append(f.calls, call)
+	if assigner != "" { // a guest's own: ram's is T-ram
+		out := []ledger.Task{}
+		if assigner == "ram@example.com" {
+			out = append(out, ledger.Task{ID: "T-ram", Agent: "agent-03", Assigner: assigner})
+		}
+		return out, nil
+	}
 	return []ledger.Task{{ID: "T1", Agent: "agent-03", Assigner: "operator"}}, nil
 }
 
-// TaskAgent: T-ram is a tailnet member's task; T-missing does not exist;
-// every other is the operator's.
+// TaskAgent: T-ram is a tailnet guest's task; T-missing does not exist;
+// every other is the operator's, and admin work.
 func (f *fake) TaskAgent(task string) (*ledger.Task, error) {
 	switch task {
 	case "T-missing":
@@ -153,7 +161,7 @@ func (f *fake) TaskAgent(task string) (*ledger.Task, error) {
 	case "T-ram":
 		return &ledger.Task{ID: task, Agent: "agent-03", Assigner: "ram@example.com"}, nil
 	}
-	return &ledger.Task{ID: task, Agent: "agent-03", Assigner: "operator"}, nil
+	return &ledger.Task{ID: task, Agent: "agent-03", Assigner: "operator", AdminWork: true}, nil
 }
 func (f *fake) Activity(_ time.Time, b time.Duration, _ time.Time) (daemon.ActivityReply, error) {
 	f.calls = append(f.calls, "activity "+b.String())

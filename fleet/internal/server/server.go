@@ -445,6 +445,9 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 	}, and(fullOnly, guest)...)
 	route("GET /v1/pick", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		if all, lent := lentAgents(r); !all {
+			if len(lent) == 0 {
+				return daemon.PickReply{Candidates: []daemon.Candidate{}}, nil // nothing lent: nobody to pick
+			}
 			return ops.PickAmong(r.URL.Query().Get("repo"), lent, time.Now()), nil
 		}
 		return ops.Pick(r.URL.Query().Get("repo"), time.Now()), nil

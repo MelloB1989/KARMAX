@@ -107,7 +107,7 @@ agents:
   agent-03: {host: kali, token_env: T3}
   agent-05: {host: kali, token_env: T5}
   agent-07: {host: kali, token_env: T7}
-tailnet: {listen: "100.64.0.1:7878", operators: [op@example.com], members: ["*@example.com"]}
+tailnet: {listen: "100.64.0.1:7878"}
 karmax:
   tools: {slack.channels: read}
 `
@@ -121,7 +121,7 @@ type gatewayFleet struct {
 }
 
 // gatewaySetup is the real fleet behind the API, KARMAX faked: agent-03 on
-// the operator's task T-op, agent-05 on a member's task T-ram, agent-07 on
+// the operator's task T-op, agent-05 on a guest's task T-ram, agent-07 on
 // none.
 func gatewaySetup(t *testing.T) *gatewayFleet {
 	t.Helper()
@@ -152,12 +152,12 @@ func gatewaySetup(t *testing.T) *gatewayFleet {
 	if err := g.fleet.Assign(ctx, "agent-03", "T-op", "operator", "Task T-op from operator. Tidy the operator's inbox.\nMore detail.", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.fleet.Assign(ctx, "agent-05", "T-ram", "ram@example.com", "Task T-ram from ram@example.com. Read the mail.", time.Now()); err != nil {
+	// A guest's run: not admin work.
+	if _, err := g.fleet.Run(ctx, daemon.RunRequest{Agent: "agent-05", Task: "T-ram", From: "ram@example.com", Brief: "Read the mail."}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	g.h = Handler(g.fleet, Tokens{Full: "full", Relay: "relay"}, nil)
-	who := fakeWho{ramIP: {Login: "ram@example.com"}, opIP: {Login: "op@example.com"}}
-	g.tail = Tailnet(g.h, who, cfg.Tailnet)
+	g.tail = Tailnet(g.h, tailnetWho, tagDevices(t), cfg.Tailnet)
 	return g
 }
 
@@ -412,7 +412,7 @@ func TestTheOperatorsSideMayUseTheGateway(t *testing.T) {
 	}
 }
 
-func TestAMemberMayNeverUseTheGatewayNotEvenToRead(t *testing.T) {
+func TestAGuestMayNeverUseTheGatewayNotEvenToRead(t *testing.T) {
 	g := gatewaySetup(t)
 	for _, c := range []struct{ method, path, body string }{
 		{"GET", "/v1/karmax/tools", ""},
@@ -421,11 +421,11 @@ func TestAMemberMayNeverUseTheGatewayNotEvenToRead(t *testing.T) {
 		{"POST", "/v1/approvals/1/approve", `{}`},
 	} {
 		if rec := tdo(t, g.tail, c.method, c.path, ramIP, "", c.body); rec.Code != 403 {
-			t.Errorf("a member's %s %s: %d %s", c.method, c.path, rec.Code, rec.Body)
+			t.Errorf("a guest's %s %s: %d %s", c.method, c.path, rec.Code, rec.Body)
 		}
 	}
 	if len(g.karmax.called()) != 0 {
-		t.Fatal("a member reached KARMAX")
+		t.Fatal("a guest reached KARMAX")
 	}
 }
 
@@ -436,10 +436,10 @@ func TestAnAgentMayUseTheGatewayOnlyOnTheOperatorsWork(t *testing.T) {
 		t.Errorf("on the operator's task: %d %s", rec.Code, rec.Body)
 	}
 	if rec := agentDo(t, g.h, "POST", "/v1/karmax/call", "agent-05", read); rec.Code != 403 {
-		t.Errorf("on a member's task: %d %s", rec.Code, rec.Body)
+		t.Errorf("on a guest's task: %d %s", rec.Code, rec.Body)
 	}
 	if rec := agentDo(t, g.h, "GET", "/v1/karmax/tools", "agent-05", ""); rec.Code != 403 {
-		t.Errorf("tools on a member's task: %d %s", rec.Code, rec.Body)
+		t.Errorf("tools on a guest's task: %d %s", rec.Code, rec.Body)
 	}
 	if rec := agentDo(t, g.h, "POST", "/v1/karmax/call", "agent-07", read); rec.Code != 403 {
 		t.Errorf("with no task: %d %s", rec.Code, rec.Body)
