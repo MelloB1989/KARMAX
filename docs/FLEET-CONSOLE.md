@@ -168,7 +168,7 @@ thin client of that route. The panel uses only these public routes.
 | `GET /v1/snapshot` | `fleetctl console snapshot [--json]` | agents, tools, load, every source with its age |
 | `GET /v1/watch` (WebSocket) | `fleetctl console watch [--json]` | the snapshot, then RFC 6902 patches, one JSON object per line |
 | `GET /v1/term/{agent}` (WebSocket) | `fleetctl console term <agent>` | the agent's terminal bytes, raw |
-| `GET /v1/term/{agent}?control=1` (WebSocket) | `fleetctl attach <agent>` | the held keyboard: one controller, `Ctrl+]` to give it back |
+| `GET /v1/term/{agent}?control=1` (WebSocket) | `fleetctl console attach <agent>` | the held keyboard: one controller, `Ctrl+]` to give it back |
 | `POST /v1/prompt` | `fleetctl prompt <agent> <text…>` | proxied to fleetd's prompt |
 | `POST /v1/rotate` | `fleetctl rotate <agent> [--dry-run]` | proxied to fleetd's rotate |
 
@@ -246,6 +246,8 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/secrets/{name}/revoke` | full | `fleetctl secret revoke` | end a grant to a `task` or an `agent` (404 when there is none) |
 | `DELETE /v1/secrets/{name}` | full | `fleetctl secret rm` | drop a secret and its grants |
 | `POST /v1/secrets/{name}/read` | relay | `fleetctl secret exec`, `get` | a granted secret's value, for a verified agent whose open task the operator, an operator's session or the orchestrator assigned (403 otherwise); every read and refusal is an event |
+| `GET /v1/term/{worker}` | full, member | `fleetctl ssh`, `attach` | a WebSocket to the worker's session: `mode` watch (read-only, never resizes it), type (the one keyboard; `held` frame when someone has it, `force=1` for an admin, who turns the holder into a watcher with a `released` frame) or shell (`bash -l` in `/work`); `cols`, `rows`. Terminal bytes are binary frames, `fleetapi.TermFrame` JSON text frames; each session is a `fleet.term` event. A guest only on a lent agent |
+| `GET /v1/screens` | full, console, member | `fleetctl tui` (Screens) | each worker's last `lines` (default 40) with ANSI, for `workers` (a comma list; none is all) the caller may use: one exec per container, shared for 2 s, at most two per host at once |
 <!-- routes:end -->
 
 `member` is a person on the tailnet (`tailnet:` in fleet.yaml, no token: Tailscale says who they are). A member runs tasks as themselves, at most `member_open` open at once, and the task routes answer them only for their own tasks (403 otherwise); `wait` needs `task`, and `done` closes by task alone. An operator login on the tailnet has `full`.

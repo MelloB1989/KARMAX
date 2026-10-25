@@ -100,6 +100,8 @@ type Ops interface {
 	AwaitApproval(ctx context.Context, who daemon.Requester, id int64) (daemon.CallReply, error)
 	Approvals(state string, limit int) ([]ledger.Approval, error)
 	Decide(id int64, by string, approve bool, reason string, now time.Time) (ledger.Approval, error)
+
+	TermOps // term.go: terminals and screen previews
 }
 
 // Tokens are the bearer tokens, one per scope.
@@ -951,6 +953,11 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 	hostRoute("up", ops.Up)
 	hostRoute("down", ops.Down)
 	hostRoute("render", func(ctx context.Context, _ []string) (string, error) { return ops.Render() })
+
+	// Terminals and screen previews (term.go, screens.go).
+	termRoutes(route, long, ops)
+	screensRoutes(route, ops)
+
 	return withAgent(tok, ops.IsWorker, mux)
 }
 

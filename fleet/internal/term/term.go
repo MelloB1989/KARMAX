@@ -196,6 +196,7 @@ type Result struct {
 	Killed   bool
 	Released bool
 	Gone     bool  // the client went away
+	Idle     bool  // the client sent nothing for Session.Idle
 	Err      error // the command could not start, or exited with an error
 }
 
@@ -271,7 +272,7 @@ func (s *Session) Run(ctx context.Context, c *Conn) Result {
 		case <-s.Released:
 			return kill(Result{Released: true})
 		case <-idle:
-			r := kill(Result{})
+			r := kill(Result{Idle: true})
 			c.Frame(fleetapi.TermFrame{Type: fleetapi.FrameExit, Error: fmt.Sprintf("closed after %s with nothing from you", s.Idle)})
 			return r
 		case werr := <-waited:
@@ -391,4 +392,14 @@ func (le *Lease) Release() {
 	if le.l.held[le.worker] == le {
 		delete(le.l.held, le.worker)
 	}
+}
+
+// Event is a fleet.term event: a session's start or end.
+type Event struct {
+	Who     string            `json:"who"`
+	Worker  string            `json:"worker"`
+	Mode    fleetapi.TermMode `json:"mode"`
+	Phase   string            `json:"phase"`             // start | end
+	Seconds int64             `json:"seconds,omitempty"` // the session's length, at its end
+	How     string            `json:"how,omitempty"`     // at its end: exit, error, gone, released, idle
 }
