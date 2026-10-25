@@ -85,6 +85,8 @@ type Fleet struct {
 	states map[string]reconcile.State
 
 	lastRetain time.Time
+	// probedAt is when the sandboxes' networks were last probed (sandbox.go).
+	probedAt time.Time
 	// alerted is when each alert text last went out (firstAlert).
 	alerted map[string]time.Time
 	// relayBackoff is the pauses before a relay that did not get through is
@@ -261,6 +263,7 @@ func (f *Fleet) Tick(ctx context.Context, now time.Time) {
 	wg.Wait()
 	f.escalate(ctx, now)
 	f.alertHeld(ctx, now)
+	f.probeSandboxes(ctx, now)
 	if now.Sub(f.lastRetain) > 24*time.Hour {
 		th := f.cfg.Thresholds
 		if err := f.db.Retain(now, ledger.Retention{EventsRaw: th.EventsRaw, QuotaRaw: th.QuotaRaw,

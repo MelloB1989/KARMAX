@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
+	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 // A guest's question is the guest's to answer: after the window it is told
@@ -113,5 +116,119 @@ func TestAPickSkipsSandboxesForAdminsUnlessNamed(t *testing.T) {
 	set(f, "agent-02", func(s *reconcile.State) { s.Phase = reconcile.Down })
 	if rep, err := f.Run(ctx, RunRequest{Brief: "work", From: ram, Among: []string{"agent-02"}, Task: "T3"}, t0); err == nil {
 		t.Fatalf("a guest got a sandbox not lent to it: %+v", rep)
+	}
+}
+
+// probeBox is a sandbox's container whose network probe passes or fails.
+type probeBox struct {
+	*box
+	mu    sync.Mutex
+	fails bool
+	argvs [][]string
+}
+
+func (p *probeBox) Rsh(_ context.Context, argv []string, _ io.Reader, _ io.Writer) (target.Result, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.argvs = append(p.argvs, argv)
+	if p.fails {
+		return target.Result{Exit: 1, Stderr: "192.0.2.10:22 answers;"}, nil
+	}
+	return target.Result{}, nil
+}
+
+func (p *probeBox) set(fails bool) { p.mu.Lock(); p.fails = fails; p.mu.Unlock() }
+
+func (p *probeBox) probes() int { p.mu.Lock(); defer p.mu.Unlock(); return len(p.argvs) }
+
+// newProbed is a pool with agent-03 a sandbox on pc2, whose fleetd_url names
+// fleetd's address, and the probe box agent-03's container answers with.
+func newProbed(t *testing.T) (*Fleet, *probeBox, *outbox) {
+	t.Helper()
+	f, boxes := newPool(t)
+	a := f.cfg.Agents["agent-03"]
+	a.Sandbox = true
+	f.cfg.Agents["agent-03"] = a
+	h := f.cfg.Hosts["pc2"]
+	h.FleetdURL = "http://192.0.2.10:7879"
+	f.cfg.Hosts["pc2"] = h
+	p := &probeBox{box: boxes["agent-03"]}
+	inner := f.box
+	f.box = func(name string) Box {
+		if name == "agent-03" {
+			return p
+		}
+		return inner(name)
+	}
+	o := &outbox{}
+	f.notify = o
+	return f, p, o
+}
+
+func TestAnUnguardedSandboxIsDisabledAndToldOnce(t *testing.T) {
+	ctx := context.Background()
+	f, p, o := newProbed(t)
+	p.set(true)
+	f.probeSandboxes(ctx, t0)
+	if st := f.State("agent-03"); st.Phase != reconcile.Disabled || st.DisabledReason != ReasonUnguarded {
+		t.Fatalf("agent-03 = %s (%s), want disabled: %s", st.Phase, st.DisabledReason, ReasonUnguarded)
+	}
+	if len(o.alerts) != 1 || !strings.Contains(o.alerts[0], "agent-03") || !strings.Contains(o.alerts[0], "192.0.2.10:22") ||
+		!strings.Contains(o.alerts[0], "fleet-sandbox-net") {
+		t.Fatalf("alerts = %q", o.alerts)
+	}
+	argv := strings.Join(p.argvs[0], " ")
+	if !strings.Contains(argv, "host.docker.internal:22") || !strings.Contains(argv, "192.0.2.10:22") || !strings.Contains(argv, "/healthz") {
+		t.Errorf("probe = %s", argv)
+	}
+	// Within the hour it is not probed again; an hour on, still unguarded, it
+	// is not told again.
+	f.probeSandboxes(ctx, t0.Add(30*time.Minute))
+	if p.probes() != 1 {
+		t.Fatalf("probed %d times within the hour", p.probes())
+	}
+	f.probeSandboxes(ctx, t0.Add(time.Hour))
+	if p.probes() != 2 || len(o.alerts) != 1 {
+		t.Fatalf("probes %d, alerts %q", p.probes(), o.alerts)
+	}
+	// A pick passes it over, even for a guest it is lent to.
+	if r := f.pickAmong("", ram, "", []string{"agent-03"}, t0.Add(time.Hour)); r.Agent == "agent-03" {
+		t.Fatal("an unguarded sandbox was picked")
+	}
+	// Ordinary agents are not probed.
+	for _, n := range []string{"agent-01", "agent-02"} {
+		if st := f.State(n); st.Phase == reconcile.Disabled {
+			t.Errorf("%s disabled", n)
+		}
+	}
+}
+
+func TestAGuardedSandboxComesBack(t *testing.T) {
+	ctx := context.Background()
+	f, p, _ := newProbed(t)
+	p.set(true)
+	f.probeSandboxes(ctx, t0)
+	p.set(false)
+	f.probeSandboxes(ctx, t0.Add(time.Hour))
+	if st := f.State("agent-03"); st.Phase == reconcile.Disabled {
+		t.Fatalf("agent-03 still disabled (%s) after its probe passed", st.DisabledReason)
+	}
+	// Disabled for its subscription, a passing probe does not clear it.
+	set(f, "agent-03", func(s *reconcile.State) { s.Phase, s.DisabledReason = reconcile.Disabled, "billing_error" })
+	f.probeSandboxes(ctx, t0.Add(2*time.Hour))
+	if st := f.State("agent-03"); st.Phase != reconcile.Disabled || st.DisabledReason != "billing_error" {
+		t.Fatalf("agent-03 = %s (%s)", st.Phase, st.DisabledReason)
+	}
+}
+
+// A probe that cannot run (the container is down) is no verdict.
+func TestAProbeThatCannotRunChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	f := newSandboxPool(t)
+	o := &outbox{}
+	f.notify = o
+	f.probeSandboxes(ctx, t0) // the plain box's Rsh fails
+	if st := f.State("agent-03"); st.Phase == reconcile.Disabled || len(o.alerts) != 0 {
+		t.Fatalf("agent-03 = %s, alerts %q", st.Phase, o.alerts)
 	}
 }
