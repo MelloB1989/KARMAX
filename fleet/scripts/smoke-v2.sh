@@ -342,6 +342,25 @@ else
 fi
 echo "SKIP durability: no check yet (v2-durable): add it when it merges"
 
+# --- tui: fleetctl tui (the TUI frame, task 5) -----------------------------
+if "$B/fleetctl" help 2>/dev/null | grep -q '^  tui '; then
+  out=$("$B/fleetctl" </dev/null 2>&1)
+  check "tui: plain fleetctl off a terminal prints the usage, not the TUI" "got: $(head -1 <<<"$out")" has "$out" "Roster and records"
+  out=$("$B/fleetctl" tui --demo </dev/null 2>&1); rc=$?
+  check "tui: fleetctl tui off a terminal says it needs one" "exit $rc: $out" \
+    bash -c 'test $1 != 0 && grep -q "needs a terminal" <<<"$2"' _ $rc "$out"
+  if command -v script >/dev/null; then
+    # In a real pty the demo draws its frame and quits on q.
+    out=$( (sleep 2; printf q) | timeout 15 script -qec "stty cols 100 rows 30; TERM=xterm-256color $B/fleetctl tui --demo --no-anim" /dev/null 2>&1); rc=$?
+    check "tui: the demo draws its frame in a pty and quits on q" "exit $rc" \
+      bash -c 'test $1 = 0 && grep -q "fleetctl" <<<"$2" && grep -q "made by" <<<"$2" && grep -q "agent-09" <<<"$2"' _ $rc "$out"
+  else
+    echo "SKIP tui pty: script(1) is not installed here"
+  fi
+else
+  echo "SKIP tui: fleetctl tui is not in this build"
+fi
+
 # ---------------------------------------------------------------------------
 if [ -s "$R/fakes/violations" ]; then
   fail "the fakes saw only the routes fleetd may call" "$(cat "$R/fakes/violations")"
