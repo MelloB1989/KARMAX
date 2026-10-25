@@ -253,8 +253,8 @@ func waitEvents(t *testing.T, n int) []term.Event {
 func TestTermRefusesAWorkerTheCallerMayNotUse(t *testing.T) {
 	log := fakeDocker(t)
 	f, h, _ := tailnetSetup(t)
-	// A member (a guest with no lends) is refused before any upgrade.
-	rec := tdo(t, h, "GET", "/v1/term/agent-03?mode=watch", ramIP, "", "")
+	// A guest lent another agent (agent-09) is refused before any upgrade.
+	rec := tdo(t, h, "GET", "/v1/term/agent-03?mode=watch", friendIP, "", "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("a guest's term: %d %s, want 403", rec.Code, rec.Body)
 	}
@@ -583,14 +583,14 @@ func TestScreensRunAtMostTwoCapturesPerHost(t *testing.T) {
 func TestScreensFilterWhatTheCallerMayUse(t *testing.T) {
 	useCaptures(t)
 	_, h, _ := tailnetSetup(t)
-	rec := tdo(t, h, "GET", "/v1/screens?workers=agent-03,agent-02", ramIP, "", "")
+	rec := tdo(t, h, "GET", "/v1/screens?workers=agent-03,agent-02", friendIP, "", "") // lent agent-09 only
 	if rec.Code != 200 {
 		t.Fatalf("a guest's screens: %d %s", rec.Code, rec.Body)
 	}
 	var got fleetapi.ScreensReply
 	json.Unmarshal(rec.Body.Bytes(), &got)
 	if len(got.Screens) != 0 {
-		t.Fatalf("a guest with no lends saw %+v", got.Screens)
+		t.Fatalf("a guest lent neither saw %+v", got.Screens)
 	}
 	_, api := setup(t)
 	for _, tok := range []string{"relay", ""} {

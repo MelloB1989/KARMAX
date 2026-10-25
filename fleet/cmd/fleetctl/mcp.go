@@ -31,7 +31,7 @@ var (
 //
 // It speaks JSON-RPC 2.0, one message per line. fleetd decides who may do
 // what; this lists only the tools the caller's scope may use (GET
-// /v1/whoami), so a member's session is not offered the operator's.
+// /v1/whoami), so a guest's session is not offered the operator's.
 func mcpCmd(args []string) error {
 	if len(args) > 0 {
 		return errors.New("usage: fleetctl mcp (a stdio MCP server; claude mcp add --scope user fleet -- fleetctl mcp)")

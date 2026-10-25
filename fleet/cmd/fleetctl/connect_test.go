@@ -25,7 +25,7 @@ func (f *tailnetFleetd) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
 	case "/v1/whoami":
-		_, _ = io.WriteString(w, `{"scope":"member","name":"ram@example.com"}`)
+		_, _ = io.WriteString(w, `{"scope":"guest","name":"ram@example.com","lent":"agent-09"}`)
 	case "/v1/tasks":
 		_, _ = io.WriteString(w, `[]`)
 	default:
@@ -49,7 +49,7 @@ func TestConnectSavesTheFleetdEveryCommandThenUses(t *testing.T) {
 		t.Fatalf("before connect: %v", err)
 	}
 	out := captureStdout(t, func() error { return run("connect", []string{srv.URL + "/"}) })
-	if !strings.Contains(out, "as ram@example.com: you run tasks as yourself") {
+	if !strings.Contains(out, "as ram@example.com, a guest: you use the agents lent to this device (agent-09)") {
 		t.Fatalf("connect said %q", out)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "cfg", "server")); strings.TrimSpace(string(b)) != srv.URL {

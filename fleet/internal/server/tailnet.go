@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/config"
+	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 	"github.com/MelloB1989/karmax/fleet/internal/tailnet"
 )
 
@@ -20,12 +22,14 @@ type WhoIs interface {
 }
 
 // Tailnet is the API for people on the Tailscale network. Each request is
-// from whoever tailscaled says its address belongs to, with that login's
-// role in cfg; a token in it counts for nothing. It also hands people
+// from the device tailscaled says its address is, with that device's tag
+// (devices): an admin device has the full scope, a guest device its lent
+// agents; a token in it counts for nothing. A device with no tag is refused,
+// told how to ask, and its knock recorded. Any tailnet person may get
 // fleetctl itself: GET /install.sh (macOS, Linux), /install.ps1 (Windows)
 // and the builds in cfg.Dist at /dl/. The scripts also register fleetctl's
 // MCP server with Claude Code, when it is installed.
-func Tailnet(api http.Handler, who WhoIs, cfg *config.Tailnet) http.Handler {
+func Tailnet(api http.Handler, who WhoIs, devices Devices, cfg *config.Tailnet) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
@@ -49,7 +53,24 @@ func Tailnet(api http.Handler, who WhoIs, cfg *config.Tailnet) http.Handler {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		http.ServeFile(w, r, p)
 	})
-	mux.Handle("/", api)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wh := r.Context().Value(whoKey{}).(tailnet.Who)
+		d, err := devices.ResolveDevice(wh, time.Now())
+		if err != nil { // the store unreadable: nobody on the tailnet, loopback still works
+			writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("fleetd cannot read its access list: %v", err))
+			return
+		}
+		if d.Role == "" {
+			refuseDevice(w, devices, wh)
+			return
+		}
+		c := &Caller{Login: wh.Login, Name: wh.Name, Role: string(d.Role), MaxOpen: cfg.GuestOpen,
+			Device: wh.Node, StableID: wh.StableID}
+		if d.Role == fleetapi.RoleGuest {
+			c.Lent = d.Agents
+		}
+		api.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, c)))
+	}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			api.ServeHTTP(w, r)
@@ -67,15 +88,11 @@ func Tailnet(api http.Handler, who WhoIs, cfg *config.Tailnet) http.Handler {
 			writeErr(w, http.StatusForbidden, fmt.Errorf("%s is a tagged device: the fleet takes requests from people, not machines", wh.Node))
 			return
 		}
-		role := cfg.Role(wh.Login)
-		if role == "" {
-			writeErr(w, http.StatusForbidden, fmt.Errorf("%s may not use this fleet: ask its operator to add you (tailnet.members in fleet.yaml)", wh.Login))
-			return
-		}
-		c := &Caller{Login: wh.Login, Name: wh.Name, Role: role, MaxOpen: cfg.MemberOpen}
-		mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, c)))
+		mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), whoKey{}, wh)))
 	})
 }
+
+type whoKey struct{}
 
 // buildName is a fleetctl build dist.sh makes.
 var buildName = regexp.MustCompile(`^fleetctl-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$`)

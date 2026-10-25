@@ -55,16 +55,11 @@ func (f *Fleet) Suggest(ctx context.Context, from, text, why string, now time.Ti
 	return to, f.send(ctx, from, to, msg, "", now)
 }
 
-// OperatorAssigner reports whether a task's assigner is the operator's side:
-// the operator, one of their sessions or the orchestrator (a name without an
-// @, which only the full scope can set), or a tailnet login with the operator
-// role. A member's task is never: their runs carry their login.
+// OperatorAssigner reports whether a task's assigner is the operator's side
+// for placing work: the operator, one of their sessions or the orchestrator
+// (a name without an @, which only the full scope can set). A guest's task
+// is never: their runs carry their login. Whether a task may use the
+// operator's data is its own AdminWork, not this.
 func (f *Fleet) OperatorAssigner(assigner string) bool {
-	switch {
-	case assigner == "":
-		return false
-	case !strings.Contains(assigner, "@"):
-		return true
-	}
-	return f.cfg.Tailnet.Role(assigner) == "operator"
+	return assigner != "" && !strings.Contains(assigner, "@")
 }

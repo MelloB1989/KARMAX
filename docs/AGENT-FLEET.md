@@ -156,9 +156,9 @@ What slots share, and how fleetd treats it:
   is never a stray of another slot: never archived, stopped or resumed by it.
 - **`/work` and the shared code.** A worktree another slot's current session has named in its
   transcript is that slot's (`used_by_slot`): a rotation never removes it.
-- **One key, one `/work`: slots are not an isolation boundary.** A member's task (a tailnet login
-  that is not an operator) and an operator-side task (the operator, their sessions, the orchestrator,
-  a tailnet operator) never share a container: a worker is not eligible while a sibling holds a task
+- **One key, one `/work`: slots are not an isolation boundary.** A guest's task (assigned by a
+  tailnet login) and an operator-side task (the operator, their sessions, the orchestrator) never
+  share a container: a worker is not eligible while a sibling holds a task
   from the other side, and the 409 says so.
 
 The pick spreads first: a worker on an agent whose slots are all free ranks before a worker on an
@@ -422,9 +422,10 @@ The orchestrator keeps the operator's long-term memory in a gitloom namespace. f
   sends it only on GETs of gitloom's read routes and never returns it, in an answer or an error. A
   suggestion is a message to the orchestrator (filed under the agent's task); it saves it with its own
   tools, or not.
-- **Who may.** The full scope (the operator, their sessions, the orchestrator) always. An agent only while
-  its current task, in the ledger, was assigned by the operator, an operator session or the orchestrator;
-  never on a member's task. A member on the tailnet and the console never, not even to read. Secrets and
+- **Who may.** The full scope (the operator, their sessions, the orchestrator, an admin device) always.
+  An agent only while its current task, in the ledger, is admin work: assigned with the full scope, for
+  the operator's side (not for a login), to an agent that is not a sandbox. Never on a guest's task. A
+  guest on the tailnet and the console never, not even to read. Secrets and
   the KARMAX gateway follow the same rule (`operatorWork` in fleet/internal/server).
 - **Which agent.** Every agent has the same relay token, so each container also gets `FLEET_AGENT_KEY`
   from `fleetctl render`: an HMAC of its agent's name under the full token, which no agent holds. fleetctl
@@ -434,11 +435,11 @@ The orchestrator keeps the operator's long-term memory in a gitloom namespace. f
 - **The skill.** `fleetctl skill install` writes `~/.claude/skills/fleet-memory/SKILL.md` too, for the
   scopes that may use memory (full: the operator, by token or on the tailnet; relay: an agent): recall
   before work the operator has history with, suggest durable facts, never secrets. It asks fleetd who it
-  is (`GET /v1/whoami`); for a member it writes the fleet skill alone and removes a fleet-memory skill
+  is (`GET /v1/whoami`); for a guest it writes the fleet skill alone and removes a fleet-memory skill
   fleetctl wrote earlier (one whose frontmatter is fleetctl's; nothing else in the directory). When
   fleetd cannot say, it leaves fleet-memory as it is.
 - **The MCP server lists what you may use.** `fleetctl mcp` asks `GET /v1/whoami` at `initialize` (or
-  the first `tools/list`), and lists `memory_*` and `karmax_*` only for full and relay; a member, and
+  the first `tools/list`), and lists `memory_*` and `karmax_*` only for full and relay; a guest, and
   anyone fleetd cannot place, sees none of them, and a `tools/call` of one is refused with JSON-RPC
   error -32602 before fleetd is asked. fleetd still decides each call; this only keeps a session from
   being offered tools it would be refused. A whoami that fails is asked again on the next request.
@@ -446,44 +447,70 @@ The orchestrator keeps the operator's long-term memory in a gitloom namespace. f
 ## From anyone's machine — the tailnet
 
 fleetd has a fourth listener, on Kali's Tailscale address (`tailnet:` in fleet.yaml). It takes no token:
-each request is whoever tailscaled's WhoIs says owns the calling address, and that login's role decides
-what it may do.
+each request is from whichever device tailscaled's WhoIs says owns the calling address, and that
+device's tag decides what it may do.
 
     tailnet:
       listen: 100.64.0.1:7878        # bound even before tailscale0 is up (IP_FREEBIND)
-      operators: [you@example.com]   # the full token's scope
-      members: ["*@example.com"]     # their own tasks only
-      member_open: 2                 # open tasks one member may hold
+      guest_open: 2                  # open tasks one guest login may hold
 
-- **Who is nobody.** A tagged device (a subnet router, whose traffic may be anyone's), an address
-  tailscaled does not know (a subnet-routed VPC range: the ACL lets it reach Kali, WhoIs does not name
-  it), a login of another domain shared into the tailnet, anyone on neither list: 403. A token sent
-  here counts for nothing.
-- **A member** runs tasks as themselves (`from` is their login, whatever they send), at most
-  `member_open` open at once, and sees and acts on only their own: `wait --task`, `result`,
-  `followup`, `cancel`, `done --task`, `tasks`, and `peek` of an agent at work on theirs; plus `ls`,
-  `pick`, `quota`, `guide`. Not the operator's inbox, events, `prompt`, `tell`, `assign`, rotate,
-  enable, restore, archives, or the hosts. The agent reports to their login (`fleetctl tell
+- **Devices, not logins.** Only devices the operator tags may use the fleet. A tag binds the device's
+  Tailscale StableID and the login that owned it when tagged; the device's name is only shown. Renaming
+  another machine to an admin device's name gets nothing, and neither does the admin's login on
+  another device. Tags live in fleetd's ledger and take effect on the next request: no restart, no
+  fleet.yaml edit. `tailnet.operators`, `members` and `member_open` are gone, and a fleet.yaml that
+  still has them fails to load.
+- **Admin or guest.** An admin device has the full token's scope, and may change access. A guest
+  device may use only the sandbox agents lent to it (`sandbox: true` in fleet.yaml; an ordinary agent
+  can never be lent): run tasks on them as its login, at most `guest_open` open at once; read, follow
+  up, cancel and close its own tasks (`wait --task`, `result`, `followup`, `cancel`, `done --task`,
+  `tasks`); `peek`, `cp`, `sync` and `rsh` on a lent agent that is not at work on someone else's task;
+  and `ls`, `pick`, `quota`, `usage`, `activity` and `events`, cut to its lent agents and its own tasks.
+  Never the operator's memory, gateway or secrets, `prompt`, `tell`, `assign`, `model`, rotate,
+  enable, restore, archives, the inbox, or access. The agent reports to their login (`fleetctl tell
   name@example.com`); fleetd files it under the task, and their `wait --task` returns it.
-- **Install.** fleetd serves fleetctl to anyone on the list: `curl -fsSL http://<kali>.<tailnet>.ts.net:7878/install.sh | sh`
+- **Tagging.** From fleetd's machine (the full token) or an admin device:
+
+      fleetctl access                                 # tagged devices, lends, and devices that asked
+      fleetctl access admin <device>                  # everything; a guest's lends are dropped
+      fleetctl access lend <device> <agent>...        # a guest with these sandbox agents
+      fleetctl access unlend <device> <agent>...
+      fleetctl access revoke <device>                 # its tag and lends
+
+  `<device>` is the full tailnet name (`friend-laptop.tail1234.ts.net`), a short name that is exactly
+  one known device's (`friend-laptop`), or its StableID. A device is admin or guest, never both: `lend`
+  on an admin device is refused. Whoever types into an agent can read its Claude login, so lend agents
+  whose subscription you are happy to share. Every change is a `fleet.access.*` event naming who made it.
+- **Knocks.** A device with no tag is refused with its name as fleetd sees it and the command to run
+  (`fleetctl access lend friend-laptop <agent>`), and its request is kept as a knock, listed by
+  `fleetctl access`. A device must knock (any fleetctl command from it) before it can be tagged by name.
+  The first knock of a device in a day is told to the operator through the notifier
+  (`friend-laptop (friend@example.com) asked for fleet access`).
+- **Who is nobody.** A tagged Tailscale device (a subnet router, whose traffic may be anyone's), an
+  address tailscaled does not know (a subnet-routed VPC range: the ACL lets it reach Kali, WhoIs does
+  not name it), and any device with no tag: 403. A token sent here counts for nothing. If fleetd cannot
+  read its access list, the tailnet is refused (503) while fleetd's own machine, with the full token,
+  still works, so it can be repaired.
+- **Install.** fleetd serves fleetctl to any person's device on the tailnet, tagged or not, so they can
+  knock with it: `curl -fsSL http://<kali>.<tailnet>.ts.net:7878/install.sh | sh`
   (Windows: `irm http://<kali>.<tailnet>.ts.net:7878/install.ps1 | iex`) downloads the build for
   their OS from `/dl/`, runs `fleetctl connect` (saved in their config dir; it prints who fleetd knows
-  them as), and `fleetctl skill install` (the fleet skill; fleet-memory too for an operator). Then, if
+  them as), and `fleetctl skill install` (the fleet skill; fleet-memory too for an admin). Then, if
   `claude` is on their PATH, it registers the MCP server in their Claude Code user config:
   `claude mcp add --scope user fleet -- <installed fleetctl> mcp`. A `fleet` server already there with
   the same fleetctl is left alone; one with another path is removed and added again; no other server is
   touched. It prints one line saying which, or, without `claude`, the command to run later. The builds come from `fleet/scripts/dist.sh`, into
   `~/.karmax/fleet/dist`; rerun it after changing fleetctl.
-- **What the agents can read.** Anyone on the list can brief an agent, and an agent reads all of
-  `~/code` and pushes as the fleet's GitHub account. Credentials kept under `~/code` are hidden from
+- **What the agents can read.** An admin device can brief any agent, and an ordinary agent reads all
+  of `~/code` and pushes as the fleet's GitHub account; a guest briefs only its lent sandboxes. Credentials kept under `~/code` are hidden from
   agents with `hide_from_agents: [secrets]`: each path is covered by an empty read-only tmpfs in the
-  agent containers (not in the orchestrator's). Anything else under `~/code` an agent can read, a member
+  agent containers (not in the orchestrator's). Anything else under `~/code` an agent can read, an admin
   can ask for. To give an agent a key for one task, use a secret (next section), not a file under `~/code`.
 
 ## Secrets — a key for one task
 
 Every agent's env file holds the same fixed set of credentials, so before this a key meant for one
-task ended up in the shared code directory, where every agent and every member's task could read it.
+task ended up in the shared code directory, where every agent and every guest's task could read it.
 Now the operator, the operator's sessions and the orchestrator (the full scope) give the key to fleetd,
 and grant it to a task or an agent:
 
@@ -504,11 +531,12 @@ output becomes its model's context.
   secrets, so back it up apart from the ledger. A value is never logged, put in an event or an error, or
   returned by `ls`.
 - **Who may read.** Only an agent whose identity fleetd has verified (the agent-identity header, not a
-  name the agent sends), whose current task is open and its own on the ledger, and whose task was
-  assigned by the operator, the orchestrator, an operator's session (any assigner name without an @) or a
-  tailnet operator login. A task a member ran never gets one, even if granted. The grant must name that
+  name the agent sends), that is not a sandbox, whose current task is open and its own on the ledger,
+  and admin work: assigned with the full scope (the full token or an admin device) by the operator's
+  side (any assigner name without an @), not for a login. A task a guest ran never gets one, even if
+  granted. The grant must name that
   task or that agent. A task's grant ends when the task closes (done, close, cancel or superseded), and
-  any grant ends at its `--ttl`. Members (the tailnet `member` scope) and the console cannot use the
+  any grant ends at its `--ttl`. Guests (the tailnet `guest` scope) and the console cannot use the
   secret routes at all, not even `ls`.
 - **Audit.** Every read is a `fleet.secret.read` event naming the agent, task and secret. A refusal is
   `fleet.secret.denied`. Put, grant, revoke and rm are events too. `secret ls` shows the last read.
@@ -561,9 +589,9 @@ the tools for them, under the operator's rules:
   `karmax_call` (`tool`, `args`, `reason`, `timeout`); a write's call waits for its approval like the
   CLI's, while the session's other calls go on.
 - **Who may use it** is decided by fleetd, as for memory and secrets: the full scope (the operator,
-  their sessions, the orchestrator) may; a member on the tailnet never may, not even to read; an agent
-  may only while its current task — by the ledger's assigner, never by anything the agent sends — came
-  from the operator, an operator's session or the orchestrator, and it proves which agent it is with its
+  their sessions, the orchestrator, an admin device) may; a guest on the tailnet never may, not even to
+  read; an agent may only while its current task is admin work by the ledger — never by anything the
+  agent sends — and it is no sandbox, and it proves which agent it is with its
   container's key (`X-Fleet-Agent`).
 - **Audit.** Every call and decision is an event (`karmax.call`, `karmax.decision`) with the tool, agent,
   task, class and decision. Events carry argument names, never their values; the values are in the
@@ -605,13 +633,13 @@ fleetctl on whatever it unpacks:
 sentence naming that directory. If the copy fails the task is closed as `undelivered`. The task id must
 be letters, digits, `.`, `_` and `-`.
 
-Access: the operator's token and tailnet operators may copy to and from any agent. A tailnet member
-only to and from an agent at work on one of their own open tasks (the same ownership rule as `peek`).
+Access: the operator's token and admin devices may copy to and from any agent. A guest device only to
+and from an agent lent to it that is not at work on someone else's task (the same rule as `peek`).
 Agents (relay scope) and the console may not.
 
 `fleetctl sync` runs `rsync -a -e "fleetctl rsh"`. `fleetctl rsh <agent> <cmd…>` is a stream both ways
-through `POST /v1/agents/{agent}/rsh` that runs the command in the container, and it is full scope
-only. It needs `rsync` in the image (the Dockerfile installs it), so it works once the new image is
+through `POST /v1/agents/{agent}/rsh` that runs the command in the container: the full scope, or a
+guest on a lent agent, as for `cp`. It needs `rsync` in the image (the Dockerfile installs it), so it works once the new image is
 deployed, and rsync on the machine that runs `sync`.
 
 ## Prompting an agent directly

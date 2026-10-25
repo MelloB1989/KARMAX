@@ -51,7 +51,7 @@ func (f *fake) Rsh(ctx context.Context, agent string, argv []string, stdin io.Re
 	return target.Result{Exit: 3, Stderr: "oops"}, err
 }
 
-func TestFileRoutesAreForFullAndMembersOnly(t *testing.T) {
+func TestFileRoutesAreForFullAndGuestsOnly(t *testing.T) {
 	_, h, _ := tailnetSetup(t)
 	_, api := setup(t)
 	for _, c := range []struct {
@@ -73,7 +73,8 @@ func TestFileRoutesAreForFullAndMembersOnly(t *testing.T) {
 		{"GET", "/v1/agents/agent-02/files?path=/work/x", "", ramIP, 403},
 		{"PUT", "/v1/agents/agent-05/files", "", ramIP, 403}, // on no task
 		{"PUT", "/v1/agents/agent-02/files", "", opIP, 200},
-		{"POST", "/v1/agents/agent-03/rsh?arg=true", "", ramIP, 403}, // rsh is full scope
+		{"POST", "/v1/agents/agent-03/rsh?arg=true", "", ramIP, 200}, // lent, on ram's own task
+		{"POST", "/v1/agents/agent-02/rsh?arg=true", "", ramIP, 403}, // not lent
 		{"POST", "/v1/agents/agent-03/rsh?arg=true", "", opIP, 200},
 	} {
 		var rec *httptest.ResponseRecorder

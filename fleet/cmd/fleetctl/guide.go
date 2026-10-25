@@ -33,7 +33,7 @@ func guideCmd(args []string) error {
 // skill, and the fleet-memory skill beside it for those fleetd gives the
 // operator's memory (scope full: the operator, on a token or the tailnet;
 // relay: an agent). Both are built into this binary; only who you are is
-// asked of fleetd. A member gets the fleet skill alone, and a fleet-memory
+// asked of fleetd. A guest gets the fleet skill alone, and a fleet-memory
 // skill fleetctl wrote earlier is removed. When fleetd cannot say, the fleet
 // skill is written and fleet-memory left as it is.
 func skillCmd(args []string) error {

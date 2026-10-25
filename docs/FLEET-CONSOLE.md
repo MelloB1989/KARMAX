@@ -196,39 +196,39 @@ the index written out, not a separate list. To refresh it after a route changes:
 <!-- routes:begin -->
 | route | scopes | fleetctl | what |
 |---|---|---|---|
-| `GET /v1` | full, relay, console, member | `fleetctl api` | the index of every route and the scopes that may call it |
-| `GET /v1/whoami` | full, relay, console, member, sandbox | `fleetctl whoami` | which scope and name this token has (on the tailnet: your login) |
-| `GET /v1/status` | full, relay, console, member | `fleetctl status`, `ls` | one row per agent (phase, task, idle, model, alerts), plus the orchestrator's quota |
+| `GET /v1` | full, relay, console, guest | `fleetctl api` | the index of every route and the scopes that may call it |
+| `GET /v1/whoami` | full, relay, console, guest, sandbox | `fleetctl whoami` | which scope and name this token has (on the tailnet: your login, device and, for a guest, its lent agents) |
+| `GET /v1/status` | full, relay, console, guest | `fleetctl status`, `ls` | one row per agent (phase, task, idle, model, alerts), plus the orchestrator's quota; a guest's lent agents only |
 | `POST /v1/tell` | full, relay, console, sandbox | `fleetctl tell` | deliver a message to a session; to `operator`, a person or a session that assigned a task it is stored in the inbox; `kind` is `report` (default), `question` or `progress` |
 | `POST /v1/ask` | relay, sandbox | `fleetctl ask` | an agent files a question under its task to its assigner and blocks until the answer arrives (`answer`) or `timeout` (default 30m) passes (`timed_out`); it waits for nothing else; while fleetd shuts down it answers 503 (the question stays filed, and is not asked again) |
-| `POST /v1/tasks/{id}/answer` | full, relay, member | `fleetctl answer` | answer the question the task's agent is blocked on: the text is the output of its ask; with nothing blocked it is a follow-up. An agent (relay) may answer only a task it assigned |
+| `POST /v1/tasks/{id}/answer` | full, relay, guest | `fleetctl answer` | answer the question the task's agent is blocked on: the text is the output of its ask; with nothing blocked it is a follow-up. An agent (relay) may answer only a task it assigned |
 | `POST /v1/assign` | full | `fleetctl assign`, `give` | record a task for an agent, and with a brief deliver it; a new task supersedes the agent's old one |
-| `POST /v1/run` | full, member | `fleetctl run` | pick a free agent (or the one named), record the task with its repo, deliver the brief; 409 with the candidates when none is free (`queue` retries); `model` runs the task on that model, and only agents whose `models` list it are candidates (not for members) |
-| `POST /v1/done` | full, member | `fleetctl done` | close a task (`agent` may be left out when `task` is named); archives and rotates the session unless `keep_session` |
-| `POST /v1/tasks/{id}/followup` | full, member | `fleetctl followup` | relay more instructions to the agent on an open task (409 when closed) |
-| `POST /v1/tasks/{id}/cancel` | full, member | `fleetctl cancel` | interrupt the agent, tell it, close the task as `cancelled` (409 when closed) |
-| `POST /v1/tasks/{id}/brief` | full, member | `fleetctl run --attach` | deliver the brief of a task placed with `attach`, naming its inbox; run it only once the files are in |
-| `PUT /v1/agents/{agent}/files` | full, member | `fleetctl cp <local>… <agent>[:<dir>]` | a tar stream, unpacked by `tar -x` in the container under `path` (default `/work/inbox`; only under `/work` or `/tmp`); checked entry by entry, never held; 413 over `files.max_bytes`; a member only on an agent at work on their open task |
-| `GET /v1/agents/{agent}/files` | full, member | `fleetctl cp <agent>:<path> [<localdir>]` | a tar stream of `path` (under `/work` or `/tmp`), checked on the way out; a break after the status is sent ends the stream with an `X-Fleet-Error` trailer |
-| `POST /v1/agents/{agent}/rsh` | full | `fleetctl rsh`, `fleetctl sync` | runs the `arg` query values as a command in the container, the request body as its stdin and its stdout as the response; the exit status and stderr tail come as trailers (`X-Fleet-Exit`, `X-Fleet-Stderr`) |
+| `POST /v1/run` | full, guest | `fleetctl run` | pick a free agent (or the one named), record the task with its repo, deliver the brief; 409 with the candidates when none is free (`queue` retries); `model` runs the task on that model, and only agents whose `models` list it are candidates (a guest only among its lent agents) |
+| `POST /v1/done` | full, guest | `fleetctl done` | close a task (`agent` may be left out when `task` is named); archives and rotates the session unless `keep_session` |
+| `POST /v1/tasks/{id}/followup` | full, guest | `fleetctl followup` | relay more instructions to the agent on an open task (409 when closed) |
+| `POST /v1/tasks/{id}/cancel` | full, guest | `fleetctl cancel` | interrupt the agent, tell it, close the task as `cancelled` (409 when closed) |
+| `POST /v1/tasks/{id}/brief` | full, guest | `fleetctl run --attach` | deliver the brief of a task placed with `attach`, naming its inbox; run it only once the files are in |
+| `PUT /v1/agents/{agent}/files` | full, guest | `fleetctl cp <local>… <agent>[:<dir>]` | a tar stream, unpacked by `tar -x` in the container under `path` (default `/work/inbox`; only under `/work` or `/tmp`); checked entry by entry, never held; 413 over `files.max_bytes`; a guest only on an agent lent to its device that is not at work on someone else's task |
+| `GET /v1/agents/{agent}/files` | full, guest | `fleetctl cp <agent>:<path> [<localdir>]` | a tar stream of `path` (under `/work` or `/tmp`), checked on the way out; a break after the status is sent ends the stream with an `X-Fleet-Error` trailer |
+| `POST /v1/agents/{agent}/rsh` | full, guest | `fleetctl rsh`, `fleetctl sync` | runs the `arg` query values as a command in the container, the request body as its stdin and its stdout as the response; the exit status and stderr tail come as trailers (`X-Fleet-Exit`, `X-Fleet-Stderr`) |
 | `POST /v1/rotate` | full, console | `fleetctl rotate` | archive the session and start fresh; `dry_run` replies with what it would close and when |
 | `GET /v1/agents/{agent}/model` | full, console | `fleetctl model` | the agent's configured default, its override, its open task's model and the live model |
 | `POST /v1/agents/{agent}/model` | full | `fleetctl model` | `{model}` sets a persistent override, `{reset: true}` clears it; fleetd types `/model` into the idle session. Members may not change models |
 | `POST /v1/enable` | full | `fleetctl enable` | re-enable an agent disabled for a subscription problem |
 | `POST /v1/restore` | full | `fleetctl restore` | restore an archived session |
 | `GET /v1/inbox` | full, console | `fleetctl inbox` | what agents reported to the operator, or to the session named by `to` (`after=<id>` cursor) |
-| `GET /v1/wait` | full, console, member, sandbox | `fleetctl wait` | long poll: returns when the agent reports, its task closes, or it stops; with `task` (`agent` then optional) it returns the agent's first report after the task's latest instruction (brief, follow-up), to whomever it was sent, unless `after` is set; with `new=<reader>` (and a task) it returns the oldest message that reader has not been handed and moves their cursor past it, so a repeated wait never returns the same message twice; while fleetd shuts down it answers 503 at once, and `fleetctl wait` tries again when fleetd is back |
-| `GET /v1/guide` | full, console, member | `fleetctl guide` | the guide to putting the fleet to work (`{"text": …}`), also installed as a skill by `fleetctl skill install` |
-| `GET /v1/events` | full, console | `fleetctl events` | an agent's recorded events |
-| `GET /v1/usage` | full, console | `fleetctl usage` | tokens and cost, by agent or model |
+| `GET /v1/wait` | full, console, guest, sandbox | `fleetctl wait` | long poll: returns when the agent reports, its task closes, or it stops; with `task` (`agent` then optional) it returns the agent's first report after the task's latest instruction (brief, follow-up), to whomever it was sent, unless `after` is set; with `new=<reader>` (and a task) it returns the oldest message that reader has not been handed and moves their cursor past it, so a repeated wait never returns the same message twice; while fleetd shuts down it answers 503 at once, and `fleetctl wait` tries again when fleetd is back |
+| `GET /v1/guide` | full, console, guest | `fleetctl guide` | the guide to putting the fleet to work (`{"text": …}`), also installed as a skill by `fleetctl skill install` |
+| `GET /v1/events` | full, console, guest | `fleetctl events` | an agent's recorded events; a guest's lent agents' only, without other people's tasks |
+| `GET /v1/usage` | full, console, guest | `fleetctl usage` | tokens and cost, by agent or model; a guest's lent agents' only, by agent |
 | `GET /v1/history` | full, console | `fleetctl history` | an agent's past tasks |
-| `GET /v1/quota` | full, console, member | `fleetctl quota` | each subscription's 5 h and 7 d windows |
-| `GET /v1/tasks/{id}` | full, console, member, sandbox | `fleetctl result` | a task with its conversation (brief, reports, follow-ups, oldest first, each with from/to) and the commits on its branch; 404 unknown |
-| `GET /v1/tasks` | full, console, member | `fleetctl tasks` | tasks, open or all; a member's own |
-| `GET /v1/activity` | full, console | `fleetctl activity` | event counts per agent in time buckets |
+| `GET /v1/quota` | full, console, guest | `fleetctl quota` | each subscription's 5 h and 7 d windows |
+| `GET /v1/tasks/{id}` | full, console, guest, sandbox | `fleetctl result` | a task with its conversation (brief, reports, follow-ups, oldest first, each with from/to) and the commits on its branch; 404 unknown |
+| `GET /v1/tasks` | full, console, guest | `fleetctl tasks` | tasks, open or all; a guest's own |
+| `GET /v1/activity` | full, console, guest | `fleetctl activity` | event counts per agent in time buckets; a guest's lent agents' only |
 | `GET /v1/today` | full, console | `fleetctl today` | tasks closed and spend since local midnight |
-| `GET /v1/pick` | full, console, member | `fleetctl pick` | which agent a new task would go to, and why each other was passed over |
-| `GET /v1/peek` | full, console, member | `fleetctl peek` | the last lines of an agent's pane; a member's only while it works on their task |
+| `GET /v1/pick` | full, console, guest | `fleetctl pick` | which agent a new task would go to, and why each other was passed over |
+| `GET /v1/peek` | full, console, guest | `fleetctl peek` | the last lines of an agent's pane; a guest's only on a lent agent not at work on someone else's task |
 | `POST /v1/prompt` | full, console | `fleetctl prompt` | type into an agent's session as the operator |
 | `GET /v1/archives` | full, console | `fleetctl archive ls` | list archived sessions |
 | `GET /v1/archives/{id...}` | full | `fleetctl archive show` | one archive |
@@ -249,15 +249,17 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/secrets/{name}/grant` | full | `fleetctl secret grant` | let a `task`'s agent, or an `agent`, read it, for `ttl` if set; a task's grant ends when the task closes |
 | `POST /v1/secrets/{name}/revoke` | full | `fleetctl secret revoke` | end a grant to a `task` or an `agent` (404 when there is none) |
 | `DELETE /v1/secrets/{name}` | full | `fleetctl secret rm` | drop a secret and its grants |
-| `POST /v1/secrets/{name}/read` | relay | `fleetctl secret exec`, `get` | a granted secret's value, for a verified agent whose open task the operator, an operator's session or the orchestrator assigned (403 otherwise); every read and refusal is an event |
-| `GET /v1/watch` | full, console, member | `fleetctl tui` | the TUI's one stream: a long poll (`since`, the last snapshot's `seq`) answered at once when fleetd has another snapshot, else when the next is made, and after 25 s at most; one `fleetapi.Snapshot` (workers with their activity, tasks, events, quota with burn and run-out, today, hosts, fleetd) cut to the caller: a guest sees only its lent agents and its own tasks |
-| `GET /v1/term/{worker}` | full, member | `fleetctl ssh`, `attach` | a WebSocket to the worker's session: `mode` watch (read-only, never resizes it), type (the one keyboard; `held` frame when someone has it, `force=1` for an admin, who turns the holder into a watcher with a `released` frame) or shell (`bash -l` in `/work`); `cols`, `rows`. Terminal bytes are binary frames, `fleetapi.TermFrame` JSON text frames; each session is a `fleet.term` event. A guest only on a lent agent |
-| `GET /v1/screens` | full, console, member | `fleetctl tui` (Screens) | each worker's last `lines` (default 40) with ANSI, for `workers` (a comma list; none is all) the caller may use: one exec per container, shared for 2 s, at most two per host at once |
+| `POST /v1/secrets/{name}/read` | relay | `fleetctl secret exec`, `get` | a granted secret's value, for a verified agent, not a sandbox, whose open task is admin work (403 otherwise); every read and refusal is an event |
+| `GET /v1/access` | full | `fleetctl access` | tagged devices (role, lent agents, last seen) and the devices that asked and are not tagged |
+| `POST /v1/access` | full | `fleetctl access admin`, `lend`, `unlend`, `revoke` | change a device's tag (`op`, `device`, `agents`); only sandbox agents can be lent, and an admin device is never lent to; the new listing |
+| `GET /v1/watch` | full, console, guest | `fleetctl tui` | the TUI's one stream: a long poll (`since`, the last snapshot's `seq`) answered at once when fleetd has another snapshot, else when the next is made, and after 25 s at most; one `fleetapi.Snapshot` (workers with their activity, tasks, events, quota with burn and run-out, today, hosts, fleetd) cut to the caller: a guest sees only its lent agents and its own tasks |
+| `GET /v1/term/{worker}` | full, guest | `fleetctl ssh`, `attach` | a WebSocket to the worker's session: `mode` watch (read-only, never resizes it), type (the one keyboard; `held` frame when someone has it, `force=1` for an admin, who turns the holder into a watcher with a `released` frame) or shell (`bash -l` in `/work`); `cols`, `rows`. Terminal bytes are binary frames, `fleetapi.TermFrame` JSON text frames; each session is a `fleet.term` event. A guest only on a lent agent |
+| `GET /v1/screens` | full, console, guest | `fleetctl tui` (Screens) | each worker's last `lines` (default 40) with ANSI, for `workers` (a comma list; none is all) the caller may use: one exec per container, shared for 2 s, at most two per host at once |
 <!-- routes:end -->
 
-`member` is a person on the tailnet (`tailnet:` in fleet.yaml, no token: Tailscale says who they are). A member runs tasks as themselves, at most `member_open` open at once, and the task routes answer them only for their own tasks (403 otherwise); `wait` needs `task`, and `done` closes by task alone. An operator login on the tailnet has `full`.
+`guest` is a device on the tailnet tagged guest (`fleetctl access lend`; no token: Tailscale says which device calls). A guest uses only the sandbox agents lent to its device, runs tasks as its login, at most `tailnet.guest_open` open at once, and the task routes answer it only for its own tasks (403 otherwise); `wait` needs `task`, and `done` closes by task alone. A device tagged admin has `full`; an untagged device is refused, and its request is listed in `fleetctl access` as a knock.
 
-The memory and KARMAX gateway routes, and every route that reaches the operator's personal data, also check who an agent is: all agents share the relay token, so each container has a key of its own (`FLEET_AGENT_KEY`, written by `fleetctl render`) that fleetctl sends as `X-Fleet-Agent`. A key that does not verify is a 403 on any route. An agent may use the operator's data only while its current task, in the ledger, was assigned by the operator, one of their sessions or the orchestrator; never on a member's task. A member and the console never may.
+The memory and KARMAX gateway routes, and every route that reaches the operator's personal data, also check who an agent is: all agents share the relay token, so each container has a key of its own (`FLEET_AGENT_KEY`, written by `fleetctl render`) that fleetctl sends as `X-Fleet-Agent`. A key that does not verify is a 403 on any route. An agent may use the operator's data only while its current task, in the ledger, is admin work: assigned with the full scope (the full token or an admin device), for the operator's side, to an agent that is not a sandbox. A guest's task never is. A guest and the console never may.
 
 ## Install, upgrade, undo on PC2
 

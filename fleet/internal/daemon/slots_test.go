@@ -20,7 +20,7 @@ import (
 const slotsYAML = `home: /h
 hosts: {kali: {exec: [docker]}, pc2: {exec: [docker, --context, pc2]}}
 orchestrator: {host: kali, token_env: O}
-tailnet: {listen: '100.64.0.1:7878', operators: [op@example.com], members: [ram@example.com]}
+tailnet: {listen: '100.64.0.1:7878'}
 slots: 2
 agents:
   agent-01: {host: kali, token_env: T1}
@@ -252,8 +252,8 @@ func TestAMembersTaskNeverSharesAContainerWithAnOperatorsTask(t *testing.T) {
 	if _, err := f.Run(ctx, RunRequest{Brief: "more", Agent: "agent-01:2", From: "ram@example.com"}, t0); err != nil {
 		t.Fatalf("a member's second task beside their first: %v", err)
 	}
-	if f.OperatorAssigner("op@example.com") != true || f.OperatorAssigner("ram@example.com") || !f.OperatorAssigner("agent-01:2") {
-		t.Error("OperatorAssigner: tailnet operator, member, worker")
+	if f.OperatorAssigner("op@example.com") || f.OperatorAssigner("ram@example.com") || !f.OperatorAssigner("agent-01:2") {
+		t.Error("OperatorAssigner: logins, worker")
 	}
 }
 

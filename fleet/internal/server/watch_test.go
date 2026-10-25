@@ -19,7 +19,6 @@ func (f *fake) Snapshot(_ time.Time, all bool, agents []string, me fleetapi.Me) 
 }
 func (f *fake) SnapshotSeq() uint64      { return 1 }
 func (f *fake) Changed() <-chan struct{} { return nil }
-func (f *fake) KnockCount() int          { return 0 }
 
 // streamOps is a fleet whose snapshot moves when the test says.
 type streamOps struct {
@@ -164,7 +163,7 @@ func TestWatchIsScopedToTheCaller(t *testing.T) {
 	}
 	// A person on the tailnet who is not an admin: their lends, never all.
 	req := httptest.NewRequest("GET", "/v1/watch", nil)
-	req = req.WithContext(context.WithValue(req.Context(), callerKey{}, &Caller{Login: "friend@example.com", Role: "member"}))
+	req = req.WithContext(context.WithValue(req.Context(), callerKey{}, &Caller{Login: "friend@example.com", Role: "guest"}))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if s := snapshotOf(t, rec); s.Knocks != 0 || s.Me.Name != "friend@example.com" || s.Me.Role != fleetapi.RoleGuest {

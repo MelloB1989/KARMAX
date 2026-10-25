@@ -30,7 +30,10 @@ func (f *fake) Run(_ context.Context, in daemon.RunRequest, _ time.Time) (daemon
 	if in.Model != "" {
 		call += " model=" + in.Model
 	}
-	f.calls = append(f.calls, call)
+	if len(in.Among) > 0 {
+		call += " among=" + strings.Join(in.Among, ",")
+	}
+	f.calls, f.runs = append(f.calls, call), append(f.runs, in)
 	switch {
 	case in.Brief == "nobody free":
 		return daemon.RunReply{}, &daemon.NoFreeAgent{Candidates: fakeCandidates}

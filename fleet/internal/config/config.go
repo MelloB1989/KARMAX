@@ -112,49 +112,26 @@ type Files struct {
 
 // Tailnet is fleetd's API for people on the Tailscale network. Who calls is
 // who Tailscale says (tailscaled's WhoIs on the caller's address), so there
-// is no token to hand out: a login on Operators has the full token's scope,
-// one on Members may run tasks as itself and see and close its own. A
-// tagged device is nobody, and so is anyone on neither list.
+// is no token to hand out. What a device may do is its tag, kept in the
+// ledger and changed with fleetctl access: an admin device has the full
+// token's scope, a guest device only the sandbox agents lent to it. A tagged
+// Tailscale device is nobody, and so is any device not tagged.
 type Tailnet struct {
 	// Listen is the API's address on the tailnet, e.g. 100.64.0.1:7878.
 	// It binds before tailscale0 has the address (IP_FREEBIND).
 	Listen string `yaml:"listen"`
-	// Operators and Members are Tailscale logins (you@example.com), or
-	// "*@example.com" for every login of that domain.
-	Operators []string `yaml:"operators"`
-	Members   []string `yaml:"members"`
-	// MemberOpen is how many open tasks one member may hold; 0 is 2.
-	MemberOpen int `yaml:"member_open"`
+	// GuestOpen is how many open tasks one guest login may hold; 0 is 2.
+	GuestOpen int `yaml:"guest_open"`
 	// Socket is tailscaled's LocalAPI socket.
 	Socket string `yaml:"socket"`
 	// Dist holds the fleetctl builds served at /dl/ (fleet/scripts/dist.sh).
 	Dist string `yaml:"dist"`
 }
 
-// Role is what a Tailscale login may do on the tailnet listener:
-// "operator", "member", or "" (nothing).
-func (t *Tailnet) Role(login string) string {
-	switch {
-	case t == nil || login == "":
-		return ""
-	case matchLogin(t.Operators, login):
-		return "operator"
-	case matchLogin(t.Members, login):
-		return "member"
-	}
-	return ""
-}
-
-func matchLogin(list []string, login string) bool {
-	login = strings.ToLower(login)
-	for _, p := range list {
-		p = strings.ToLower(p)
-		if p == login || strings.HasPrefix(p, "*@") && strings.HasSuffix(login, p[1:]) {
-			return true
-		}
-	}
-	return false
-}
+// goneTailnetKeys are the login lists device access replaced. A fleet.yaml
+// that still has one fails to load, so nobody believes a wildcard still
+// lets someone in.
+var goneTailnetKeys = []string{"operators", "members", "member_open"}
 
 // Console is fleet-console: the live panel on one fleet host. fleetctl
 // render writes its console.yaml and its fleetd token from this.
@@ -397,6 +374,16 @@ func Parse(b []byte) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("fleet.yaml: %w", err)
 	}
+	var old struct {
+		Tailnet map[string]any `yaml:"tailnet"`
+	}
+	if err := yaml.Unmarshal(b, &old); err == nil {
+		for _, k := range goneTailnetKeys {
+			if _, ok := old.Tailnet[k]; ok {
+				return nil, fmt.Errorf("fleet.yaml: tailnet.%s: tailnet.operators/members are gone: tag devices with `fleetctl access` (admin, lend), then remove it", k)
+			}
+		}
+	}
 	c.defaults()
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("fleet.yaml: %w", err)
@@ -446,8 +433,8 @@ func (c *Config) defaults() {
 		c.Listen = "127.0.0.1:7878"
 	}
 	if t := c.Tailnet; t != nil {
-		if t.MemberOpen <= 0 {
-			t.MemberOpen = 2
+		if t.GuestOpen <= 0 {
+			t.GuestOpen = 2
 		}
 		if t.Socket == "" {
 			t.Socket = "/var/run/tailscale/tailscaled.sock"
@@ -653,11 +640,6 @@ func (c *Config) validate() error {
 	if t := c.Tailnet; t != nil {
 		if _, port, err := net.SplitHostPort(t.Listen); err != nil || port == "" {
 			return fmt.Errorf("tailnet: listen %q: want the tailnet address and a port, e.g. 100.64.0.1:7878", t.Listen)
-		}
-		for _, l := range append(append([]string{}, t.Operators...), t.Members...) {
-			if at := strings.Index(l, "@"); at < 1 || at == len(l)-1 || strings.Contains(l[at+1:], "*") || strings.Contains(l[:at], "*") && l[:at] != "*" {
-				return fmt.Errorf("tailnet: %q is not a Tailscale login (you@example.com) or *@example.com", l)
-			}
 		}
 	}
 	if m := c.Memory; m != nil {

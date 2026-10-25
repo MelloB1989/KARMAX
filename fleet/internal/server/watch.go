@@ -55,7 +55,7 @@ func watchRoutes(route func(string, func(http.ResponseWriter, *http.Request) (an
 				return nil, context.Cause(r.Context())
 			}
 		}
-	}), and(readers, member)...)
+	}), and(readers, guest)...)
 }
 
 // snapshotFor is the snapshot cut to the caller: an admin sees everything

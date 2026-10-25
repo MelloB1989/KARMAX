@@ -165,26 +165,11 @@ func (f *Fleet) mayUseSecrets(agent string) (string, error) {
 	if err != nil || t.Agent != agent || !t.Closed.IsZero() {
 		return task, fmt.Errorf("%w: %s has no open task", ErrForbidden, agent)
 	}
-	if !f.operatorAssigned(t.Assigner) {
-		return task, fmt.Errorf("%w: task %s was assigned by %s, a member: its agent may not use the operator's secrets",
+	if !t.AdminWork || f.Sandbox(agent) {
+		return task, fmt.Errorf("%w: task %s is not the operator's work (assigned by %s): its agent may not use the operator's secrets",
 			ErrForbidden, task, cmp.Or(t.Assigner, "nobody on record"))
 	}
 	return task, nil
-}
-
-// operatorAssigned reports whether a task's assigner may hand its agent the
-// operator's data. Only the full scope names an assigner (a member's run is
-// always theirs, by login), so a name without an @ is the operator, an
-// operator's session or the orchestrator; a login is a member unless the
-// tailnet lists it as an operator.
-func (f *Fleet) operatorAssigned(assigner string) bool {
-	switch {
-	case assigner == "":
-		return false
-	case !strings.Contains(assigner, "@"):
-		return true
-	}
-	return f.cfg.Tailnet.Role(assigner) == "operator"
 }
 
 // redactSecrets is the one hook on the message path: every stored secret's

@@ -88,7 +88,7 @@ Work (fleetd):
                                       arrives (printed to stdout); on timeout say so, exit 4
   cp <local>... <agent>[:<dir>]       copy files and directories into an agent's container (default /work/inbox/);
   cp <agent>:<path> [<localdir>]      or out of it. Under /work or /tmp only; symlinks are copied as links and
-                                      never out of the tree; member scope: only an agent on a task of yours
+                                      never out of the tree; a guest: only its lent agents, not at work for others
   sync [--delete] [--dry-run] [--exclude P] <localdir> <agent>:<dir>   (or the reverse) rsync through fleetd
                                       (full scope; needs rsync here and in the image)
   rsh <agent> <cmd…>                  run a command in the container, stdin and stdout streamed (rsync -e; full scope)
@@ -148,6 +148,13 @@ The operator's memory (fleetd; read-only; an agent only on the operator's tasks)
                                       karmax tools, those your scope may use (whoami):
                                       claude mcp add --scope user fleet -- fleetctl mcp
 
+Devices (admins: fleetd's own machine with the full token, or a device tagged admin):
+  access [--json]                     tagged devices (admin, or guest with lent agents) and devices that asked
+  access admin <device>               everything, as the full token; drops a guest's lends
+  access lend <device> <agent>…       a guest: only these sandbox agents, its own tasks
+  access unlend <device> <agent>… | access revoke <device>
+                                      <device>: its tailnet name, a short name that is one device's, or its id
+
 About fleetd:
   connect http://<host>:7878          from a machine on the tailnet: save that fleetd as yours, and
                                       say who it knows you as (no token: Tailscale says)
@@ -155,7 +162,7 @@ About fleetd:
   api                                 every route and the scopes it allows
   guide | skill install [--dir D] [--print] [--force]
                                       the guide; install it for Claude Code, with the fleet-memory
-                                      skill for the operator and agents (a member's is removed)
+                                      skill for the operator and agents (a guest's is removed)
 
 The console (fleet-console on its host, reached over ssh; or FLEET_CONSOLE_URL + FLEET_CONSOLE_TOKEN):
   console snapshot [--json]           agents, tools, load, and every source with its age
@@ -822,6 +829,9 @@ func run(cmd string, args []string) error {
 
 	case "memory":
 		return memoryCmd(args)
+
+	case "access":
+		return accessCmd(args)
 	case "mcp":
 		return mcpCmd(args)
 	case "skill":

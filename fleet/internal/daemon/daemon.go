@@ -836,6 +836,10 @@ func (f *Fleet) Assign(ctx context.Context, name, task, from, brief string, now 
 	if err := f.assign(name, task, from, now); err != nil {
 		return err
 	}
+	// Only the full scope assigns: its task is admin work (adminWork).
+	if err := f.db.SetTaskAdminWork(task, f.adminWork(name, from)); err != nil {
+		return err
+	}
 	if strings.TrimSpace(brief) == "" {
 		return nil
 	}

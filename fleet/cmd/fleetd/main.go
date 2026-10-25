@@ -200,7 +200,7 @@ func run(cfgPath string, once bool) error {
 	if t := cfg.Tailnet; t != nil {
 		// Who calls is who tailscaled says. The address is tailscale0's,
 		// which a boot may not have given it yet: bound regardless.
-		serve(t.Listen, server.Tailnet(api, &tailnet.Local{Socket: t.Socket}, t), "tailnet api", net.ListenConfig{Control: freebind})
+		serve(t.Listen, server.Tailnet(api, &tailnet.Local{Socket: t.Socket}, f, t), "tailnet api", net.ListenConfig{Control: freebind})
 	}
 
 	log.Printf("%d agents (%d workers) on %d hosts, tick %s", len(cfg.Agents), len(cfg.WorkerNames()), len(cfg.Hosts), cfg.Thresholds.Tick)

@@ -70,7 +70,7 @@ func screensRoutes(route func(string, func(http.ResponseWriter, *http.Request) (
 			out.Screens[at[i]] = s
 		}
 		return out, nil
-	}, and(readers, member)...)
+	}, and(readers, guest)...)
 }
 
 // screens is the shared capture cache.

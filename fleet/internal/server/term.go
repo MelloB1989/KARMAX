@@ -94,7 +94,7 @@ func termRoutes(route func(string, func(http.ResponseWriter, *http.Request) (any
 		}
 		ops.RecordTerm(term.Event{Who: who, Worker: worker, Mode: mode, Phase: "end", Seconds: int64(time.Since(started).Seconds()), How: how(res)})
 		return streamed{}, nil
-	}), and(fullOnly, member)...)
+	}), and(fullOnly, guest)...)
 }
 
 // runTerm runs one session of mode on tg until it ends, and leaves the
