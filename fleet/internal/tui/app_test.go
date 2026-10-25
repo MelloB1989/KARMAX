@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -179,14 +180,16 @@ func TestATabIsToldWhenItIsShown(t *testing.T) {
 	}
 }
 
-type spyTab struct {
-	stubTab
-	got []tea.Msg
-}
+// spyTab records what the app tells it. It stands alone, so it outlives
+// tab_stubs.go.
+type spyTab struct{ got []tea.Msg }
 
 func (s *spyTab) Title() string                    { return "Spy" }
 func (s *spyTab) Visible(fleetapi.Me) bool         { return true }
 func (s *spyTab) Update(m tea.Msg, _ *Ctx) tea.Cmd { s.got = append(s.got, m); return nil }
+func (s *spyTab) View(_ *Ctx, w, h int) string     { return block("", w, h) }
+func (s *spyTab) Help() []key.Binding              { return nil }
+func (s *spyTab) Capturing() bool                  { return false }
 
 func TestQuitKeys(t *testing.T) {
 	for _, k := range []string{"q", "ctrl+c"} {
