@@ -1,0 +1,60 @@
+╭─ KARMAX ▸ fleetctl ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── admin · operator ── 20 workers · 3 working ── 21:04 ─╮
+│  1 Fleet   2 Screens   3 Tasks   4 Events   5 Quota   6 Hosts   7 Access ●1                                                                                                                   ● live │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ┃ agent-01 · pc2                                                           cpu 37% · 1020M / 2.5G  ┃ agent-07 · pc2                                                                                  │
+│ ┃▸ ◉‿◉ S1 working   tui-frame-1a2b                   opus    ctx   0% 5h ███░░░░░  34% Grep 5s     ┃  ✕·· S1 down      container is not running         opus    ctx  16% 5h ░░░░░░░░   0%            │
+│ ┃  zzz S2 standby   idle 21m                         opus    ctx  13% 5h ███░░░░░  34%             ┃  ✕·· S2 down      container is not running         opus    ctx  29% 5h ░░░░░░░░   0%            │
+│                                                                                                                                                                                                      │
+│ ┃ agent-02 · pc2                                                            cpu 71% · 1.1G / 2.5G  ┃ agent-08 · pc2                                                             cpu 5% · 1.8G / 2.5G │
+│ ┃  zzz S1 standby   idle 22m                         opus    ctx  26% 5h ████████  99%             ┃  zzz S1 standby   idle 34m                         opus    ctx  42% 5h ██░░░░░░  22%            │
+│ ┃  zzz S2 standby   idle 23m                         opus    ctx  39% 5h ████████  99%             ┃  zzz S2 standby   idle 35m                         opus    ctx  55% 5h ██░░░░░░  22%            │
+│                                                                                                                                                                                                      │
+│ ┃ agent-03 · pc2                                                            cpu 15% · 1.2G / 2.5G  ┃ agent-09 · kali sandbox                                                   cpu 22% · 1.9G / 1.5G │
+│ ┃  ❄·· S1 cooling   cools till 21:29                 opus    ctx  52% 5h █░░░░░░░  12%             ┃  ⚙·· S1 working   port-api-7a8b                    opus    ctx  68% 5h █░░░░░░░  17% Bash 21s   │
+│ ┃  zzz S2 standby   idle 25m                         opus    ctx  65% 5h █░░░░░░░  12%                                                                                                               │
+│                                                                                                    ┃ agent-10 · kali sandbox                                                   cpu 39% · 1.9G / 1.5G │
+│ ┃ agent-04 · pc2                                                            cpu 49% · 1.3G / 2.5G  ┃  zzz S1 standby   idle 37m                         opus    ctx  11% 5h ░░░░░░░░   0%            │
+│ ┃  ?·· S1 waiting   access-3c4d                      opus    ctx   8% 5h ████░░░░  51%                                                                                                               │
+│ ┃  zzz S2 standby   idle 27m                         opus    ctx  21% 5h ████░░░░  51%             ┃ agent-11 · kali sandbox                                                   cpu 56% · 2.0G / 1.5G │
+│                                                                                                    ┃  zzz S1 standby   idle 38m                         opus    ctx  24% 5h ░░░░░░░░   0%            │
+│ ┃ agent-05 · pc2                                                            cpu 83% · 1.5G / 2.5G                                                                                                    │
+│ ┃  zzz S1 standby   idle 28m                         opus    ctx  34% 5h ███░░░░░  43%             ┃ agent-12 · kali                                                           cpu 73% · 2.1G / 2.5G │
+│ ┃  ⚙·· S2 working   term-5e6f                        opus    ctx  47% 5h ███░░░░░  43% Bash 14s    ┃  zzz S1 standby   idle 39m                         opus    ctx  37% 5h ░░░░░░░░   5%            │
+│                                                                                                                                                                                                      │
+│ ┃ agent-06 · pc2                                                            cpu 27% · 1.6G / 2.5G                                                                                                    │
+│ ┃  zzz S1 standby   idle 30m                         opus    ctx  60% 5h █░░░░░░░   8%                                                                                                               │
+│ ┃  zzz S2 standby   idle 31m                         opus    ctx   3% 5h █░░░░░░░   8%                                                                                                               │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+│                                                                                                                                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ↑↓ select · ⏎ detail · s ssh · t type · m model · d done · c cancel · ? help · q quit                                                                                        made by MelloB · v0.3.0 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

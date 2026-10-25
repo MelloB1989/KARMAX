@@ -1,0 +1,24 @@
+╭─ KARMAX ▸ fleetctl ──── admin · operator ── 20 workers · 3 working ── 21:04 ─╮
+│  1 Fleet 2 Screens 3 Tasks  4 Events 5 Quota 6 Hosts 7 Access ●1      ● live │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Open 4 ───────────────────────────────────────────────────────────────────── │
+│ ▸● 20261025-tui-frame-1a2b    agent-01    3m     frame and tabs render at 8… │
+│  ? 20261025-access-3c4d       agent-04    1m     Should a lend to an admin … │
+│  ● 20261025-term-5e6f         agent-05:2  34m    on it                       │
+│  ● 20261025-port-api-7a8b     agent-09    6m     synced your repo into /wor… │
+│                                                                              │
+│ Recent 1 ─────────────────────────────────────────────────────────────────── │
+│  ✓ 20261025-fix-login-9c0d    agent-06    2h     done · fleet/agent-06/fix-… │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ↑↓ select · ⏎ open · r run · f follow up · a answe…  made by MelloB · v0.3.0 │
+╰──────────────────────────────────────────────────────────────────────────────╯
