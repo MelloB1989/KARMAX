@@ -298,7 +298,7 @@ func TestATelemetryToolEventBecomesTheWorkersActivity(t *testing.T) {
 		{Agent: "agent-03", At: now.Add(-2 * time.Second), Kind: "otel.tool_decision", Session: "s-agent-03", Detail: `{"tool_name":"Bash","command":"go test ./..."}`},
 		{Agent: "agent-03", At: now.Add(-time.Second), Kind: "otel.tool_result", Session: "s-agent-03", Detail: `{"tool_name":"Bash","command":"git push"}`},
 		{Agent: "agent-03", At: now.Add(-time.Minute), Kind: "otel.tool_result", Session: "s-agent-03", Detail: `{"tool_name":"Read"}`}, // late, and older
-		{Agent: "agent-03", At: now, Kind: "otel.tool_result", Session: "s-other", Detail: `{"tool_name":"Edit"}`},              // another session's
+		{Agent: "agent-03", At: now, Kind: "otel.tool_result", Session: "s-other", Detail: `{"tool_name":"Edit"}`},                      // another session's
 	} {
 		if err := rec.AddEvent(e); err != nil {
 			t.Fatal(err)

@@ -14,7 +14,7 @@ import (
 // command when the event carries one.
 type ToolEvent struct {
 	Tool, Command string
-	At           time.Time
+	At            time.Time
 }
 
 // thinkAfter is how long a working worker shows its last tool; after that,
