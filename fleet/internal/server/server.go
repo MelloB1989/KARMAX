@@ -100,6 +100,8 @@ type Ops interface {
 	AwaitApproval(ctx context.Context, who daemon.Requester, id int64) (daemon.CallReply, error)
 	Approvals(state string, limit int) ([]ledger.Approval, error)
 	Decide(id int64, by string, approve bool, reason string, now time.Time) (ledger.Approval, error)
+
+	watchOps // watch.go
 }
 
 // Tokens are the bearer tokens, one per scope.
@@ -948,6 +950,7 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 		}, fullOnly...)
 	}
 	gatewayRoutes(route, long, ops)
+	watchRoutes(route, long, ops)
 	hostRoute("up", ops.Up)
 	hostRoute("down", ops.Down)
 	hostRoute("render", func(ctx context.Context, _ []string) (string, error) { return ops.Render() })

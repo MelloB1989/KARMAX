@@ -246,6 +246,7 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `POST /v1/secrets/{name}/revoke` | full | `fleetctl secret revoke` | end a grant to a `task` or an `agent` (404 when there is none) |
 | `DELETE /v1/secrets/{name}` | full | `fleetctl secret rm` | drop a secret and its grants |
 | `POST /v1/secrets/{name}/read` | relay | `fleetctl secret exec`, `get` | a granted secret's value, for a verified agent whose open task the operator, an operator's session or the orchestrator assigned (403 otherwise); every read and refusal is an event |
+| `GET /v1/watch` | full, console, member | `fleetctl tui` | the TUI's one stream: a long poll (`since`, the last snapshot's `seq`) answered at once when fleetd has another snapshot, else when the next is made, and after 25 s at most; one `fleetapi.Snapshot` (workers with their activity, tasks, events, quota with burn and run-out, today, hosts, fleetd) cut to the caller: a guest sees only its lent agents and its own tasks |
 <!-- routes:end -->
 
 `member` is a person on the tailnet (`tailnet:` in fleet.yaml, no token: Tailscale says who they are). A member runs tasks as themselves, at most `member_open` open at once, and the task routes answer them only for their own tasks (403 otherwise); `wait` needs `task`, and `done` closes by task alone. An operator login on the tailnet has `full`.

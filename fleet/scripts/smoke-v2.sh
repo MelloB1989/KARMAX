@@ -361,6 +361,27 @@ else
   echo "SKIP tui: fleetctl tui is not in this build"
 fi
 
+# -- watch: the TUI's snapshot stream (fleetctl TUI plan, task 4) ------------
+watch() { curl -s -m 15 -H "Authorization: Bearer $FULL" "http://$API/v1/watch?since=$1"; }
+if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $FULL" "http://$API/v1/watch?since=0")" = 200 ]; then
+  out=$(watch 0)
+  check "watch: one long poll returns a snapshot with the fleet's workers" "got: $(head -c 300 <<<"$out")" \
+    bash -c 'jq -e "[.workers[].agent] | index(\"agent-01\") and index(\"agent-02:2\")" <<<"$1" >/dev/null' _ "$out"
+  check "watch: the full token is an admin, and its snapshot has the hosts" "me: $(jq -c '.me' <<<"$out" 2>/dev/null)" \
+    bash -c 'jq -e ".me.role == \"admin\" and (.hosts | length) == 1 and .fleetd.started != null" <<<"$1" >/dev/null' _ "$out"
+  seq=$(jq -r .seq <<<"$out")
+  out=$(watch "$seq")
+  check "watch: a poll since the latest snapshot waits for the next" "since $seq got: $(jq -c .seq <<<"$out" 2>/dev/null)" \
+    bash -c 'jq -e ".seq != $2" <<<"$1" >/dev/null' _ "$out" "$seq"
+  out=$(curl -s -m 15 "http://$TAILNET/v1/watch")
+  check "watch: a person on the tailnet with no lent agents sees none" "got: $(head -c 300 <<<"$out")" \
+    bash -c 'jq -e ".me.name == \"ram@example.com\" and .me.role == \"guest\" and .workers == [] and .hosts == [] and .knocks == 0" <<<"$1" >/dev/null' _ "$out"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $RELAY" "http://$API/v1/watch")
+  check "watch: an agent's token may not watch the fleet" "status $code" test "$code" = 403
+else
+  echo "SKIP watch: GET /v1/watch is not in this build (fleet/agent-06/watch)"
+fi
+
 # ---------------------------------------------------------------------------
 if [ -s "$R/fakes/violations" ]; then
   fail "the fakes saw only the routes fleetd may call" "$(cat "$R/fakes/violations")"

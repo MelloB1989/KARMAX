@@ -124,6 +124,14 @@ type Fleet struct {
 	Log func(format string, args ...any)
 	// vault seals the secrets the operator hands agents (secrets.go).
 	vault *vault.Vault
+
+	// The watch stream (snapshot.go) and the host samples behind it
+	// (hosts.go). Version and Started are fleetd's, for the snapshot.
+	watch    *stream
+	hosts    *hostSeries
+	hostExec func(ctx context.Context, worker, script string, args ...string) ([]byte, error)
+	Version  string
+	Started  time.Time
 }
 
 // New loads the fleet's remembered state.
@@ -137,7 +145,8 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 		waitEvery: 500 * time.Millisecond, git: runGit, relayBackoff: []time.Duration{5 * time.Second, 15 * time.Second},
 		soonEvery: 5 * time.Second, holdAfter: 75 * time.Second, sendMus: map[string]*sync.Mutex{},
 		resendFailed: map[string]time.Time{}, resendFails: map[string]int{}, outboxAlerted: map[string]bool{}, asks: map[string]*ask{},
-		vault: vault.New(filepath.Join(cfg.StateDir, vault.KeyFile))}
+		vault: vault.New(filepath.Join(cfg.StateDir, vault.KeyFile)), watch: newStream(), hosts: newHostSeries()}
+	f.hostExec = f.rshHost
 	for _, name := range append(cfg.WorkerNames(), cfg.Orchestrator.Name, "") {
 		f.sendMus[name] = &sync.Mutex{}
 	}
@@ -224,10 +233,14 @@ func (f *Fleet) event(name, kind, session string, detail any) {
 	if err := f.db.AddEvent(ledger.Event{Agent: name, At: time.Now(), Kind: kind, Session: session, Detail: d}); err != nil {
 		f.Log("ledger: event %s: %v", kind, err)
 	}
+	f.touch()
 }
 
 // Tick is one pass over every worker, run concurrently.
 func (f *Fleet) Tick(ctx context.Context, now time.Time) {
+	began := time.Now()
+	f.tickStarted()
+	defer func() { f.tickEnded(now, time.Since(began)) }()
 	var wg sync.WaitGroup
 	for _, name := range f.cfg.WorkerNames() {
 		wg.Add(1)
@@ -250,15 +263,25 @@ func (f *Fleet) Tick(ctx context.Context, now time.Time) {
 				defer wg.Done()
 				samples, err := f.HostStats(ctx, h)
 				if err != nil {
+					f.tickErr(fmt.Sprintf("docker stats on %s: %v", h, err))
 					return
 				}
 				for _, s := range samples {
 					_ = f.db.AddHostSample(s)
 				}
+				f.containerSamples(samples)
 			}(h)
 		}
 	}
+	for _, h := range f.cfg.HostNames() {
+		wg.Add(1)
+		go func(h string) {
+			defer wg.Done()
+			f.sampleHost(ctx, h, now) // once a minute, one exec
+		}(h)
+	}
 	wg.Wait()
+	f.forgetTools(now)
 	f.escalate(ctx, now)
 	f.alertHeld(ctx, now)
 	if now.Sub(f.lastRetain) > 24*time.Hour {
@@ -282,6 +305,7 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 		// Could not see inside a running container. Deciding on a blank
 		// observation would read as "no session" and restart a healthy agent.
 		f.Log("observe %s: %v", name, err)
+		f.tickErr(fmt.Sprintf("observe %s: %v", name, err))
 		f.event(name, "fleet.observe_failed", "", map[string]string{"error": err.Error()})
 		return
 	}
@@ -289,6 +313,7 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 		// Its host did not answer whether the container runs (Observe asks
 		// that first): the agent is out of reach, not down.
 		host := w.Host
+		f.tickErr(fmt.Sprintf("%s does not answer", host))
 		if f.State(name).UnreachableSince.IsZero() {
 			f.Log("observe %s: %s does not answer: %v", name, host, err)
 			f.event(name, "fleet.unreachable", "", map[string]string{"host": host, "error": err.Error()})

@@ -115,6 +115,7 @@ func run(cfgPath string, once bool) error {
 		return err
 	}
 	f.Log = log.Printf
+	f.Version, f.Started = server.Version, time.Now() // the watch snapshot's fleetd
 	if karmax.APIToken != "" {
 		f.Karmax = karmax // the gateway: agents call KARMAX's tools, never holding its token
 	}
@@ -184,7 +185,9 @@ func run(cfgPath string, once bool) error {
 	}
 	serve(cfg.Listen, api, "api", net.ListenConfig{})
 	serve(cfg.RelayListen, api, "relay api", net.ListenConfig{})
-	serve(cfg.OTLPListen, otlp.Handler(db, tokens.Relay), "otlp", net.ListenConfig{})
+	// Telemetry goes to the ledger through the fleet: each event moves the
+	// watch stream, and a tool event is its worker's activity.
+	serve(cfg.OTLPListen, otlp.Handler(f.Recorder(), tokens.Relay), "otlp", net.ListenConfig{})
 	if t := cfg.Tailnet; t != nil {
 		// Who calls is who tailscaled says. The address is tailscale0's,
 		// which a boot may not have given it yet: bound regardless.

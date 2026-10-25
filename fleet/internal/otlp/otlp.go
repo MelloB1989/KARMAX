@@ -1,6 +1,7 @@
 // Package otlp receives the agents' OpenTelemetry export (OTLP/HTTP, JSON
 // encoding): api_request logs are the authoritative token and cost account,
-// errors and tool results go to the event log, and the activity counters
+// errors, tool decisions and tool results go to the event log (a tool's
+// input dropped but for the start of a Bash command), and the activity counters
 // (commits, PRs, lines, active time, sessions) are kept as events.
 //
 // Prompts, responses and tool parameters are redacted by Claude Code's
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 )
@@ -229,14 +231,64 @@ func ingestLogs(s Sink, req *logsRequest) {
 						CacheRead: a.int("cache_read_tokens"), CacheCreation: a.int("cache_creation_tokens"),
 						CostUSD: a.float("cost_usd"),
 					})
-				case "api_error", "tool_result":
+				case "api_error":
 					detail, _ := json.Marshal(a.asMap())
+					_ = s.AddEvent(ledger.Event{Agent: agent, At: at, Kind: "otel." + name,
+						Session: a.get("session.id"), Detail: string(detail)})
+				case "tool_result", "tool_decision":
+					detail, _ := json.Marshal(toolDetail(a))
 					_ = s.AddEvent(ledger.Event{Agent: agent, At: at, Kind: "otel." + name,
 						Session: a.get("session.id"), Detail: string(detail)})
 				}
 			}
 		}
 	}
+}
+
+// commandBytes is how much of a Bash command a tool event keeps: enough to
+// tell a test run or a push (the watch stream's activity), no more.
+const commandBytes = 120
+
+// toolDetail is a tool event's attributes without the tool's input: its
+// parameters are dropped, except the start of a Bash command, kept as
+// "command".
+func toolDetail(a attrs) map[string]string {
+	m := a.asMap()
+	params := m["tool_parameters"]
+	for k := range m {
+		if strings.HasPrefix(k, "tool_parameters") || strings.HasPrefix(k, "tool_input") {
+			delete(m, k)
+		}
+	}
+	if m["tool_name"] != "Bash" || params == "" {
+		return m
+	}
+	var p struct {
+		Full    string `json:"full_command"`
+		Command string `json:"command"`
+		Bash    string `json:"bash_command"`
+	}
+	if json.Unmarshal([]byte(params), &p) != nil {
+		return m
+	}
+	cmd := p.Full
+	if cmd == "" {
+		cmd = p.Command
+	}
+	if cmd == "" {
+		cmd = p.Bash
+	}
+	if len(cmd) > commandBytes {
+		cut := commandBytes
+		for cut > 0 && !utf8.RuneStart(cmd[cut]) {
+			cut--
+		}
+		cmd = cmd[:cut]
+	}
+	if cmd != "" {
+		m["command"] = cmd
+	}
+	return m
 }
 
 type dataPoint struct {
