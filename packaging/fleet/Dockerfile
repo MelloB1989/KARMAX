@@ -68,11 +68,13 @@ RUN corepack enable
 
 # You, inside: same uid, gid and HOME as on the host, so absolute paths under
 # HOME (the shared code, Claude Code's per-project keys) match everywhere.
+# /work/code is a sandbox agent's code volume: Docker gives a new volume its
+# mount point's owner, so it is the agent's, not root's.
 RUN set -eux; \
     getent group "$GID" >/dev/null || groupadd -g "$GID" "$USER_NAME"; \
     if getent passwd "$UID" >/dev/null; then userdel -r "$(getent passwd "$UID" | cut -d: -f1)" 2>/dev/null || true; fi; \
     useradd -u "$UID" -g "$GID" -d "$HOME_DIR" -m -s /bin/bash "$USER_NAME"; \
-    mkdir -p "$HOME_DIR/.claude/sessions" "$HOME_DIR/.claude/fleet" /work /run/fleet; \
+    mkdir -p "$HOME_DIR/.claude/sessions" "$HOME_DIR/.claude/fleet" /work/code /run/fleet; \
     chown -R "$UID:$GID" "$HOME_DIR" /work /run/fleet
 
 COPY packaging/fleet/agent-run /opt/fleet/agent-run

@@ -1,0 +1,34 @@
+#!/bin/sh
+# Rendered by fleetctl render from fleet.yaml: the fleet-sandbox network's
+# rules on {{.Host}}. Run as root, by fleet-sandbox-net.service, after Docker.
+# Sandbox containers ({{.Subnet}}) reach the internet and fleetd's relay and
+# telemetry ports, and nothing else: not this host, not the LAN, not the
+# tailnet. Each run flushes the fleet's own chains and adds the rules again,
+# so running it twice changes nothing.
+set -eu
+SUBNET={{.Subnet}}
+
+chain() { # chain <parent> <name>: an empty chain of ours, jumped to first
+	iptables -N "$2" 2>/dev/null || true
+	iptables -F "$2"
+	iptables -C "$1" -s "$SUBNET" -m comment --comment fleet-sandbox -j "$2" 2>/dev/null ||
+		iptables -I "$1" 1 -s "$SUBNET" -m comment --comment fleet-sandbox -j "$2"
+}
+
+# To this host itself.
+chain INPUT FLEET-SANDBOX-IN
+iptables -A FLEET-SANDBOX-IN -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment fleet-sandbox -j ACCEPT
+{{- range .Input}}
+iptables -A FLEET-SANDBOX-IN -p tcp --dport {{.Port}} -m comment --comment "fleet-sandbox: fleetd {{.What}}" -j ACCEPT
+{{- end}}
+iptables -A FLEET-SANDBOX-IN -m comment --comment fleet-sandbox -j DROP
+
+# Through this host. Docker creates DOCKER-USER and keeps what is in it.
+iptables -N DOCKER-USER 2>/dev/null || true
+chain DOCKER-USER FLEET-SANDBOX-FWD
+{{- range .Forward}}
+iptables -A FLEET-SANDBOX-FWD -d {{.Addr}} -p tcp --dport {{.Port}} -m comment --comment "fleet-sandbox: fleetd {{.What}}" -j RETURN
+{{- end}}
+for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
+	iptables -A FLEET-SANDBOX-FWD -d "$net" -m comment --comment fleet-sandbox -j DROP
+done

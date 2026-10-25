@@ -1,0 +1,56 @@
+container_name: agent-01
+cpus: "2"
+depends_on:
+    - fleet-anchor
+env_file:
+    - <render>/agents/agent-01.env
+extra_hosts:
+    - host.docker.internal:host-gateway
+hostname: agent-01
+image: karmax-fleet:2.1.294
+mem_limit: 4g
+pid: service:fleet-anchor
+restart: unless-stopped
+stop_grace_period: 20s
+tmpfs:
+    - /home/op/code/secrets:ro,size=4k,mode=755
+volumes:
+    - /home/op/code:/home/op/code
+    - fleet-peers:/home/op/.claude/sessions
+    - fleet-socks:/run/fleet
+    - agent-01-home:/home/op/.claude
+    - agent-01-work:/work
+--- environment
+CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+DOCKER_HOST: ssh://fleetbuild@192.0.2.20
+FLEET_AGENT: agent-01
+FLEET_BUILD_IMAGE: karmax-fleet:2.1.294
+FLEET_CODE: /home/op/code
+FLEET_GITHUB_OWNERS: example-org
+FLEET_GITHUB_SSH_ALIASES: gh-work
+FLEET_HOST: kali
+FLEET_NAME: agent-01
+FLEET_SLOTS: "2"
+FLEETD_URL: http://host.docker.internal:7879
+GIT_AUTHOR_EMAIL: build@example.com
+GIT_AUTHOR_NAME: Example coding agent (agent-01)
+GIT_COMMITTER_EMAIL: build@example.com
+GIT_COMMITTER_NAME: Example coding agent (agent-01)
+HOME: /home/op
+KARMAX_API_URL: http://host.docker.internal:9091
+OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
+OTEL_EXPORTER_OTLP_PROTOCOL: http/json
+OTEL_LOGS_EXPORTER: otlp
+OTEL_METRICS_EXPORTER: otlp
+OTEL_RESOURCE_ATTRIBUTES: fleet.agent=agent-01,fleet.host=kali
+XDG_RUNTIME_DIR: /run/fleet
+--- agent-01.env
+# Rendered by fleetctl render. Secrets: keep 0600.
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-A1
+FLEET_AGENT_KEY=faf7610d88e221225e09fd88b935536a8f9fe10d3bc4d688909b6813ebeb76b9
+FLEET_BUILD_KEY=a2V5
+FLEET_TOKEN=relay
+GH_TOKEN=gho_fleet
+GH_TOKEN_OWNER_EXAMPLE_ORG=gho_org
+GITHUB_TOKEN=ghp_packages
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20relay

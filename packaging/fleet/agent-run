@@ -42,7 +42,10 @@ event() { # a line in slot 1's hook log, so fleetd records what this loop did
 # moment (so the restart policy does not spin), and EXIT non-zero: Docker
 # restarts the container, which re-binds the mount. fleetd alerts on the event.
 code="${FLEET_CODE:-$HOME/code}"
-if [ -z "$(ls -A "$code" 2>/dev/null | head -n 1)" ]; then
+# A sandbox's code is its own volume, empty until its guest syncs some in.
+if [ -n "${FLEET_SANDBOX:-}" ]; then
+  mkdir -p "$code"
+elif [ -z "$(ls -A "$code" 2>/dev/null | head -n 1)" ]; then
   echo "agent-run: the code directory $code is missing or empty (the share is not mounted yet?); exiting so the container restarts and re-binds it." >&2
   event "agent-run.code_missing" "" "$code"
   sleep "${FLEET_CODE_RETRY:-20}"

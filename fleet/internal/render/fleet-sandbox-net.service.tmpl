@@ -1,0 +1,17 @@
+# Rendered by fleetctl render from fleet.yaml: keeps the fleet-sandbox
+# network's rules on {{.Host}}. Install once, as root:
+#   install -m 0755 sandbox-net.{{.Host}}.sh {{.Script}}
+#   install -m 0644 fleet-sandbox-net.{{.Host}}.service /etc/systemd/system/fleet-sandbox-net.service
+#   systemctl daemon-reload && systemctl enable --now fleet-sandbox-net
+[Unit]
+Description=fleet-sandbox network rules (sandbox agents reach the internet and fleetd only)
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh {{.Script}}
+
+[Install]
+WantedBy=multi-user.target docker.service
