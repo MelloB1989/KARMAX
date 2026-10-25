@@ -1,0 +1,24 @@
+╭─ KARMAX ▸ fleetctl ──── admin · operator ── 20 workers · 3 working ── 21:04 ─╮
+│  1 Fleet 2 Screens 3 Tasks 4 Events  5 Quota 6 Hosts 7 Access ●1      ● live │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ● live · 7 events                                                            │
+│ ▸21:03:00 agent-01    fleet.report         frame and tabs render at 80x24    │
+│  21:00:00 agent-04    fleet.question       Should a lend to an admin device… │
+│  20:57:00 agent-09    fleet.report         synced your repo into /work/code… │
+│  20:54:00 agent-07    fleet.alert          agent-07 is down: container is n… │
+│  20:51:00 agent-06    fleet.task.closed    outcome=done                      │
+│  20:48:00 agent-05:2  fleet.term           duration_s=95 mode=watch who=you… │
+│  20:45:00 fleetd      fleet.access.knock   device=pal-desktop.tail9abc.ts.n… │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ↑↓ scroll · / filter · space pause · ? help · q qu…  made by MelloB · v0.3.0 │
+╰──────────────────────────────────────────────────────────────────────────────╯
