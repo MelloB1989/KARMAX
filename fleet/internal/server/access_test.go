@@ -161,6 +161,8 @@ func (g guestOps) TaskAgent(task string) (*ledger.Task, error) {
 		return &ledger.Task{ID: task, Agent: "agent-09", Assigner: "friend@example.com/cc-1"}, nil
 	case "T-pal":
 		return &ledger.Task{ID: task, Agent: "agent-09", Assigner: "pal@example.com"}, nil
+	case "T-unlent":
+		return &ledger.Task{ID: task, Agent: "agent-10", Assigner: "friend@example.com"}, nil
 	}
 	return g.fake.TaskAgent(task)
 }
@@ -236,6 +238,31 @@ func TestAGuestSeesOnlyItsLentAgentsAndOwnTasks(t *testing.T) {
 	}
 	if rec := tdo(t, h, "GET", "/v1/peek?agent=agent-03", friendIP, "", ""); rec.Code != 403 {
 		t.Errorf("peek another agent: %d", rec.Code)
+	}
+}
+
+// A guest's own task on an agent no longer lent to it may be read and
+// closed, but nothing more is sent to that agent.
+func TestAGuestSendsNothingToAnAgentNoLongerLent(t *testing.T) {
+	f, h := guestSetup(t)
+	for _, c := range []struct {
+		path, body string
+		want       int
+	}{
+		{"/v1/tasks/T-unlent/followup", `{"text":"more"}`, 403},
+		{"/v1/tasks/T-unlent/answer", `{"text":"yes"}`, 403},
+		{"/v1/tasks/T-unlent/brief", `{"brief":"x"}`, 403},
+		{"/v1/tasks/T-unlent/cancel", `{}`, 200},
+		{"/v1/tasks/T-friend/followup", `{"text":"more"}`, 200},
+	} {
+		if rec := tdo(t, h, "POST", c.path, friendIP, "", c.body); rec.Code != c.want {
+			t.Errorf("%s: %d %s", c.path, rec.Code, rec.Body)
+		}
+	}
+	for _, c := range f.calls {
+		if strings.Contains(c, "T-unlent") && !strings.HasPrefix(c, "cancel") {
+			t.Errorf("reached the agent: %s", c)
+		}
 	}
 }
 

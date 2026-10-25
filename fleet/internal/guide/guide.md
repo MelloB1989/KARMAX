@@ -109,7 +109,7 @@ and when the task closes and the session rotates the agent goes back to its own 
 session shows now. `fleetctl model <agent> opus` sets an override that outlasts fleetd restarts, and
 `fleetctl model <agent> --reset` clears it. fleetd applies a change when the session is idle, never
 mid-turn, and once per change; a fresh session is asked again. Only the operator's token may change
-models: a person on the tailnet cannot.
+models: a guest device cannot.
 
 ## Files
 
@@ -155,14 +155,14 @@ secret exec OPENAI_API_KEY=openai -- <cmd>` (or `get --to`), only on your side's
     fleetctl memory suggest "<fact>" --why "<where it came from>"   # the orchestrator decides whether to save it
 
 Recall before work on a person, project or decision the operator has history with. Suggest durable facts,
-never secrets. An agent may use these only on a task the operator's side gave it; a member never may.
+never secrets. An agent may use these only on a task the operator's side gave it; a guest never may.
 `fleetctl mcp` serves both as MCP tools (`claude mcp add --scope user fleet -- fleetctl mcp`), and `fleetctl
-skill install` adds the fleet-memory skill that says when to use them; a member gets neither.
+skill install` adds the fleet-memory skill that says when to use them; a guest gets neither.
 
 ## From another machine (the tailnet)
 
-fleetd also listens on the Tailscale network, where it knows who you are without a token. If your
-login is on the fleet's list, install fleetctl from fleetd itself and connect it in one step:
+fleetd also listens on the Tailscale network, where it knows your device without a token. The operator tags it
+(`fleetctl access admin <device>`, or `access lend <device> <agent>…` for a guest). Install fleetctl from fleetd:
 
     curl -fsSL http://<fleetd host>:7878/install.sh | sh        # macOS, Linux
     irm http://<fleetd host>:7878/install.ps1 | iex             # Windows, in PowerShell
@@ -170,8 +170,8 @@ login is on the fleet's list, install fleetctl from fleetd itself and connect it
 It installs fleetctl, runs `fleetctl connect http://<fleetd host>:7878` (which prints who fleetd knows you
 as), installs this guide as your Claude Code skill, and registers fleetctl's MCP server with Claude Code
 (`claude mcp add --scope user fleet -- <fleetctl> mcp`), offering only what your role may use.
-As a member you can `run`, `wait --task`, `result`, `followup`, `cancel` and `done --task` your own tasks, and `ls`, `pick`, `quota`, `tasks` and `peek` (an
-agent at work on your task). Tasks run as you: the agent reports to your login (or a session of yours), and `--from` names a session of yours
+Untagged, every command says how to ask. As a guest you use only the agents lent to your device: `run`, `wait --task`, `result`, `followup`,
+`cancel` and `done --task` your own tasks, and `ls`, `pick`, `quota`, `tasks`, `events`, `peek`, `cp` and `sync` on a lent agent. Tasks run as you: the agent reports to your login (or a session of yours), and `--from` names a session of yours
 (`ram@example.com/review`), never someone else. You may hold a few open tasks at once (fleetd says how many when you reach it); close one with `done --task`
 before you start another, or pass `--queue`. `--repo` names a checkout in the fleet host's code directory; for a repo that is not there, say in the brief where
 to clone it from.
@@ -181,7 +181,7 @@ Agents work in the fleet host's checkouts: review what they push with `git fetch
 
 fleetd holds KARMAX's token and calls its tools (mail, calendar, drive, WhatsApp, GitHub, Slack, Notion,
 …) for an agent, which never sees the token — and only while the agent's task came from the operator,
-one of their sessions or the orchestrator. A member's task never may, and neither may a member.
+one of their sessions or the orchestrator. A guest's task never may, and neither may a guest.
 
     fleetctl karmax tools                                  # what may be called, each read or write
     fleetctl karmax call google.mail.search query="invoice" --reason "find the invoice"
@@ -242,9 +242,9 @@ to assign; console tokens may read.
 | `fleetctl approve`, `deny` | `POST /v1/approvals/{id}/approve`, `/deny` `{by, reason}` |
 | `fleetctl secret …` | `POST`/`GET /v1/secrets`, `POST /v1/secrets/{name}/grant` \| `revoke` `{task \| agent, ttl}`, `DELETE /v1/secrets/{name}` |
 
-Statuses: 400 bad input; 403 not yours to call (a member, a member's task, a denied tool, a refused
+Statuses: 400 bad input; 403 not yours to call (a guest, a guest's task, a denied tool, a refused
 write); 404 unknown task; 409 no free agent (the body lists the candidates), agent busy,
 or task already closed.
 
 `fleetctl skill install` writes this guide as a Claude Code skill (`~/.claude/skills/fleet/SKILL.md`) so
-any session on this machine finds it (and, except for a member, the fleet-memory skill). `fleetctl guide` prints it.
+any session on this machine finds it (and, except for a guest, the fleet-memory skill). `fleetctl guide` prints it.

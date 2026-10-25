@@ -50,7 +50,7 @@ const (
 	whoOperator   = `{"scope":"full","name":"operator"}`
 	whoTailnetOp  = `{"scope":"full","name":"op@example.com"}`
 	whoAgent      = `{"scope":"relay","name":"agent"}`
-	whoMember     = `{"scope":"member","name":"ram@example.com"}`
+	whoMember     = `{"scope":"guest","name":"ram@example.com","lent":"agent-09"}`
 	whoNoOneKnown = `{"ok":true}`
 )
 
@@ -258,7 +258,7 @@ func TestMCPAnswersWhileAWriteWaitsForApproval(t *testing.T) {
 }
 
 // A session lists only the tools fleetd would let its caller use: the
-// operator (on a token or the tailnet) and an agent get them all, a member
+// operator (on a token or the tailnet) and an agent get them all, a guest
 // none of the operator's, nor does anyone fleetd cannot place.
 func TestMCPListsEachScopeOnlyTheToolsFleetdGivesIt(t *testing.T) {
 	all := "memory_recall,memory_suggest,karmax_tools,karmax_call"
@@ -288,7 +288,7 @@ func TestMCPListsEachScopeOnlyTheToolsFleetdGivesIt(t *testing.T) {
 	}
 }
 
-// A member who calls a tool they were not shown is refused here, and fleetd
+// A guest who calls a tool they were not shown is refused here, and fleetd
 // is never asked for it.
 func TestMCPRefusesAMemberAHiddenTool(t *testing.T) {
 	f := &fakeFleetd{reply: map[string]string{"/v1/whoami": whoMember}}
@@ -298,7 +298,7 @@ func TestMCPRefusesAMemberAHiddenTool(t *testing.T) {
 	))
 	for _, id := range []string{"1", "2"} {
 		e, ok := r[id]["error"].(map[string]any)
-		if !ok || e["code"] != float64(-32602) || !strings.Contains(e["message"].(string), "not for scope member") {
+		if !ok || e["code"] != float64(-32602) || !strings.Contains(e["message"].(string), "not for scope guest") {
 			t.Errorf("call %s = %v", id, r[id])
 		}
 	}

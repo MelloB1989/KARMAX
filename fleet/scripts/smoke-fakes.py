@@ -7,7 +7,10 @@
       GET /api/tools lists a read tool and a write tool; POST /api/tools/<name>
       records the call in <dir>/karmax-calls.jsonl and answers ok.
   smoke-fakes.py tailscaled <socket> <login>
-      tailscaled's LocalAPI on a unix socket: every whois is <login>.
+      tailscaled's LocalAPI on a unix socket: every whois is <login>, on the
+      device laptop.example.ts.net (StableID nLAPTOP); or, while the file
+      whois.json beside the socket exists, the device it names
+      ({"name", "stable_id", "login"}).
 
 Anything else a fake is asked is a bug in fleetd: it answers 500 and appends
 a line to <dir>/violations, which fails the run.
@@ -70,8 +73,14 @@ class Fake(BaseHTTPRequestHandler):
                 return self.violation("no KARMAX token")
             return self.answer(200, {"tools": TOOLS})
         if self.kind == "tailscaled" and path == "/localapi/v0/whois":
-            return self.answer(200, {"Node": {"Name": "laptop.example.ts.net.", "Tags": []},
-                                     "UserProfile": {"LoginName": self.secret, "DisplayName": "Ram"}})
+            who = {"name": "laptop.example.ts.net", "stable_id": "nLAPTOP", "login": self.secret}
+            try:
+                with open(os.path.join(self.dir, "whois.json")) as f:
+                    who = json.load(f)
+            except FileNotFoundError:
+                pass
+            return self.answer(200, {"Node": {"Name": who["name"] + ".", "StableID": who["stable_id"], "Tags": []},
+                                     "UserProfile": {"LoginName": who["login"], "DisplayName": "Ram"}})
         self.violation("no such route")
 
     def do_POST(self):

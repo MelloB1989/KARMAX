@@ -30,10 +30,10 @@ hosts: {kali: {exec: [$R/bin/docker]}}
 orchestrator: {host: kali, token_env: CLAUDE_TOKEN_KARMAX}
 agents:
   agent-01: {host: kali, token_env: CLAUDE_TOKEN_AGENT_01, models: [sonnet, haiku], slots: 1}
-  agent-02: {host: kali, token_env: CLAUDE_TOKEN_AGENT_02, slots: 2}
+  agent-02: {host: kali, token_env: CLAUDE_TOKEN_AGENT_02, slots: 2, sandbox: true}
 karmax: {notify: false, api_url: "http://127.0.0.1:$KARMAX"}
 memory: {url: "http://127.0.0.1:$GITLOOM", key_env: GITLOOM_KEY, namespace: operator}
-tailnet: {listen: "$TAILNET", members: [ram@example.com], socket: $R/fakes/tailscaled.sock}
+tailnet: {listen: "$TAILNET", socket: $R/fakes/tailscaled.sock}
 thresholds: {tick: 1s, question_escalate: 2s}
 console: {host: kali, fleetd_url: "http://$API", token_env: FLEET_CONSOLE_TOKEN}
 EOF
@@ -85,8 +85,9 @@ op() { FLEET_SESSION=cc-smoke "$B/fleetctl" "$@"; }
 # fleet.yaml. KEY is what fleetctl render writes: identity.Key.
 KEY=$(python3 -c 'import hmac,hashlib,sys; print(hmac.new(sys.argv[1].encode(), b"agent:agent-01", hashlib.sha256).hexdigest())' $FULL)
 agent() { FLEET_CONFIG=$R/none FLEETD_URL=http://$API FLEET_TOKEN=$RELAY FLEET_AGENT=agent-01 FLEET_AGENT_KEY=$KEY "$B/fleetctl" "$@"; }
-# A member on the tailnet: no token, Tailscale (the fake) says ram@example.com.
-member() { FLEET_CONFIG=$R/none FLEETD_URL=http://$TAILNET "$B/fleetctl" "$@"; }
+# A guest on the tailnet: no token, Tailscale (the fake) says ram@example.com
+# on laptop.example.ts.net, which the scopes section lends agent-02, a sandbox.
+guest() { FLEET_CONFIG=$R/none FLEETD_URL=http://$TAILNET "$B/fleetctl" "$@"; }
 # The console's token.
 consoleTok() { FLEET_CONFIG=$R/none FLEETD_URL=http://$API FLEET_TOKEN=$CONSOLE "$B/fleetctl" "$@"; }
 
@@ -199,12 +200,15 @@ check "an agent cannot approve" "got: $out" has "$out" "scope relay"
 out=$(agent karmax call system.exec cmd=ls --reason x 2>&1)
 check "a code-running tool is always denied" "got: $out" has "$out" "refused"
 
-echo "== scopes: members and the console get none of the operator's data"
-out=$(member whoami 2>&1)
-check "the tailnet member is a member" "whoami: $out" has "$out" "scope member"
+echo "== scopes: guests and the console get none of the operator's data"
+out=$(guest whoami 2>&1)
+check "an untagged device is refused and told how to ask" "whoami: $out" has "$out" "fleetctl access lend laptop"
+op access lend laptop agent-02 >/dev/null 2>&1
+out=$(guest whoami 2>&1)
+check "the device lent a sandbox is a guest" "whoami: $out" has "$out" "scope guest"
 for c in "memory recall deploys" "memory suggest x" "karmax tools" "karmax call mail.search q=x --reason x"; do
-  out=$(member $c 2>&1)
-  check "a member is refused: $c" "got: $out" bash -c 'grep -q "403\|may:\|not for scope" <<<"$1" && ! grep -q "21:00" <<<"$1"' _ "$out"
+  out=$(guest $c 2>&1)
+  check "a guest is refused: $c" "got: $out" bash -c 'grep -q "403\|may:\|not for scope" <<<"$1" && ! grep -q "21:00" <<<"$1"' _ "$out"
   out=$(consoleTok $c 2>&1)
   check "the console token is refused: $c" "got: $out" bash -c 'grep -q "403\|may:\|not for scope" <<<"$1" && ! grep -q "21:00" <<<"$1"' _ "$out"
 done
@@ -212,11 +216,11 @@ mcp=$(printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"deploys"}}}' |
-  member mcp 2>&1)
-check "fleetctl mcp lists a member none of the operator's tools" "tools/list: $(jq -c 'select(.id==2)' <<<"$mcp" 2>/dev/null)" \
+  guest mcp 2>&1)
+check "fleetctl mcp lists a guest none of the operator's tools" "tools/list: $(jq -c 'select(.id==2)' <<<"$mcp" 2>/dev/null)" \
   bash -c 'jq -e "select(.id==2) | .result.tools == []" <<<"$1" >/dev/null' _ "$mcp"
-check "fleetctl mcp refuses a member's memory_recall" "tools/call: $(jq -c 'select(.id==3)' <<<"$mcp" 2>/dev/null)" \
-  bash -c 'jq -e "select(.id==3) | .error.message | contains(\"not for scope member\")" <<<"$1" >/dev/null && ! grep -q "21:00" <<<"$1"' _ "$mcp"
+check "fleetctl mcp refuses a guest's memory_recall" "tools/call: $(jq -c 'select(.id==3)' <<<"$mcp" 2>/dev/null)" \
+  bash -c 'jq -e "select(.id==3) | .error.message | contains(\"not for scope guest\")" <<<"$1" >/dev/null && ! grep -q "21:00" <<<"$1"' _ "$mcp"
 
 echo "== an agent off the operator's work gets none of it"
 op done agent-01 --task T-ASK --keep-session >/dev/null 2>&1
@@ -238,8 +242,8 @@ if has "$usage" "secret put"; then # v2-secrets-2
   check "secret exec hands a granted agent the value in its environment" "got: $out" has "$out" matched
   out=$(op secret ls --json 2>&1)
   check "secret ls never shows a value" "got: $out" bash -c 'grep -q DEPLOY_KEY <<<"$1" && ! grep -q s3cr3t-smoke <<<"$1"' _ "$out"
-  out=$(member secret ls 2>&1)
-  check "a member is refused secrets" "got: $out" bash -c '! grep -q DEPLOY_KEY <<<"$1"' _ "$out"
+  out=$(guest secret ls 2>&1)
+  check "a guest is refused secrets" "got: $out" bash -c '! grep -q DEPLOY_KEY <<<"$1"' _ "$out"
   op done agent-01 --task T-SEC --keep-session >/dev/null 2>&1
   out=$(agent secret exec K=DEPLOY_KEY -- true 2>&1); rc=$?
   check "a task's grant ends when the task closes" "exit $rc: $out" test $rc != 0
@@ -273,8 +277,8 @@ if has "$usage" "  cp "; then # v2-files
   rm "$S/proj/out"
   out=$(agent cp "$S/proj" agent-01 2>&1); rc=$?
   check "an agent may not copy files" "exit $rc: $out" test $rc != 0
-  out=$(member cp "$S/proj" agent-01 2>&1); rc=$?
-  check "a member may not copy to an agent that is not on their task" "exit $rc: $out" bash -c 'test $1 != 0 && grep -q "not working on a task of yours" <<<"$2"' _ $rc "$out"
+  out=$(guest cp "$S/proj" agent-01 2>&1); rc=$?
+  check "a guest may not copy to an agent not lent to it" "exit $rc: $out" bash -c 'test $1 != 0 && grep -q "not lent to this device" <<<"$2"' _ $rc "$out"
   out=$(consoleTok cp "$S/proj" agent-01 2>&1); rc=$?
   check "the console token may not copy files" "exit $rc: $out" test $rc != 0
   out=$(op run --attach "$S/proj" --agent agent-01 --task T-FILES "Read the attached files." 2>&1)
@@ -292,8 +296,8 @@ if has "$usage" "  cp "; then # v2-files
   openhold
   out=$(timeout 20 "$B/fleetctl" rsh agent-01 sh -c 'echo bye; exit 3' 2>&1 < "$HOLD"; echo "rc=$?"); kill $HOLDPID 2>/dev/null
   check "rsh returns when the command ends, with the caller's stdin still open" "got: $out" test "$out" = "$(printf 'bye\nrc=3')"
-  out=$(member rsh agent-01 true 2>&1); rc=$?
-  check "a member may not rsh" "exit $rc: $out" test $rc != 0
+  out=$(guest rsh agent-01 true 2>&1); rc=$?
+  check "a guest may not rsh an agent not lent to it" "exit $rc: $out" test $rc != 0
   if command -v rsync >/dev/null; then
     # rsync --server runs on this machine (the fake docker), where /work is
     # not the smoke's: sync through /tmp, which means the same everywhere.
@@ -341,6 +345,62 @@ else
   echo "SKIP slots: status has no slots in this build (v2-slots)"
 fi
 echo "SKIP durability: no check yet (v2-durable): add it when it merges"
+
+# ---------------------------------------------------------------------------
+# access: devices tagged admin or guest (fleetctl access). The fake tailscaled
+# says which device calls (whois.json); fleetd remembers a whois for a
+# minute, so it restarts each time the device changes.
+echo "== access"
+as_device() { # name stable_id login
+  printf '{"name":"%s","stable_id":"%s","login":"%s"}' "$1" "$2" "$3" > "$R/fakes/whois.json"
+  kill $FPID; wait $FPID 2>/dev/null; start_fleetd; up
+}
+# agent-02:2's live session, as agent-01's above, in slot 2's places: the
+# sandbox the guest runs on. fleetd reads `claude agents` at most every 10 s.
+tmux new-session -d -s main-2 -e FLEET_AGENT=agent-02:2 "exec sleep 600"; sleep 0.3
+pid2=$(tmux list-panes -t main-2 -F '#{pane_pid}')
+echo "{\"pid\":$pid2,\"kind\":\"interactive\",\"sessionId\":\"s2\",\"name\":\"agent-02:2\",\"status\":\"idle\"}" > "$HOME/.claude/sessions/$pid2.json"
+mkdir -p "$R/work/.fleet/slot-2" "$HOME/.claude/fleet/slot-2"; echo s2 > "$R/work/.fleet/slot-2/current"
+echo '{"type":"user","sessionId":"s2","cwd":"/work","timestamp":"2026-10-08T10:00:00Z","message":{"role":"user","content":"hello"}}' > "$HOME/.claude/projects/-work/s2.jsonl"
+echo '{"session_id":"s2","context_window":{"used_percentage":5},"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":1891430000}}}' > "$HOME/.claude/fleet/slot-2/status.json"
+for _ in $(seq 100); do op status --json 2>/dev/null | jq -e '.agents[] | select(.agent=="agent-02:2") | .session != null and .session != ""' >/dev/null && break; sleep 0.2; done
+out=$(op access 2>&1)
+check "access lists the guest device and its lend" "access: $out" bash -c 'grep -q "^laptop.example.ts.net  *ram@example.com  *guest  *agent-02 " <<<"$1"' _ "$out"
+out=$(op access lend laptop agent-01 2>&1)
+check "only a sandbox agent can be lent" "lend: $out" has "$out" "agent-01 is not a sandbox"
+out=$(guest run "Say hello." --agent agent-02:2 --task T-GUEST --json 2>&1)
+check "the guest runs a task on its lent sandbox" "run: $out; status: $(op status --json 2>&1 | jq -c '[.agents[] | {agent, state, task, session}]' 2>/dev/null)" \
+  test "$(jq -r .agent <<<"$out" 2>/dev/null)" = agent-02:2
+out=$(op tasks --json 2>/dev/null)
+check "a guest's task is not admin work" "tasks: $(jq -c 'map(select(.id=="T-GUEST"))' <<<"$out" 2>/dev/null)" \
+  bash -c 'jq -e "map(select(.id==\"T-GUEST\"))[0] | .admin_work == false" <<<"$1" >/dev/null' _ "$out"
+out=$(guest run "Say hello." --agent agent-01 2>&1); rc=$?
+check "the guest may not run on an agent not lent to it" "exit $rc: $out" bash -c 'test $1 != 0 && grep -q "not lent to this device" <<<"$2"' _ $rc "$out"
+out=$(guest status --json 2>&1)
+check "the guest's status holds only its lent agent" "status: $(jq -c '[.agents[].agent]' <<<"$out" 2>/dev/null)" \
+  bash -c 'jq -e "[.agents[].agent] | length > 0 and all(startswith(\"agent-02\"))" <<<"$1" >/dev/null' _ "$out"
+out=$(guest memory recall deploys 2>&1)
+check "the guest is refused the operator's memory" "got: $out" bash -c 'grep -q "403\|may:\|not for scope" <<<"$1" && ! grep -q "21:00" <<<"$1"' _ "$out"
+out=$(guest access 2>&1)
+check "the guest may not see or change access" "got: $out" bash -c '! grep -q "ram@example.com  *guest" <<<"$1"' _ "$out"
+op done agent-02:2 --task T-GUEST --keep-session >/dev/null 2>&1
+# The operator's own laptop, tagged admin once it has asked.
+as_device op-mac.tail1234.ts.net nOPMAC op@example.com
+out=$(guest whoami 2>&1)
+check "a new device is refused until it is tagged" "whoami: $out" has "$out" "may not use this fleet yet"
+op access admin op-mac >/dev/null 2>&1
+out=$(guest whoami 2>&1)
+check "a device tagged admin has the full scope" "whoami: $out" has "$out" "scope full"
+# The same name on another device is nobody.
+as_device op-mac.tail1234.ts.net nIMPOSTOR op@example.com
+out=$(guest status 2>&1)
+check "a device named like the admin's, with another id, is refused" "status: $out" has "$out" "may not use this fleet yet"
+as_device stranger-pc.tail9abc.ts.net nSTRANGER stranger@example.com
+out=$(guest status 2>&1)
+check "an untagged device is refused" "status: $out" has "$out" "fleetctl access lend stranger-pc"
+out=$(op access 2>&1)
+check "its knock is listed" "access: $out" bash -c 'grep -q "Asked, not tagged" <<<"$1" && grep -q "stranger-pc.tail9abc.ts.net" <<<"$1"' _ "$out"
+rm -f "$R/fakes/whois.json"
 
 # ---------------------------------------------------------------------------
 if [ -s "$R/fakes/violations" ]; then

@@ -47,7 +47,7 @@ func connectCmd(args []string) error {
 		u = "http://" + u
 	}
 	c := &client{base: u, timeout: 20 * time.Second}
-	var who struct{ Scope, Name string }
+	var who struct{ Scope, Name, Lent string }
 	if err := c.do("GET", "/v1/whoami", nil, &who); err != nil {
 		return err
 	}
@@ -62,10 +62,10 @@ func connectCmd(args []string) error {
 		return err
 	}
 	switch who.Scope {
-	case "member":
-		fmt.Printf("connected to %s as %s: you run tasks as yourself, and see and close your own\n", u, who.Name)
+	case "guest":
+		fmt.Printf("connected to %s as %s, a guest: you use the agents lent to this device (%s), and see and close your own tasks\n", u, who.Name, who.Lent)
 	case "full":
-		fmt.Printf("connected to %s as %s, an operator\n", u, who.Name)
+		fmt.Printf("connected to %s as %s, an admin\n", u, who.Name)
 	default:
 		fmt.Printf("connected to %s as %s (scope %s)\n", u, who.Name, who.Scope)
 	}

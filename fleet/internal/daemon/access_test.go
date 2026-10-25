@@ -121,3 +121,22 @@ func TestAKnockIsRecordedAndToldOnce(t *testing.T) {
 		return len(out.alerts) == 1 && strings.Contains(out.alerts[0], "friend-laptop (friend@example.com) asked for fleet access")
 	})
 }
+
+// A task that was admin work stops being so when its agent becomes a
+// sandbox (fleet.yaml changed under it): the agent reads no secret.
+func TestAnAgentMadeASandboxLosesItsAdminWork(t *testing.T) {
+	f, _, _ := newFleet(t)
+	f.Tick(context.Background(), t0)
+	assignAs(t, f, "agent-05", "T1", "operator")
+	putSecret(t, f, "openai", apiKey)
+	if err := f.SecretGrant("openai", "", "agent-05", "operator", 0, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.SecretRead("agent-05", "openai", t0); err != nil {
+		t.Fatalf("an ordinary agent on admin work: %v", err)
+	}
+	sandboxed(f)
+	if _, err := f.SecretRead("agent-05", "openai", t0); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("a sandbox read a secret: %v", err)
+	}
+}
