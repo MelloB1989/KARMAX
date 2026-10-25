@@ -1179,3 +1179,22 @@ func (b *box) GetFiles(context.Context, string, io.Writer) error { return errors
 func (b *box) Rsh(context.Context, []string, io.Reader, io.Writer) (target.Result, error) {
 	return target.Result{}, errors.New("not faked")
 }
+
+// A tick cut short by fleetd stopping records nothing: no failed look, no
+// host out of reach, for a fleet that was fine.
+func TestATickCutByShutdownRecordsNoFailure(t *testing.T) {
+	f, boxes, _ := newFleet(t)
+	boxes["agent-03"].observeErr = errors.New("docker exec agent-03 sh: signal: killed")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f.tickOne(ctx, "agent-03", t0)
+	evs, _ := f.db.Events("agent-03", t0.Add(-time.Hour))
+	for _, e := range evs {
+		if e.Kind == "fleet.observe_failed" || e.Kind == "fleet.unreachable" {
+			t.Errorf("a shutdown recorded %s: %s", e.Kind, e.Detail)
+		}
+	}
+	if f.State("agent-03").UnreachableSince != (time.Time{}) {
+		t.Error("a shutdown put the host out of reach")
+	}
+}

@@ -304,6 +304,9 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 	b := f.box(name)
 	w := f.worker(name)
 	o, err := b.Observe(ctx, now)
+	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return // fleetd is stopping: the look was cut short, nothing failed
+	}
 	if err != nil && o.ContainerUp {
 		// Could not see inside a running container. Deciding on a blank
 		// observation would read as "no session" and restart a healthy agent.
