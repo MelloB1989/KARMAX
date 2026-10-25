@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -68,6 +69,16 @@ func (f *Fleet) PickModel(repo, model string, now time.Time) PickReply {
 // task was in the same repo, then the lowest 5 h quota use, the lowest 7 d,
 // the longest idle.
 func (f *Fleet) PickFor(repo, from, model string, now time.Time) PickReply {
+	return f.pickAmong(repo, from, model, nil, now)
+}
+
+// notLent is why a pick passes over a sandbox: it is lent to guests, and
+// takes another's task only when it is named.
+const notLent = "a sandbox, lent to guests: name it with --agent to give it a task"
+
+// pickAmong is PickFor for a run that may go only to the agents among (a
+// guest's lent ones): a sandbox is eligible only when it is among them.
+func (f *Fleet) pickAmong(repo, from, model string, among []string, now time.Time) PickReply {
 	rows := f.Status(now)
 	type scored struct {
 		c        Candidate
@@ -88,6 +99,9 @@ func (f *Fleet) PickFor(repo, from, model string, now time.Time) PickReply {
 	for _, r := range rows {
 		c := Candidate{Agent: r.Agent, FiveHour: r.FiveHour, SevenDay: r.SevenDay, IdleS: r.IdleS}
 		c.Why = f.ineligible(r)
+		if c.Why == "" && f.worker(r.Agent).Sandbox && !slices.Contains(among, r.SlotOf) {
+			c.Why = notLent
+		}
 		if models := f.worker(r.Agent).Models; c.Why == "" && model != "" && !ModelAllowed(models, model) {
 			c.Why = fmt.Sprintf("does not list %s (models: %s)", model, strings.Join(models, ", "))
 		}
@@ -260,6 +274,9 @@ type RunRequest struct {
 	// Attach says files are about to be copied into the task's inbox: the
 	// task is placed, but its brief waits for Brief.
 	Attach bool
+	// Among, when set, is the only agents the run may go to: a guest's lent
+	// ones. The server sets it for a guest.
+	Among []string
 }
 
 // RunReply is where a run went.
@@ -353,12 +370,12 @@ func (f *Fleet) place(in RunRequest, now time.Time) (RunReply, error) {
 				ErrConflict, in.From, len(open), strings.Join(ids, ", "))
 		}
 	}
-	p := f.PickFor(in.Repo, in.From, in.Model, now)
+	p := f.pickAmong(in.Repo, in.From, in.Model, in.Among, now)
 	rep := RunReply{Agent: p.Agent, Why: p.Why}
 	if in.Agent != "" {
 		rep = RunReply{Agent: in.Agent, Why: "named"}
 		for _, c := range p.Candidates {
-			if c.Agent == in.Agent && !c.Eligible {
+			if c.Agent == in.Agent && !c.Eligible && c.Why != notLent { // named: lent or not
 				return RunReply{}, fmt.Errorf("%w: %s is not free: %s", ErrConflict, c.Agent, c.Why)
 			}
 		}
