@@ -436,7 +436,7 @@ func thread(c *Ctx, d *fleetapi.TaskDetail, w int) string {
 		if kind == "" {
 			kind = "message"
 		}
-		head := th.Muted.Render(m.At.Format("15:04")+"  ") + th.Strong.Render(m.From) + th.Muted.Render(" → "+m.To)
+		head := th.Muted.Render(m.At.Local().Format("15:04")+"  ") + th.Strong.Render(m.From) + th.Muted.Render(" → "+m.To)
 		b = append(b, spread(head, paint(kc, kind), w))
 		for _, l := range strings.Split(ansi.Wrap(strings.TrimRight(m.Text, "\n"), max(1, w-2), " -"), "\n") {
 			b = append(b, "  "+text.Render(l))

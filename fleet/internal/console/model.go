@@ -7,6 +7,8 @@ package console
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 )
 
 // Source keys.
@@ -154,7 +156,7 @@ type Event struct {
 // StreamKinds are the events a person reads; tool-level events drive
 // current_tool and activity only. A kind matches when equal, or when the
 // entry ends in "." and the kind has it as a prefix.
-var StreamKinds = []string{"fleet.", "SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFailure", "Notification"}
+var StreamKinds = fleetapi.StreamKinds
 
 type Today struct {
 	Since        time.Time `json:"since"`

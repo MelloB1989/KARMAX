@@ -535,7 +535,7 @@ func doing(c *Ctx, s fleetapi.Worker) string {
 	case s.Task != "":
 		return lipgloss.NewStyle().Foreground(t.Text).Render(taskSlug(s.Task))
 	case s.State == "cooling" && !s.Cooling.IsZero():
-		return paint(t.Frost, "cools till "+s.Cooling.Format("15:04"))
+		return paint(t.Frost, "cools till "+s.Cooling.Local().Format("15:04"))
 	case s.Reason != "":
 		return t.Muted.Render(s.Reason)
 	case s.Unreachable:
@@ -567,10 +567,10 @@ func detailPane(c *Ctx, s fleetapi.Worker, w, h int, rule bool) string {
 	}
 	reset5, reset7 := "", ""
 	if !s.FiveResets.IsZero() {
-		reset5 = resets(s.FiveResets.Format("15:04"), Age(s.FiveResets.Sub(c.Now)))
+		reset5 = resets(s.FiveResets.Local().Format("15:04"), Age(s.FiveResets.Sub(c.Now)))
 	}
 	if !s.SevenResets.IsZero() {
-		reset7 = resets(s.SevenResets.Format("Mon 15:04"), Age(s.SevenResets.Sub(c.Now)))
+		reset7 = resets(s.SevenResets.Local().Format("Mon 15:04"), Age(s.SevenResets.Sub(c.Now)))
 	}
 	bw := max(4, min(16, w-24))
 	act := string(s.Activity.Kind)
@@ -615,7 +615,7 @@ func detailPane(c *Ctx, s fleetapi.Worker, w, h int, rule bool) string {
 		if e.Agent != s.Agent && (s.Task == "" || eventTask(e) != s.Task) {
 			continue
 		}
-		lines = append(lines, t.Muted.Render(e.At.Format("15:04")+" ")+paint(kindColor(t, e.Kind), e.Kind)+" "+text.Render(eventText(e)))
+		lines = append(lines, t.Muted.Render(e.At.Local().Format("15:04")+" ")+paint(kindColor(t, e.Kind), e.Kind)+" "+text.Render(eventText(e)))
 		n++
 	}
 	if n == 0 {

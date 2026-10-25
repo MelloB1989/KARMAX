@@ -193,7 +193,7 @@ func (e *eventsTab) View(c *Ctx, w, h int) string {
 		if agent == "" {
 			agent = "fleetd"
 		}
-		row := mark + t.Muted.Render(ev.At.Format("15:04:05")) + " " +
+		row := mark + t.Muted.Render(ev.At.Local().Format("15:04:05")) + " " +
 			lipgloss.NewStyle().Foreground(t.Text).Render(Fit(agent, agentW)) + " " +
 			paint(kindColor(t, ev.Kind), Fit(ev.Kind, kindW)) + " "
 		if w >= 110 {

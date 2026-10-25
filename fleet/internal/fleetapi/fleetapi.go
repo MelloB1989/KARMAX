@@ -130,6 +130,12 @@ type Task struct {
 	LastKind string    `json:"last_kind,omitempty"` // report | question | progress
 }
 
+// StreamKinds are the events a person reads, as the console streams them:
+// a kind matches when equal, or when the entry ends in "." and the kind has
+// it as a prefix. Tool, hook and metric events drive activity and counts,
+// never the list (there are thousands a day).
+var StreamKinds = []string{"fleet.", "SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFailure", "Notification"}
+
 // Event is one ledger event. Detail is the event's JSON object.
 type Event struct {
 	ID      int64           `json:"id"`

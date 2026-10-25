@@ -378,7 +378,7 @@ func (a *App) banner(w int) string {
 	t := a.c.Theme
 	at := ""
 	if a.c.Snap != nil {
-		at = " · showing " + a.c.Snap.At.Format("15:04:05")
+		at = " · showing " + a.c.Snap.At.Local().Format("15:04:05")
 	}
 	return t.Danger.Render("▲ fleetd unreachable") + t.Muted.Render(" · retrying in "+Age(a.retry.Sub(a.c.Now).Round(time.Second))+at+" · "+oneLine(a.err.Error()))
 }

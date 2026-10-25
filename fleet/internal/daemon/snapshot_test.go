@@ -354,3 +354,23 @@ func TestAHostIsNeverAskedThroughASandbox(t *testing.T) {
 		t.Fatalf("asked kali through its sandbox %d times", asked)
 	}
 }
+
+// The snapshot's events are the ones a person reads: tool, hook and metric
+// events (thousands a day) never crowd the fleet's own out of the list.
+func TestASnapshotsEventsAreTheOnesAPersonReads(t *testing.T) {
+	f, _, _ := newFleet(t)
+	f.event("agent-03", "fleet.report", "", map[string]string{"text": "done"})
+	for i := range 30 {
+		for _, k := range []string{"otel.tool_result", "PreToolUse", "PostToolUse", "metric.session.count", "otel.tool_decision"} {
+			_ = f.db.AddEvent(ledger.Event{Agent: "agent-03", At: t0.Add(time.Duration(i) * time.Second), Kind: k})
+		}
+	}
+	f.event("agent-03", "SessionStart", "s1", nil)
+	var kinds []string
+	for _, e := range f.Snapshot(t0.Add(time.Minute), true, nil, fleetapi.Me{}).Events {
+		kinds = append(kinds, e.Kind)
+	}
+	if strings.Join(kinds, ",") != "SessionStart,fleet.report" {
+		t.Fatalf("events = %v", kinds)
+	}
+}

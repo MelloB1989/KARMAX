@@ -79,7 +79,7 @@ func pulse(c *Ctx, w, h int) string {
 		draw       func(w, h int) []string
 	}
 	spark := panel{"Working", "last 30m", 24, func(w, h int) []string { return workingChart(c, w, h) }}
-	today := panel{"Today", "since " + c.Snap.Today.Since.Format("15:04"), 20, func(w, h int) []string { return todayLines(c, h) }}
+	today := panel{"Today", "since " + c.Snap.Today.Since.Local().Format("15:04"), 20, func(w, h int) []string { return todayLines(c, h) }}
 	quota := panel{"Running out", "5h windows", 34, func(w, h int) []string { return runOutLines(c, w, h) }}
 	events := panel{"Events", "latest", 30, func(w, h int) []string { return tickerLines(c, w, h) }}
 	// The roomiest set that fits; the events take what is left.
@@ -238,7 +238,7 @@ func runOutLines(c *Ctx, w, h int) []string {
 	for _, a := range acc {
 		left := a.RunOut.Sub(c.Now)
 		col := quotaColor(t, a.FiveHour)
-		when := "out " + a.RunOut.Format("15:04")
+		when := "out " + a.RunOut.Local().Format("15:04")
 		switch {
 		case left <= 0:
 			col, when = t.Alert, "out now"
@@ -270,7 +270,7 @@ func tickerLines(c *Ctx, w, h int) []string {
 	text := lipgloss.NewStyle().Foreground(t.Text)
 	var out []string
 	for _, e := range evs {
-		at := t.Muted.Render(e.At.Format("15:04") + " ")
+		at := t.Muted.Render(e.At.Local().Format("15:04") + " ")
 		kind := paint(kindColor(t, e.Kind), strings.TrimPrefix(e.Kind, "fleet."))
 		if h >= 2*len(evs) {
 			out = append(out, Fit(at+kind+t.Muted.Render(" · "+e.Agent), w), Fit("      "+text.Render(eventText(e)), w))

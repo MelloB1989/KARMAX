@@ -263,14 +263,11 @@ func (f *Fleet) buildSnapshot(now time.Time, seq uint64) *fullSnapshot {
 				Messages: l.Messages, Last: firstLine(l.Last, 200), LastAt: l.LastAt, LastKind: l.LastKind})
 		}
 	}
-	if evs, err := f.db.EventsWhere(ledger.EventQuery{Newest: true, Limit: snapshotPool}); err != nil {
+	if evs, err := f.db.EventsWhere(ledger.EventQuery{Newest: true, Limit: snapshotPool, Kinds: fleetapi.StreamKinds}); err != nil {
 		f.Log("snapshot: events: %v", err)
 	} else {
 		for i := len(evs) - 1; i >= 0; i-- {
 			e := evs[i]
-			if e.Kind == "otel.tool_decision" {
-				continue // the activity's signal; its tool_result is the event
-			}
 			s.Events = append(s.Events, fleetapi.Event{ID: e.ID, At: e.At, Agent: e.Agent, Kind: e.Kind,
 				Session: e.Session, Detail: rawDetail(e.Detail)})
 		}

@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -313,5 +315,26 @@ func TestTheDetailPaneShowsTheWorker(t *testing.T) {
 			}
 		}
 		checkSize(t, view(a), w, 40)
+	}
+}
+
+// fleetd's times come over the wire in UTC; the TUI shows them in the
+// viewer's own zone, as its clock does.
+func TestTimesShowInTheViewersZone(t *testing.T) {
+	old := time.Local
+	time.Local = time.FixedZone("IST", 5*3600+1800)
+	t.Cleanup(func() { time.Local = old })
+	a, f := testApp(t, fleetapi.RoleAdmin, 120, 40, false)
+	s, err := f.Watch(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 25, 17, 37, 0, 0, time.UTC) // 23:07 in IST
+	s.Events = []fleetapi.Event{{ID: 1, At: at, Agent: "agent-01", Kind: "fleet.report", Detail: []byte(`{"text":"hi"}`)}}
+	s.Today.Since = time.Date(2026, 10, 24, 18, 30, 0, 0, time.UTC) // midnight in IST
+	a.Update(SnapshotMsg{Snap: s})
+	press(a, "4")
+	if v := ansi.Strip(view(a)); !strings.Contains(v, "23:07:00") || strings.Contains(v, "17:37") {
+		t.Errorf("an event at 17:37 UTC is not shown at 23:07 IST:\n%s", v)
 	}
 }
