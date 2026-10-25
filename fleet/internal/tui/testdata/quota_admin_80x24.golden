@@ -1,0 +1,24 @@
+ACCOUNT      AGENTS         5H              RESETS BURN    RUN-OUT              
+acct-01      agent-01       ███░░░░░░░  34% 1h30m  —       ok till reset        
+acct-02      agent-02       ██████████  99% 1h44m  6.5%/h  runs out 21:13       
+acct-03      agent-03       █░░░░░░░░░  12% 1h58m  13.0%/h ok till reset        
+acct-04      agent-04       █████░░░░░  51% 2h12m  19.5%/h ok till reset        
+acct-05      agent-05       ████░░░░░░  43% 2h26m  —       ok till reset        
+acct-06      agent-06       █░░░░░░░░░   8% 2h40m  6.5%/h  ok till reset        
+acct-07      agent-07       ░░░░░░░░░░   0% 2h54m  13.0%/h ok till reset        
+acct-08      agent-08       ██░░░░░░░░  22% 3h8m   19.5%/h ok till reset        
+acct-09      agent-09       ██░░░░░░░░  17% 3h22m  —       ok till reset        
+acct-10      agent-10       ░░░░░░░░░░   0% 3h29m  6.5%/h  ok till reset        
+acct-11      agent-11       ░░░░░░░░░░   0% 3h36m  13.0%/h ok till reset        
+acct-12      agent-12       █░░░░░░░░░   5% 3h43m  19.5%/h ok till reset        
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+karmax       orchestrator   ░░░░░░░░░░   2% 3h     —       ok till reset        
+                                                                                
+Today since 00:00                                                               
+7 tasks closed  ·  $41.37 spent  ·  1.28M output tokens                         
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                

@@ -1,0 +1,40 @@
+fleetd v0.3.0-demo  up 1d2h  tick 2140ms (4s ago)  no tick errors                                                       
+                                                                                                                        
+pc2 ✓ load 2.4 2.9 3.1 /4 cpu ▁▂▄▅▆▇████▇▆  mem ██████░░ 5.0G/7.0G  disk █████░░░ 158G/233G                             
+  agent-01   cpu 37%  ▂▂▃▃▃▄▄▅▅▅▆▆  mem ██░░░░ 1020M/2.5G                                                               
+  agent-02   cpu 71%  ▆▆▆▆▆▆▅▅▅▄▄▄  mem ███░░░ 1.1G/2.5G                                                                
+  agent-03   cpu 15%  ▄▄▃▃▂▂▂▂▂▂▂▂  mem ███░░░ 1.2G/2.5G                                                                
+  agent-04   cpu 49%  ▂▂▂▃▃▃▄▄▅▅▅▆  mem ███░░░ 1.3G/2.5G                                                                
+  agent-05   cpu 83%  ▅▆▆▆▆▆▆▆▅▅▅▄  mem ████░░ 1.5G/2.5G                                                                
+  agent-06   cpu 27%  ▅▄▄▃▃▃▂▂▂▂▂▂  mem ████░░ 1.6G/2.5G                                                                
+  agent-07   stopped                                                                                                    
+  agent-08   cpu 5%   ▅▅▅▆▆▆▆▆▆▅▅▅  mem ████░░ 1.8G/2.5G                                                                
+                                                                                                                        
+kali ✓ load 1.2 1.6 1.8 /8 cpu ▇████▇▇▆▅▄▂▁  mem █████░░░ 9.0G/16G  disk █████░░░ 301G/467G                             
+  agent-09   cpu 22%  ▆▆▆▆▅▅▅▄▄▄▃▃  mem ██████ 1.9G/1.5G                                                                
+  agent-10   cpu 39%  ▅▅▄▄▄▃▃▂▂▂▂▂  mem ██████ 1.9G/1.5G                                                                
+  agent-11   cpu 56%  ▃▃▂▂▂▂▂▂▂▂▂▃  mem ██████ 2.0G/1.5G                                                                
+  agent-12   cpu 73%  ▂▂▂▂▂▂▃▃▃▄▄▅  mem █████░ 2.1G/2.5G                                                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
