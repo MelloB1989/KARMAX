@@ -101,8 +101,8 @@ func (s *screens) visible(c *Ctx) ([]string, int) {
 
 func (s *screens) Update(msg tea.Msg, c *Ctx) tea.Cmd {
 	ws := snapWorkers(c)
-	if s.sel == 0 && c.Selected != "" {
-		s.follow(c.Selected, ws)
+	if c.Selected != "" && (s.sel >= len(ws) || ws[s.sel].Agent != c.Selected) {
+		s.follow(c.Selected, ws) // another tab selected a worker: show it
 	}
 	var cmds []tea.Cmd
 	switch m := msg.(type) {

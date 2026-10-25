@@ -187,6 +187,17 @@ func TestScreensSshIntoTheSelectedTile(t *testing.T) {
 	}
 }
 
+func TestScreensFollowTheWorkerSelectedElsewhere(t *testing.T) {
+	c, f := tabCtx(t, fleetapi.RoleAdmin)
+	tab := newScreens()
+	tabSettle(tab, c, 120, 20)
+	c.Selected = "agent-05:2" // the Fleet tab's selection
+	tabFeed(tab, c, tabRun(tab.Update(FrameMsg{}, c)))
+	if got := f.ScreensAsked[len(f.ScreensAsked)-1]; !slices.Contains(got, "agent-05:2") {
+		t.Errorf("asked %v, want the grid around agent-05:2", got)
+	}
+}
+
 func TestQuotaShowsRunOutOnlyBeforeReset(t *testing.T) {
 	c, _ := tabCtx(t, fleetapi.RoleAdmin)
 	at := func(h, m int) time.Time { return time.Date(2026, 10, 25, h, m, 0, 0, time.UTC) }
