@@ -1,0 +1,40 @@
+┏━ ʘʘ⠶ agent-01 working · 20261025-tui-frame-1a2b ━━━━━━━━━┓╭─ zᶻᶻ agent-01:2 standby ─────────────────────────────────╮
+┃✻ Welcome to Claude Code                                  ┃│✻ Welcome to Claude Code                                  │
+┃                                                          ┃│                                                          │
+┃> agent-01: working on its task                           ┃│> agent-01:2: working on its task                         │
+┃                                                          ┃│                                                          │
+┃⏺ Bash(go test ./internal/... -run Test0)                 ┃│⏺ Bash(go test ./internal/... -run Test0)                 │
+┃  ⎿  ok      github.com/example/fleet/internal/access    0┃│  ⎿  ok      github.com/example/fleet/internal/access    0│
+┃                                                          ┃│                                                          │
+┃✶ Pondering… (12s · ↓ 1.2k tokens)                        ┃│✶ Pondering… (12s · ↓ 1.2k tokens)                        │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛╰──────────────────────────────────────────────────────────╯
+╭─ zᶻᶻ agent-02 standby ───────────────────────────────────╮╭─ zᶻᶻ agent-02:2 standby ─────────────────────────────────╮
+│✻ Welcome to Claude Code                                  ││✻ Welcome to Claude Code                                  │
+│                                                          ││                                                          │
+│> agent-02: working on its task                           ││> agent-02:2: working on its task                         │
+│                                                          ││                                                          │
+│⏺ Bash(go test ./internal/... -run Test0)                 ││⏺ Bash(go test ./internal/... -run Test0)                 │
+│  ⎿  ok      github.com/example/fleet/internal/access    0││  ⎿  ok      github.com/example/fleet/internal/access    0│
+│                                                          ││                                                          │
+│✶ Pondering… (12s · ↓ 1.2k tokens)                        ││✶ Pondering… (12s · ↓ 1.2k tokens)                        │
+╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯
+╭─ ❆⠁  agent-03 cooling ───────────────────────────────────╮╭─ zᶻᶻ agent-03:2 standby ─────────────────────────────────╮
+│✻ Welcome to Claude Code                                  ││✻ Welcome to Claude Code                                  │
+│                                                          ││                                                          │
+│> agent-03: working on its task                           ││> agent-03:2: working on its task                         │
+│                                                          ││                                                          │
+│⏺ Bash(go test ./internal/... -run Test0)                 ││⏺ Bash(go test ./internal/... -run Test0)                 │
+│  ⎿  ok      github.com/example/fleet/internal/access    0││  ⎿  ok      github.com/example/fleet/internal/access    0│
+│                                                          ││                                                          │
+│✶ Pondering… (12s · ↓ 1.2k tokens)                        ││✶ Pondering… (12s · ↓ 1.2k tokens)                        │
+╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯
+╭─  ?  agent-04 waiting · 20261025-access-3c4d ────────────╮╭─ zᶻᶻ agent-04:2 standby ─────────────────────────────────╮
+│✻ Welcome to Claude Code                                  ││✻ Welcome to Claude Code                                  │
+│                                                          ││                                                          │
+│> agent-04: working on its task                           ││> agent-04:2: working on its task                         │
+│                                                          ││                                                          │
+│⏺ Bash(go test ./internal/... -run Test0)                 ││⏺ Bash(go test ./internal/... -run Test0)                 │
+│  ⎿  ok      github.com/example/fleet/internal/access    0││  ⎿  ok      github.com/example/fleet/internal/access    0│
+│                                                          ││                                                          │
+│✶ Pondering… (12s · ↓ 1.2k tokens)                        ││✶ Pondering… (12s · ↓ 1.2k tokens)                        │
+╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯

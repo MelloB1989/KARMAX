@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,8 @@ type Fake struct {
 	devices []Device
 	knocks  []Knock
 	Calls   []string
+	// ScreensAsked is the workers of each Screens call, in order.
+	ScreensAsked [][]string
 }
 
 // NewFake is a fleet of twelve agents as an admin (or a guest lent agent-09)
@@ -244,6 +247,7 @@ func midnight(t time.Time) time.Time {
 func (f *Fake) Screens(ctx context.Context, workers []string, lines int) ([]Screen, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ScreensAsked = append(f.ScreensAsked, append([]string(nil), workers...))
 	var out []Screen
 	for _, w := range workers {
 		body := []string{
@@ -381,7 +385,58 @@ func (f *Fake) ChangeAccess(ctx context.Context, c AccessChange) (*AccessList, e
 		f.mu.Unlock()
 		return nil, fmt.Errorf("403: access is for admins")
 	}
+	if err := f.change(c); err != nil {
+		f.mu.Unlock()
+		return nil, err
+	}
 	f.record("access %s %s %s", c.Op, c.Device, strings.Join(c.Agents, ","))
 	f.mu.Unlock()
 	return f.Access(ctx)
+}
+
+// change applies c to the fake's devices roughly as fleetd's access rules
+// do: a knock tagged becomes a device, admin drops lends, lend on an admin
+// is refused.
+func (f *Fake) change(c AccessChange) error {
+	i := -1
+	for j, d := range f.devices {
+		if d.StableID == c.Device || d.Name == c.Device {
+			i = j
+		}
+	}
+	if i < 0 && (c.Op == AccessAdmin || c.Op == AccessLend) {
+		for j, k := range f.knocks {
+			if k.StableID == c.Device || k.Name == c.Device {
+				f.devices = append(f.devices, Device{StableID: k.StableID, Name: k.Name, Login: k.Login, TaggedAt: f.Now(), TaggedBy: "operator", LastSeen: k.Last})
+				f.knocks = append(f.knocks[:j:j], f.knocks[j+1:]...)
+				i = len(f.devices) - 1
+				break
+			}
+		}
+	}
+	if i < 0 {
+		return fmt.Errorf("no device %q", c.Device)
+	}
+	d := &f.devices[i]
+	switch c.Op {
+	case AccessAdmin:
+		d.Role, d.Agents = RoleAdmin, nil
+	case AccessLend:
+		if d.Role == RoleAdmin {
+			return fmt.Errorf("%s is an admin; lend is for guests", d.Name)
+		}
+		d.Role = RoleGuest
+		for _, a := range c.Agents {
+			if !slices.Contains(d.Agents, a) {
+				d.Agents = append(d.Agents, a)
+			}
+		}
+	case AccessUnlend:
+		d.Agents = slices.DeleteFunc(d.Agents, func(a string) bool { return slices.Contains(c.Agents, a) })
+	case AccessRevoke:
+		f.devices = append(f.devices[:i:i], f.devices[i+1:]...)
+	default:
+		return fmt.Errorf("unknown access op %q", c.Op)
+	}
+	return nil
 }
