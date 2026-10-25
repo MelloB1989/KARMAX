@@ -136,7 +136,8 @@ Your keyboard:
   ssh <agent> [--type] [--shell] [--force]
                                       the live session in this terminal, from any machine, through fleetd:
                                       watch it (read-only), --type (one typist per agent; --force, admins
-                                      only, makes the typist a watcher) or --shell in its container. Ctrl-] leaves
+                                      only, makes the typist a watcher) or --shell in its container.
+                                      Ctrl-] leaves (q or Esc too, when watching)
   attach <agent>                      the same as ssh --type
   prompt <agent> <text…>              type into it, as you (fleetd)
   peek <agent> [-n 80]                its last lines (fleetd)

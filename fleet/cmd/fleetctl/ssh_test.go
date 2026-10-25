@@ -228,3 +228,70 @@ func TestSSHFlags(t *testing.T) {
 		t.Fatalf("no worker: %v", err)
 	}
 }
+
+// session runs a term session against a fake fleetd that shows a screen,
+// types what, and returns how it left and what fleetd was sent.
+func session(t *testing.T, mode fleetapi.TermMode, what string) (how, typed string) {
+	t.Helper()
+	got := make(chan string, 1)
+	c := fakeTerm(t, func(r *http.Request, ws *websocket.Conn) {
+		readFrame(t, ws)
+		sendFrame(ws, fleetapi.TermFrame{Type: fleetapi.FrameHello, Worker: "agent-03", Mode: mode})
+		ws.Write(context.Background(), websocket.MessageBinary, []byte("the screen"))
+		var b strings.Builder
+		for {
+			typ, p, err := ws.Read(context.Background())
+			if err != nil {
+				break
+			}
+			if typ == websocket.MessageBinary {
+				b.Write(p)
+			}
+		}
+		got <- b.String()
+	})
+	pr, pw := io.Pipe()
+	out := &syncBuf{}
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		how, err = c.term(context.Background(), termRun{worker: "agent-03", mode: mode, in: pr, out: out, size: size80x24})
+	}()
+	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(out.String(), "the screen"); {
+		if time.Now().After(deadline) {
+			t.Fatalf("no screen; output %q", out.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	pw.Write([]byte(what))
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%q did not leave a %s session", what, mode)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return how, <-got
+}
+
+// On a terminal an application in the session asked for extended keys,
+// Ctrl-] comes as an escape sequence; it leaves all the same, and a
+// watcher also leaves on q.
+func TestASessionIsLeftWhateverTheTerminalSends(t *testing.T) {
+	for _, c := range []struct {
+		mode       fleetapi.TermMode
+		what, sent string
+	}{
+		{fleetapi.TermType, "ls\r\x1b[93;5u", "ls\r"},
+		{fleetapi.TermType, "x\x1b[27;5;93~", "x"},
+		{fleetapi.TermShell, "\x1b[93;5:1u", ""},
+		{fleetapi.TermWatch, "q", ""},
+	} {
+		how, sent := session(t, c.mode, c.what)
+		if how != "[detached from agent-03]" || sent != c.sent {
+			t.Errorf("%s %q: how %q, fleetd got %q, want %q", c.mode, c.what, how, sent, c.sent)
+		}
+	}
+}

@@ -141,7 +141,7 @@ secret exec OPENAI_API_KEY=openai -- <cmd>` (or `get --to`), only on your side's
     fleetctl tui                # all of it live, full-screen: agents, tasks, events (tui --demo: a made-up fleet)
     fleetctl pick --repo R      # who would get a task, and why the others would not
     fleetctl peek agent-02      # the agent's screen now (do not poll it: `wait` returns when it reports)
-    fleetctl ssh agent-02       # its live session in your terminal: --type to type, --shell for a shell; Ctrl-] leaves
+    fleetctl ssh agent-02       # its live session in your terminal: --type to type, --shell a shell; Ctrl-] leaves (q too, watching)
     fleetctl tasks --open       # every task still open; fleetctl quota: 5-hour and 7-day windows per agent
 
 ## The operator's memory

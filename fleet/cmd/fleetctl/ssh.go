@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,7 +21,8 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 )
 
-// detachKey is Ctrl-]: it ends the session here, whatever the mode.
+// detachKey is Ctrl-]: it ends the session here, whatever the mode, in
+// whichever encoding the terminal sends it (detachAt).
 const detachKey = 0x1d
 
 // sshCmd is `ssh <worker> [--type] [--shell] [--force]`, and attach, which
@@ -95,12 +95,16 @@ func attach(worker string, mode fleetapi.TermMode, force bool, stdin io.Reader, 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	tty := out >= 0 && term.IsTerminal(out)
+	if tty { // the way back, where it stays in sight: the window's title
+		fmt.Fprintf(stdout, "\x1b[22;0t\x1b]0;fleetctl ssh %s · %s to go back\x07", worker, leaveKeys(mode))
+	}
 	how, err := c.term(ctx, termRun{worker: worker, mode: mode, force: force, in: stdin, out: stdout, size: size, winch: winch(ctx, size)})
-	if out >= 0 && term.IsTerminal(out) {
+	if tty {
 		// Ctrl-] cuts the session before the tmux inside can hand the
-		// terminal back: leave its alternate screen, colors, scroll region
-		// and hidden cursor behind here.
-		fmt.Fprint(stdout, screenReset)
+		// terminal back: leave its alternate screen, colors, scroll region,
+		// hidden cursor and keyboard modes behind here, and the title.
+		fmt.Fprint(stdout, screenReset+"\x1b[23;0t")
 	}
 	if how != "" {
 		fmt.Fprintf(stderr, "\r\n%s\r\n", how)
@@ -109,8 +113,18 @@ func attach(worker string, mode fleetapi.TermMode, force bool, stdin io.Reader, 
 }
 
 // screenReset puts a terminal back as a shell expects it: attributes off,
-// the whole screen scrolling, the cursor shown, the main screen.
-const screenReset = "\x1b[0m\x1b[r\x1b[?25h\x1b[?1049l"
+// the whole screen scrolling, the cursor shown, the main screen, and the
+// keyboard modes an application in the session may have asked for
+// (modifyOtherKeys, and the kitty keyboard stack's entry).
+const screenReset = "\x1b[0m\x1b[r\x1b[?25h\x1b[?1049l\x1b[>4m\x1b[<u"
+
+// leaveKeys is what leaves a session of mode, for the hint.
+func leaveKeys(mode fleetapi.TermMode) string {
+	if mode == fleetapi.TermWatch {
+		return "q, Esc or Ctrl-]"
+	}
+	return "Ctrl-]"
+}
 
 func fdOf(v any) int {
 	if f, ok := v.(*os.File); ok {
@@ -178,7 +192,7 @@ func (c *client) term(ctx context.Context, t termRun) (how string, err error) {
 		for {
 			n, err := in.Read(buf)
 			b := buf[:n]
-			if i := bytes.IndexByte(b, detachKey); i >= 0 {
+			if i, _ := detachAt(b, t.mode == fleetapi.TermWatch); i >= 0 {
 				if i > 0 {
 					ws.Write(ctx, websocket.MessageBinary, b[:i])
 				}

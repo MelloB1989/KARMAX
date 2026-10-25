@@ -671,7 +671,10 @@ pty, the host's exec prefix with `exec -it <container>`:
 (`<pane>` is slot 1's tmux session `main`, or slot k's `main-k`.) It needs no fleet.yaml, ssh or docker on your machine:
 it works from wherever fleetctl reaches fleetd (a fleet host, or `fleetctl connect` over the tailnet), on
 macOS, Linux and Windows. The terminal goes raw, a resize is sent at the start and on every change, and
-`Ctrl-]` leaves, printing `[detached from agent-05]`.
+`Ctrl-]` leaves, printing `[detached from agent-05]`, in whichever encoding the terminal sends it (the
+control byte, or an escape sequence once tmux or Claude Code in the session has asked for extended
+keys). A watcher also leaves on `q`, `Esc` or `Ctrl-C`, which reach nothing anyway; the window's title
+says which keys leave while a session is open.
 
 - One typist per worker. A second `--type` is told who holds it (`held by …`) and exits 1; an admin may
   `--force`, which turns the holder into a watcher (it is told so, and watches on).
