@@ -197,6 +197,8 @@ func TestModelIsForAdmins(t *testing.T) {
 	}
 }
 
+// On the Fleet tab s is a shell in the agent's container; t types into its
+// Claude Code session (watching a session is the Screens tab's s).
 func TestSSHKeysAttachTheSelectedWorker(t *testing.T) {
 	f := fleetapi.NewFake(fleetapi.RoleAdmin, clock)
 	var got []string
@@ -209,7 +211,7 @@ func TestSSHKeysAttachTheSelectedWorker(t *testing.T) {
 	press(a, "down")
 	a.Update(keyMsg("s"))
 	a.Update(keyMsg("t"))
-	if strings.Join(got, ",") != "agent-01:2 watch,agent-01:2 type" {
+	if strings.Join(got, ",") != "agent-01:2 shell,agent-01:2 type" {
 		t.Errorf("attached %q", got)
 	}
 }

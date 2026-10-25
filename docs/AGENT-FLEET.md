@@ -676,6 +676,9 @@ control byte, or an escape sequence once tmux or Claude Code in the session has 
 keys). A watcher also leaves on `q`, `Esc` or `Ctrl-C`, which reach nothing anyway; the window's title
 says which keys leave while a session is open.
 
+In `fleetctl tui`, `s` on the Fleet tab is `--shell` in the selected agent's container and `t` is
+`--type`; on the Screens tab `s` watches the selected tile's session and `t` types into it.
+
 - One typist per worker. A second `--type` is told who holds it (`held by …`) and exits 1; an admin may
   `--force`, which turns the holder into a watcher (it is told so, and watches on).
 - Watchers are many and never resize the session. A watcher that sends nothing for 12 hours is closed.

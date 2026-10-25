@@ -43,7 +43,7 @@ func (f *fleetTab) Help() []key.Binding {
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "select")),
 		key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "detail")),
-		keyIs("s", "ssh"), keyIs("t", "type"), m, keyIs("d", "done"), keyIs("c", "cancel"),
+		keyIs("s", "shell"), keyIs("t", "type"), m, keyIs("d", "done"), keyIs("c", "cancel"),
 	}
 }
 
@@ -127,8 +127,8 @@ func (f *fleetTab) Update(msg tea.Msg, c *Ctx) tea.Cmd {
 		f.detail = !f.detail
 	case "esc":
 		f.detail = false
-	case "s":
-		return c.Attach(w.Agent, fleetapi.TermWatch)
+	case "s": // a shell in the container; watching the session is the Screens tab's
+		return c.Attach(w.Agent, fleetapi.TermShell)
 	case "t":
 		return c.Attach(w.Agent, fleetapi.TermType)
 	case "m":
