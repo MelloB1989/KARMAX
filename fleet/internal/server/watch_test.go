@@ -82,8 +82,15 @@ func TestWatchAnswersAtOnceWhenBehind(t *testing.T) {
 	ops := newStreamOps(5)
 	h := Handler(ops, Tokens{Full: "full"}, nil)
 	for _, since := range []string{"", "0", "3", "9"} { // 9: a sequence from before fleetd restarted
-		if s := snapshotOf(t, do(t, h, "GET", "/v1/watch?since="+since, "full", "")); s.Seq != 5 {
-			t.Errorf("since %q: seq %d", since, s.Seq)
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- do(t, h, "GET", "/v1/watch?since="+since, "full", "") }()
+		select {
+		case rec := <-done:
+			if s := snapshotOf(t, rec); s.Seq != 5 {
+				t.Errorf("since %q: seq %d", since, s.Seq)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("since %q: the watch waited instead of answering at once", since)
 		}
 	}
 	if rec := do(t, h, "GET", "/v1/watch?since=-1", "full", ""); rec.Code != http.StatusBadRequest {
