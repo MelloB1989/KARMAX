@@ -235,7 +235,7 @@ func (f *fleetTab) View(c *Ctx, w, h int) string {
 	case f.detail && ok:
 		body = detailPane(c, sel, w, h, false)
 	default:
-		body = f.cards(c, w, h)
+		body = f.withPulse(c, w, h)
 	}
 	if foot != "" {
 		return block(body, w, h) + "\n" + foot
@@ -253,6 +253,30 @@ func emptyWhy(me fleetapi.Me) string {
 // cards lays out every agent's card in w×h: with bars when they fit, then
 // dense, then dense in one scrolling column.
 func (f *fleetTab) cards(c *Ctx, w, h int) string {
+	if cols, widths, _, ok := f.layout(c, w, h); ok {
+		return joinColumns(cols, widths, h)
+	}
+	return f.scroll(c, w, h)
+}
+
+// withPulse is the cards, and the pulse under them when they leave
+// pulseMin rows spare.
+func (f *fleetTab) withPulse(c *Ctx, w, h int) string {
+	cols, widths, used, ok := f.layout(c, w, h)
+	switch {
+	case !ok:
+		return f.scroll(c, w, h)
+	case h-used < pulseMin:
+		return joinColumns(cols, widths, h)
+	}
+	return joinColumns(cols, widths, used) + "\n" + pulse(c, w, h-used)
+}
+
+// layout packs the cards into columns of at most h lines: the roomiest
+// mode that fits, the columns, their widths and the lines the tallest takes
+// without its trailing blank. ok is false when only the scrolling column
+// holds them.
+func (f *fleetTab) layout(c *Ctx, w, h int) (cols []string, widths []int, used int, ok bool) {
 	gs := groups(c.Snap)
 	boxes := containers(c.Snap)
 	// Roomiest first: bars and a gap between cards, then no bars, then no
@@ -263,25 +287,40 @@ func (f *fleetTab) cards(c *Ctx, w, h int) string {
 			minW, maxW = cardDenseW, cardDenseX
 		}
 		minCols := max(1, (w+maxW-1)/maxW)
-		for cols := minCols; cols <= max(minCols, (w+colGap)/(minW+colGap)); cols++ {
-			cw := (w - colGap*(cols-1)) / cols
-			if cw < minW && cols > 1 {
+		for n := minCols; n <= max(minCols, (w+colGap)/(minW+colGap)); n++ {
+			cw := (w - colGap*(n-1)) / n
+			if cw < minW && n > 1 {
 				break
 			}
 			var blocks [][]string
 			for _, g := range gs {
 				blocks = append(blocks, card(c, g, boxes, cw, mode.bars, mode.gap))
 			}
-			if colsOut, ok := pack(blocks, cols, h); ok {
+			if cols, ok := pack(blocks, n, h); ok {
 				f.off = 0
-				widths := make([]int, cols)
+				widths := make([]int, n)
 				for i := range widths {
 					widths[i] = cw
 				}
-				return joinColumns(colsOut, widths, h)
+				for _, col := range cols {
+					lines := strings.Split(col, "\n")
+					for len(lines) > 0 && ansiBlank(lines[len(lines)-1]) {
+						lines = lines[:len(lines)-1]
+					}
+					used = max(used, len(lines))
+				}
+				return cols, widths, used, true
 			}
 		}
 	}
+	return nil, nil, 0, false
+}
+
+// scroll is every card dense in one column, scrolled to keep the selection
+// in view.
+func (f *fleetTab) scroll(c *Ctx, w, h int) string {
+	gs := groups(c.Snap)
+	boxes := containers(c.Snap)
 	// One scrolling column, dense, the selection kept in view.
 	var lines []string
 	selAt := 0

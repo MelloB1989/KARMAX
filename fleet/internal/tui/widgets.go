@@ -123,3 +123,16 @@ func Fit(s string, w int) string {
 	}
 	return s + strings.Repeat(" ", max(0, w-lipgloss.Width(s)))
 }
+
+// Count is a count in a few cells: 842, 12.4k, 1.28M.
+func Count(n int64) string {
+	switch {
+	case n >= 1e9:
+		return fmt.Sprintf("%.2fG", float64(n)/1e9)
+	case n >= 1e6:
+		return fmt.Sprintf("%.2fM", float64(n)/1e6)
+	case n >= 1e4:
+		return fmt.Sprintf("%.1fk", float64(n)/1e3)
+	}
+	return fmt.Sprint(n)
+}

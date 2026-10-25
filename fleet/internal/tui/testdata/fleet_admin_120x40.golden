@@ -25,16 +25,16 @@
 │ ┃  zᶻᶻ S1 standby   idle 30m          ctx  60%                                                                       │
 │ ┃  zᶻᶻ S2 standby   idle 31m          ctx   3%                                                                       │
 │                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
+│ ─ Working · last 30m ────── Today · since 00:00 ─ Running out · 5h windows ────────── Events · latest ────────────── │
+│                                 7 tasks closed  acct-02             99%  out 21:13  21:03 report · agent-01          │
+│                                                   █████████████ in 9m · +6%/h             frame and tabs render at … │
+│                        █   $41.37 spent                                             21:00 question · agent-04        │
+│                        █                                                                  Should a lend to an admin… │
+│                        █    1.28M tokens out                                        20:57 report · agent-09          │
+│                        █                                                                  synced your repo into /wo… │
+│                        █                                                                                             │
+│                        █                                                                                             │
+│ −30m      now 3 · peak 3                                                                                             │
 ├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ ↑↓ select · ⏎ detail · s ssh · t type · m model · d done · c cancel · ? help · q quit        made by MelloB · v0.3.0 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

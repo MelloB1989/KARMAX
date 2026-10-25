@@ -46,6 +46,9 @@ type Ctx struct {
 	Frame  int // the animation frame: +1 about six times a second; fixed under NoAnim
 	NoAnim bool
 	Attach func(worker string, mode fleetapi.TermMode) tea.Cmd
+	// Working is the working count of every snapshot the TUI has seen,
+	// for the Fleet tab's pulse.
+	Working *Samples
 	// Selected is the worker the user last selected, shared by tabs so
 	// Fleet → Screens keeps the same agent in view.
 	Selected string
