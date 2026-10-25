@@ -102,8 +102,12 @@ type Ops interface {
 	Decide(id int64, by string, approve bool, reason string, now time.Time) (ledger.Approval, error)
 }
 
-// Tokens are the bearer tokens, one per scope.
-type Tokens struct{ Full, Relay, Console string }
+// Tokens are the bearer tokens, one per scope. Sandboxes are the sandbox
+// agents, each with a key of its own that is scope sandbox (sandbox.go).
+type Tokens struct {
+	Full, Relay, Console string
+	Sandboxes            []string
+}
 
 // A scope is what a token may do. Each route names the scopes it allows.
 type scope string
@@ -138,6 +142,9 @@ func (t Tokens) scope(r *http.Request) scope {
 		return relay
 	case eq(t.Console):
 		return console
+	}
+	if _, ok := t.sandboxOf(got); ok {
+		return sandbox
 	}
 	return none
 }
@@ -212,6 +219,7 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 	var index []Route
 	may := map[scope][]string{}
 	route := func(pattern string, h func(w http.ResponseWriter, r *http.Request) (any, error), allowed ...scope) {
+		allowed = withSandboxScope(pattern, allowed)
 		names := make([]string, len(allowed))
 		for i, a := range allowed {
 			names[i] = string(a)
@@ -307,7 +315,7 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 	route("GET /v1/whoami", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		s := scopeOf(r)
 		name := ledger.Operator
-		if s == relay {
+		if s == relay || s == sandbox {
 			name = "agent"
 			if a, ok := verifiedAgent(r); ok {
 				name = a // the worker its container's key proved
@@ -338,6 +346,11 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 		switch scopeOf(r) {
 		case console:
 			in.From = ledger.Operator // the console is the operator's keyboard
+		case sandbox:
+			var err error
+			if in.From, err = sandboxTell(r, ops, in.From, in.To); err != nil {
+				return nil, err
+			}
 		case relay:
 			if ledger.IsPerson(in.From) {
 				return nil, forbidden{fmt.Errorf("an agent does not speak as %s: only that person does", in.From)}
@@ -677,7 +690,7 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 		if err := own(r, ops, q.Get("task")); err != nil {
 			return nil, err
 		}
-		if scopeOf(r) == member {
+		if scopeOf(r) == member || scopeOf(r) == sandbox {
 			agent = ""
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
@@ -686,6 +699,9 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 			// Only what this reader has not been handed: their cursor, kept here.
 			if c := callerOf(r); c != nil && scopeOf(r) == member {
 				reader = memberFrom(c, reader)
+			}
+			if scopeOf(r) == sandbox {
+				reader, _ = verifiedAgent(r)
 			}
 			return ops.WaitNew(ctx, agent, q.Get("task"), reader)
 		}
@@ -951,7 +967,7 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 	hostRoute("up", ops.Up)
 	hostRoute("down", ops.Down)
 	hostRoute("render", func(ctx context.Context, _ []string) (string, error) { return ops.Render() })
-	return withAgent(tok, ops.IsWorker, mux)
+	return withSandbox(tok, ops.IsWorker, withAgent(tok, ops.IsWorker, mux))
 }
 
 type agentKey struct{}
@@ -993,7 +1009,7 @@ func verifiedAgent(r *http.Request) (string, bool) {
 // when it proved one (a different body "from" is refused), else what the body
 // says, as before keys were rendered. Other scopes' names pass through.
 func provenFrom(r *http.Request, asked string) (string, error) {
-	if scopeOf(r) != relay {
+	if s := scopeOf(r); s != relay && s != sandbox {
 		return asked, nil
 	}
 	if name, ok := verifiedAgent(r); ok {
@@ -1079,8 +1095,12 @@ func (c *Caller) scope() scope {
 	return none
 }
 
-// own refuses a member a task someone else asked for. Everyone else may.
+// own refuses a member a task someone else asked for, and a sandbox any task
+// but its own. Everyone else may.
 func own(r *http.Request, ops Ops, task string) error {
+	if scopeOf(r) == sandbox {
+		return sandboxOwns(r, ops, task)
+	}
 	c := callerOf(r)
 	if c == nil || scopeOf(r) != member {
 		return nil

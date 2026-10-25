@@ -163,3 +163,45 @@ func TestOTLPAcceptsAPercentEncodedBearer(t *testing.T) {
 		}
 	}
 }
+
+// sandboxes is a receiver's sandbox lookup: "key-09" is agent-09's key.
+func sandboxes(bearer string) (string, bool) {
+	if bearer == "key-09" {
+		return "agent-09", true
+	}
+	return "", false
+}
+
+// A sandbox sends its telemetry under its sandbox key, and it is that
+// agent's whatever the export says: a spoofed fleet.agent is not believed,
+// though a slot of the key's own agent is kept.
+func TestTelemetryWithASandboxKeyIsTheKeysAgents(t *testing.T) {
+	s := &sink{}
+	h := HandlerFor(s, "relay", sandboxes)
+	if rec := post(t, h, "/v1/logs", logs, "key-09", false); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if len(s.usage) != 1 || s.usage[0].Agent != "agent-09" {
+		t.Fatalf("usage = %+v, want agent-09's (the export says agent-03)", s.usage)
+	}
+	for _, e := range s.events {
+		if e.Agent != "agent-09" {
+			t.Errorf("event %s is %s's", e.Kind, e.Agent)
+		}
+	}
+	slot := strings.Replace(logs, `"agent-03"`, `"agent-09:2"`, 1)
+	if rec := post(t, h, "/v1/logs", slot, "key-09", false); rec.Code != 200 || s.usage[1].Agent != "agent-09:2" {
+		t.Errorf("a slot of its own: %d, %+v", rec.Code, s.usage)
+	}
+	missing := strings.Replace(logs, `{"key":"fleet.agent","value":{"stringValue":"agent-03"}},`, "", 1)
+	if rec := post(t, h, "/v1/logs", missing, "key-09", false); rec.Code != 200 || s.usage[2].Agent != "agent-09" {
+		t.Errorf("no fleet.agent: %d, %+v", rec.Code, s.usage)
+	}
+	// The relay token still says nothing about who sends.
+	if rec := post(t, h, "/v1/logs", logs, "relay", false); rec.Code != 200 || s.usage[3].Agent != "agent-03" {
+		t.Errorf("relay: %d, %+v", rec.Code, s.usage)
+	}
+	if rec := post(t, h, "/v1/metrics", `{"resourceMetrics":[]}`, "key-10", false); rec.Code != 401 {
+		t.Errorf("another key: %d, want 401", rec.Code)
+	}
+}
