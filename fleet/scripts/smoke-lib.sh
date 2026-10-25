@@ -17,7 +17,11 @@ cat > "$R/bin/docker" <<'EOF'
 case "$1" in
   inspect) echo true ;;
   stats) echo '{"Name":"agent-01","CPUPerc":"1.00%","MemUsage":"100MiB / 15GiB","MemPerc":"0.6%"}' ;;
-  exec) shift; env=(); while [[ "$1" == -* ]]; do if [[ "$1" == -e ]]; then env+=("$2"); shift; fi; shift; done; shift; exec env "${env[@]}" "$@" ;;
+  exec) shift; env=(); while [[ "$1" == -* ]]; do if [[ "$1" == -e ]]; then env+=("$2"); shift; fi; shift; done; shift
+    # A sandbox's network probe: these "containers" are this machine, on its
+    # LAN and tailnet, so only its fleetd half means anything here.
+    if [ "$1" = bash ] && [ "$4" = probe ]; then exec curl -fsS -m 5 -o /dev/null "$FLEETD_URL/healthz"; fi
+    exec env "${env[@]}" "$@" ;;
 esac
 EOF
 cat > "$R/bin/claude" <<'EOF'
