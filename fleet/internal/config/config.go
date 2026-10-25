@@ -89,7 +89,9 @@ type Config struct {
 // else (the rules fleetctl render writes beside each host's compose file).
 type SandboxNet struct {
 	// Subnet is the bridge's fixed subnet, which the rules match; default
-	// 172.31.250.0/24.
+	// 172.30.250.0/24. It must be one no route on the host sends elsewhere:
+	// a tailnet's subnet route over it (172.31.0.0/16, AWS's default VPC,
+	// is a common one) takes the replies to the sandboxes into the tailnet.
 	Subnet string `yaml:"subnet"`
 }
 
@@ -469,7 +471,7 @@ func (c *Config) defaults() {
 		c.Slots = 2
 	}
 	if c.SandboxNet.Subnet == "" {
-		c.SandboxNet.Subnet = "172.31.250.0/24"
+		c.SandboxNet.Subnet = "172.30.250.0/24"
 	}
 	for name, a := range c.Agents {
 		if a.Sandbox && a.Slots == 0 {
@@ -560,7 +562,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("orchestrator: name %q: a name with \":\" in it is an agent's slot", c.Orchestrator.Name)
 	}
 	if _, _, err := net.ParseCIDR(c.SandboxNet.Subnet); err != nil {
-		return fmt.Errorf("sandbox: subnet %q: want a CIDR like 172.31.250.0/24", c.SandboxNet.Subnet)
+		return fmt.Errorf("sandbox: subnet %q: want a CIDR like 172.30.250.0/24", c.SandboxNet.Subnet)
 	}
 	for _, name := range c.AgentNames() {
 		a := c.Agents[name]

@@ -729,8 +729,10 @@ operator's is in its container, so `fleetctl render` gives it, compared with an 
 - one fleet credential: `FLEET_SANDBOX_KEY`, HMAC-SHA256 of its name under the full token, which fleetd
   takes as scope `sandbox` (whoami, its own task, and tell or ask its task's assigner) and as its
   telemetry token. No relay token and no agent key;
-- the `fleet-sandbox` network: a bridge on `sandbox.subnet` (default `172.31.250.0/24`), no traffic
-  between its containers.
+- the `fleet-sandbox` network: a bridge on `sandbox.subnet` (default `172.30.250.0/24`), no traffic
+  between its containers. The subnet must be one the host routes to the bridge: a tailnet subnet
+  route over it (check `ip route get <an address in it>`) sends the sandboxes' replies into the
+  tailnet, and the hourly probe then finds fleetd does not answer and disables them.
 
 Its brief and the fleet-agent skill tell it what it is: code comes in with `fleetctl sync` into
 `/work/code`, and results go back the same way. Picks pass a sandbox over unless the run is a guest's

@@ -196,7 +196,7 @@ func TestASandboxIsOnTheSandboxNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		n, ok := doc.Networks["fleet-sandbox"]
-		if !ok || n.Name != "fleet-sandbox" || n.Driver != "bridge" || len(n.IPAM.Config) != 1 || n.IPAM.Config[0].Subnet != "172.31.250.0/24" ||
+		if !ok || n.Name != "fleet-sandbox" || n.Driver != "bridge" || len(n.IPAM.Config) != 1 || n.IPAM.Config[0].Subnet != "172.30.250.0/24" ||
 			n.DriverOpts["com.docker.network.bridge.enable_icc"] != "false" {
 			t.Errorf("compose.%s.yaml networks = %+v", host, doc.Networks)
 		}
@@ -264,7 +264,7 @@ func TestTheNetworkRulesNameFleetdsPorts(t *testing.T) {
 	}
 	kali, pc2 := read("sandbox-net.kali.sh"), read("sandbox-net.pc2.sh")
 	for _, want := range []string{
-		"SUBNET=172.31.250.0/24",
+		"SUBNET=172.30.250.0/24",
 		"iptables -A FLEET-SANDBOX-IN -p tcp --dport 7879 -m comment --comment \"fleet-sandbox: fleetd relay\" -j ACCEPT",
 		"iptables -A FLEET-SANDBOX-IN -p tcp --dport 4318 -m comment --comment \"fleet-sandbox: fleetd telemetry\" -j ACCEPT",
 		"iptables -A FLEET-SANDBOX-IN -m comment --comment fleet-sandbox -j DROP",

@@ -439,7 +439,7 @@ func TestASandboxDefaultsToOneSlotAndASmallContainer(t *testing.T) {
 	if a := c.Agents["agent-04"]; a.Slots != 2 || a.Memory != "" {
 		t.Errorf("ordinary agent = %+v: the sandbox defaults are the sandbox's only", a)
 	}
-	if c.SandboxNet.Subnet != "172.31.250.0/24" {
+	if c.SandboxNet.Subnet != "172.30.250.0/24" {
 		t.Errorf("subnet = %q", c.SandboxNet.Subnet)
 	}
 	c, err = Parse([]byte(strings.Replace(example, "models: [sonnet, opus]}", "models: [sonnet, opus], sandbox: true, slots: 2, memory: 3g}", 1) +
