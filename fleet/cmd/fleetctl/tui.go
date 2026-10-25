@@ -48,7 +48,7 @@ func tuiCmd(args []string) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	opts := tui.Options{Version: server.Version, NoAnim: noAnim || os.Getenv("NO_COLOR") != "", Attach: pendingAttach}
+	opts := tui.Options{Version: server.Version, NoAnim: noAnim || os.Getenv("NO_COLOR") != "", Attach: AttachCommand}
 	if demo {
 		role := fleetapi.RoleAdmin
 		if guest {
@@ -56,7 +56,7 @@ func tuiCmd(args []string) error {
 		}
 		f := fleetapi.NewFake(role, time.Now)
 		go stepEvery(ctx, f, 2*time.Second)
-		opts.Client = f
+		opts.Client, opts.Attach = f, demoAttach // its agents are made up: no session to join
 	} else {
 		c, err := newClient()
 		if err != nil {
@@ -87,18 +87,19 @@ func stdioIsTerminal() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
-// pendingAttach stands in for the terminals work's AttachCommand until it
-// merges; the merge wires that in its place.
-func pendingAttach(worker string, mode fleetapi.TermMode) tea.ExecCommand {
-	return pendingSSH{}
+// demoAttach is ssh in the demo, whose agents have no sessions.
+func demoAttach(worker string, mode fleetapi.TermMode) tea.ExecCommand {
+	return demoSSH{}
 }
 
-type pendingSSH struct{}
+type demoSSH struct{}
 
-func (pendingSSH) Run() error          { return errors.New("ssh lands with the terminals work") }
-func (pendingSSH) SetStdin(io.Reader)  {}
-func (pendingSSH) SetStdout(io.Writer) {}
-func (pendingSSH) SetStderr(io.Writer) {}
+func (demoSSH) Run() error {
+	return errors.New("the demo's agents are made up: run fleetctl tui to ssh into real ones")
+}
+func (demoSSH) SetStdin(io.Reader)  {}
+func (demoSSH) SetStdout(io.Writer) {}
+func (demoSSH) SetStderr(io.Writer) {}
 
 // apiClient is fleetapi.Client over fleetd's routes, the same ones the CLI
 // commands use, as the session from.

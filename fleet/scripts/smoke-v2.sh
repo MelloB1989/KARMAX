@@ -341,6 +341,39 @@ else
   echo "SKIP slots: status has no slots in this build (v2-slots)"
 fi
 echo "SKIP durability: no check yet (v2-durable): add it when it merges"
+if has "$usage" "ssh <agent>"; then # term (fleetctl ssh)
+  # agent-02's slot 2: a tmux session main-2 that says which slot it is and
+  # echoes what it reads. The fake docker's exec -it runs tmux attach here.
+  tmux new-session -d -s main-2 -x 120 -y 30 "echo 'this is slot 2'; exec cat"; sleep 0.3
+  # A terminal for fleetctl (script(1)), fed keys with pauses: $1 is fleetctl's
+  # arguments, $2… the keys, each after a second.
+  term() {
+    local args=$1; shift
+    { for k in "$@"; do sleep 1; printf '%b' "$k"; done; sleep 2; } |
+      timeout 30 script -qfec "$B/fleetctl $args" /dev/null 2>&1
+  }
+  out=$(term "ssh agent-02:2 --type" 'typed-through-fleetd\r' '\035')
+  pane=$(tmux capture-pane -p -t =main-2:)
+  check "ssh --type through fleetd shows the slot's session" "got: $out" has "$out" "this is slot 2"
+  check "ssh --type: what is typed reaches the session" "pane: $pane" bash -c '[ "$(grep -c typed-through-fleetd <<<"$1")" -ge 2 ]' _ "$pane"
+  check "Ctrl-] detaches and says from what" "got: $out" has "$out" "detached from agent-02:2"
+  out=$(term "ssh agent-02:2" 'typed-by-a-watcher\r' '\035')
+  pane=$(tmux capture-pane -p -t =main-2:)
+  check "ssh (watch) shows the session" "got: $out" has "$out" "typed-through-fleetd"
+  check "ssh (watch) never types into the session" "pane: $pane" bash -c '! grep -q typed-by-a-watcher <<<"$1"' _ "$pane"
+  out=$(op events agent-02:2 --json 2>&1)
+  check "each ssh session is a fleet.term event" "events: $(jq -c '[.[] | select(.kind=="fleet.term") | .detail]' <<<"$out" 2>/dev/null)" \
+    bash -c '[ "$(jq "[.[] | select(.kind==\"fleet.term\")] | length" <<<"$1")" -ge 4 ]' _ "$out"
+  out=$(member ssh agent-02:2 2>&1 </dev/null); rc=$?
+  check "a guest with no lends may not ssh" "exit $rc: $out" bash -c 'test $1 != 0 && grep -q "not yours" <<<"$2"' _ $rc "$out"
+  out=$(curl -s "http://$API/v1/screens?workers=agent-02:2,agent-01&lines=3" -H "Authorization: Bearer $FULL")
+  check "screens: the last lines of each asked worker" "got: $out" \
+    bash -c 'jq -e ".screens[0].worker==\"agent-02:2\" and (.screens[0].text | contains(\"typed-through-fleetd\")) and (.screens|length)==2" <<<"$1" >/dev/null' _ "$out"
+  check "the typist's window is back at 220x50 once it left" "got: $out" bash -c 'jq -e ".screens[0].cols==220" <<<"$1" >/dev/null' _ "$out"
+  tmux kill-session -t =main-2 2>/dev/null
+else
+  echo "SKIP term: fleetctl ssh is not in this build (term)"
+fi
 
 # --- tui: fleetctl tui (the TUI frame, task 5) -----------------------------
 if "$B/fleetctl" help 2>/dev/null | grep -q '^  tui '; then

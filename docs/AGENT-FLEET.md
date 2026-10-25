@@ -49,7 +49,7 @@ Checked against the Claude Code docs and the 2.1.294 CLI, not recalled.
 |---|---|
 | orchestrator ↔ Kali agents, Kali agent ↔ Kali agent, PC2 agent ↔ PC2 agent | native `SendMessage`, nothing in between |
 | anything ↔ across PCs | `fleetctl tell <name> "<text>"`. fleetd starts a throwaway `claude -p --model haiku` **inside the receiver's namespace** that delivers it with `SendMessage`, so it still arrives as a native peer message. The relay's reply address dies with it, so replies go back through `fleetctl tell`. One cheap turn per hop, on the receiving side's subscription. |
-| you → any agent | `fleetctl attach` / `prompt` / `peek` (below) |
+| you → any agent | `fleetctl ssh` / `prompt` / `peek` (below) |
 | you → orchestrator | unchanged: WhatsApp, the app, `karmax ask` |
 
 The relay deliberately does **not** type into the receiver's terminal. Typed input counts as you —
@@ -616,16 +616,47 @@ deployed, and rsync on the machine that runs `sync`.
 
 ## Prompting an agent directly
 
-The live panel, the 3D office and the keyboard handover (`Ctrl+]`) are described in [FLEET-CONSOLE.md](FLEET-CONSOLE.md); `attach` below goes through the console when the host runs one.
+The live panel, the 3D office and the console's own keyboard handover (`fleetctl console attach`) are described in [FLEET-CONSOLE.md](FLEET-CONSOLE.md).
 
 | command | does | authority |
 |---|---|---|
-| `fleetctl attach agent-05` | `docker --context pc2 exec -it agent-05 tmux attach -t main` — the live session's full TUI. Detach with `Ctrl-b d`; it keeps running and keeps receiving messages. | you |
+| `fleetctl ssh agent-05` | the live session in your terminal, from any machine with fleetctl, through fleetd (below): read-only | you, or a guest on a lent agent |
+| `fleetctl ssh agent-05 --type` (`attach`) | the same with the keyboard: one typist per worker. `Ctrl-]` leaves; the session keeps running and receiving messages | you, or a guest on a lent agent |
+| `fleetctl ssh agent-05 --shell` | `bash -l` in the container, in `/work` | you, or a guest on a lent agent |
 | `fleetctl prompt agent-05 "…"` | types into the pane (`tmux send-keys -l`, then Enter). If it's mid-turn, Claude Code queues it as your next message. | you |
 | `fleetctl peek agent-05 [-n 80]` | last lines of the pane, no attach | — |
 | `fleetctl ls` | AGENT HOST ACCOUNT STATE SESSION TASK IDLE WORKTREES | — |
 | `fleetctl history agent-05` / `archive ls --since 7d` | past sessions and archives | — |
 | `fleetctl tell agent-05 "…"` | peer message (the relay) | peer |
+
+### `fleetctl ssh` — terminals through fleetd
+
+`fleetctl ssh <worker>` opens a websocket to fleetd's `GET /v1/term/{worker}`, and fleetd runs, under a
+pty, the host's exec prefix with `exec -it <container>`:
+
+| mode | in the container |
+|---|---|
+| watch (default) | `tmux attach -t =<pane> -f read-only,ignore-size`: keystrokes are dropped, and the window keeps its size |
+| `--type` | `tmux attach -t =<pane>`: the window takes your terminal's size while you type, and goes back to 220×50 when you leave |
+| `--shell` | `bash -l` in `/work` |
+
+(`<pane>` is slot 1's tmux session `main`, or slot k's `main-k`.) It needs no fleet.yaml, ssh or docker on your machine:
+it works from wherever fleetctl reaches fleetd (a fleet host, or `fleetctl connect` over the tailnet), on
+macOS, Linux and Windows. The terminal goes raw, a resize is sent at the start and on every change, and
+`Ctrl-]` leaves, printing `[detached from agent-05]`.
+
+- One typist per worker. A second `--type` is told who holds it (`held by …`) and exits 1; an admin may
+  `--force`, which turns the holder into a watcher (it is told so, and watches on).
+- Watchers are many and never resize the session. A watcher that sends nothing for 12 hours is closed.
+- An admin may use any worker in any mode; a guest only the workers of the agents lent to its device.
+- Every session's start and end is a `fleet.term` event (who, worker, mode, length, how it ended).
+- When the session's websocket closes, fleetd ends the exec and whatever it left in the container (each
+  session's processes carry `FLEET_TERM=<id>`). A container that is gone ends the session with its error.
+
+`GET /v1/screens?workers=a,b&lines=N` is the TUI's screen previews: each worker's last lines with ANSI.
+fleetd captures every asked slot of a container in **one** exec (`tmux capture-pane`, which starts nothing
+in the agent's session), shares a capture among every viewer for 2 seconds (and viewers who ask at once
+share the capture in flight), and runs at most two captures per host at once.
 
 `prompt` is your keyboard, so it is not a model-callable tool anywhere: KARMAX's orchestrator uses
 `SendMessage` / `tell`, never `prompt`. From your phone, go through the orchestrator. If you later want

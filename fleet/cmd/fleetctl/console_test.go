@@ -130,7 +130,7 @@ func TestConsoleTermWritesRawBytes(t *testing.T) {
 	}
 }
 
-func TestAttachReportsWhoHoldsControl(t *testing.T) {
+func TestConsoleAttachReportsWhoHoldsControl(t *testing.T) {
 	fakeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("control") != "1" {
 			t.Errorf("attach must ask for control: %s", r.URL)
@@ -139,15 +139,15 @@ func TestAttachReportsWhoHoldsControl(t *testing.T) {
 		w.WriteHeader(409)
 		io.WriteString(w, `{"error":"held by alice","holder":"alice"}`)
 	})
-	_, err := capture(t, "attach", "agent-01")
+	_, err := capture(t, "console", "attach", "agent-01")
 	if err == nil || err.Error() != "held by alice" {
 		t.Fatalf("err = %v, want %q", err, "held by alice")
 	}
 }
 
 // The console upgrades a second controller and says who holds it in an error
-// frame (a browser cannot read an HTTP 409); attach still says "held by X".
-func TestAttachReportsHolderFromErrorFrame(t *testing.T) {
+// frame (a browser cannot read an HTTP 409); console attach still says "held by X".
+func TestConsoleAttachReportsHolderFromErrorFrame(t *testing.T) {
 	fakeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -156,7 +156,7 @@ func TestAttachReportsHolderFromErrorFrame(t *testing.T) {
 		c.Write(r.Context(), websocket.MessageText, []byte(`{"type":"error","holder":"alice","error":"held by alice"}`))
 		c.Close(websocket.StatusPolicyViolation, "held by alice")
 	})
-	_, err := capture(t, "attach", "agent-01")
+	_, err := capture(t, "console", "attach", "agent-01")
 	if err == nil || err.Error() != "held by alice" {
 		t.Fatalf("err = %v, want %q", err, "held by alice")
 	}

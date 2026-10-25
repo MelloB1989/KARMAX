@@ -146,6 +146,7 @@ secret exec OPENAI_API_KEY=openai -- <cmd>` (or `get --to`), only on your side's
     fleetctl tui                # all of it live, full-screen: agents, tasks, events (tui --demo: a made-up fleet)
     fleetctl pick --repo R      # who would get a task, and why the others would not
     fleetctl peek agent-02      # the agent's screen now (do not poll it: `wait` returns when it reports)
+    fleetctl ssh agent-02       # its live session in your terminal: --type to type, --shell for a shell; Ctrl-] leaves
     fleetctl tasks --open       # every task still open
     fleetctl quota              # 5-hour and 7-day windows per agent
 
@@ -238,8 +239,7 @@ to assign; console tokens may read.
 | `fleetctl memory suggest` | `POST /v1/memory/suggest` `{text, why}` → `{to}` |
 | `fleetctl karmax tools` | `GET /v1/karmax/tools` → `[{name, description, class}]` |
 | `fleetctl karmax call` | `POST /v1/karmax/call` `{tool, args, reason, timeout}` → `{result}` or `{approval}`, then `GET /v1/approvals/{id}?wait=5m` |
-| `fleetctl approvals` | `GET /v1/approvals?state=pending` |
-| `fleetctl approve`, `deny` | `POST /v1/approvals/{id}/approve`, `/deny` `{by, reason}` |
+| `fleetctl approvals`, `approve`, `deny` | `GET /v1/approvals?state=pending`; `POST /v1/approvals/{id}/approve`, `/deny` `{by, reason}` |
 | `fleetctl secret …` | `POST`/`GET /v1/secrets`, `POST /v1/secrets/{name}/grant` \| `revoke` `{task \| agent, ttl}`, `DELETE /v1/secrets/{name}` |
 
 Statuses: 400 bad input; 403 not yours to call (a member, a member's task, a denied tool, a refused
