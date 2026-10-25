@@ -8,24 +8,39 @@
 set -eu
 SUBNET={{.Subnet}}
 
-chain() { # chain <parent> <name>: an empty chain of ours, jumped to first
-	iptables -N "$2" 2>/dev/null || true
-	iptables -F "$2"
-	iptables -C "$1" -s "$SUBNET" -m comment --comment fleet-sandbox -j "$2" 2>/dev/null ||
-		iptables -I "$1" 1 -s "$SUBNET" -m comment --comment fleet-sandbox -j "$2"
+chain() { # chain <table> <parent> <name>: an empty chain of ours, jumped to first
+	iptables -t "$1" -N "$3" 2>/dev/null || true
+	iptables -t "$1" -F "$3"
+	iptables -t "$1" -C "$2" -s "$SUBNET" -m comment --comment fleet-sandbox -j "$3" 2>/dev/null ||
+		iptables -t "$1" -I "$2" 1 -s "$SUBNET" -m comment --comment fleet-sandbox -j "$3"
 }
 
+# Before any filter rule. tailscaled and Docker each put their own jumps
+# first in FORWARD, and tailscaled's accepts whatever leaves by tailscale0,
+# so a rule there would come too late for the tailnet. The raw table is
+# neither's: the LAN and the tailnet are refused here, and what is addressed
+# to this host itself goes on to FLEET-SANDBOX-IN.
+chain raw PREROUTING FLEET-SANDBOX-RAW
+{{- range .Forward}}
+iptables -t raw -A FLEET-SANDBOX-RAW -d {{.Addr}} -p tcp --dport {{.Port}} -m comment --comment "fleet-sandbox: fleetd {{.What}}" -j RETURN
+{{- end}}
+iptables -t raw -A FLEET-SANDBOX-RAW -m addrtype --dst-type LOCAL -m comment --comment "fleet-sandbox: this host (FLEET-SANDBOX-IN)" -j RETURN
+for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
+	iptables -t raw -A FLEET-SANDBOX-RAW -d "$net" -m comment --comment fleet-sandbox -j DROP
+done
+
 # To this host itself.
-chain INPUT FLEET-SANDBOX-IN
+chain filter INPUT FLEET-SANDBOX-IN
 iptables -A FLEET-SANDBOX-IN -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment fleet-sandbox -j ACCEPT
 {{- range .Input}}
 iptables -A FLEET-SANDBOX-IN -p tcp --dport {{.Port}} -m comment --comment "fleet-sandbox: fleetd {{.What}}" -j ACCEPT
 {{- end}}
 iptables -A FLEET-SANDBOX-IN -m comment --comment fleet-sandbox -j DROP
 
-# Through this host. Docker creates DOCKER-USER and keeps what is in it.
+# Through this host, again (the raw rules are the ones that hold). Docker
+# creates DOCKER-USER and keeps what is in it.
 iptables -N DOCKER-USER 2>/dev/null || true
-chain DOCKER-USER FLEET-SANDBOX-FWD
+chain filter DOCKER-USER FLEET-SANDBOX-FWD
 {{- range .Forward}}
 iptables -A FLEET-SANDBOX-FWD -d {{.Addr}} -p tcp --dport {{.Port}} -m comment --comment "fleet-sandbox: fleetd {{.What}}" -j RETURN
 {{- end}}

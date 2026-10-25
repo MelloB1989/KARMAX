@@ -178,7 +178,7 @@ func TestAnUnguardedSandboxIsDisabledAndToldOnce(t *testing.T) {
 		t.Fatalf("alerts = %q", o.alerts)
 	}
 	argv := strings.Join(p.argvs[0], " ")
-	if !strings.Contains(argv, "host.docker.internal:22") || !strings.Contains(argv, "192.0.2.10:22") || !strings.Contains(argv, "/healthz") {
+	if !strings.Contains(argv, "host.docker.internal:22") || !strings.Contains(argv, "100.100.100.100:53") || !strings.Contains(argv, "192.0.2.10:22") || !strings.Contains(argv, "/healthz") {
 		t.Errorf("probe = %s", argv)
 	}
 	// Within the hour it is not probed again; an hour on, still unguarded, it

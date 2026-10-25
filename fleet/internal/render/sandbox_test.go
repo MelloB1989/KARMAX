@@ -269,6 +269,11 @@ func TestTheNetworkRulesNameFleetdsPorts(t *testing.T) {
 		"iptables -A FLEET-SANDBOX-IN -p tcp --dport 4318 -m comment --comment \"fleet-sandbox: fleetd telemetry\" -j ACCEPT",
 		"iptables -A FLEET-SANDBOX-IN -m comment --comment fleet-sandbox -j DROP",
 		"10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16",
+		// The tailnet and LAN are refused in raw, before tailscaled's FORWARD
+		// jump (which accepts all that leaves by tailscale0) can let it out.
+		"chain raw PREROUTING FLEET-SANDBOX-RAW",
+		"iptables -t raw -A FLEET-SANDBOX-RAW -m addrtype --dst-type LOCAL",
+		`iptables -t raw -A FLEET-SANDBOX-RAW -d "$net" -m comment --comment fleet-sandbox -j DROP`,
 	} {
 		if !strings.Contains(kali, want) {
 			t.Errorf("kali's rules lack %q:\n%s", want, kali)
@@ -293,6 +298,14 @@ func TestTheNetworkRulesNameFleetdsPorts(t *testing.T) {
 	if i, j := strings.Index(pc2, "-d 192.168.1.10"), strings.Index(pc2, "192.168.0.0/16"); i < 0 || j < i {
 		t.Errorf("pc2 drops the LAN before it allows fleetd:\n%s", pc2)
 	}
+	if !strings.Contains(pc2, "iptables -t raw -A FLEET-SANDBOX-RAW -d 192.168.1.10 -p tcp --dport 7879") {
+		t.Errorf("pc2's raw rules do not let fleetd's address through:\n%s", pc2)
+	}
+	// This host's own addresses are FLEET-SANDBOX-IN's to decide, after the
+	// raw table lets them by; fleetd's address before both.
+	if i, j, k := strings.Index(pc2, "-t raw -A FLEET-SANDBOX-RAW -d 192.168.1.10"), strings.Index(pc2, "--dst-type LOCAL"), strings.Index(pc2, "-t raw -A FLEET-SANDBOX-RAW -d \"$net\""); !(i >= 0 && i < j && j < k) {
+		t.Errorf("pc2's raw rules are out of order:\n%s", pc2)
+	}
 	unit := read("fleet-sandbox-net.pc2.service")
 	for _, want := range []string{"After=docker.service", "Type=oneshot", "ExecStart=/bin/sh " + SandboxNetScript, "WantedBy=multi-user.target"} {
 		if !strings.Contains(unit, want) {
@@ -312,10 +325,12 @@ func TestTheNetworkRulesAreIdempotent(t *testing.T) {
 	fake := `#!/bin/sh
 state=` + log + `.jumps
 touch "$state"
+t=filter
+if [ "$1" = -t ]; then t=$2; shift 2; fi
 echo "$*" >> ` + log + `
 case "$1" in
--C) grep -qxF -e "$*" "$state" && exit 0; exit 1 ;;
--I) shift; echo "-C $1 $(echo "$*" | cut -d' ' -f3-)" >> "$state" ;;
+-C) grep -qxF -e "$t $*" "$state" && exit 0; exit 1 ;;
+-I) shift; echo "$t -C $1 $(echo "$*" | cut -d' ' -f3-)" >> "$state" ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(bin, "iptables"), []byte(fake), 0o755); err != nil {
@@ -341,10 +356,10 @@ esac
 		return n
 	}
 	first, second := run(), run()
-	if count(first, "-I ") != 2 || count(second, "-I ") != 0 {
-		t.Errorf("jumps inserted: %d then %d, want 2 then 0\n%s", count(first, "-I "), count(second, "-I "), strings.Join(second, "\n"))
+	if count(first, "-I ") != 3 || count(second, "-I ") != 0 {
+		t.Errorf("jumps inserted: %d then %d, want 3 then 0\n%s", count(first, "-I "), count(second, "-I "), strings.Join(second, "\n"))
 	}
-	if count(second, "-F FLEET-SANDBOX-") != 2 || count(first, "-A ") != count(second, "-A ") {
+	if count(second, "-F FLEET-SANDBOX-") != 3 || count(first, "-A ") != count(second, "-A ") {
 		t.Errorf("a second run is not a flush and the same rules:\n%s", strings.Join(second, "\n"))
 	}
 }

@@ -92,10 +92,11 @@ func (f *Fleet) probeSandbox(ctx context.Context, name string, now time.Time) {
 }
 
 // sandboxTargets is what a sandbox must not reach: ssh on its host itself,
-// and on fleetd's address when its fleetd_url names one (a LAN address, open
-// to it only on fleetd's ports).
+// the tailnet (Tailscale's own resolver, which answers wherever the host is
+// on one), and ssh on fleetd's address when its fleetd_url names one (a LAN
+// address, open to it only on fleetd's ports).
 func sandboxTargets(fleetdURL string) []string {
-	out := []string{"host.docker.internal:22"}
+	out := []string{"host.docker.internal:22", "100.100.100.100:53"}
 	if u, err := url.Parse(fleetdURL); err == nil && net.ParseIP(u.Hostname()) != nil {
 		out = append(out, net.JoinHostPort(u.Hostname(), "22"))
 	}
