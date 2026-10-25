@@ -36,6 +36,14 @@ func (t *tasksTab) Capturing() bool {
 }
 
 func (t *tasksTab) Help() []key.Binding {
+	switch {
+	case t.form != nil:
+		return []key.Binding{keyIs("ctrl+s", "send"), keyIs("tab", "next field"), keyIs("←→", "choose"), keyIs("esc", "drop it")}
+	case t.input != nil:
+		return []key.Binding{keyIs("⏎", "send"), keyIs("esc", "drop it")}
+	case t.confirm != nil:
+		return []key.Binding{keyIs("y", "yes"), keyIs("n", "no")}
+	}
 	open := key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "open"))
 	if t.detail != nil {
 		open = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))

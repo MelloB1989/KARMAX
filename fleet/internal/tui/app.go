@@ -387,7 +387,9 @@ func (a *App) top(w int) string {
 	t := a.c.Theme
 	edge := lipgloss.NewStyle().Foreground(t.Grey)
 	title := t.Gradient("KARMAX", true) + t.Muted.Render(" ▸ ") + t.Strong.Render("fleetctl")
-	var segs []string // most important last: dropped from the front
+	// Who you are, the counts and the clock; the counts go first when
+	// there is no room, then who you are.
+	var me, counts string
 	if s := a.c.Snap; s != nil {
 		working := 0
 		for _, w := range s.Workers {
@@ -395,8 +397,11 @@ func (a *App) top(w int) string {
 				working++
 			}
 		}
-		segs = append(segs, t.Muted.Render(fmt.Sprintf("%d workers · ", len(s.Workers)))+
-			lipgloss.NewStyle().Foreground(t.Amber).Render(fmt.Sprintf("%d working", working)))
+		noun := "workers"
+		if len(s.Workers) == 1 {
+			noun = "worker"
+		}
+		counts = t.Muted.Render(fmt.Sprintf("%d %s · ", len(s.Workers), noun)) + paint(t.Amber, fmt.Sprintf("%d working", working))
 		role := lipgloss.NewStyle().Foreground(t.Amber).Bold(true)
 		if s.Me.Role == fleetapi.RoleGuest {
 			role = role.Foreground(t.Violet)
@@ -405,20 +410,33 @@ func (a *App) top(w int) string {
 		if s.Me.Device != "" {
 			who, _, _ = strings.Cut(s.Me.Device, ".")
 		}
-		segs = append([]string{role.Render(string(s.Me.Role)) + t.Muted.Render(" · "+who)}, segs...)
+		me = role.Render(string(s.Me.Role)) + t.Muted.Render(" · "+who)
 	}
-	segs = append(segs, t.Strong.Render(a.c.Now.Format("15:04")))
-	for {
+	clock := t.Strong.Render(a.c.Now.Format("15:04"))
+	var tries [][]string
+	for _, segs := range [][]string{{me, counts, clock}, {me, clock}, {clock}, {}} {
+		var keep []string
+		for _, s := range segs {
+			if s != "" {
+				keep = append(keep, s)
+			}
+		}
+		tries = append(tries, keep)
+	}
+	for _, segs := range tries {
 		right := strings.Join(segs, edge.Render(" ── "))
 		fill := w - 4 - lipgloss.Width(title) - lipgloss.Width(right) - 4
-		if fill >= 1 || len(segs) == 0 {
-			if fill < 1 {
-				return edge.Render("╭─ ") + Fit(title, w-5) + edge.Render(" ╮")
-			}
-			return edge.Render("╭─ ") + title + edge.Render(" "+strings.Repeat("─", fill)+" ") + right + edge.Render(" ─╮")
+		if len(segs) == 0 {
+			fill = w - 5 - lipgloss.Width(title)
 		}
-		segs = segs[1:]
+		switch {
+		case fill >= 1 && len(segs) > 0:
+			return edge.Render("╭─ ") + title + edge.Render(" "+strings.Repeat("─", fill)+" ") + right + edge.Render(" ─╮")
+		case fill >= 1:
+			return edge.Render("╭─ ") + title + edge.Render(" "+strings.Repeat("─", fill-1)+"╮")
+		}
 	}
+	return edge.Render("╭─ ") + Fit(title, w-5) + edge.Render(" ╮")
 }
 
 // tabBar is the numbered tabs, the shown one lit, and the link state.
@@ -490,7 +508,10 @@ func (a *App) footer(w int) string {
 				}
 			}
 		}
-		hints = append(hints, hint(t, key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help"))), hint(t, key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit"))))
+		// While a tab holds the keys, ? and q are its text.
+		if a.help || !a.current().Capturing() {
+			hints = append(hints, hint(t, keyIs("?", "help")), hint(t, keyIs("q", "quit")))
+		}
 		left = strings.Join(hints, t.Muted.Render(" · "))
 	}
 	if lipgloss.Width(mark)+2 > w {

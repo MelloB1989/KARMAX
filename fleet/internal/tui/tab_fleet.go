@@ -32,6 +32,12 @@ func (f *fleetTab) Visible(fleetapi.Me) bool { return true }
 func (f *fleetTab) Capturing() bool          { return f.confirm != nil || f.picker != nil }
 
 func (f *fleetTab) Help() []key.Binding {
+	switch {
+	case f.picker != nil:
+		return []key.Binding{keyIs("←→", "choose"), keyIs("⏎", "set"), keyIs("esc", "drop it")}
+	case f.confirm != nil:
+		return []key.Binding{keyIs("y", "yes"), keyIs("n", "no")}
+	}
 	m := keyIs("m", "model")
 	m.SetEnabled(f.admin)
 	return []key.Binding{
@@ -225,9 +231,9 @@ func (f *fleetTab) View(c *Ctx, w, h int) string {
 		body = center(t.Muted.Render("no agents to show")+"\n"+t.Muted.Render(emptyWhy(c.Snap.Me)), w, h)
 	case f.detail && ok && w >= paneW+cardDenseW+colGap:
 		cw := w - paneW - colGap
-		body = joinColumns([]string{f.cards(c, cw, h), detailPane(c, sel, paneW, h)}, []int{cw, paneW}, h)
+		body = joinColumns([]string{f.cards(c, cw, h), detailPane(c, sel, paneW, h, true)}, []int{cw, paneW}, h)
 	case f.detail && ok:
-		body = detailPane(c, sel, w, h)
+		body = detailPane(c, sel, w, h, false)
 	default:
 		body = f.cards(c, w, h)
 	}
@@ -501,8 +507,9 @@ func doing(c *Ctx, s fleetapi.Worker) string {
 	return t.Muted.Render("idle")
 }
 
-// detailPane is everything about one worker, w×h.
-func detailPane(c *Ctx, s fleetapi.Worker, w, h int) string {
+// detailPane is everything about one worker, w×h; with a rule down its
+// left when it sits beside the cards.
+func detailPane(c *Ctx, s fleetapi.Worker, w, h int, rule bool) string {
 	t := c.Theme
 	pc, label := t.Phase(s.State, s.Alerts)
 	kv := func(k, v string) string { return t.Muted.Render(Fit(k, 9)) + v }
@@ -575,11 +582,13 @@ func detailPane(c *Ctx, s fleetapi.Worker, w, h int) string {
 	if n == 0 {
 		lines = append(lines, t.Muted.Render("nothing in the last 200 events"))
 	}
-	// A rule down the left keeps the pane apart from the cards.
-	rule := lipgloss.NewStyle().Foreground(t.Line).Render("│") + " "
+	if !rule {
+		return block(strings.Join(lines, "\n"), w, h)
+	}
+	edge := lipgloss.NewStyle().Foreground(t.Line).Render("│") + " "
 	out := strings.Split(block(strings.Join(lines, "\n"), max(1, w-2), h), "\n")
 	for i := range out {
-		out[i] = rule + out[i]
+		out[i] = edge + out[i]
 	}
 	return strings.Join(out, "\n")
 }
