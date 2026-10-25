@@ -246,6 +246,17 @@ func (s *Session) Run(ctx context.Context, c *Conn) Result {
 	}()
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
+	// Keystrokes go to the pty from a goroutine of their own: a command that
+	// stops reading must not stop this loop from seeing the client leave.
+	keys := make(chan []byte, 64)
+	go func() {
+		for b := range keys {
+			if _, err := f.Write(b); err != nil {
+				return
+			}
+		}
+	}()
+	defer close(keys)
 
 	var idle <-chan time.Time
 	var timer *time.Timer
@@ -302,7 +313,10 @@ func (s *Session) Run(ctx context.Context, c *Conn) Result {
 			}
 			if m.typ == websocket.MessageBinary {
 				if s.Input {
-					f.Write(m.b)
+					select {
+					case keys <- m.b:
+					default: // the command has not read the last 64 writes: it is stuck
+					}
 				}
 				continue
 			}

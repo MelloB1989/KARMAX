@@ -257,7 +257,12 @@ func (s *screens) capture(ctx context.Context, slot chan struct{}, host string, 
 	marker := "==fleet-screen-" + newTermID() + "=="
 	out, err := tg.Container.Sh(ctx, captureScript, append([]string{marker, strconv.Itoa(lines)}, panes...)...)
 	if err != nil {
-		return nil, fmt.Errorf("capture: %w", err)
+		// What docker said, without the command line: a guest sees this.
+		why := err.Error()
+		if i := strings.LastIndex(why, ": "); i >= 0 && strings.TrimSpace(why[i+2:]) != "" {
+			why = why[i+2:]
+		}
+		return nil, fmt.Errorf("capture: %s", why)
 	}
 	got := map[string]shot{}
 	var cur string
