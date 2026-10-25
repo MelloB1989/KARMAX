@@ -130,6 +130,11 @@ Secrets (fleetd; a value is never listed, logged or put in an event):
   secret get <name> --to <file>       write it 0600 under /work/.secrets (nowhere else)
   secret get <name> --print           to stdout: avoid, your output is the model's context
 
+The TUI (plain fleetctl on a terminal opens it):
+  tui [--demo [--guest]] [--no-anim]  the fleet full-screen and live: agents, tasks, events, quota;
+                                      --demo runs on a made-up fleet (--guest: as a guest sees it);
+                                      NO_COLOR or --no-anim keeps it still
+
 Your keyboard:
   attach <agent> [--direct]           the live session's TUI (host only), through the console when
                                       the host runs one (one controller; give it back: Ctrl-])
@@ -172,8 +177,13 @@ the up plan are host-side):
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
-		fmt.Print(usage)
-		return
+		// Plain fleetctl on a terminal is the TUI.
+		if len(os.Args) < 2 && stdioIsTerminal() {
+			os.Args = append(os.Args, "tui")
+		} else {
+			fmt.Print(usage)
+			return
+		}
 	}
 	if err := run(os.Args[1], os.Args[2:]); err != nil {
 		var ec exitCode
@@ -876,6 +886,9 @@ func run(cmd string, args []string) error {
 			fmt.Println("ok " + id)
 		}
 		return errors.Join(failed...)
+
+	case "tui":
+		return tuiCmd(args)
 
 	case "karmax":
 		return karmaxCmd(args)

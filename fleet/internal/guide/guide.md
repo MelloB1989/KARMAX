@@ -25,8 +25,7 @@ The agent starts with nothing but your text. Give it:
 4. constraints: what not to touch, the branch base, style rules;
 5. what to report: the branch, the PR if any, anything left undone.
 
-One task per agent. Do not hand an agent work that needs secrets; never put a token or an env value in a
-brief.
+One task per agent. Do not hand an agent work that needs secrets; never put a token or an env value in a brief.
 
 ## The loop
 
@@ -144,6 +143,7 @@ secret exec OPENAI_API_KEY=openai -- <cmd>` (or `get --to`), only on your side's
 ## Looking around
 
     fleetctl ls                 # the roster: phase, task, quota use for every agent and slot
+    fleetctl tui                # all of it live, full-screen: agents, tasks, events (tui --demo: a made-up fleet)
     fleetctl pick --repo R      # who would get a task, and why the others would not
     fleetctl peek agent-02      # the agent's screen now (do not poll it: `wait` returns when it reports)
     fleetctl tasks --open       # every task still open
