@@ -13,11 +13,14 @@ import (
 )
 
 const (
-	screensEvery   = 2 * time.Second  // how often the visible tiles are captured again
-	screensLost    = 10 * time.Second // a capture this old with no answer is given up on
-	tileMinW       = 60               // the grid has width ÷ tileMinW columns
-	tileMinH       = 9                // and height ÷ tileMinH rows
-	screensTimeout = 8 * time.Second
+	screensEvery = 2 * time.Second // how often the visible tiles are captured again
+	tileMinW     = 60              // the grid has width ÷ tileMinW columns
+	tileMinH     = 9               // and height ÷ tileMinH rows
+	// screensTimeout outlasts fleetd's own bound on an answer (20 s), which
+	// reports what it could not capture in time tile by tile: a loaded host
+	// is slow, and fleetd still answers.
+	screensTimeout = 25 * time.Second
+	screensLost    = screensTimeout + 5*time.Second // a capture this old with no answer is given up on
 )
 
 // screens is the Screens tab: a grid of live previews of the workers'
@@ -29,14 +32,17 @@ type screens struct {
 	off    int    // the first row of tiles in view
 	w, h   int    // the body's size, from the last View (or the window's)
 	got    map[string]fleetapi.Screen
-	asked  []string // the workers of the capture in flight or last made
+	seen   map[string]time.Time // when each worker's screen in got arrived, by this clock
+	asked  []string             // the workers of the capture in flight or last made
 	lines  int
 	flying bool
 	sentAt time.Time // when the capture in flight (or the last one) was asked for
 	err    string
 }
 
-func newScreens() Tab { return &screens{got: map[string]fleetapi.Screen{}} }
+func newScreens() Tab {
+	return &screens{got: map[string]fleetapi.Screen{}, seen: map[string]time.Time{}}
+}
 
 type (
 	screensMsg struct {
@@ -112,12 +118,20 @@ func (s *screens) Update(msg tea.Msg, c *Ctx) tea.Cmd {
 		}
 	case screensMsg:
 		s.flying = false
+		// An error never hides a screen already shown: the tile keeps it,
+		// marked with its age (tile).
 		if m.err != nil {
 			s.err = m.err.Error()
 		} else {
 			s.err = ""
 			for _, sc := range m.got {
+				if old := s.got[sc.Worker]; sc.Error != "" && old.Text != "" {
+					old.Error = sc.Error
+					s.got[sc.Worker] = old
+					continue
+				}
 				s.got[sc.Worker] = sc
+				s.seen[sc.Worker] = c.Now
 			}
 		}
 		cmds = append(cmds, tea.Tick(screensEvery, func(time.Time) tea.Msg { return screensTickMsg{} }))
@@ -252,6 +266,10 @@ func (s *screens) tile(c *Ctx, wk fleetapi.Worker, sel bool, w, h int) []string 
 	col, phase := th.Phase(wk.State, wk.Alerts)
 	title := Sprite(th, wk.Activity.Kind, c.Frame) + " " + th.Strong.Render(wk.Agent) + " " +
 		th.Muted.Render(phase)
+	sc, ok := s.got[wk.Agent]
+	if ok && sc.Text != "" && (sc.Error != "" || s.err != "") {
+		title += " " + th.Danger.Render("⚠ "+Since(c.Now, s.seen[wk.Agent])+" old")
+	}
 	if wk.Task != "" {
 		title += " " + th.Muted.Render("· "+wk.Task)
 	}
@@ -260,9 +278,8 @@ func (s *screens) tile(c *Ctx, wk fleetapi.Worker, sel bool, w, h int) []string 
 	}
 	in := max(0, w-2)
 	var body []string
-	sc, ok := s.got[wk.Agent]
 	switch {
-	case ok && sc.Error != "":
+	case ok && sc.Text == "" && sc.Error != "":
 		body = []string{th.Danger.Render(sc.Error)}
 	case ok:
 		lines := strings.Split(strings.TrimRight(sc.Text, "\n"), "\n")

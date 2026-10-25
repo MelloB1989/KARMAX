@@ -24,7 +24,16 @@ const (
 	capturesPerHost = 2
 	defaultLines    = 40
 	maxLines        = 500
+	// captureTimeout bounds one capture, its wait for a slot included.
+	captureTimeout = 20 * time.Second
+	// screensAnswer bounds a viewer's wait: what has not landed by then is
+	// reported as not captured yet. fleetctl waits longer than this.
+	screensAnswer = 20 * time.Second
 )
+
+// notYet is a screen whose capture had not landed when the viewer's wait
+// ran out; the capture goes on, and the next ask finds it.
+const notYet = "not captured yet: the host is slow to answer"
 
 // screensRoutes registers GET /v1/screens?workers=a,b&lines=N: each worker's
 // last N lines, ANSI kept, for those the caller may use. No workers is every
@@ -64,7 +73,7 @@ func screensRoutes(route func(string, func(http.ResponseWriter, *http.Request) (
 			out.Screens = append(out.Screens, fleetapi.Screen{Worker: wk})
 			targets = append(targets, tg)
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), screensAnswer)
 		defer cancel()
 		for i, s := range sc.get(ctx, targets, int(lines)) {
 			out.Screens[at[i]] = s
@@ -169,7 +178,7 @@ func (s *screens) box(ctx context.Context, key string, targets []term.Target, li
 			select {
 			case <-w:
 			case <-ctx.Done():
-				return &capture{err: ctx.Err().Error()}
+				return &capture{err: notYet}
 			}
 			s.mu.Lock()
 			continue
@@ -206,19 +215,30 @@ func (s *screens) box(ctx context.Context, key string, targets []term.Target, li
 		slot = make(chan struct{}, capturesPerHost)
 		s.hosts[host] = slot
 	}
+	landed := c.wait
 	s.mu.Unlock()
 
-	panesOut, err := s.capture(ctx, slot, host, targets[0], panes, lines)
-
-	s.mu.Lock()
-	c.at, c.panes = s.now(), panesOut
-	if err != nil {
-		c.err = err.Error()
+	// The capture is every viewer's, not this one's: it runs to the end (or
+	// captureTimeout) when this viewer gives up, so the next one finds it.
+	go func() {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), captureTimeout)
+		defer cancel()
+		panesOut, err := s.capture(cctx, slot, host, targets[0], panes, lines)
+		s.mu.Lock()
+		c.at, c.panes = s.now(), panesOut
+		if err != nil {
+			c.err = err.Error()
+		}
+		close(c.wait)
+		c.wait = nil
+		s.mu.Unlock()
+	}()
+	select {
+	case <-landed:
+		return c
+	case <-ctx.Done():
+		return &capture{err: notYet}
 	}
-	close(c.wait)
-	c.wait = nil
-	s.mu.Unlock()
-	return c
 }
 
 func covers(c *capture, targets []term.Target) bool {

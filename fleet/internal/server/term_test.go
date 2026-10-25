@@ -432,9 +432,6 @@ type captures struct {
 }
 
 func (c *captures) Run(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
-	if c.gate != nil {
-		<-c.gate
-	}
 	// … exec fleet-agent-03 sh -c <script> sh <marker> <lines> <pane>…
 	i := slices.Index(argv, "exec")
 	name := argv[i+1]
@@ -442,6 +439,13 @@ func (c *captures) Run(ctx context.Context, argv []string, _ io.Reader) ([]byte,
 	c.calls[name]++
 	n := c.calls[name]
 	c.mu.Unlock()
+	if c.gate != nil {
+		select {
+		case <-c.gate:
+		case <-ctx.Done(): // as docker exec is killed with its context
+			return nil, ctx.Err()
+		}
+	}
 	if c.fail {
 		return nil, errors.New("Error response from daemon: container " + name + " is not running")
 	}
@@ -552,6 +556,29 @@ func TestScreensAreSharedForTwoSeconds(t *testing.T) {
 	wg.Wait()
 	if n := c.count()["fleet-agent-03"]; n != 4 {
 		t.Fatalf("five viewers at once: %d execs, want one more", n-3)
+	}
+}
+
+// A capture outlives the viewer who started it: on a loaded host it can
+// take longer than a viewer waits, and killing it then would leave every
+// later viewer to start from nothing again, and time out again.
+func TestACaptureLandsAfterItsViewerHasGone(t *testing.T) {
+	c := useCaptures(t)
+	c.gate = make(chan struct{})
+	sc := newScreens()
+	tg, _ := (&fake{}).Terminal("agent-03")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if s := sc.get(ctx, []term.Target{tg}, 10); s[0].Error == "" {
+		t.Fatalf("a viewer who gave up got %+v", s[0])
+	}
+	close(c.gate)
+	for sc.inflight("fleet-agent-03") != 0 {
+		time.Sleep(time.Millisecond)
+	}
+	s := sc.get(context.Background(), []term.Target{tg}, 10)
+	if n := c.count()["fleet-agent-03"]; n != 1 || s[0].Error != "" || !strings.Contains(s[0].Text, "screen 1") {
+		t.Fatalf("the next viewer: %d execs, screen %+v; want the capture the first one started", n, s[0])
 	}
 }
 

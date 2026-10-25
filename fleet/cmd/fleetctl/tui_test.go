@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -153,6 +154,25 @@ func TestTheWatchStopsWithItsContext(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the watch did not stop with its context")
+	}
+}
+
+// fleetd that answers slowly was reached: saying "unreachable" sends a
+// person to check the tailnet when the host is only busy.
+func TestASlowAnswerIsNotCalledUnreachable(t *testing.T) {
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-block }))
+	defer srv.Close()
+	defer close(block)
+	a := &apiClient{c: &client{base: srv.URL}, from: "operator"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := a.Screens(ctx, []string{"agent-01"}, 10)
+	if err == nil || strings.Contains(err.Error(), "unreachable") || !strings.Contains(err.Error(), "did not answer in time") {
+		t.Errorf("err = %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v: want it to be a deadline", err)
 	}
 }
 

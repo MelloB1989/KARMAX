@@ -687,7 +687,10 @@ says which keys leave while a session is open.
 `GET /v1/screens?workers=a,b&lines=N` is the TUI's screen previews: each worker's last lines with ANSI.
 fleetd captures every asked slot of a container in **one** exec (`tmux capture-pane`, which starts nothing
 in the agent's session), shares a capture among every viewer for 2 seconds (and viewers who ask at once
-share the capture in flight), and runs at most two captures per host at once.
+share the capture in flight), and runs at most two captures per host at once. A capture runs to its end
+(at most 20 seconds) even when the viewer who started it has gone, so the next one finds it; a viewer
+waits at most 20 seconds, and a slot not captured by then says so. The TUI waits longer than that, and a
+failed capture never blanks a screen it already shows: the tile keeps it, marked `⚠ 14s old`.
 
 `prompt` is your keyboard, so it is not a model-callable tool anywhere: KARMAX's orchestrator uses
 `SendMessage` / `tell`, never `prompt`. From your phone, go through the orchestrator. If you later want

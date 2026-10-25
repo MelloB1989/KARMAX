@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -143,6 +144,55 @@ func TestScreensFetchOnlyVisibleTiles(t *testing.T) {
 	tabFeed(tab, c, tabRun(tab.Update(screensTickMsg{}, c)))
 	if n := len(f.ScreensAsked); n != 3 {
 		t.Errorf("%d captures after the 2 s tick, want 3", n)
+	}
+}
+
+// A poll that fails, or one tile's capture that fails, never blanks a screen
+// already shown: on a loaded host one slow answer is common, and a grid of
+// errors over screens that were fine says the fleet is down when it is not.
+// The screen stays, marked with its age; a tile with nothing yet shows why.
+func TestAFailedPollKeepsTheScreensItHad(t *testing.T) {
+	c, _ := tabCtx(t, fleetapi.RoleAdmin)
+	tab := newScreens()
+	tabSettle(tab, c, 120, 20) // agent-01, agent-01:2, agent-02, agent-02:2
+	c.Now = c.Now.Add(14 * time.Second)
+	tab.Update(screensMsg{err: errors.New("fleetd at http://fleet.example:7878 did not answer in time")}, c)
+	v := ansi.Strip(tab.View(c, 120, 20))
+	if n := strings.Count(v, "working on its task"); n != 4 {
+		t.Errorf("a failed poll: %d of 4 screens still shown:\n%s", n, v)
+	}
+	if n := strings.Count(v, "⚠ 14s old"); n != 4 {
+		t.Errorf("a failed poll: %d of 4 tiles marked with their age:\n%s", n, v)
+	}
+	if strings.Contains(v, "did not answer") {
+		t.Errorf("an error hides a screen:\n%s", v)
+	}
+
+	// The next poll answers, but agent-02's capture failed: it keeps its old
+	// screen and age, the others are fresh again.
+	c.Now = c.Now.Add(2 * time.Second)
+	var got []fleetapi.Screen
+	for _, w := range []string{"agent-01", "agent-01:2", "agent-02", "agent-02:2"} {
+		sc := fleetapi.Screen{Worker: w, Text: "> " + w + ": working on its task"}
+		if w == "agent-02" {
+			sc = fleetapi.Screen{Worker: w, Error: "not captured yet: the host is slow to answer"}
+		}
+		got = append(got, sc)
+	}
+	tab.Update(screensMsg{got: got}, c)
+	v = ansi.Strip(tab.View(c, 120, 20))
+	if n := strings.Count(v, "working on its task"); n != 4 || strings.Contains(v, "not captured") {
+		t.Errorf("a failed tile: %d of 4 screens shown:\n%s", n, v)
+	}
+	if n := strings.Count(v, "⚠ 16s old"); n != 1 || !strings.Contains(v, "agent-02 standby ⚠ 16s old") {
+		t.Errorf("a failed tile: want agent-02 alone marked 16s old:\n%s", v)
+	}
+
+	fresh := newScreens()
+	fresh.View(c, 120, 20)
+	fresh.Update(screensMsg{err: errors.New("fleetd at http://fleet.example:7878 did not answer in time")}, c)
+	if v := ansi.Strip(fresh.View(c, 120, 20)); strings.Count(v, "did not answer in time") != 4 {
+		t.Errorf("tiles never captured do not say why:\n%s", v)
 	}
 }
 

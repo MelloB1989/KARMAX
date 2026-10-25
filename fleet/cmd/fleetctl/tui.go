@@ -141,6 +141,11 @@ func (a *apiClient) do(ctx context.Context, method, path string, in, out any, ti
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return err
 		}
+		// The call's own time ran out (not a dial that failed): fleetd is
+		// there, and busy.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("fleetd at %s did not answer in time: %w", a.c.base, context.DeadlineExceeded)
+		}
 		return fmt.Errorf("fleetd unreachable at %s: %w", a.c.base, err)
 	}
 	defer resp.Body.Close()
