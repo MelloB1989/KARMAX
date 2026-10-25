@@ -427,3 +427,14 @@ func TestFilesCapDefaultsToTwoGiBAndTakesYAML(t *testing.T) {
 		t.Fatalf("set = %d, %v", c.Files.MaxBytes, err)
 	}
 }
+
+func TestASandboxAgentsWorkersAreSandboxes(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(example, "models: [sonnet, opus]}", "models: [sonnet, opus], sandbox: true}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := c.Worker("agent-01")
+	if !ok || !w.Sandbox || !c.Workers()[0].Sandbox {
+		t.Fatalf("worker = %+v (%v)", w, ok)
+	}
+}

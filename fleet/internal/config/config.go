@@ -209,6 +209,10 @@ type Agent struct {
 	// Slots is how many sessions the agent runs at once; 0 is the top-level
 	// slots. Each needs about 1.25 GB of the container's memory.
 	Slots int `yaml:"slots"`
+	// Sandbox makes the agent one that can be lent to a guest device: none
+	// of the operator's code, accounts or credentials in its container
+	// (docs/superpowers/specs/2026-10-25-fleetctl-tui-access-design.md, 2).
+	Sandbox bool `yaml:"sandbox"`
 }
 
 // maxSlots bounds an agent's slots: past it one container is a host.
@@ -228,6 +232,7 @@ type Worker struct {
 	Account   string
 	Models    []string
 	Model     string
+	Sandbox   bool
 }
 
 // WorkerName is the name of an agent's slot.
@@ -714,7 +719,7 @@ func (c *Config) Workers() []Worker {
 		a := c.Agents[n]
 		for k := 1; k <= max(a.Slots, 1); k++ {
 			out = append(out, Worker{Name: WorkerName(n, k), Agent: n, Slot: k, Host: a.Host,
-				Container: a.Container, Account: a.Account, Models: a.Models, Model: a.Model})
+				Container: a.Container, Account: a.Account, Models: a.Models, Model: a.Model, Sandbox: a.Sandbox})
 		}
 	}
 	return out
@@ -738,7 +743,7 @@ func (c *Config) Worker(name string) (Worker, bool) {
 		return Worker{}, false
 	}
 	return Worker{Name: WorkerName(agent, slot), Agent: agent, Slot: slot, Host: a.Host,
-		Container: a.Container, Account: a.Account, Models: a.Models, Model: a.Model}, true
+		Container: a.Container, Account: a.Account, Models: a.Models, Model: a.Model, Sandbox: a.Sandbox}, true
 }
 
 // Siblings is the other workers of a worker's agent, in slot order.
