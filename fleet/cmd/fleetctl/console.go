@@ -57,16 +57,6 @@ func newConsole(ctx context.Context) (*consoleConn, error) {
 	return &consoleConn{base: "http://" + k.Listen, token: strings.TrimSpace(string(tok)), hc: sshdial.Client(k.Host, k.Listen)}, nil
 }
 
-// consoleConfigured reports whether attach should go through a console: the
-// env override, or a console: section on the agent's host.
-func consoleFor(agentHost string) bool {
-	if os.Getenv("FLEET_CONSOLE_URL") != "" {
-		return true
-	}
-	cfg, err := loadConfig()
-	return err == nil && cfg.Console != nil && cfg.Console.Host == agentHost
-}
-
 func (c *consoleConn) header() http.Header {
 	return http.Header{"Authorization": {"Bearer " + c.token}}
 }
@@ -106,7 +96,7 @@ func (c *consoleConn) dialWS(ctx context.Context, path string) (*websocket.Conn,
 // consoleCmd is `fleetctl console <snapshot|watch|term|health>`.
 func consoleCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: fleetctl console snapshot|watch|term|health")
+		return errors.New("usage: fleetctl console snapshot|watch|term|attach|health")
 	}
 	sub, args := args[0], args[1:]
 	var asJSON bool
@@ -166,6 +156,16 @@ func consoleCmd(args []string) error {
 			return err
 		}
 		return consoleTerm(ctx, c, pos[0], os.Stdout, os.Stderr)
+
+	case "attach":
+		if err := need(pos, 1, "console attach <agent>"); err != nil {
+			return err
+		}
+		c, err := newConsole(ctx)
+		if err != nil {
+			return err
+		}
+		return consoleAttach(ctx, c, pos[0])
 	}
 	return fmt.Errorf("unknown console command %q", sub)
 }

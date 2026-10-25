@@ -1,10 +1,10 @@
 // Command fleetctl is the agent fleet's CLI.
 //
-// Every command but attach is an HTTP client of fleetd: on a fleet host it
-// finds fleetd through fleet.yaml; anywhere else through FLEETD_URL and
-// FLEET_TOKEN, or the fleetd `fleetctl connect` saved, reached over the
-// tailnet with no token (Tailscale says who you are). attach goes straight to the container through its host's exec
-// prefix — it is your keyboard, and no model-callable tool ever wraps it.
+// Every command is an HTTP client of fleetd: on a fleet host it finds fleetd
+// through fleet.yaml; anywhere else through FLEETD_URL and FLEET_TOKEN, or
+// the fleetd `fleetctl connect` saved, reached over the tailnet with no token
+// (Tailscale says who you are). ssh and attach are a websocket to fleetd's
+// /v1/term — your keyboard, and no model-callable tool ever wraps them.
 // render, up and down run on a fleet host directly, and through fleetd from
 // anywhere else (or with --remote).
 package main
@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -30,7 +29,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/MelloB1989/karmax/fleet/internal/agent"
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
@@ -40,7 +38,6 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
 	"github.com/MelloB1989/karmax/fleet/internal/recreate"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
-	"github.com/MelloB1989/karmax/fleet/internal/target"
 )
 
 const usage = `fleetctl — the agent fleet (docs/AGENT-FLEET.md)
@@ -131,8 +128,11 @@ Secrets (fleetd; a value is never listed, logged or put in an event):
   secret get <name> --print           to stdout: avoid, your output is the model's context
 
 Your keyboard:
-  attach <agent> [--direct]           the live session's TUI (host only), through the console when
-                                      the host runs one (one controller; give it back: Ctrl-])
+  ssh <agent> [--type] [--shell] [--force]
+                                      the live session in this terminal, from any machine, through fleetd:
+                                      watch it (read-only), --type (one typist per agent; --force, admins
+                                      only, makes the typist a watcher) or --shell in its container. Ctrl-] leaves
+  attach <agent>                      the same as ssh --type
   prompt <agent> <text…>              type into it, as you (fleetd)
   peek <agent> [-n 80]                its last lines (fleetd)
 
@@ -156,6 +156,7 @@ The console (fleet-console on its host, reached over ssh; or FLEET_CONSOLE_URL +
   console snapshot [--json]           agents, tools, load, and every source with its age
   console watch [--json]              the snapshot, then patches, one JSON object per line
   console term <agent>                an agent's terminal bytes, raw, to stdout
+  console attach <agent>              the console's own keyboard on PC2's agents (one controller; Ctrl-])
   console health [--json]             the sources and their ages
 
 Setup (on a fleet host directly, else through fleetd; --remote forces fleetd; up --when-idle and
@@ -1068,8 +1069,8 @@ func run(cmd string, args []string) error {
 	case "console":
 		return consoleCmd(args)
 
-	case "attach":
-		return keyboard(cmd, args)
+	case "ssh", "attach":
+		return sshCmd(cmd, args)
 
 	case "peek":
 		var n int
@@ -1370,48 +1371,6 @@ func askFleetd(route string, hosts []string) error {
 	}
 	fmt.Print(reply.Output)
 	return nil
-}
-
-// keyboard is attach: straight to the container, or through the console.
-func keyboard(cmd string, args []string) error {
-	var direct bool
-	_, pos, err := flags(cmd, args, func(fs *flag.FlagSet) { fs.BoolVar(&direct, "direct", false, "") })
-	if err != nil {
-		return err
-	}
-	if err := need(pos, 1, "attach <agent> [--direct]"); err != nil {
-		return err
-	}
-	if !direct && os.Getenv("FLEET_CONSOLE_URL") != "" {
-		return attachViaConsole(pos[0])
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	a, ok := cfg.Worker(pos[0])
-	if !ok {
-		return fmt.Errorf("no agent %q", pos[0])
-	}
-	if !direct && consoleFor(a.Host) {
-		return attachViaConsole(pos[0])
-	}
-	ag := &agent.Agent{Name: a.Name, Slot: a.Slot, C: target.Container{Exec: cfg.Hosts[a.Host].Exec, Name: a.Container}}
-	argv := ag.AttachArgv()
-	c := exec.Command(argv[0], argv[1:]...)
-	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return c.Run()
-}
-
-// attachViaConsole: the console owns the one-controller rule, so attach
-// goes through it whenever the agent's host runs one. --direct bypasses it.
-func attachViaConsole(agentName string) error {
-	ctx := context.Background()
-	c, err := newConsole(ctx)
-	if err != nil {
-		return fmt.Errorf("%w (attach --direct goes to the container without the console's one-controller rule)", err)
-	}
-	return consoleAttach(ctx, c, agentName)
 }
 
 func table(rows []daemon.Row, orch *outbound.Quota) error {
