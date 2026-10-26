@@ -361,7 +361,7 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 	}
 	o.Sibling = w.Slot > 1
 	next, acts := reconcile.Decide(f.cfg.Thresholds, f.sharedCooling(old, now), o)
-	next = f.sharedQuota(next)
+	next = f.sharedQuota(next, now)
 	if o.Sibling && o.Unreachable == "" && !o.ContainerUp {
 		next = followContainer(next, f.State(w.Agent))
 	}
@@ -417,15 +417,17 @@ func (f *Fleet) sharedCooling(st reconcile.State, now time.Time) reconcile.State
 // sharedQuota gives a worker its account's quota as its siblings last saw
 // it. Each session's status line has the windows as of its own last turn,
 // so an idle slot's are old: of two readings of a window, the one that
-// resets later is a newer window, and within one window use only grows.
-func (f *Fleet) sharedQuota(st reconcile.State) reconcile.State {
+// resets later is a newer window, and within one window use only grows. A
+// sibling's reading is aged first: it was last cleared at its own tick, and
+// a window that has reset since must not come back from it.
+func (f *Fleet) sharedQuota(st reconcile.State, now time.Time) reconcile.State {
 	sibs := f.cfg.Siblings(st.Name)
 	if len(sibs) == 0 {
 		return st
 	}
 	q := st.Quota
 	for _, sib := range sibs {
-		q = newerQuota(q, f.State(sib).Quota)
+		q = newerQuota(q, f.State(sib).Quota.Aged(now))
 	}
 	st.Quota = q
 	st.Low = q.FiveHour >= f.cfg.Thresholds.Low5h
@@ -1447,10 +1449,15 @@ func (f *Fleet) Status(now time.Time) []Row {
 		if st.OutOfReach(now) {
 			phase = reconcile.Unreachable // shown, not stored: the phase is kept for its return
 		}
+		// As of now, as the account's own row is: a window that has reset since
+		// the tick shows reset, and no longer low or reserved.
+		q := st.Quota.Aged(now)
+		low := st.Low && q.FiveHourResets.Equal(st.Quota.FiveHourResets)
+		reserved := st.Reserved && q.SevenDayResets.Equal(st.Quota.SevenDayResets)
 		rows = append(rows, Row{Agent: name, SlotOf: a.Agent, Slot: a.Slot, Host: a.Host, Account: a.Account, State: string(phase), Task: task,
-			Idle: idle, IdleS: idleS, Model: st.Model, Alerts: activeAlerts(st), RecordedAt: st.RecordedAt, FiveHour: st.Quota.FiveHour, SevenDay: st.Quota.SevenDay, FiveResets: st.Quota.FiveHourResets,
-			SevenResets: st.Quota.SevenDayResets, QuotaAt: st.Quota.At, Context: st.ContextPct, Low: st.Low,
-			Reserved: st.Reserved, Models: a.Models, Session: st.SessionID, Reason: st.DisabledReason, Cooling: st.CoolingUntil,
+			Idle: idle, IdleS: idleS, Model: st.Model, Alerts: activeAlerts(st), RecordedAt: st.RecordedAt, FiveHour: q.FiveHour, SevenDay: q.SevenDay, FiveResets: q.FiveHourResets,
+			SevenResets: q.SevenDayResets, QuotaAt: q.At, Context: st.ContextPct, Low: low,
+			Reserved: reserved, Models: a.Models, Session: st.SessionID, Reason: st.DisabledReason, Cooling: st.CoolingUntil,
 			Unreachable: !st.UnreachableSince.IsZero(), Rotating: st.Done})
 	}
 	return rows

@@ -242,6 +242,49 @@ func TestTheLedgersQuotaIsTheAccountsNotOneSlots(t *testing.T) {
 	}
 }
 
+// A window that has reset stays reset on every slot. Each slot clears its own
+// reading at the reset; taking its sibling's not yet cleared one would hand
+// the old use back and forth between them for as long as no turn reports
+// the new window.
+func TestAWindowThatHasResetIsNotTakenBackFromASibling(t *testing.T) {
+	f, boxes, _ := newSlots(t)
+	resets := t0.Add(time.Hour)
+	for _, n := range []string{"agent-01", "agent-01:2"} {
+		boxes[n].obs.Status, _ = observe.ParseStatus([]byte(`{"session_id":"s-` + n + `","rate_limits":{"five_hour":{"used_percentage":98,"resets_at":` +
+			itoa(int(resets.Unix())) + `},"seven_day":{"used_percentage":40,"resets_at":` + itoa(int(t0.Add(48*time.Hour).Unix())) + `}}}`))
+	}
+	f.Tick(context.Background(), t0)
+	// Between ticks, the roster shows the reset as the account's row does.
+	for _, r := range f.Status(resets.Add(time.Second)) {
+		if r.SlotOf == "agent-01" && (r.FiveHour != 0 || r.Low) {
+			t.Fatalf("before the next tick %s shows %.0f%% low %v, want the window reset", r.Agent, r.FiveHour, r.Low)
+		}
+	}
+	// Fresh sessions, no turn yet: their status lines have no rate limits.
+	for _, n := range []string{"agent-01", "agent-01:2"} {
+		boxes[n].obs.Status, _ = observe.ParseStatus([]byte(`{"session_id":"s-` + n + `"}`))
+	}
+	for i := range 4 {
+		now := resets.Add(time.Duration(i) * 30 * time.Second)
+		f.Tick(context.Background(), now)
+		for _, r := range f.Status(now) {
+			if r.SlotOf != "agent-01" {
+				continue
+			}
+			if r.FiveHour != 0 || !r.FiveResets.IsZero() || r.Low {
+				t.Fatalf("tick %d: %s shows %.0f%% resets %v low %v, want the window reset", i, r.Agent, r.FiveHour, r.FiveResets, r.Low)
+			}
+			if r.SevenDay != 40 {
+				t.Fatalf("tick %d: %s shows 7d %.0f%%, want the open window's 40%%", i, r.Agent, r.SevenDay)
+			}
+			// What pick goes by, not only what the roster shows.
+			if st := f.State(r.Agent); st.Quota.FiveHour != 0 || st.Low {
+				t.Fatalf("tick %d: %s keeps %.0f%% low %v, want the window reset", i, r.Agent, st.Quota.FiveHour, st.Low)
+			}
+		}
+	}
+}
+
 // Tasks spread over containers first: a slot of an agent that is already at
 // work ranks after a slot of an idle agent, whatever its quota or idle time.
 func TestPickSpreadsTasksOverAgentsBeforeSharingAContainer(t *testing.T) {

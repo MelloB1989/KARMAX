@@ -155,6 +155,18 @@ type Quota struct {
 	At             time.Time `json:"at"`
 }
 
+// Aged is q as of now: a window whose reset has passed is a new one that no
+// turn has reported yet, so it is reset, not kept with the use it had.
+func (q Quota) Aged(now time.Time) Quota {
+	if !q.FiveHourResets.IsZero() && !now.Before(q.FiveHourResets) {
+		q.FiveHour, q.FiveHourResets = 0, time.Time{}
+	}
+	if !q.SevenDayResets.IsZero() && !now.Before(q.SevenDayResets) {
+		q.SevenDay, q.SevenDayResets = 0, time.Time{}
+	}
+	return q
+}
+
 // Obs is one tick's observation of an agent.
 type Obs struct {
 	Now         time.Time
@@ -774,12 +786,7 @@ func observeQuota(th config.Thresholds, st State, o Obs) State {
 		}
 		st.CostUSD = s.Cost.TotalCostUSD
 	}
-	if !st.Quota.FiveHourResets.IsZero() && !o.Now.Before(st.Quota.FiveHourResets) {
-		st.Quota.FiveHour, st.Quota.FiveHourResets = 0, time.Time{}
-	}
-	if !st.Quota.SevenDayResets.IsZero() && !o.Now.Before(st.Quota.SevenDayResets) {
-		st.Quota.SevenDay, st.Quota.SevenDayResets = 0, time.Time{}
-	}
+	st.Quota = st.Quota.Aged(o.Now)
 	st.Low = st.Quota.FiveHour >= th.Low5h
 	st.Reserved = st.Quota.SevenDay >= th.Reserved7d
 	return st
