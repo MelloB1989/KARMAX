@@ -587,16 +587,62 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if req.Decision == "reject" {
-		_ = s.store.DecideProposal(id, "rejected", req.Note)
+	if req.Decision != "approve" && req.Decision != "reject" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be 'approve' or 'reject'"})
+		return
+	}
+	_ = s.store.DecideProposal(id, decidedStatus(req.Decision), req.Note)
+	if err := s.actOnDecision(*p, req.Decision, req.Edit, req.Note); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	updated, _ := s.store.GetProposal(id)
+	writeJSON(w, http.StatusOK, map[string]any{"proposal": proposalJSON(*updated)})
+}
+
+// DecideProposal is the app's decision for a caller that is not the app —
+// the operator answering on WhatsApp — with who decided recorded.
+func (s *Server) DecideProposal(id, decision, note, by string) error {
+	p, err := s.store.GetProposal(id)
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		return errors.New("proposal not found")
+	}
+	if p.Status != "pending" {
+		return fmt.Errorf("proposal is already %s", p.Status)
+	}
+	if decision != "approve" && decision != "reject" {
+		return errors.New("decision must be 'approve' or 'reject'")
+	}
+	if err := s.store.DecideProposalBy(id, decidedStatus(decision), note, by); err != nil {
+		return err
+	}
+	return s.actOnDecision(*p, decision, "", note)
+}
+
+func decidedStatus(decision string) string {
+	if decision == "approve" {
+		return "approved"
+	}
+	return "rejected"
+}
+
+// actOnDecision carries out a decision already recorded: an approval runs the
+// action (edit, when set, in place of the proposed one), a reject with a note
+// is fed back so the agent can rework it, and a bare reject just drops it.
+func (s *Server) actOnDecision(p store.StoredProposal, decision, edit, note string) error {
+	id := p.ID
+	if decision == "reject" {
 		// Reject WITH feedback = revise, not drop: feed the feedback back to the
 		// agent so it reworks its approach and (if still sensible) submits a NEW
 		// proposal via the propose tool. Plain reject (no note) just drops it.
-		if strings.TrimSpace(req.Note) != "" {
+		if strings.TrimSpace(note) != "" {
 			if ag := s.resolveAgent(""); ag != nil {
 				prompt := fmt.Sprintf(
 					"The operator REJECTED your proposed action and left feedback. Rework your approach using that feedback. If a revised action still makes sense, call the `propose` tool to submit a NEW proposal that incorporates the feedback (do not repeat the rejected version). If the feedback means they don't want this at all, just acknowledge and do not re-propose.\n\nRejected title: %s\nRejected action: %s\nOperator feedback: %s",
-					p.Title, p.ProposedAction, req.Note,
+					p.Title, p.ProposedAction, note,
 				)
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -607,33 +653,24 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 				}()
 			}
 		}
-		updated, _ := s.store.GetProposal(id)
-		writeJSON(w, http.StatusOK, map[string]any{"proposal": proposalJSON(*updated)})
-		return
-	}
-	if req.Decision != "approve" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be 'approve' or 'reject'"})
-		return
+		return nil
 	}
 
 	action := p.ProposedAction
-	if strings.TrimSpace(req.Edit) != "" {
-		action = req.Edit
+	if strings.TrimSpace(edit) != "" {
+		action = edit
 	}
-	_ = s.store.DecideProposal(id, "approved", req.Note)
-
 	ag := s.resolveAgent("")
 	if ag == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "no agent available"})
-		return
+		return errors.New("no agent available")
 	}
 
 	prompt := fmt.Sprintf(
 		"The operator APPROVED this proposed action. Execute it now using your tools, then confirm exactly what you did.\n\nTitle: %s\nAction: %s",
 		p.Title, action,
 	)
-	if strings.TrimSpace(req.Note) != "" {
-		prompt += "\nNote from the operator: " + req.Note
+	if strings.TrimSpace(note) != "" {
+		prompt += "\nNote from the operator: " + note
 	}
 
 	// Execute in the background so the decision request returns immediately;
@@ -648,9 +685,7 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 		}
 		_ = s.store.SetProposalResult(id, "executed", reply)
 	}()
-
-	updated, _ := s.store.GetProposal(id)
-	writeJSON(w, http.StatusOK, map[string]any{"proposal": proposalJSON(*updated)})
+	return nil
 }
 
 func proposalJSON(p store.StoredProposal) map[string]any {
