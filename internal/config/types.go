@@ -87,6 +87,10 @@ type HarnessKindConfig struct {
 	// evicted, not counted in max_live, and revived if one dies. For a
 	// session other sessions message, which has no inbox while it is down.
 	Resident bool `yaml:"resident"`
+	// InheritMCP lets this kind's sessions start the MCP servers in the
+	// operator's own Claude Code config. Off (the default), a session gets
+	// only the servers KARMAX itself passes it.
+	InheritMCP bool `yaml:"inherit_mcp"`
 }
 
 // DatabaseConfig points the store at a backend. See store.ParseDSN for the

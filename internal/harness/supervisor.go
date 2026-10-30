@@ -42,6 +42,12 @@ type Policy struct {
 	// session other sessions message must stay up: a closed one has no inbox,
 	// and every message to it bounces.
 	Resident bool
+	// InheritMCP lets this kind's sessions start the MCP servers in the
+	// operator's own Claude Code config. Off, a session gets only what KARMAX
+	// passes it (--strict-mcp-config): those servers are the operator's
+	// tools, started as a process tree per session whether or not a session
+	// ever calls one.
+	InheritMCP bool
 }
 
 // Store is what the supervisor needs to remember sessions across restarts.
@@ -400,7 +406,7 @@ func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Polic
 	}
 	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
 		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig, SystemPrompt: opt.SystemPrompt,
-		Name: pol.Name, Launch: pol.Launch}
+		Name: pol.Name, Launch: pol.Launch, InheritMCP: pol.InheritMCP}
 	sess.onBackground = func(t Turn) { s.background(key, kind, t) }
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup

@@ -47,6 +47,9 @@ type Session struct {
 	// Name and Launch come from the kind's policy, fixed at spawn.
 	Name   string
 	Launch []string
+	// InheritMCP comes from the kind's policy: false spawns with
+	// --strict-mcp-config, so only MCPConfig's servers start.
+	InheritMCP bool
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
@@ -141,6 +144,12 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	// KARMAX to observe and react to in time.
 	if fallbackModel != "" && fallbackModel != s.Model {
 		args = append(args, "--fallback-model", fallbackModel)
+	}
+	// Only the servers KARMAX hands over (MCPConfig), not the operator's own:
+	// without this every session started a process tree for each server in
+	// their Claude Code config. Before --mcp-config, which is variadic.
+	if !s.InheritMCP {
+		args = append(args, "--strict-mcp-config")
 	}
 	// No positional prompt here to collide with; still appended last, and tested.
 	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig, SystemPrompt: s.SystemPrompt})...)

@@ -182,6 +182,7 @@ func harnessPolicies(hc config.HarnessConfig) map[string]harness.Policy {
 			Launch:      k.Launch,
 			Name:        k.Name,
 			Resident:    k.Resident,
+			InheritMCP:  k.InheritMCP,
 		}
 	}
 	return policies
