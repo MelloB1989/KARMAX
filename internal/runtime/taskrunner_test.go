@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"github.com/MelloB1989/karmax/internal/policy"
 	"strings"
 	"testing"
 
@@ -96,7 +97,7 @@ func TestBackoffClimbsThenLevelsOff(t *testing.T) {
 // The brief is the session's whole understanding of its authority. The operator
 // chose full autonomy, so it must not read as though it should stop and ask.
 func TestTheBriefGrantsAutonomyAndStillForbidsTheIrreversibleLeak(t *testing.T) {
-	brief := taskBrief(store.Task{Title: "ship the thing", Goal: "ship it"})
+	brief := taskBrief(store.Task{Title: "ship the thing", Goal: "ship it"}, policy.Default())
 	for _, want := range []string{"pre-authorised", "Do not stop to ask permission"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("the brief does not grant autonomy: missing %q", want)
@@ -109,6 +110,21 @@ func TestTheBriefGrantsAutonomyAndStillForbidsTheIrreversibleLeak(t *testing.T) 
 	}
 	if !strings.Contains(brief, "blocked") {
 		t.Error("the brief does not say what being stuck means")
+	}
+}
+
+// A task acts under the same operating policy as every turn: autonomy over
+// everything but the hard floor, which it asks about and waits on.
+func TestTheBriefKeepsTheHardFloor(t *testing.T) {
+	brief := taskBrief(store.Task{Title: "clean up", Goal: "tidy the bucket"},
+		policy.New(policy.Config{HardFloor: []string{"deleting cloud resources"}}))
+	for _, want := range []string{"deleting cloud resources", "propose", "floor=", "blocked"} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("the brief omits %q:\n%s", want, brief)
+		}
+	}
+	if strings.Contains(brief, "cost money, post publicly") {
+		t.Errorf("the brief still pre-authorises the hard floor:\n%s", brief)
 	}
 }
 

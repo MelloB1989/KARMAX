@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/harness"
+	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
@@ -126,7 +127,7 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 	turn, err := rt.harness.SendWith(turnCtx, task.SessionKey, "task",
 		taskPrompt(task), harness.Options{
 			Workdir:      task.Workdir,
-			Instructions: taskBrief(task),
+			Instructions: taskBrief(task, rt.policy),
 		})
 	if err != nil {
 		// Quota, a dead process, a timeout. None of them mean the task is over
@@ -315,7 +316,7 @@ func taskPrompt(t store.Task) string {
 // Seeded once, then owned by the session — so what it learns about this
 // particular job accumulates in that file instead of being re-stated every
 // round.
-func taskBrief(t store.Task) string {
+func taskBrief(t store.Task, p policy.Policy) string {
 	return `# A task you own
 
 The operator handed you this and expects it finished. You are not advising them
@@ -337,9 +338,13 @@ rounds — the actual next thing, done.
 ## Authority
 
 The operator has pre-authorised you to finish this by whatever means it takes,
-including actions that cost money, post publicly, message other people, or
-change things that are hard to change back. Do not stop to ask permission for
-those. Do them, and say what you did.
+including messaging other people as them, posting, and changing things that are
+hard to change back. Do not stop to ask permission for those. Do them, and say
+what you did.
+
+One exception, the operator's hard floor: ` + strings.Join(p.HardFloor(), "; ") + `.
+For those, ask first — ` + "`karmax tool call propose title=\"…\" action=\"<exact command or text>\" floor=\"<the rule>\"`" + ` —
+then end the round STATUS: blocked until they answer.
 
 The limits that remain are the ones that are not about permission:
 
