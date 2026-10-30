@@ -83,6 +83,10 @@ type Config struct {
 	Operator string
 	// OperatorJIDs are the operator's other accounts; their messages are his.
 	OperatorJIDs []string
+	// IsOperator, when set, is the identity directory's answer to "is this
+	// account the operator's" — which also knows the LIDs it has learned since
+	// the configuration was written. OperatorJIDs still count either way.
+	IsOperator func(jid string) bool
 	// Since is where a chat with no cursor starts reading.
 	Since time.Time
 	// Deny names chats never read, by JID or by name.
@@ -295,6 +299,8 @@ func (s *Syncer) speaker(ctx context.Context, chat Chat, m Message, names map[st
 	case m.FromMe && s.sent(chat.JID, m.Content, m.At):
 		return "KARMAX (on " + s.cfg.Operator + "'s account)"
 	case m.FromMe, s.operators[bare(m.SenderJID)]:
+		return s.cfg.Operator
+	case s.cfg.IsOperator != nil && s.cfg.IsOperator(m.SenderJID):
 		return s.cfg.Operator
 	}
 	key := bare(m.SenderJID)
