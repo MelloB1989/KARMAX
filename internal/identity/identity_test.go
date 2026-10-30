@@ -196,6 +196,35 @@ func TestThePreambleNamesTheSenderAndOutranksWhatFollows(t *testing.T) {
 	}
 }
 
+// Each line of a thread a model reads says who wrote it.
+//
+// A thread used to reach the model as raw JSON: a sender id and is_from_me per
+// message. "From me" is the linked account, which is KARMAX's sends AND the
+// operator typing on it; the operator's personal account is a bare LID nothing
+// names. The model was left to work out who was who, and did not.
+func TestAThreadLineSaysWhoWroteIt(t *testing.T) {
+	d := priya()
+	for _, c := range []struct {
+		sender             string
+		fromMe, karmaxSent bool
+		label              string
+		role, from         string
+	}{
+		{"123456789:4@lid", false, false, "Omar", "operator", "Priya (your operator)"},
+		{"15550002222:63@s.whatsapp.net", true, true, "", "karmax", "KARMAX (on the linked account)"},
+		{"15550002222:63@s.whatsapp.net", true, false, "", "operator", "Priya (your operator, typing on the linked account)"},
+		{"987654321@lid", false, false, "", "operator", "Priya (your operator, typing on the linked account)"},
+		{"555000444@lid", false, false, "Omar", "contact", "Omar (not your operator)"},
+		{"15550003333@s.whatsapp.net", false, false, "", "contact", "+15550003333 (not your operator)"},
+	} {
+		role, from := d.Attribute(c.sender, c.fromMe, c.karmaxSent, c.label)
+		if role != c.role || from != c.from {
+			t.Errorf("Attribute(%q, fromMe=%v, karmax=%v) = %q, %q; want %q, %q",
+				c.sender, c.fromMe, c.karmaxSent, role, from, c.role, c.from)
+		}
+	}
+}
+
 func TestNameFromEnvPrefersTheGeneralSetting(t *testing.T) {
 	env := map[string]string{
 		"KARMAX_LOOP_WA_MONITOR_OPERATOR_NAME": "Omar",

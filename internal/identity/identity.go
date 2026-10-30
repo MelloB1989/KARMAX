@@ -257,6 +257,26 @@ func (d *Directory) NameOf(id, label string) string {
 	return "+" + b
 }
 
+// Attribute labels one message in a thread a model will read: who wrote it
+// ("operator", "karmax" or "contact") and what to call them.
+//
+// fromMe is the bridge's is_from_me: the linked account sent it. That account
+// carries KARMAX's sends AND the operator typing on it, so karmaxSent — whether
+// KARMAX's own record shows it sending this — is what tells the two apart.
+func (d *Directory) Attribute(senderJID string, fromMe, karmaxSent bool, label string) (role, from string) {
+	r := d.RoleOf(senderJID)
+	if fromMe || r == RoleLinked {
+		if karmaxSent {
+			return "karmax", "KARMAX (on the linked account)"
+		}
+		return "operator", d.operatorName() + " (your operator, typing on the linked account)"
+	}
+	if r == RoleOperator {
+		return "operator", d.operatorName() + " (your operator)"
+	}
+	return "contact", d.NameOf(senderJID, label) + " (not your operator)"
+}
+
 // Describe is the line a prompt states about who sent a message.
 func (d *Directory) Describe(id, label string) string {
 	b := shown(id)
