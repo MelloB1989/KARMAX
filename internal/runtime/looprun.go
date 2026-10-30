@@ -302,12 +302,25 @@ func (rt *KarmaxRuntime) executeLoop(parent context.Context, l loopkit.Loop, tri
 // resumeInterruptedRuns reschedules work the daemon was killed in the middle
 // of, which used to be marked dead and left there.
 func (rt *KarmaxRuntime) resumeInterruptedRuns() {
-	runs, err := rt.store.ReapStaleLoopRuns(time.Now().Add(-leaseTTL))
+	// Every run that began before this process did was cut off by the
+	// restart, however recently it started. The lease cutoff used before
+	// missed exactly those: this runs once, at start, so a run a minute old
+	// at the restart stayed "running" for good and was never resumed.
+	cutoff := rt.startedAt
+	if cutoff.IsZero() {
+		cutoff = time.Now().Add(-leaseTTL)
+	}
+	runs, err := rt.store.ReapStaleLoopRuns(cutoff)
 	if err != nil {
 		rt.log.Warn("could not check for interrupted loop runs", zap.Error(err))
 		return
 	}
 	for _, r := range runs {
+		// The run's lease died with it. Left in place it refuses the resume
+		// below, and every other trigger, until it times out.
+		if err := rt.store.ReleaseLoopLease(r.Loop, r.ID); err != nil {
+			rt.log.Warn("could not release an interrupted run's lease", zap.String("loop", r.Loop), zap.Error(err))
+		}
 		if r.Attempt >= maxAttempts {
 			rt.log.Error("a loop run was interrupted after its last attempt; work was NOT done",
 				zap.String("loop", r.Loop))
