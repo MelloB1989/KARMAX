@@ -25,6 +25,8 @@ type actHub struct {
 	reqs  []actReq
 	perms map[string]map[string]string // login → repo → "push" | "read"
 	repo  map[string]any               // repository settings every account sees
+	// outage answers the next n repository lookups with a 502.
+	outage int
 }
 
 type actReq struct {
@@ -93,6 +95,9 @@ func (h *actHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	tail := strings.Join(parts[3:], "/")
 	switch {
+	case tail == "" && r.Method == http.MethodGet && h.outage > 0:
+		h.outage--
+		w.WriteHeader(http.StatusBadGateway)
 	case tail == "" && r.Method == http.MethodGet:
 		out := map[string]any{"full_name": repo, "permissions": map[string]bool{"pull": true, "push": level == "push", "admin": false}}
 		for k, v := range h.repo {
@@ -439,3 +444,17 @@ func (failingLogins) Accounts(context.Context) ([]Account, error) {
 	return nil, errors.New("gh is not installed")
 }
 func (failingLogins) Token(context.Context, Account) (string, error) { return "", errors.New("no") }
+
+// A blip while asking who may write is not remembered as "nobody may".
+func TestAFailedLookupIsAskedAgain(t *testing.T) {
+	h := newActHub(t)
+	h.grant("octo-user", "contoso/app", "push")
+	a, _ := newActor(h, "octo-user", "octo-work")
+	h.outage = 1
+	if _, err := run(t, a, "github.reply", map[string]any{"repo": "contoso/app", "number": 12, "body": "hi"}); err == nil {
+		t.Fatal("acted although no account could be checked")
+	}
+	if _, err := run(t, a, "github.reply", map[string]any{"repo": "contoso/app", "number": 12, "body": "hi"}); err != nil {
+		t.Errorf("after the blip: %v", err)
+	}
+}

@@ -318,10 +318,13 @@ func (a *Actor) access(ctx context.Context, acc Account, tok string, tg target) 
 	_, err := callAt(ctx, acc.APIBase(), tok, "GET", "/repos/"+tg.repo(), "", nil, &out)
 	r := out.repoAccess
 	r.at, r.err = time.Now(), err
-	if err == nil {
-		r.visible = true
-		r.push = out.Permissions.Push || out.Permissions.Maintain || out.Permissions.Admin
+	if err != nil {
+		// Not remembered: a blip must not read as "cannot see it" for ten
+		// minutes, and a repository just shared should be found next call.
+		return r
 	}
+	r.visible = true
+	r.push = out.Permissions.Push || out.Permissions.Maintain || out.Permissions.Admin
 	a.mu.Lock()
 	if a.repos == nil {
 		a.repos = map[string]repoAccess{}
