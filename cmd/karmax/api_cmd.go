@@ -184,6 +184,17 @@ func newWebhookCmd() *cobra.Command {
 	return cmd
 }
 
+// formatMemoryHit is one search result line, with its id when asked.
+func formatMemoryHit(e map[string]any, withID bool) string {
+	line := oneLine(asStr(e["content"]), 200)
+	if withID {
+		if id := asStr(e["id"]); id != "" {
+			line = "[" + id + "] " + line
+		}
+	}
+	return "• " + line
+}
+
 func newMemoryCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "memory", Short: "Search, add to, and export agent memory"}
 
@@ -219,27 +230,34 @@ func newMemoryCmd() *cobra.Command {
 	add.Flags().IntVar(&ttlDays, "ttl-days", 0, "auto-expire after N days")
 	cmd.AddCommand(add)
 
-	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "search <query>",
-			Short: "Search long-term memory",
-			Args:  cobra.ExactArgs(1),
-			RunE: func(_ *cobra.Command, args []string) error {
-				out, err := apiGET("/api/memory/entries?limit=25&q=" + url.QueryEscape(args[0]))
-				if err != nil {
-					return err
-				}
-				entries := asList(out["entries"])
-				if len(entries) == 0 {
-					fmt.Println("no matching memory entries.")
-					return nil
-				}
-				for _, e := range entries {
-					fmt.Printf("• %s\n", oneLine(asStr(e["content"]), 200))
-				}
+	// --ids shows each hit's id, which is what memory.correct and memory.forget
+	// take: a wrong fact found by search could otherwise only be removed by
+	// a query that deletes whatever matches best.
+	var showIDs bool
+	search := &cobra.Command{
+		Use:   "search <query>",
+		Short: "Search long-term memory",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			out, err := apiGET("/api/memory/entries?limit=25&q=" + url.QueryEscape(args[0]))
+			if err != nil {
+				return err
+			}
+			entries := asList(out["entries"])
+			if len(entries) == 0 {
+				fmt.Println("no matching memory entries.")
 				return nil
-			},
+			}
+			for _, e := range entries {
+				fmt.Println(formatMemoryHit(e, showIDs))
+			}
+			return nil
 		},
+	}
+	search.Flags().BoolVar(&showIDs, "ids", false, "show each memory's id (for memory.correct / memory.forget)")
+
+	cmd.AddCommand(
+		search,
 		&cobra.Command{
 			Use:   "export",
 			Short: "Dump recent memory entries",
