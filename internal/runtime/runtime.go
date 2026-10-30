@@ -177,6 +177,11 @@ type KarmaxRuntime struct {
 	// yet is judged against this rather than against the epoch, so a restart
 	// does not report every scheduled loop as dark.
 	startedAt time.Time
+
+	// sourceTools are lent to the turn handling an event from that source
+	// (internal/sources): the Slack source's send-as-the-operator, for one.
+	sourceToolsMu sync.Mutex
+	sourceTools   map[string][]tools.Tool
 }
 
 func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
@@ -1317,6 +1322,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	}
 
 	rt.installOperatorMirror(s, waAgentID, rt.messageOperator)
+
+	// Event sources: each polls its accounts and publishes what happened as a
+	// webhook.fired event, and stays off — saying what to run — until its
+	// credentials exist. See internal/sources.
+	rt.registerSlackSource(integrationReg)
+	rt.registerPostHogSource(integrationReg)
 
 	return rt, nil
 }
