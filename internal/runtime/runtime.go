@@ -974,11 +974,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		// CLAUDE-ONLY-ORCHESTRATOR.md) on its own session key, never an
 		// operator-priority kind: a ten-minute health check must not spend a
 		// share of the operator's own quota.
-		waChannelID2, _ := commsMgr.FindChannelIDByType("whatsapp")
 		brainLatch := &brainMonitorLatch{}
 		loopkit.Register(loopkit.Loop{
 			Name:        "brain-monitor",
-			Description: "Pings the harness (the agent's real brain) every few minutes on the cheapest tier and alerts you (app + WhatsApp) if it goes down or comes back — so an outage never silently deafens KARMAX. A paused circuit breaker (quota policy) is never reported as down.",
+			Description: "Pings the harness (the agent's real brain) every few minutes on the cheapest tier and alerts you if it goes down or comes back — in the app, and on WhatsApp as an urgent item when the operating policy sends those — so an outage never silently deafens KARMAX. A paused circuit breaker (quota policy) is never reported as down.",
 			Schedule:    loopkit.Every("10m"),
 			Run: func(ctx context.Context, k loopkit.Kit) error {
 				h := harnessRT.get()
@@ -990,18 +989,16 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				event, reason := brainLatch.tick(pctx, h.harness)
 				switch event {
 				case brainMonitorAlertDown:
+					// One notice, urgent: the app, and WhatsApp through the
+					// policy. It used to go to WhatsApp twice — directly, and
+					// again through the mirror of the app notification.
 					msg := fmt.Sprintf("⚠️ KARMAX brain is DOWN (harness: %.140s). Your messages won't be answered until it recovers.", reason)
-					builtin.PushAppNotification(s, waAgentID, "alert", "⚠️ KARMAX brain is down", msg)
-					if waChannelID2 != "" && waTarget != "" {
-						_ = commsMgr.SendFrom(comms.ProducerSystem, waChannelID2, waTarget, msg)
-					}
+					builtin.PushAppNotificationUrgent(s, waAgentID, "alert", "⚠️ KARMAX brain is down", msg)
 					k.Logf("brain-monitor: DOWN (%s)", reason)
 				case brainMonitorAlertRecovered:
+					// Closes the urgent item above, so it travels the same way.
 					msg := "✅ KARMAX brain is back online. Resend anything I missed."
-					builtin.PushAppNotification(s, waAgentID, "update", "✅ KARMAX brain recovered", msg)
-					if waChannelID2 != "" && waTarget != "" {
-						_ = commsMgr.SendFrom(comms.ProducerSystem, waChannelID2, waTarget, msg)
-					}
+					builtin.PushAppNotificationUrgent(s, waAgentID, "update", "✅ KARMAX brain recovered", msg)
 					k.Logf("brain-monitor: recovered")
 				}
 				return nil
@@ -1863,18 +1860,30 @@ func (rt *KarmaxRuntime) startCriticalAlertLoop(ctx context.Context) {
 					zap.String("event", evt.ID), zap.Duration("age", age.Round(time.Minute)))
 				return nil
 			}
-			message, _ := evt.Payload["message"].(string)
-			if message == "" {
-				message = "KARMAX critical system event"
-			}
-			primary, _ := evt.Payload["karmax_channel_id"].(string)
-			// Returned, not logged: an undelivered critical alert is what the
-			// retry and dead-letter path is for.
-			if err := rt.comms.AlertAlternative(evt.AgentID, primary, "Critical KARMAX alert: "+message); err != nil {
-				return fmt.Errorf("alternative channel alert for %s: %w", evt.AgentID, err)
-			}
-			return nil
+			return rt.raiseCritical(evt)
 		})
+}
+
+// raiseCritical tells the operator about a critical system event: always on
+// record in the app, and on WhatsApp (or another live channel) when the
+// operating policy sends urgent items there — a critical alert is urgent by
+// nature.
+func (rt *KarmaxRuntime) raiseCritical(evt bus.Event) error {
+	message, _ := evt.Payload["message"].(string)
+	if message == "" {
+		message = "KARMAX critical system event"
+	}
+	builtin.PushAppNotificationQuiet(rt.store, evt.AgentID, "alert", "Critical KARMAX alert", message)
+	if !rt.policy.ToWhatsApp(policy.Urgent) {
+		return nil
+	}
+	primary, _ := evt.Payload["karmax_channel_id"].(string)
+	// Returned, not logged: an undelivered critical alert is what the
+	// retry and dead-letter path is for.
+	if err := rt.comms.AlertAlternative(evt.AgentID, primary, "Critical KARMAX alert: "+message); err != nil {
+		return fmt.Errorf("alternative channel alert for %s: %w", evt.AgentID, err)
+	}
+	return nil
 }
 
 func (rt *KarmaxRuntime) publishCritical(agentID, message string, fields map[string]any) {

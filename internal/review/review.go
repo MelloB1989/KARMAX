@@ -51,8 +51,8 @@ type Config struct {
 	// metered call. It returns ok=false when the harness cannot serve the turn,
 	// which is a routing fact rather than a failure: the API path answers.
 	Ask func(ctx context.Context, key, prompt string) (reply string, ok bool)
-	// Deliver the check-in to WhatsApp. WAChannelID/WATarget come from the
-	// comms channel; SendFunc is the comms manager's Send. Both optional.
+	// Retired: check-ins are filed in the app only (see deliver). Kept so
+	// existing callers compile; nothing reads them.
 	WAChannelID string
 	WATarget    string
 	SendFunc    func(channelID, target, content string) error
@@ -185,8 +185,12 @@ func (r *Reviewer) Tick(ctx context.Context) error {
 	return nil
 }
 
-// deliver sends the check-in to the app feed (+push) and WhatsApp. The operator
-// can answer in either place.
+// deliver files the check-in in the app feed (with a push). The operator
+// answers it there, or anywhere: open reviews ride on every agent turn.
+//
+// It used to go to WhatsApp as well, directly, every 45 minutes. A staleness
+// check-in is never urgent, and the operator's WhatsApp is for approvals and
+// urgent items only, so it stays out of the WhatsApp mirror too.
 func (r *Reviewer) deliver(rev store.StoredReview) {
 	var opts []string
 	_ = json.Unmarshal([]byte(rev.Options), &opts)
@@ -194,14 +198,7 @@ func (r *Reviewer) deliver(rev store.StoredReview) {
 	if len(opts) > 0 {
 		body += "\n\nReply: " + strings.Join(opts, " / ")
 	}
-	// App feed + push.
-	builtin.PushAppNotification(r.store, r.cfg.AgentID, "review", "🕰️ Still relevant?", body)
-	// WhatsApp.
-	if r.cfg.SendFunc != nil && r.cfg.WAChannelID != "" && r.cfg.WATarget != "" {
-		if err := r.cfg.SendFunc(r.cfg.WAChannelID, r.cfg.WATarget, "🕰️ "+body); err != nil {
-			r.log.Warn("review: whatsapp deliver failed", zap.Error(err))
-		}
-	}
+	builtin.PushAppNotificationQuiet(r.store, r.cfg.AgentID, "review", "🕰️ Still relevant?", body)
 }
 
 // ---- candidate gathering ---------------------------------------------------
