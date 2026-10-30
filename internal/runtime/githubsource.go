@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 
 	"github.com/MelloB1989/karmax/internal/bus"
 	ghconn "github.com/MelloB1989/karmax/internal/connectors/github"
+	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/sources"
@@ -71,6 +73,11 @@ func registerGitHubSource(getenv func(string) string, s *store.Store, b *bus.Log
 // next half-hourly sweep does.
 func githubTick(ctx context.Context, logf func(string, ...any), p *sourcegh.Poller, logins ghconn.Logins,
 	reg *integration.Registry, hc *http.Client) error {
+	if !ghInstalled() {
+		// No gh, no source: the gh health row says so, and a loop failing
+		// every three minutes would only repeat it as alerts.
+		return nil
+	}
 	res, err := p.Tick(ctx)
 	var failing []string
 	for _, a := range res.Accounts {
@@ -95,6 +102,13 @@ func githubTick(ctx context.Context, logf func(string, ...any), p *sourcegh.Poll
 		logf("%s", line)
 	}
 	return err
+}
+
+// ghInstalled reports whether this host has the gh CLI. A var so a test can
+// play a host without it.
+var ghInstalled = func() bool {
+	_, err := exec.LookPath(hostpaths.Gh())
+	return err == nil
 }
 
 // githubActNotice is what the operator is told after KARMAX acted as them.

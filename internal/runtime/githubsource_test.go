@@ -89,6 +89,9 @@ func (l twoLogins) Token(_ context.Context, a ghconn.Account) (string, error) {
 // One tick: the working login publishes, the broken one is named in the log
 // and its health row is checked there and then, not half an hour later.
 func TestAGitHubTickPublishesAndReportsABrokenLogin(t *testing.T) {
+	was := ghInstalled
+	ghInstalled = func() bool { return true } // whether or not this test host has it
+	defer func() { ghInstalled = was }()
 	updated := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer tok-octo-user" {
@@ -143,4 +146,36 @@ func TestAGitHubTickPublishesAndReportsABrokenLogin(t *testing.T) {
 	if log := strings.Join(lines, "\n"); !strings.Contains(log, "octo-work") || !strings.Contains(log, "1 event") {
 		t.Errorf("log = %q, want the event count and the broken login", log)
 	}
+}
+
+// A host without gh has no GitHub source. Its health row says so; the loop
+// failing every few minutes would only repeat that as alerts.
+func TestWithoutGhTheTickIsQuiet(t *testing.T) {
+	was := ghInstalled
+	ghInstalled = func() bool { return false }
+	defer func() { ghInstalled = was }()
+
+	p := &sourcegh.Poller{Logins: brokenGh{}}
+	var lines []string
+	err := githubTick(context.Background(), func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) },
+		p, brokenGh{}, nil, nil)
+	if err != nil || len(lines) != 0 {
+		t.Errorf("tick without gh = %v, logged %q; want a quiet no-op", err, lines)
+	}
+
+	// With gh there but unable to list its logins, the source has stopped,
+	// and that is an error worth surfacing.
+	ghInstalled = func() bool { return true }
+	if err := githubTick(context.Background(), func(string, ...any) {}, p, brokenGh{}, nil, nil); err == nil {
+		t.Error("a gh that cannot list its logins was a silent tick")
+	}
+}
+
+type brokenGh struct{}
+
+func (brokenGh) Accounts(context.Context) ([]ghconn.Account, error) {
+	return nil, errors.New(`exec: "gh": executable file not found in $PATH`)
+}
+func (brokenGh) Token(context.Context, ghconn.Account) (string, error) {
+	return "", errors.New("no gh")
 }
