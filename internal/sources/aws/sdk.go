@@ -70,6 +70,9 @@ func withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 func (a *sdkAPI) Identity(ctx context.Context) (string, error) {
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
+	if a.cfg.Credentials == nil {
+		return "", &AuthError{Err: errors.New("no credentials configured for this profile")}
+	}
 	// Cached by the SDK until they expire, so this is the login check
 	// without a call, most of the time.
 	if _, err := a.cfg.Credentials.Retrieve(ctx); err != nil {

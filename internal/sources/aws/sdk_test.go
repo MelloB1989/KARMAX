@@ -59,6 +59,14 @@ func TestErrorsAreToldApartByWhatFixesThem(t *testing.T) {
 	}
 }
 
+// A profile the SDK finds no credentials for is a login to set up, not a crash.
+func TestAProfileWithNoCredentialsIsALoginToSetUp(t *testing.T) {
+	_, err := (&sdkAPI{}).Identity(context.Background())
+	if !isAuth(err) {
+		t.Fatalf("err = %v, want a login error", err)
+	}
+}
+
 // Credits and refunds are left out of what an account is said to spend, or an
 // account running on credits would read as costing nothing, spikes included.
 func TestSpendIsCountedBeforeCredits(t *testing.T) {

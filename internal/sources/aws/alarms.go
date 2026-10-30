@@ -218,7 +218,7 @@ func (s *Source) compareStates(r reader, alarms []Alarm, now time.Time) (int, er
 		prevState, _, _ := strings.Cut(prev, "|")
 		var t *Transition
 		switch {
-		case a.State == "ALARM" && (!found || prevState != "ALARM" || prev != cur):
+		case a.State == "ALARM": // new to this read, or changed since the last
 			t = &Transition{Alarm: a.Name, At: a.UpdatedAt, From: prevState, To: "ALARM", Reason: a.Reason}
 		case a.State == "OK" && found && prevState == "ALARM":
 			t = &Transition{Alarm: a.Name, At: a.UpdatedAt, From: "ALARM", To: "OK", Reason: a.Reason}
@@ -233,7 +233,7 @@ func (s *Source) compareStates(r reader, alarms []Alarm, now time.Time) (int, er
 				n++
 			}
 		}
-		if err := s.kv.Set(alarmStateGroup, key, cur, seenTTL); err != nil {
+		if err := s.kv.Set(alarmStateGroup, key, cur, 0); err != nil {
 			return n, err
 		}
 	}

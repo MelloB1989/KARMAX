@@ -288,6 +288,16 @@ func TestAPassingCostFailureIsRetriedNextPoll(t *testing.T) {
 	}
 }
 
+// An outage that keeps every account from being reached fails the poll, so
+// loop health shows it; it is not a quiet success.
+func TestUnreachableAccountsFailTheCostPoll(t *testing.T) {
+	down := &fakeAPI{account: "111122223333", identityErr: errors.New("dial tcp: no route to host")}
+	h := newHarness(t, costConfig("ops-admin"), map[string]*fakeAPI{"ops-admin": down})
+	if _, err := h.src.PollCost(context.Background()); err == nil {
+		t.Fatal("a cost poll that reached no account reported success")
+	}
+}
+
 // Cost is per account: profiles on one account in different regions are one
 // bill, read once.
 func TestCostIsReadOncePerAccount(t *testing.T) {

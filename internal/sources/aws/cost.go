@@ -61,6 +61,11 @@ func (s *Source) PollCost(ctx context.Context) (CostReport, error) {
 	now := s.now()
 	ok, broken := 0, 0
 	var lastErr error
+	for _, h := range health {
+		if h.Status == StatusDegraded {
+			broken++ // reached for, and not reached: not a login, an outage
+		}
+	}
 	for _, r := range readers {
 		res, err := s.costOf(ctx, r, now)
 		rep.BilledCalls += res.billed
@@ -92,6 +97,9 @@ func (s *Source) PollCost(ctx context.Context) (CostReport, error) {
 	}
 	rep.Fixes = fixes(health)
 	if ok == 0 && broken > 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("every profile failed; see health")
+		}
 		return rep, fmt.Errorf("no AWS account's cost could be read: %w", lastErr)
 	}
 	return rep, nil
