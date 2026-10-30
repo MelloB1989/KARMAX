@@ -27,7 +27,12 @@ func TestACheckInIsFiledInTheAppNotSentToWhatsApp(t *testing.T) {
 	t.Cleanup(func() { builtin.SetMirrorHook(nil) })
 
 	r := New(Config{AgentID: "nexus", Namespace: "nexus", WAChannelID: "wa", WATarget: "15555550100@s.whatsapp.net",
-		SendFunc: func(_, _, content string) error { mu.Lock(); whatsapp = append(whatsapp, content); mu.Unlock(); return nil }},
+		SendFunc: func(_, _, content string) error {
+			mu.Lock()
+			whatsapp = append(whatsapp, content)
+			mu.Unlock()
+			return nil
+		}},
 		s, nil, zap.NewNop())
 	r.deliver(store.StoredReview{ID: "r-1", Question: "Is the Contoso pilot still on for Friday?", Options: `["Yes","Cancelled"]`})
 
