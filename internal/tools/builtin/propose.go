@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/google/uuid"
@@ -19,12 +20,22 @@ import (
 type ProposeTool struct {
 	Store   *store.Store
 	AgentID string
+	// Policy is the operator's operating policy. Nil means the default: act,
+	// then report, asking only for what is on the hard floor.
+	Policy *policy.Policy
+}
+
+func (t *ProposeTool) policy() policy.Policy {
+	if t.Policy != nil {
+		return *t.Policy
+	}
+	return policy.Default()
 }
 
 func (t *ProposeTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "propose",
-		Description: "Request the operator's approval BEFORE a CRITICAL, hard-to-undo action. Use ONLY for: spending money / making purchases, posting publicly (social, public channels), or deleting/overwriting data. This creates a pending approval in their phone app and notifies them; do NOT perform the action yet — once they approve you'll be asked to execute it. Do NOT use it for ordinary work, INCLUDING sending WhatsApp/messages to other people — the operator has enabled act-and-inform, so just send those via comms.send and they'll automatically see what you sent. Also don't propose for: replying to the operator, briefings/notifications, calendar/reminders, reading/searching, writing local files, safe commands, or delegating coding. When unsure about a routine action, act.",
+		Description: t.description(),
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -32,7 +43,8 @@ func (t *ProposeTool) Manifest() tools.ToolManifest {
 				"summary": {"type": "string", "description": "Why this matters and the context that prompted it."},
 				"action": {"type": "string", "description": "The concrete action you will take on approval, including any draft text (e.g. the exact WhatsApp message)."},
 				"kind": {"type": "string", "description": "Optional category: message, schedule, purchase, task, other."},
-				"urgency": {"type": "string", "enum": ["low", "normal", "high"], "description": "How time-sensitive (default normal)."}
+				"urgency": {"type": "string", "enum": ["low", "normal", "high"], "description": "How time-sensitive (default normal)."},
+				"floor": {"type": "string", "description": "Which hard-floor rule this falls under, in the policy's words (e.g. 'payments or spending money'). Required under act-then-report: a proposal that names none is declined, because the operator does not want to be asked about anything else."}
 			},
 			"required": ["title", "action"]
 		}`),
@@ -48,8 +60,23 @@ func (t *ProposeTool) Execute(ctx context.Context, input map[string]any) (tools.
 	summary, _ := input["summary"].(string)
 	kind, _ := input["kind"].(string)
 	urgency, _ := input["urgency"].(string)
+	floor, _ := input["floor"].(string)
+	floor = strings.TrimSpace(floor)
 
-	id, err := CreateProposal(t.Store, t.AgentID, kind, title, summary, action, urgency)
+	// Under act-then-report the operator is asked about the hard floor and
+	// nothing else. A proposal for anything else is a question they decided
+	// not to be asked: decline it, and say so in a way that gets the work done.
+	pol := t.policy()
+	if pol.ActFirst() && floor == "" {
+		return tools.SuccessResult(map[string]any{
+			"status": "not_needed",
+			"message": "Not proposed: under the operator's policy (act, then report) this needs no approval. Do it now; " +
+				"what you send as the operator is reported to them. Only the hard floor is asked about: " +
+				strings.Join(pol.HardFloor(), "; ") + ". If this really is one of those, call propose again with floor set to the rule.",
+		}), nil
+	}
+
+	id, err := CreateProposalOnFloor(t.Store, t.AgentID, kind, title, summary, action, urgency, floor)
 	if err != nil {
 		return tools.ErrorResult(fmt.Errorf("create proposal: %w", err)), nil
 	}
@@ -68,6 +95,12 @@ func (t *ProposeTool) Execute(ctx context.Context, input map[string]any) (tools.
 // approvals inbox (actionable: approve → execute), never as plain
 // notifications.
 func CreateProposal(s *store.Store, agentID, kind, title, summary, action, urgency string) (string, error) {
+	return CreateProposalOnFloor(s, agentID, kind, title, summary, action, urgency, "")
+}
+
+// CreateProposalOnFloor is CreateProposal for an approval its raiser knows is
+// on the hard floor, naming the rule. Empty floor means unknown.
+func CreateProposalOnFloor(s *store.Store, agentID, kind, title, summary, action, urgency, floor string) (string, error) {
 	// Drop empty decisions. The scan loops (chat-sweep/wa-monitor/gchat-watch)
 	// sometimes get a placeholder APPROVE line from the harness ("APPROVE: none",
 	// "APPROVE (none)", "APPROVE — none") that really means "nothing to approve".
@@ -116,7 +149,7 @@ func CreateProposal(s *store.Store, agentID, kind, title, summary, action, urgen
 	if strings.TrimSpace(summary) != "" {
 		body = summary + "\n\n" + action
 	}
-	notifyMirror(MirrorEvent{Kind: MirrorApproval, Title: title, Body: body, Source: "proposal:" + kind, ProposalID: id})
+	notifyMirror(MirrorEvent{Kind: MirrorApproval, Title: title, Body: body, Source: "proposal:" + kind, ProposalID: id, Floor: floor})
 	return id, nil
 }
 
@@ -135,4 +168,20 @@ func meaningfulText(s string) string {
 		return ""
 	}
 	return s
+}
+
+// description is the tool's contract, from the policy it enforces.
+func (t *ProposeTool) description() string {
+	pol := t.policy()
+	floor := strings.Join(pol.HardFloor(), "; ")
+	if pol.ActFirst() {
+		return "Ask the operator to approve an action BEFORE doing it — ONLY for the hard floor: " + floor +
+			". Set floor to the rule it falls under. It reaches them on WhatsApp and lands in their app's approvals; do not act until they approve, " +
+			"and you will be asked to execute it. Everything else — messages to other people as the operator, replies, comments, " +
+			"scheduling, changes that can be undone — needs no approval under their policy (act, then report): just do it. " +
+			"A proposal without a floor rule is declined."
+	}
+	return "Ask the operator to approve a consequential action BEFORE doing it, with a concrete draft (the exact message, " +
+		"the command). It lands in their app's approvals and reaches them on WhatsApp; do not act until they approve. " +
+		"Always required for: " + floor + " (set floor to the rule). Not needed for reading, searching, drafting or filing memory."
 }

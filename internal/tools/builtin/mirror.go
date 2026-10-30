@@ -14,6 +14,11 @@ type MirrorEvent struct {
 	Body       string
 	Source     string
 	ProposalID string
+	// Floor names the hard-floor rule an approval falls under, when whoever
+	// raised it said so. Empty means unknown, not "not on the floor".
+	Floor string
+	// Urgent marks a notification whoever raised it judged cannot wait.
+	Urgent bool
 }
 
 var (

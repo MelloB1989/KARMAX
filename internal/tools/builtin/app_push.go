@@ -23,7 +23,7 @@ type AppPushTool struct {
 func (t *AppPushTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "app.push",
-		Description: "Send a notification to the operator's KARMAX phone app. It is saved to the in-app notification feed AND delivered as a push. Use for proactive briefings, reminders, status updates, and alerts that should surface in the app. Always succeeds (the feed entry is saved even if no device is registered for push).",
+		Description: "Log a notification to the operator's KARMAX phone app: saved to the in-app feed and delivered as a push. This is where status updates, briefings and FYIs go. It reaches the operator's WhatsApp only when urgent is true — set that only for what cannot wait (something broken that blocks them, a deadline within the hour), since their WhatsApp is for approvals and urgent items only. Always succeeds (the feed entry is saved even if no device is registered for push).",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -31,7 +31,8 @@ func (t *AppPushTool) Manifest() tools.ToolManifest {
 				"body": {"type": "string", "description": "Notification body."},
 				"kind": {"type": "string", "description": "Optional category: briefing, reminder, alert, update."},
 				"data": {"type": "string", "description": "Optional JSON string of extra data delivered with the notification."},
-				"priority": {"type": "string", "enum": ["default", "high"], "description": "Delivery priority (default 'high')."}
+				"priority": {"type": "string", "enum": ["default", "high"], "description": "Delivery priority (default 'high')."},
+				"urgent": {"type": "boolean", "description": "True only if the operator must see this now; it then also reaches their WhatsApp."}
 			},
 			"required": ["body"]
 		}`),
@@ -76,7 +77,8 @@ func (t *AppPushTool) Execute(ctx context.Context, input map[string]any) (tools.
 	data["notification_id"] = notifID
 
 	devices, _, err := SendExpoPush(t.Store, title, body, priority, data)
-	notifyMirror(MirrorEvent{Kind: MirrorNotification, Title: title, Body: body, Source: "app.push"})
+	urgent, _ := input["urgent"].(bool)
+	notifyMirror(MirrorEvent{Kind: MirrorNotification, Title: title, Body: body, Source: "app.push", Urgent: urgent})
 	return tools.SuccessResult(map[string]any{
 		"saved":      true,
 		"id":         notifID,
@@ -100,6 +102,13 @@ func PushAppNotification(s *store.Store, agentID, kind, title, body string) {
 	pushAppNotification(s, agentID, kind, title, body, true)
 }
 
+// PushAppNotificationUrgent is PushAppNotification for something the operator
+// must see now, which the operating policy lets reach their WhatsApp without a
+// second opinion: their assistant going deaf, an outage they are waiting on.
+func PushAppNotificationUrgent(s *store.Store, agentID, kind, title, body string) {
+	pushAppNotificationMirrored(s, agentID, kind, title, body, true, true)
+}
+
 // PushAppNotificationQuiet is PushAppNotification without the WhatsApp mirror,
 // for notices that are themselves the echo of a WhatsApp send.
 func PushAppNotificationQuiet(s *store.Store, agentID, kind, title, body string) {
@@ -107,6 +116,10 @@ func PushAppNotificationQuiet(s *store.Store, agentID, kind, title, body string)
 }
 
 func pushAppNotification(s *store.Store, agentID, kind, title, body string, mirror bool) {
+	pushAppNotificationMirrored(s, agentID, kind, title, body, mirror, false)
+}
+
+func pushAppNotificationMirrored(s *store.Store, agentID, kind, title, body string, mirror, urgent bool) {
 	if s == nil || strings.TrimSpace(body) == "" {
 		return
 	}
@@ -137,7 +150,7 @@ func pushAppNotification(s *store.Store, agentID, kind, title, body string, mirr
 	data := map[string]any{"type": "notification", "notification_id": id}
 	_, _, _ = SendExpoPush(s, title, body, "default", data)
 	if mirror {
-		notifyMirror(MirrorEvent{Kind: MirrorNotification, Title: title, Body: body, Source: "app.notification:" + kind})
+		notifyMirror(MirrorEvent{Kind: MirrorNotification, Title: title, Body: body, Source: "app.notification:" + kind, Urgent: urgent})
 	}
 }
 

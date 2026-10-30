@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
@@ -34,58 +35,143 @@ func (s *sendSink) all() []string {
 	return append([]string(nil), s.sent...)
 }
 
-func jevSays(choice string) func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error) {
-	return func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error) {
-		return &loopkit.Decision{Answers: map[string]loopkit.Answer{"deliver": {Choice: choice, Confidence: 0.9}}}, nil
+// jevAnswers is a Jev that answers every question it is asked from a table,
+// and counts how often it was asked.
+func jevAnswers(asked *int, answers map[string]loopkit.Answer) func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error) {
+	return func(_ context.Context, _ any, qs loopkit.Questions) (*loopkit.Decision, error) {
+		if asked != nil {
+			*asked++
+		}
+		d := &loopkit.Decision{Answers: map[string]loopkit.Answer{}}
+		for id := range qs {
+			d.Answers[id] = answers[id]
+		}
+		return d, nil
 	}
 }
 
-func TestMirrorJevNoIsNotSent(t *testing.T) {
+func jevDown(context.Context, any, loopkit.Questions) (*loopkit.Decision, error) {
+	return nil, errors.New("reflex unavailable")
+}
+
+func mirrorWith(sink *sendSink, decide func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error), p policy.Policy) *operatorMirror {
+	return newOperatorMirror(zap.NewNop(), sink.send, decide, p)
+}
+
+// A routine notification is logged to the app and goes no further, which is
+// the whole of the operator's "approvals and urgent only".
+func TestARoutineNotificationStaysInTheApp(t *testing.T) {
 	sink := &sendSink{}
-	m := newOperatorMirror(zap.NewNop(), sink.send, jevSays("app_only"))
+	m := mirrorWith(sink, jevAnswers(nil, map[string]loopkit.Answer{"urgency": {Score: 1}}), policy.Default())
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "Daily briefing", Body: "3 meetings today"})
+	if n := len(sink.all()); n != 0 {
+		t.Fatalf("a routine notification reached WhatsApp: %v", sink.all())
+	}
+}
+
+// Something that cannot wait reaches WhatsApp: marked urgent by whoever raised
+// it, or scored at the threshold by the screener.
+func TestAnUrgentNotificationReachesWhatsApp(t *testing.T) {
+	sink := &sendSink{}
+	asked := 0
+	m := mirrorWith(sink, jevAnswers(&asked, map[string]loopkit.Answer{"urgency": {Score: 3}}), policy.Default())
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "Brain is down", Body: "no replies until it recovers"})
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "Prod 5xx", Body: "alarm firing", Urgent: true})
+	got := sink.all()
+	if len(got) != 2 || got[0] != "Brain is down\n\nno replies until it recovers" {
+		t.Fatalf("sent %q", got)
+	}
+	if asked != 1 {
+		t.Errorf("Jev was asked %d times; a notification marked urgent needs no second opinion", asked)
+	}
+}
+
+// An unanswered urgency question is not a reason to interrupt: the item is in
+// the app already, and noise is the failure the operator named.
+func TestAnUnclassifiedNotificationStaysInTheApp(t *testing.T) {
+	sink := &sendSink{}
+	m := mirrorWith(sink, jevDown, policy.Default())
 	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "t", Body: "b"})
 	if n := len(sink.all()); n != 0 {
 		t.Fatalf("sent %d, want 0", n)
 	}
 }
 
-func TestMirrorJevYesIsSentWithTemplate(t *testing.T) {
+// An approval on the hard floor reaches WhatsApp with what to reply.
+func TestAHardFloorApprovalReachesWhatsApp(t *testing.T) {
 	sink := &sendSink{}
-	m := newOperatorMirror(zap.NewNop(), sink.send, jevSays("whatsapp_now"))
-	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "Build done", Body: "all green"})
-	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: "Pay invoice", Body: "pay 5", ProposalID: "p-1"})
+	asked := 0
+	m := mirrorWith(sink, jevAnswers(&asked, nil), policy.Default())
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: "Pay invoice", Body: "pay 5", ProposalID: "p-1",
+		Floor: "payments or spending money"})
 	got := sink.all()
-	if len(got) != 2 {
-		t.Fatalf("sent %d, want 2", len(got))
+	if len(got) != 1 {
+		t.Fatalf("sent %d, want 1", len(got))
 	}
-	if got[0] != "Build done\n\nall green" {
-		t.Errorf("notification text = %q", got[0])
-	}
-	for _, want := range []string{"Approval needed: Pay invoice", "pay 5", "Proposal id: p-1", "approve or reject"} {
-		if !strings.Contains(got[1], want) {
-			t.Errorf("approval text %q missing %q", got[1], want)
+	for _, want := range []string{"Approval needed: Pay invoice", "pay 5", "payments or spending money", "Proposal id: p-1", "approve or reject"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("approval text %q missing %q", got[0], want)
 		}
+	}
+	if asked != 0 {
+		t.Error("an approval that names its floor rule needs no classification")
 	}
 }
 
-func TestMirrorJevUnavailableFailsOpen(t *testing.T) {
+// A loop's proposal does not say whether it is on the floor; Jev is asked, and
+// one that is not stays in the app's approvals inbox.
+func TestAnApprovalOffTheFloorStaysInTheApp(t *testing.T) {
 	sink := &sendSink{}
-	m := newOperatorMirror(zap.NewNop(), sink.send, func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error) {
-		return nil, errors.New("reflex unavailable")
-	})
-	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "t", Body: "b"})
+	m := mirrorWith(sink, jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0.1}}), policy.Default())
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: "Reply to Dana?", Body: "draft", ProposalID: "p-2"})
+	if n := len(sink.all()); n != 0 {
+		t.Fatalf("an off-floor approval reached WhatsApp: %v", sink.all())
+	}
+	m = mirrorWith(sink, jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0.9}}), policy.Default())
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: "Delete the staging bucket", Body: "x", ProposalID: "p-3"})
+	if n := len(sink.all()); n != 1 {
+		t.Fatalf("an on-floor approval did not reach WhatsApp: %v", sink.all())
+	}
+}
+
+// An approval waits on a person, so one that cannot be classified is sent.
+func TestAnUnclassifiedApprovalIsSent(t *testing.T) {
+	sink := &sendSink{}
+	m := mirrorWith(sink, jevDown, policy.Default())
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: "t", Body: "b", ProposalID: "p-4"})
 	if n := len(sink.all()); n != 1 {
 		t.Fatalf("sent %d, want 1", n)
+	}
+}
+
+// Under "ask first" every approval is the operator's to give.
+func TestAskFirstSendsEveryApproval(t *testing.T) {
+	sink := &sendSink{}
+	m := mirrorWith(sink, jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0}}), policy.New(policy.Config{Autonomy: "ask"}))
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: "Reply to Dana?", Body: "draft", ProposalID: "p-5"})
+	if n := len(sink.all()); n != 1 {
+		t.Fatalf("sent %d, want 1", n)
+	}
+}
+
+// An operator who turns WhatsApp off gets nothing there, however urgent.
+func TestAnEmptyWhatsAppPolicySendsNothing(t *testing.T) {
+	sink := &sendSink{}
+	m := mirrorWith(sink, jevAnswers(nil, nil), policy.New(policy.Config{WhatsApp: []string{}}))
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "t", Body: "b", Urgent: true})
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: "t", Body: "b", ProposalID: "p", Floor: "payments"})
+	if n := len(sink.all()); n != 0 {
+		t.Fatalf("sent %d, want 0", n)
 	}
 }
 
 func TestMirrorHookIsAsync(t *testing.T) {
 	release := make(chan struct{})
 	sink := &sendSink{}
-	m := newOperatorMirror(zap.NewNop(), sink.send, func(ctx context.Context, _ any, _ loopkit.Questions) (*loopkit.Decision, error) {
+	m := mirrorWith(sink, func(ctx context.Context, _ any, _ loopkit.Questions) (*loopkit.Decision, error) {
 		<-release
 		return nil, errors.New("x")
-	})
+	}, policy.Default())
 	done := make(chan struct{})
 	go func() {
 		m.Hook(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "t", Body: "b"})
@@ -108,10 +194,10 @@ func TestMirrorSendIsNotEchoedBackToTheApp(t *testing.T) {
 		notify("operator-alias", text)
 		return nil
 	}
-	m = newOperatorMirror(zap.NewNop(), send, jevSays("whatsapp_now"))
+	m = newOperatorMirror(zap.NewNop(), send, jevDown, policy.Default())
 	notify = m.Notifier(func(target, content string) { pushed = append(pushed, content) })
 
-	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "t", Body: "b"})
+	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorNotification, Title: "t", Body: "b", Urgent: true})
 	if len(pushed) != 0 {
 		t.Fatalf("mirror send was pushed back to the app: %v", pushed)
 	}

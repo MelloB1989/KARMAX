@@ -48,6 +48,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/mesh"
 	"github.com/MelloB1989/karmax/internal/orgops"
+	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/review"
@@ -172,6 +173,9 @@ type KarmaxRuntime struct {
 	// screened by before anything expensive looks at it. Nil-safe — an
 	// unconfigured reflex passes every event through untouched.
 	reflex *reflex.Evaluator
+
+	// policy is how KARMAX acts for the operator and when it reaches them.
+	policy policy.Policy
 
 	// startedAt is when this process came up. A loop that has not succeeded
 	// yet is judged against this rather than against the epoch, so a restart
@@ -735,7 +739,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		toolReg.Register(&builtin.NtfyPushTool{Server: os.Getenv("NTFY_SERVER"), Topic: ntfyTopic})
 	}
 	toolReg.Register(&builtin.AppPushTool{Store: s})
-	toolReg.Register(&builtin.ProposeTool{Store: s})
+	// The tool enforces the operating policy: under act-then-report it is for
+	// the hard floor only.
+	operating := policy.New(cfg.Policy)
+	toolReg.Register(&builtin.ProposeTool{Store: s, Policy: &operating})
 	toolReg.Register(&builtin.CalendarAddTool{Store: s})
 	toolReg.Register(&builtin.ReminderAddTool{Store: s})
 	toolReg.Register(&builtin.ContactAddTool{Store: s})
@@ -1239,6 +1246,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}(),
 		voice:        voiceReg,
 		routedKinds:  routedKinds,
+		policy:       operating,
 		officeClaims: officeClaimFn(orgOffice),
 		mesh:         meshNode,
 		pending:      newPendingTriggers(),
