@@ -7,6 +7,7 @@ import (
 
 	"github.com/MelloB1989/karma/ai/jev"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/sources"
 )
 
 // Question ids. They are ours and never reach the model, so they are named for
@@ -92,6 +93,27 @@ func StateOf(evt bus.Event, hint Hint) map[string]any {
 		}
 		state["recent_context"] = trimmed
 	}
+	// An event from one of the operator's accounts is judged on what a person
+	// would read about it — which service and account, what kind of thing, what
+	// it says — rather than on the router's plumbing around it.
+	if src, ok := sources.FromBusEvent(evt); ok {
+		state["source"] = src.Source
+		state["account"] = src.Account
+		if src.Type != "" {
+			state["type"] = clip(src.Type)
+		}
+		if src.Title != "" {
+			state["title"] = clip(src.Title)
+		}
+		if src.Summary != "" {
+			state["summary"] = clip(src.Summary)
+		}
+		state["urgent"] = src.Urgent
+		if details := summarisePayload(src.Data); len(details) > 0 {
+			state["details"] = details
+		}
+		return state
+	}
 	if payload := summarisePayload(evt.Payload); len(payload) > 0 {
 		state["payload"] = payload
 	}
@@ -109,6 +131,10 @@ func summarisePayload(in map[string]any) map[string]any {
 	for k, v := range in {
 		switch k {
 		case "karmax_channel_id", "agent_id":
+			continue
+		case "headers":
+			// A webhook's request headers can carry credentials, and the
+			// screener is a third-party API. They decide nothing anyway.
 			continue
 		}
 		switch t := v.(type) {

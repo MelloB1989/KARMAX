@@ -74,6 +74,11 @@ type Hint struct {
 	Channel  string
 	Sender   string
 	Recent   []string
+	// Urgent is the source's own mark that the operator must hear about this
+	// now — an alarm firing, a person asking them directly. Like Operator, it
+	// comes from the event's origin, never from the model, and the screener
+	// cannot overrule it.
+	Urgent bool
 }
 
 // Verdict is one screening decision, plus the numbers behind it so a threshold
@@ -186,6 +191,15 @@ func Decide(res *jev.Result, hint Hint, th Thresholds) Verdict {
 		v.Action = ActionHandle
 		v.Floored = true
 		v.Reason = "operator floor: " + string(Action(disposition))
+	}
+
+	// The urgent floor. A source that marks an event urgent has said the
+	// operator must hear about it now; the screener decides how it is handled,
+	// never that it is dropped, filed, or left to wait.
+	if hint.Urgent && v.Action != ActionEscalate {
+		v.Floored = true
+		v.Reason = "urgent floor: " + string(v.Action)
+		v.Action = ActionEscalate
 	}
 
 	if v.Reason == "" {
