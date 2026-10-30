@@ -415,6 +415,24 @@ func TestActingWithoutAnyLoginSaysHowToFixIt(t *testing.T) {
 	}
 }
 
+// `karmax tool call github.reply number=12 body=123` types each value as JSON,
+// and a model may quote a number: neither changes what is meant.
+func TestArgumentsTypedAsTheCommandLineTypesThemStillWork(t *testing.T) {
+	h := newActHub(t)
+	h.grant("octo-user", "contoso/app", "push")
+	a, _ := newActor(h, "octo-user")
+	if _, err := run(t, a, "github.reply", map[string]any{"repo": "contoso/app", "number": "12", "body": float64(123)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, a, "github.merge", map[string]any{"repo": "contoso/app", "number": float64(12), "sha": float64(1234567)}); err != nil {
+		t.Fatal(err)
+	}
+	w := h.writes()
+	if len(w) != 2 || w[0].body["body"] != "123" || w[1].body["sha"] != "1234567" {
+		t.Errorf("writes = %+v, want the body and sha as written", w)
+	}
+}
+
 type failingLogins struct{}
 
 func (failingLogins) Accounts(context.Context) ([]Account, error) {

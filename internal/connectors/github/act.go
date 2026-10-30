@@ -143,8 +143,7 @@ func (t target) ref() string {
 
 // parseTarget reads repo (owner/name or a link) and number.
 func parseTarget(in map[string]any, needNumber bool) (target, error) {
-	raw, _ := in["repo"].(string)
-	raw = strings.TrimSpace(raw)
+	raw := str(in, "repo")
 	tg := target{host: defaultHost}
 	if raw == "" {
 		return tg, fmt.Errorf("github: need repo as owner/name or a GitHub link")
@@ -167,7 +166,7 @@ func parseTarget(in map[string]any, needNumber bool) (target, error) {
 	if len(parts) >= 4 && (parts[2] == "pull" || parts[2] == "pulls" || parts[2] == "issues") {
 		tg.number, _ = strconv.Atoi(parts[3])
 	}
-	if n := intOf(in["number"], 0); n > 0 {
+	if n := num(in, "number", 0); n > 0 {
 		tg.number = n
 	}
 	if needNumber && tg.number <= 0 {
@@ -349,9 +348,33 @@ func (a *Actor) told(act Act) {
 	}
 }
 
+// str reads a text argument. The CLI types every key=value as JSON, so a
+// body of 123 or an all-digit sha arrives as a number; it still means the text.
 func str(in map[string]any, k string) string {
-	s, _ := in[k].(string)
-	return strings.TrimSpace(s)
+	switch v := in[k].(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case bool:
+		return strconv.FormatBool(v)
+	}
+	return ""
+}
+
+// num reads a number argument, quoted ("12", "#12") or not; def when absent.
+func num(in map[string]any, k string, def int) int {
+	if s, ok := in[k].(string); ok {
+		if n, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(s), "#")); err == nil {
+			return n
+		}
+		return def
+	}
+	return intOf(in[k], def)
 }
 
 func (a *Actor) accountsTool(ctx context.Context, _ connectorkit.Credentials, in map[string]any) (any, error) {
@@ -397,7 +420,7 @@ func (a *Actor) reply(ctx context.Context, _ connectorkit.Credentials, in map[st
 		return nil, err
 	}
 	path, action := fmt.Sprintf("/repos/%s/issues/%d/comments", tg.repo(), tg.number), "commented on"
-	if id := intOf(in["in_reply_to"], 0); id > 0 {
+	if id := num(in, "in_reply_to", 0); id > 0 {
 		path = fmt.Sprintf("/repos/%s/pulls/%d/comments/%d/replies", tg.repo(), tg.number, id)
 		action = "replied in a review thread on"
 	}
@@ -562,7 +585,7 @@ func (a *Actor) read(ctx context.Context, _ connectorkit.Credentials, in map[str
 		}
 	}
 
-	limit := intOf(in["comments"], 5)
+	limit := num(in, "comments", 5)
 	if limit > 20 {
 		limit = 20
 	}
@@ -700,7 +723,7 @@ func (a *Actor) read(ctx context.Context, _ connectorkit.Credentials, in map[str
 			out["review_comments"] = list
 		}
 
-		if b, _ := in["diff"].(bool); b {
+		if strings.EqualFold(str(in, "diff"), "true") {
 			var diff string
 			if err := get(fmt.Sprintf("%s/pulls/%d", base, tg.number), "application/vnd.github.diff", &diff); err != nil {
 				note("diff", err)
