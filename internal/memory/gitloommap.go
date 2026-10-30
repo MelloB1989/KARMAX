@@ -375,41 +375,6 @@ func ToGitLoom(e MemoryEntry, path string, related []string) gitloom.NewMemory {
 	return m
 }
 
-// RemoveSection deletes the "## ..." block whose header slugifies to slug,
-// returning the document without it and whether anything matched.
-//
-// The store addresses a fact as file.md#slug, where the slug is derived from
-// the header text. Matching is done by slugifying each header the same way
-// rather than by string-comparing the header, because the slug the store hands
-// back is truncated and lower-cased and will never equal the header itself.
-func RemoveSection(doc, slug string) (string, bool) {
-	slug = strings.ToLower(strings.Trim(slug, "-"))
-	if slug == "" {
-		return doc, false
-	}
-	lines := strings.Split(doc, "\n")
-	start, end := -1, len(lines)
-	for i, l := range lines {
-		if !strings.HasPrefix(l, "## ") {
-			continue
-		}
-		if start >= 0 {
-			end = i
-			break
-		}
-		h := slugify(strings.TrimSpace(strings.TrimPrefix(l, "## ")))
-		// The stored slug is a truncation of the header's slug.
-		if h == slug || strings.HasPrefix(h, slug) || strings.HasPrefix(slug, h) {
-			start = i
-		}
-	}
-	if start < 0 {
-		return doc, false
-	}
-	kept := append(append([]string{}, lines[:start]...), lines[end:]...)
-	return strings.TrimSpace(strings.Join(kept, "\n")), true
-}
-
 // EventTime is when a memory's subject happened, else when it was recorded.
 func EventTime(e MemoryEntry) time.Time {
 	if !e.OccurredAt.IsZero() {

@@ -277,8 +277,8 @@ func (m *Manager) Forget(handle string) error {
 		// could write a consolidated fact and then fail to remove a single
 		// duplicate it replaced — it ADDED a memory on every run and removed
 		// none, which is the opposite of consolidating.
-		if file, slug, ok := splitSectionPath(handle); ok {
-			return remote.forgetSection(context.Background(), file, slug)
+		if _, _, ok := splitSectionPath(handle); ok {
+			return remote.forget(context.Background(), handle)
 		}
 		if !strings.HasSuffix(handle, ".md") {
 			return fmt.Errorf("memory: %q is not a GitLoom path; recall returns paths ending in .md", handle)

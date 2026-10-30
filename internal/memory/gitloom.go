@@ -191,59 +191,56 @@ func (g *gitloomBackend) write(ctx context.Context, e MemoryEntry, path string, 
 	return g.put(cctx, merged, occurred)
 }
 
-// forgetSection removes ONE dated fact from the document that holds its
-// subject, leaving the rest of the document intact.
+// forget removes a document, or ONE dated fact in one ("file.md#slug"), and
+// returns once the store no longer holds it.
 //
-// The store has no delete-a-section call: a write replaces the whole file. So
-// the section is cut out here and the remainder written back. Deleting the file
-// instead — the only thing the API offers directly — would take every other
-// fact about that subject with it.
-func (g *gitloomBackend) forgetSection(ctx context.Context, file, slug string) error {
+// The store cuts a section itself. KARMAX used to cut it here — read the
+// document, find the header whose slug matched, write the rest back — but its
+// slugs were not the store's ("19:47" became "19-47" here and "1947" there),
+// so three in four section forgets matched nothing and reported success.
+//
+// A handle that names nothing is ErrNotStored, never a quiet success. And the
+// call waits for the forget to land: the next write to the document folds onto
+// what is stored, so a forget still in the queue — or KARMAX's own memory of
+// what it last wrote there — would carry the fact straight back.
+func (g *gitloomBackend) forget(ctx context.Context, handle string) error {
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
+	file, _, _ := strings.Cut(handle, "#")
 	defer g.lockPath(file)()
-	existing, err := g.current(cctx, file)
-	if err != nil {
+	opts := &gitloom.RecallOptions{Namespace: g.cfg.Namespace}
+	if _, err := g.client.Get(cctx, handle, opts); err != nil {
 		if isAbsent(err) {
-			return nil // already gone
+			return fmt.Errorf("%w: %s", ErrNotStored, handle)
 		}
 		g.setHealth(false, err)
 		return err
 	}
-	if existing == nil || strings.TrimSpace(existing.Content) == "" {
-		return nil
-	}
-	remaining, removed := RemoveSection(existing.Content, slug)
-	if !removed {
-		return nil // nothing matched; not an error, the fact is not there
-	}
-	if strings.TrimSpace(remaining) == "" {
-		// The last fact in the document: drop the document itself rather than
-		// leaving an empty file that still answers searches.
-		return g.forget(ctx, file)
-	}
-	out := gitloom.NewMemory{
-		Path: existing.Path, Content: remaining, Tags: userTags(existing),
-		Confidence: existing.Confidence, Cues: existing.Cues, Related: existing.Related,
-	}
-	if !existing.OccurredAt.IsZero() {
-		out.OccurredAt = gitloom.At(existing.OccurredAt)
-	}
-	return g.put(cctx, out, existing.OccurredAt)
-}
-
-func (g *gitloomBackend) forget(ctx context.Context, path string) error {
-	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
-	defer cancel()
-	g.dropPending(path)
-	if err := g.client.Forget(cctx, []string{path}, nil); err != nil {
+	if err := g.client.Forget(cctx, []string{handle}, &gitloom.WriteOptions{Namespace: g.cfg.Namespace}); err != nil {
 		g.setHealth(false, err)
 		return err
 	}
+	g.dropPending(file)
 	g.setHealth(true, nil)
-	return nil
+
+	for {
+		if _, err := g.client.Get(cctx, handle, opts); isAbsent(err) {
+			return nil
+		}
+		select {
+		case <-cctx.Done():
+			// Accepted and queued, so it will land; only a write to this
+			// document in the meantime can undo it.
+			g.log.Warn("gitloom: forget accepted but not yet applied", zap.String("handle", handle))
+			return nil
+		case <-time.After(forgetPoll):
+		}
+	}
 }
+
+// forgetPoll is how often a forget checks whether the store has applied it.
+const forgetPoll = 100 * time.Millisecond
 
 // foldOntoStored carries everything already at a path into the memory about to
 // replace it.
@@ -284,6 +281,9 @@ func isNotFound(err error) bool {
 }
 
 const codeNamespaceNotFound = "namespace_not_found"
+
+// ErrNotStored is a forget whose handle names nothing in the store.
+var ErrNotStored = errors.New("memory: nothing is stored at that handle")
 
 // isNamespaceMissing reports a 404 for the namespace itself.
 func isNamespaceMissing(err error) bool {

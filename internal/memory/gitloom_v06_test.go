@@ -319,19 +319,98 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 			s.mu.Unlock()
 		}()
 		writeJSON(w, map[string]any{"written": 1})
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories"):
+	case r.Method == http.MethodDelete && r.URL.Path == "/v1/memories":
+		paths := strings.Split(r.URL.Query().Get("path"), ",")
+		s.wg.Add(1)
 		s.mu.Lock()
-		c, ok := s.files[r.URL.Query().Get("path")]
+		before, mine := s.prev, make(chan struct{})
+		s.prev = mine
 		s.mu.Unlock()
+		go func() {
+			defer s.wg.Done()
+			defer close(mine)
+			if before != nil {
+				<-before
+			}
+			time.Sleep(s.delay)
+			s.mu.Lock()
+			for _, p := range paths {
+				file, slug, isSection := strings.Cut(p, "#")
+				if !isSection {
+					delete(s.files, file)
+					continue
+				}
+				if rest := cutSection(s.files[file], slug); strings.TrimSpace(rest) == "" {
+					delete(s.files, file)
+				} else {
+					s.files[file] = rest
+				}
+			}
+			s.mu.Unlock()
+		}()
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(w, map[string]any{"status": "accepted"})
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories"):
+		p := r.URL.Query().Get("path")
+		file, slug, isSection := strings.Cut(p, "#")
+		s.mu.Lock()
+		c, ok := s.files[file]
+		s.mu.Unlock()
+		if ok && isSection {
+			ok = cutSection(c, slug) != c
+		}
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			writeJSON(w, map[string]any{"error": map[string]any{"code": "not_found", "message": "no memory"}})
 			return
 		}
-		writeJSON(w, map[string]any{"path": r.URL.Query().Get("path"), "content": c, "updated_at": time.Now().Unix() - 3600})
+		writeJSON(w, map[string]any{"path": p, "content": c, "updated_at": time.Now().Unix() - 3600})
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// serverSlug is how the store addresses a header: punctuation dropped, spaces
+// to single hyphens — not how KARMAX would slug it.
+func serverSlug(header string) string {
+	var b strings.Builder
+	hyphen := false
+	for _, r := range strings.ToLower(strings.TrimSpace(header)) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			hyphen = false
+		case r == ' ' || r == '-' || r == '_':
+			if !hyphen && b.Len() > 0 {
+				b.WriteByte('-')
+				hyphen = true
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "-")
+}
+
+// cutSection is the store's forget of one "## " section; doc is returned
+// unchanged when no header has that slug.
+func cutSection(doc, slug string) string {
+	lines := strings.Split(doc, "\n")
+	start, end := -1, len(lines)
+	for i, l := range lines {
+		if !strings.HasPrefix(l, "## ") {
+			continue
+		}
+		if start >= 0 {
+			end = i
+			break
+		}
+		if serverSlug(strings.TrimPrefix(l, "## ")) == slug {
+			start = i
+		}
+	}
+	if start < 0 {
+		return doc
+	}
+	return strings.TrimSpace(strings.Join(append(lines[:start:start], lines[end:]...), "\n"))
 }
 
 func (s *slowStore) final(path string) string {

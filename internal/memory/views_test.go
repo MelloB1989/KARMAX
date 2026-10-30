@@ -227,7 +227,14 @@ func TestForgettingASingleFactStillWorks(t *testing.T) {
 	deleted := false
 
 	srv := fakeGitLoom(t, func(w http.ResponseWriter, r *http.Request) bool {
+		mu.Lock()
+		gone := deleted
+		mu.Unlock()
 		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories") && gone:
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, map[string]any{"error": map[string]any{"code": "not_found", "message": "no memory"}})
+			return true
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories"):
 			writeJSON(w, map[string]any{"path": "facts/context/one.md", "content": "a single fact, no sections"})
 			return true
