@@ -336,8 +336,5 @@ func (b *Broker) forget(subject string) {
 // LoopSubject names a loop as a broker subject.
 func LoopSubject(name string) string { return "loop:" + name }
 
-// PeerSubject names a mesh peer as a broker subject.
-func PeerSubject(id string) string { return "peer:" + id }
-
 // ConnectorSubject names a connector as a broker subject.
 func ConnectorSubject(id string) string { return "connector:" + id }

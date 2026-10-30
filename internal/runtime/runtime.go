@@ -46,11 +46,9 @@ import (
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
-	"github.com/MelloB1989/karmax/internal/mesh"
 	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/review"
-	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -137,10 +135,6 @@ type KarmaxRuntime struct {
 	loopkitLoops     map[string]loopkit.Loop
 	loopWebhooks     map[string]string // webhook route -> loop name
 	loopDefaultAgent string
-
-	// mesh is this instance's presence among other KARMAX instances. Nil when
-	// no endpoint is configured, which is the single-instance default.
-	mesh *mesh.Node
 
 	// waChannel is kept so voice can teach it to answer incoming calls once the
 	// brain is up — the channel is built long before the brain is.
@@ -1107,42 +1101,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			zap.String("source", string(t.src)), zap.String("path", t.path))
 	}
 
-	// The mesh: other KARMAX instances, one per person plus one for the org.
-	//
-	// Only started when an endpoint is configured. Without one this instance
-	// has no address to advertise, and standing up an inbound trust surface
-	// that nobody can reach is all risk and no function.
-	var meshNode *mesh.Node
-	if ep := strings.TrimSpace(os.Getenv("KARMAX_MESH_ENDPOINT")); ep != "" {
-		meshID, err := mesh.LoadOrCreateIdentity(filepath.Join(dataDir, "mesh"), meshInstanceName(cfg))
-		if err != nil {
-			log.Error("mesh: could not load this instance's identity", zap.Error(err))
-		} else {
-			meshNode = mesh.New(meshID, mesh.Config{
-				Endpoint:   ep,
-				TrustedOrg: strings.TrimSpace(os.Getenv("KARMAX_MESH_ORG_KEY")),
-				IsOrg:      strings.EqualFold(os.Getenv("KARMAX_MESH_IS_ORG"), "true"),
-				OrgName:    strings.TrimSpace(os.Getenv("KARMAX_MESH_ORG_NAME")),
-			}, s, log)
-			wh.AddHandler("/mesh", meshNode.Handler().ServeHTTP)
-			wh.AddHandler("/mesh/hello", meshNode.Handler().ServeHTTP)
-			// The mesh is served BY the webhook server, so it is only actually
-			// reachable when that server runs. Saying "reachable" regardless
-			// would be a lie the operator only discovers when a peer cannot
-			// connect and nothing in the log admits why.
-			if cfg.Webhooks.Enabled {
-				log.Info("mesh: this instance is reachable",
-					zap.String("endpoint", ep),
-					zap.String("fingerprint", meshID.Fingerprint()))
-			} else {
-				log.Warn("mesh: configured but NOT reachable — webhooks are disabled, "+
-					"and the mesh is served on the webhook port",
-					zap.String("endpoint", ep),
-					zap.String("fingerprint", meshID.Fingerprint()))
-			}
-		}
-	}
-
 	connHost.MountWebhooks(wh.AddHandler)
 
 	// Operator-defined webhooks, dispatched from a lookup rather than the mux.
@@ -1229,7 +1187,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}(),
 		voice:        voiceReg,
 		routedKinds:  routedKinds,
-		mesh:         meshNode,
 		pending:      newPendingTriggers(),
 		startedAt:    startedAt,
 		wasmByName:   map[string]*wasmloop.Runner{},
@@ -1334,7 +1291,6 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.connectors.StartProbing(ctx)
 	rt.startRecipes(ctx)
 	rt.startAgentRouter(ctx)
-	rt.wireMesh()
 	rt.startCriticalAlertLoop(ctx)
 	rt.startDeadLetterAlerts()
 
@@ -1554,105 +1510,6 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 
 	wg.Wait()
 	return nil
-}
-
-// wireMesh connects peer instances to this one's agent.
-//
-// Until now the mesh recorded traffic and nothing acted on it. An ask from a
-// peer reaches the agent with the delegation provenance attached, so if the
-// agent needs another instance's help it can pass that on with SendOnBehalf
-// rather than presenting the work as its own.
-func (rt *KarmaxRuntime) wireMesh() {
-	if rt.mesh == nil {
-		return
-	}
-	rt.mesh.OnCertificate(rt.applyOrgCertificate)
-
-	rt.mesh.OnAsk(func(ctx context.Context, peer store.MeshPeer, question string, prov mesh.Provenance) (string, error) {
-		ag, ok := rt.agents.Get(rt.loopDefaultAgent)
-		if !ok || ag == nil {
-			return "", fmt.Errorf("this instance has no agent to answer with")
-		}
-		// A peer is not the operator, and neither is whoever asked the peer.
-		origin := prov.Origin()
-		source := fmt.Sprintf("the KARMAX instance %q", peer.Name)
-		if prov.Delegated() {
-			source += fmt.Sprintf(", asking on behalf of %s", short(origin))
-		}
-		prompt := fmt.Sprintf(
-			"Another KARMAX instance has asked you a question. Answer it as this operator's colleague would: "+
-				"helpfully, but disclosing only what is appropriate to share outside.\n\n%s",
-			safety.Fence(source, question))
-
-		rt.log.Info("mesh: answering a question from a peer",
-			zap.String("peer", peer.Name), zap.Int("delegation_depth", prov.Depth()))
-		return ag.Chat(ctx, prompt)
-	})
-
-	rt.mesh.OnMessage(func(peer store.MeshPeer, kind mesh.Kind, body mesh.MessageBody, prov mesh.Provenance) {
-		evt := bus.NewEvent(bus.EventUserDefined, rt.loopDefaultAgent, map[string]any{
-			"source":   "mesh",
-			"peer":     peer.Name,
-			"peer_id":  peer.ID,
-			"kind":     string(kind),
-			"subject":  body.Subject,
-			"prompt":   safety.Fence("a message from the KARMAX instance "+peer.Name, body.Text),
-			"origin":   prov.Origin(),
-			"depth":    prov.Depth(),
-			"reply_to": body.ReplyTo,
-		})
-		if err := rt.bus.Publish(evt); err != nil {
-			rt.log.Error("mesh: could not record an inbound message",
-				zap.String("peer", peer.Name), zap.Error(err))
-		}
-	})
-
-	rt.mesh.OnPeerRequest(func(peer store.MeshPeer) {
-		builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "alert",
-			fmt.Sprintf("%s wants to connect", peer.Name),
-			"Fingerprint "+peer.Fingerprint+" — verify it out of band, then `karmax mesh accept`.")
-	})
-}
-
-// applyOrgCertificate turns the capability scopes on a verified org certificate
-// into Broker grants for that org.
-//
-// The certificate is the org saying what it may do here; the Broker is this
-// instance deciding whether that is honoured, and metering it either way.
-// Keeping them separate is what lets an operator revoke a capability without
-// leaving the org, and what stops a transport verb from silently becoming
-// permission to read memory.
-//
-// Grants expire with the certificate, so an org that stops re-issuing loses
-// access without anybody having to remember to withdraw it.
-func (rt *KarmaxRuntime) applyOrgCertificate(cert *mesh.Certificate) {
-	caps := cert.Capabilities()
-	if len(caps) == 0 {
-		return
-	}
-	subject := broker.PeerSubject(cert.Org)
-	expires := time.Unix(cert.Expires, 0)
-
-	for _, c := range caps {
-		if err := rt.broker.Grant(store.Grant{
-			Subject: subject, Capability: c.Class, Value: c.Value,
-			GrantedBy: "org-certificate:" + cert.OrgName, ExpiresAt: &expires,
-		}); err != nil {
-			rt.log.Warn("could not record an org capability",
-				zap.String("org", cert.OrgName), zap.String("capability", c.Class), zap.Error(err))
-		}
-	}
-	rt.broker.SetTrust(subject, broker.Registry)
-	rt.log.Info("org certificate granted capabilities",
-		zap.String("org", cert.OrgName), zap.Int("capabilities", len(caps)),
-		zap.Time("until", expires))
-}
-
-func short(id string) string {
-	if len(id) > 12 {
-		return id[:12] + "…"
-	}
-	return id
 }
 
 // startAgentRouter delivers routed events to agent inboxes. No agent means
@@ -2029,21 +1886,6 @@ func defaultNamespace(cfg *config.KarmaxConfig) string {
 	}
 	return cfg.Agents[0].ID
 }
-
-// meshInstanceName labels this instance for other nodes. A display label only —
-// every trust decision is made on the key, never on this.
-func meshInstanceName(cfg *config.KarmaxConfig) string {
-	if n := strings.TrimSpace(os.Getenv("KARMAX_MESH_NAME")); n != "" {
-		return n
-	}
-	if len(cfg.Agents) > 0 && cfg.Agents[0].ID != "" {
-		return cfg.Agents[0].ID
-	}
-	return "karmax"
-}
-
-// Mesh exposes the mesh node, nil when this instance is not on a mesh.
-func (rt *KarmaxRuntime) Mesh() *mesh.Node { return rt.mesh }
 
 // unconfiguredChannel reports a channel that is declared but has no credentials
 // yet, so it can be skipped rather than started and failed.

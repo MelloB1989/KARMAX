@@ -172,12 +172,8 @@ flowchart LR
   itself, including a privacy guard every social post must pass.
 - **Connectors** (`internal/connectors`, `pkg/connectorkit`) — integrations that mount their
   own tools, auth and event sources: GitHub, LinkedIn, X.
-- **Mesh** (`internal/mesh`) — lets KARMAX instances find each other, agree to talk, and
-  exchange work, with a hop limit so a chain cannot run away.
 - **Voice** (`internal/voice`) — the interface a voice integration plugs into; WhatsApp calls
   are answered and spoken through it.
-- **vorg** (`internal/vorg`) — instantiates a virtual organisation of agents from a
-  declarative spec.
 - **API** (`internal/api`) — bearer-auth HTTP API plus mDNS discovery for the app.
 
 ## Install (prebuilt)
