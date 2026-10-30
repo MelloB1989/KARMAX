@@ -160,15 +160,33 @@ type Host struct {
 	// HasLogin reports whether a gws directory holds a stored login, so an
 	// empty directory costs no process.
 	HasLogin func(dir string) bool
-	Run      Runner
+	// Stamp identifies a gws directory's stored credentials (their size and
+	// time). `gws auth status` asks Google about the token, which takes
+	// seconds, so a directory's login is reused while its stamp is unchanged.
+	// Nil asks every time.
+	Stamp func(dir string) string
+	Run   Runner
 	// Env is the environment the CLIs run with; nil means this process's.
 	Env []string
 	// TTL is how long a discovery is reused (60s).
 	TTL time.Duration
 
-	mu   sync.Mutex
-	last Discovery
+	mu      sync.Mutex
+	last    Discovery
+	gwsSeen map[string]gwsCached
 }
+
+// gwsCached is one gws directory's login as last asked.
+type gwsCached struct {
+	stamp string
+	at    time.Time
+	login Login
+}
+
+// gwsRecheck is how long a gws login is trusted without asking again, even
+// with unchanged credentials: a token revoked at Google changes nothing on
+// disk.
+const gwsRecheck = 30 * time.Minute
 
 // NewHost describes this machine: gog at gogPath, gws found on PATH or where
 // bun installs it, and gws directories at the default plus every
@@ -185,15 +203,17 @@ func NewHost(gogPath string, getenv func(string) string) *Host {
 		Gws:           findGws(getenv, home),
 		DefaultGwsDir: def,
 		Run:           ExecRunner,
-		HasLogin: func(dir string) bool {
-			for _, f := range []string{"credentials.enc", "credentials.json"} {
-				if st, err := os.Stat(filepath.Join(dir, f)); err == nil && st.Size() > 0 {
-					return true
-				}
-			}
-			return false
-		},
 	}
+	h.Stamp = func(dir string) string {
+		var parts []string
+		for _, f := range []string{"credentials.enc", "credentials.json"} {
+			if st, err := os.Stat(filepath.Join(dir, f)); err == nil && st.Size() > 0 {
+				parts = append(parts, fmt.Sprintf("%s:%d:%d", f, st.Size(), st.ModTime().UnixNano()))
+			}
+		}
+		return strings.Join(parts, ",")
+	}
+	h.HasLogin = func(dir string) bool { return h.Stamp(dir) != "" }
 	h.GwsDirs = func() []string {
 		dirs := []string{def}
 		if siblings, err := filepath.Glob(filepath.Join(filepath.Dir(def), filepath.Base(def)+"-*")); err == nil {
@@ -271,11 +291,41 @@ func (h *Host) Accounts(ctx context.Context) Discovery {
 	return d
 }
 
-// Forget drops the cached discovery, so the next call looks again.
+// Forget drops the cached discovery and every cached login, so the next call
+// looks again.
 func (h *Host) Forget() {
 	h.mu.Lock()
 	h.last = Discovery{}
+	h.gwsSeen = nil
 	h.mu.Unlock()
+}
+
+// gwsLoginCached is gwsLogin, reusing the last answer while the directory's
+// credentials are unchanged.
+func (h *Host) gwsLoginCached(ctx context.Context, dir string) (Login, error) {
+	stamp := ""
+	if h.Stamp != nil {
+		stamp = h.Stamp(dir)
+	}
+	if stamp != "" {
+		h.mu.Lock()
+		c, ok := h.gwsSeen[dir]
+		h.mu.Unlock()
+		if ok && c.stamp == stamp && time.Since(c.at) < gwsRecheck {
+			return c.login, nil
+		}
+	}
+	l, err := h.gwsLogin(ctx, dir)
+	if err != nil || stamp == "" {
+		return l, err
+	}
+	h.mu.Lock()
+	if h.gwsSeen == nil {
+		h.gwsSeen = map[string]gwsCached{}
+	}
+	h.gwsSeen[dir] = gwsCached{stamp: stamp, at: time.Now(), login: l}
+	h.mu.Unlock()
+	return l, nil
 }
 
 // Discover asks both CLIs which accounts they hold.
@@ -312,7 +362,7 @@ func (h *Host) Discover(ctx context.Context) Discovery {
 				continue
 			}
 			seen[dir] = true
-			l, err := h.gwsLogin(ctx, dir)
+			l, err := h.gwsLoginCached(ctx, dir)
 			if err != nil {
 				d.Errors = append(d.Errors, err.Error())
 				continue

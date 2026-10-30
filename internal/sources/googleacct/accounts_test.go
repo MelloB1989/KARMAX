@@ -86,6 +86,45 @@ func TestDiscoveryCarriesOnWhenOneCLIFails(t *testing.T) {
 	}
 }
 
+// gws asks Google whether its token is valid, which takes seconds; a login
+// only changes when its stored credentials do, so it is asked again only then
+// (or when a call has found the login signed out).
+func TestAGwsLoginIsAskedAgainOnlyWhenItsCredentialsChange(t *testing.T) {
+	f := &fakeCLI{}
+	f.on("gog", "", "auth list", reply{out: `{"accounts":[]}`})
+	f.on("gws", "", "auth status", reply{out: gwsStatus("priya@example.com", true)})
+	h := hostWith(f, "/cfg/gws")
+	stamp := "v1"
+	h.Stamp = func(string) string { return stamp }
+	statuses := func() int {
+		n := 0
+		for _, c := range f.calls {
+			if c.bin == "gws" && strings.Contains(strings.Join(c.args, " "), "auth status") {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < 3; i++ {
+		if d := h.Discover(context.Background()); len(d.Accounts) != 1 {
+			t.Fatalf("discovery %d: %v", i, d.Accounts)
+		}
+	}
+	if n := statuses(); n != 1 {
+		t.Fatalf("gws auth status ran %d times for unchanged credentials", n)
+	}
+	stamp = "v2"
+	h.Discover(context.Background())
+	if n := statuses(); n != 2 {
+		t.Fatalf("changed credentials were not looked at again (%d runs)", n)
+	}
+	h.Forget()
+	h.Discover(context.Background())
+	if n := statuses(); n != 3 {
+		t.Fatalf("after a sign-in failure the login must be looked at again (%d runs)", n)
+	}
+}
+
 func TestASignedOutGwsDirIsNotAnAccount(t *testing.T) {
 	f := &fakeCLI{}
 	f.on("gog", "", "auth list", reply{out: `{"accounts":[]}`})
