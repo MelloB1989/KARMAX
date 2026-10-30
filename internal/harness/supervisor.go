@@ -735,12 +735,24 @@ func (s *Supervisor) policy(kind string) Policy {
 	return withDefaults(Policy{Model: s.cfg.CheapModel})
 }
 
+// DefaultMaxTurns bounds a kind whose policy names no max_turns.
+//
+// Zero used to mean "never start over", so a kind nobody thought to limit kept
+// one transcript forever and every turn re-read all of it. The health check's
+// session is the case that showed it: a one-word ping every ten minutes had
+// grown to 5,471 turns and 266k tokens read per ping. A negative max_turns is
+// still the way to ask for a transcript that never ends.
+const DefaultMaxTurns = 200
+
 func withDefaults(p Policy) Policy {
 	if p.TurnTimeout <= 0 {
 		p.TurnTimeout = 2 * time.Minute
 	}
 	if p.Idle <= 0 {
 		p.Idle = 10 * time.Minute
+	}
+	if p.MaxTurns == 0 {
+		p.MaxTurns = DefaultMaxTurns
 	}
 	return p
 }
