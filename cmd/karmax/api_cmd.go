@@ -195,6 +195,12 @@ func formatMemoryHit(e map[string]any, withID bool) string {
 	return "• " + line
 }
 
+// formatMemoryHitFull is a search result with its id and whole content —
+// what correcting a fact needs, since a correction replaces all of it.
+func formatMemoryHitFull(e map[string]any) string {
+	return "• [" + asStr(e["id"]) + "]\n" + strings.TrimSpace(asStr(e["content"])) + "\n"
+}
+
 func newMemoryCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "memory", Short: "Search, add to, and export agent memory"}
 
@@ -233,7 +239,7 @@ func newMemoryCmd() *cobra.Command {
 	// --ids shows each hit's id, which is what memory.correct and memory.forget
 	// take: a wrong fact found by search could otherwise only be removed by
 	// a query that deletes whatever matches best.
-	var showIDs bool
+	var showIDs, full bool
 	search := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Search long-term memory",
@@ -249,12 +255,17 @@ func newMemoryCmd() *cobra.Command {
 				return nil
 			}
 			for _, e := range entries {
+				if full {
+					fmt.Println(formatMemoryHitFull(e))
+					continue
+				}
 				fmt.Println(formatMemoryHit(e, showIDs))
 			}
 			return nil
 		},
 	}
 	search.Flags().BoolVar(&showIDs, "ids", false, "show each memory's id (for memory.correct / memory.forget)")
+	search.Flags().BoolVar(&full, "full", false, "show each memory's id and whole content")
 
 	cmd.AddCommand(
 		search,
