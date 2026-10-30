@@ -800,7 +800,7 @@ func (k *loopKit) SendWhatsApp(_ context.Context, target, content string) error 
 }
 
 func (k *loopKit) ReadWhatsApp(ctx context.Context, chat string, limit int) (string, error) {
-	tool := &builtin.WhatsAppReadTool{WacliPath: k.wacliPath, Store: k.rt.store}
+	tool := &builtin.WhatsAppReadTool{WacliPath: k.wacliPath, Store: k.rt.store, Label: k.rt.labelSpeaker}
 	in := map[string]any{}
 	if strings.TrimSpace(chat) != "" {
 		in["chat"] = chat
