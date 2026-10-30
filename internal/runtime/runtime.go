@@ -58,6 +58,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/tracker"
 	"github.com/MelloB1989/karmax/internal/voice"
+	"github.com/MelloB1989/karmax/internal/wamemory"
 	"github.com/MelloB1989/karmax/internal/wasmloop"
 	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
@@ -919,6 +920,32 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				return nil
 			},
 		})
+
+		// WhatsApp → memory: every chat's new messages, set beside what memory
+		// already holds, become facts added, corrected or retired. A chat never
+		// read before starts at KARMAX_WA_MEMORY_SINCE, which is how the same
+		// loop backfills history. See internal/wamemory.
+		home, _ := os.UserHomeDir()
+		if waCfg, on := waMemoryConfig(os.Getenv, filepath.Join(home, ".karmax"), time.Now(), operatorChats); on {
+			syncer := wamemory.New(waCfg, wamemory.NewWacli(hostpaths.WacliAPIURL()), memFactory.For(a0.ID, ns),
+				kvCursors{s: s}, s.SentWhatsApp,
+				func(ctx context.Context, prompt string) (string, error) {
+					return harnessRT.get().harnessExtract(ctx, "wa-memory", prompt)
+				}, log)
+			loopkit.Register(loopkit.Loop{
+				Name:        "wa-memory",
+				Description: "Reads every WhatsApp chat's new messages and keeps long-term memory in step with them: durable facts added under their person or project, outdated ones corrected, finished ones retired.",
+				Schedule:    loopkit.Every("20m"),
+				Run: func(ctx context.Context, k loopkit.Kit) error {
+					res, err := syncer.Tick(ctx)
+					if res.Batches > 0 || err != nil {
+						k.Logf("wa-memory: %d batches: added %d, corrected %d, forgot %d, refused %d; more to read: %v",
+							res.Batches, res.Added, res.Updated, res.Forgotten, res.Refused, res.More)
+					}
+					return err
+				},
+			})
+		}
 
 		// Brain monitor: pings the actual brain the agent depends on — the
 		// harness (Claude Code via the supervisor; see

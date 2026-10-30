@@ -128,3 +128,30 @@ func (s *Store) HeardFromSince(chatID string, since time.Time) bool {
 	}
 	return false
 }
+
+// sentWindow is how far a message wacli shows can be from the moment KARMAX
+// recorded sending it and still be the same message.
+const sentWindow = 5 * time.Minute
+
+// SentWhatsApp reports whether KARMAX itself sent text to a WhatsApp chat
+// around at. KARMAX speaks through the operator's own account, so wacli shows
+// its messages as the operator's; this is how they are told apart.
+func (s *Store) SentWhatsApp(chatJID, text string, at time.Time) bool {
+	user, _, _ := strings.Cut(chatJID, "@")
+	user, _, _ = strings.Cut(user, ":")
+	text = strings.TrimSpace(text)
+	if user == "" || text == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	err := s.queryRow(`SELECT COUNT(*) FROM channel_messages
+WHERE direction = 'outbound' AND channel_type = 'whatsapp'
+  AND (channel_id = ? OR channel_id LIKE ?)
+  AND trim(content) = ? AND created_at BETWEEN ? AND ?`,
+		user, user+"@%", text,
+		at.Add(-sentWindow).UTC().Format("2006-01-02 15:04:05"),
+		at.Add(sentWindow).UTC().Format("2006-01-02 15:04:05")).Scan(&n)
+	return err == nil && n > 0
+}

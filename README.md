@@ -129,6 +129,14 @@ flowchart LR
     REVIEW --> MEM
 ```
 
+WhatsApp reaches memory through the `wa-memory` loop (`internal/wamemory`): every chat's new
+messages, set beside what memory already holds about them, become facts added under their
+person or project, corrected, or retired. Each chat keeps a cursor, so a message is read once;
+a chat never read before starts at `KARMAX_WA_MEMORY_SINCE`, which is how the same loop
+backfills history. Secrets are never stored, and a fact can only be corrected or retired by a
+handle the model was shown. Channels are skipped; `~/.karmax/wa-memory-deny.txt` names chats
+to skip, and `KARMAX_WA_MEMORY=off` turns it off.
+
 A write folds into the document that already holds its subject rather than replacing it, so
 the fortieth fact about a project does not delete the previous thirty-nine. Two properties
 of that store shape everything built on it: a write is a **whole-file overwrite**, and reads
