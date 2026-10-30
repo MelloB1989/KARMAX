@@ -346,6 +346,13 @@ func TestABrokenAccountIsReportedAndNeverHoldsUpTheOthers(t *testing.T) {
 	for _, a := range res.Failed() {
 		failed[a.Account] = a.Err.Error()
 	}
+	// Each result carries its login, so whoever reads it can check or
+	// register that login without listing them again.
+	for _, a := range res.Accounts {
+		if a.Login.Name() != a.Account || a.Login.APIBase() == "" {
+			t.Errorf("result %q carries login %+v", a.Account, a.Login)
+		}
+	}
 	if !strings.Contains(failed["octo-work"], "token") || !strings.Contains(failed["octo-gone"], "invalid") {
 		t.Errorf("failures = %v, want both broken accounts named with why", failed)
 	}

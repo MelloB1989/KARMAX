@@ -53,6 +53,7 @@ type Poller struct {
 // AccountResult is how one account's tick went.
 type AccountResult struct {
 	Account     string
+	Login       ghconn.Account
 	Published   int
 	NotModified bool // GitHub said nothing changed
 	Waiting     bool // GitHub's poll interval had not passed
@@ -108,7 +109,7 @@ func (p *Poller) Tick(ctx context.Context) (Result, error) {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
-		r := AccountResult{Account: a.Name()}
+		r := AccountResult{Account: a.Name(), Login: a}
 		if !a.OK() {
 			r.Err = fmt.Errorf("gh reports the login as %s: %s", a.State, a.Error)
 		} else {
@@ -127,7 +128,7 @@ func (p *Poller) Tick(ctx context.Context) (Result, error) {
 }
 
 func (p *Poller) account(ctx context.Context, a ghconn.Account) AccountResult {
-	r := AccountResult{Account: a.Name()}
+	r := AccountResult{Account: a.Name(), Login: a}
 	now := p.now()
 	st, first, err := p.load(a.Name())
 	if err != nil {
