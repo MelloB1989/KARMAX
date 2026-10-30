@@ -123,7 +123,12 @@ func checkSlackFor(id string) func(context.Context, connectorkit.Credentials) er
 	return func(ctx context.Context, c connectorkit.Credentials) error {
 		token := strings.TrimSpace(c.Get("bot_token"))
 		if token == "" {
-			return fmt.Errorf("no bot token configured")
+			need := "bot_token (xoxb-) and app_token (xapp-)"
+			if SourceOn(slacksrc.Name) {
+				need += ", and your user_token (xoxp-) with the scopes " + slacksrc.Scopes
+			}
+			return fmt.Errorf("no bot token configured — create or open the app at https://api.slack.com/apps, "+
+				"install it to the workspace, then run `karmax login %s` and paste its %s", id, need)
 		}
 		if err := slackAuthTest(ctx, token); err != nil {
 			return err

@@ -117,7 +117,11 @@ func TestSlackHealthCoversTheUserToken(t *testing.T) {
 	creds := func(kv map[string]string) connectorkit.Credentials { return connectorkit.Credentials{Config: kv} }
 	ctx := context.Background()
 
-	err := checkSlackFor("slack-main")(ctx, creds(map[string]string{"bot_token": "xoxb-good"}))
+	err := checkSlackFor("slack-main")(ctx, creds(map[string]string{}))
+	if err == nil || !strings.Contains(err.Error(), "karmax login slack-main") || !strings.Contains(err.Error(), "user_token") {
+		t.Errorf("nothing configured should say what to run: %v", err)
+	}
+	err = checkSlackFor("slack-main")(ctx, creds(map[string]string{"bot_token": "xoxb-good"}))
 	if err == nil || !strings.Contains(err.Error(), "karmax login slack-main") || !strings.Contains(err.Error(), "xoxp-") {
 		t.Errorf("bot without user token: %v", err)
 	}
