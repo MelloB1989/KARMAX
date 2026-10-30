@@ -179,13 +179,13 @@ func (f *fakeLogins) Token(_ context.Context, a ghconn.Account) (string, error) 
 }
 
 type rig struct {
-	hub    *hub
-	logins *fakeLogins
-	kv     map[string]string
-	now    time.Time
-	events []sources.Event
+	hub         *hub
+	logins      *fakeLogins
+	kv          map[string]string
+	now         time.Time
+	events      []sources.Event
 	failPublish int
-	p      *Poller
+	p           *Poller
 }
 
 func newRig(t *testing.T, logins ...string) *rig {
