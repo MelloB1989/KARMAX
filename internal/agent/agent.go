@@ -96,6 +96,10 @@ type Agent struct {
 	// the operator talks to; a child that could itself spawn would carry one
 	// more, which is what bounds a fan-out from recursing.
 	depth int
+
+	// ops is the operating policy and what has been reported under it. See
+	// policy.go.
+	ops policyState
 }
 
 // CommsChannelInfo describes a communication channel available to the agent.
@@ -540,13 +544,14 @@ type commsEscalateTool struct {
 func (t *commsEscalateTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "comms.escalate",
-		Description: "Ask the operator for permission before dangerous actions such as deleting files, force pushing, modifying production, or spending money. Uses an alternative communication channel if the primary is unavailable or in DND.",
+		Description: "Ask the operator for an immediate yes/no before an action on the hard floor of their operating policy (deleting repositories, data or cloud resources; payments; sharing secrets — the policy in your context is authoritative). Set floor to the rule. Under act-then-report anything else is declined: do it and it is reported. Prefer propose, which also files the approval in their app. Uses an alternative channel if the primary is unavailable or in DND.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"primary_channel_id": {"type": "string", "description": "The original KARMAX channel ID, if known"},
 				"action": {"type": "string", "description": "The action requiring approval"},
-				"risk": {"type": "string", "description": "Why the action is dangerous or irreversible"}
+				"risk": {"type": "string", "description": "Why the action is dangerous or irreversible"},
+				"floor": {"type": "string", "description": "The hard-floor rule this falls under, in the policy's words"}
 			},
 			"required": ["action", "risk"]
 		}`),
@@ -566,6 +571,15 @@ func (t *commsEscalateTool) Execute(ctx context.Context, input map[string]any) (
 	}
 	if strings.TrimSpace(risk) == "" {
 		return tools.ErrorResult(fmt.Errorf("risk is required")), nil
+	}
+	floor, _ := input["floor"].(string)
+	if pol := t.agent.operatingPolicy(); pol.ActFirst() && strings.TrimSpace(floor) == "" {
+		return tools.SuccessResult(map[string]any{
+			"status": "not_needed",
+			"message": "Not sent: under the operator's policy (act, then report) this needs no permission. Do it; " +
+				"what you send as them and anything urgent is reported to them. Only the hard floor is asked about: " +
+				strings.Join(pol.HardFloor(), "; ") + ". If it is one of those, call again with floor set to the rule.",
+		}), nil
 	}
 
 	message := fmt.Sprintf("Permission required before action:\n\nAction: %s\nRisk: %s\n\nReply with approval before KARMAX proceeds.", action, risk)
@@ -830,7 +844,7 @@ func (a *Agent) buildCommsContext() string {
 
 	var sb strings.Builder
 	sb.WriteString("## Available Communication Channels\n\n")
-	sb.WriteString("Use the `comms.send` tool to send messages through these channels. For dangerous actions that require permission, use `comms.escalate` first.\n\n")
+	sb.WriteString("Use the `comms.send` tool to send messages through these channels. When to ask the operator first is the operating policy's call (see above), not the channel's.\n\n")
 
 	for _, ch := range a.commsChannels {
 		dnd := ""
@@ -1163,7 +1177,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt) + a.buildRelatedMemoryContext(evt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).context()
+	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildOperatingContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).contextFor(a.operatingPolicy())
 	if dynamicCtx != "" && a.mainSession == nil {
 		userPrompt = dynamicCtx + userPrompt
 	}
@@ -1286,6 +1300,10 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 				}
 			}
 		}
+
+		// Tell the operator what the policy says they hear about: an urgent
+		// event and what was done, and what was sent as them — one message.
+		a.deliverTurnReport(evt, turnStart, response)
 
 		// Check if compaction is needed
 		if a.mainSession.NeedsCompaction() && a.summaryModel != nil {
@@ -1486,12 +1504,13 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 	oc, tc, pc, rc := a.buildOrgContext(), a.buildTimeContext(), a.buildProfileContext(), a.buildReviewContext()
 	ac, sc, cc := a.buildRecentActionsContext(), a.buildSessionContext(), a.buildCommsContext()
 	mc := a.buildProactiveMemoryContext(ctx, evt, text)
-	dynamicCtx := oc + tc + pc + rc + ac + sc + cc + mc
+	opc := a.buildOperatingContext()
+	dynamicCtx := oc + tc + pc + opc + rc + ac + sc + cc + mc
 	// What the turn actually pays for, block by block. A total cannot say which
 	// block grew, and a block repeating what another already said is invisible
 	// in a single number.
 	a.log.Info("turn context assembled",
-		zap.Int("org", len(oc)), zap.Int("time", len(tc)), zap.Int("profile", len(pc)),
+		zap.Int("org", len(oc)), zap.Int("time", len(tc)), zap.Int("profile", len(pc)), zap.Int("operating", len(opc)),
 		zap.Int("review", len(rc)), zap.Int("recent_actions", len(ac)),
 		zap.Int("sessions", len(sc)), zap.Int("comms", len(cc)), zap.Int("memory", len(mc)),
 		zap.Int("total", len(dynamicCtx)), zap.Int("system", len(a.def.SystemPrompt)))

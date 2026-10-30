@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/policy"
 	"go.uber.org/zap"
 )
 
@@ -130,23 +131,40 @@ func (a *Agent) brainFor(evt bus.Event) Brain {
 // business depending on the screener.
 const effortTrivial = "trivial"
 
-// context renders the verdict for the model.
+// context renders the verdict for the model under the default policy.
+func (s Screening) context() string { return s.contextFor(policy.Default()) }
+
+// contextFor renders the verdict for the model.
 //
 // Only the parts that change what the turn should DO are included. Telling a
 // model its message scored 0.31 on urgency invites it to talk about the score.
-func (s Screening) context() string {
+//
+// The wording follows the operating policy. Under act-then-report a risky
+// event means "be sure", not "ask": the operator decided they are asked about
+// the hard floor only. And an escalation means "deal with it now" — KARMAX
+// tells the operator about an urgent event itself, after the turn.
+func (s Screening) contextFor(p policy.Policy) string {
 	if !s.Screened {
 		return ""
 	}
+	floor := strings.Join(p.HardFloor(), "; ")
 	var b strings.Builder
 	switch s.Action {
 	case "escalate":
-		b.WriteString("\n[TRIAGE] This is time-critical or needs a decision only the operator can make. Deal with it now, and if it is theirs to decide, ask them directly rather than choosing for them.\n")
+		if p.ActFirst() {
+			b.WriteString("\n[TRIAGE] This is time-critical: deal with it now. The operator is told about it after this turn, with your final reply — so make that reply say plainly what happened and what you did. Ask them first only if what it needs is on the hard floor (" + floor + ").\n")
+		} else {
+			b.WriteString("\n[TRIAGE] This is time-critical or needs a decision only the operator can make. Deal with it now, and if it is theirs to decide, ask them directly rather than choosing for them.\n")
+		}
 	case "delegate":
 		b.WriteString("\n[TRIAGE] This needs real work — shell, files, code or research. Delegate it to claude_code rather than answering from memory.\n")
 	}
 	if s.Approval {
-		b.WriteString("[TRIAGE] Acting on this is hard to undo (money, a commitment, or a message to someone who is not the operator). Propose it for approval instead of doing it outright, unless the operator already told you to go ahead.\n")
+		if p.ActFirst() {
+			b.WriteString("[TRIAGE] Acting on this is hard to undo (money, a commitment, or a message to someone who is not the operator). Be sure before you act — check memory and the facts. Under the operator's policy you still act without asking unless it is on the hard floor (" + floor + "), which needs their approval through propose.\n")
+		} else {
+			b.WriteString("[TRIAGE] Acting on this is hard to undo (money, a commitment, or a message to someone who is not the operator). Propose it for approval with propose instead of doing it outright, unless the operator already told you to go ahead.\n")
+		}
 	}
 	return b.String()
 }

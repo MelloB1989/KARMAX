@@ -16,6 +16,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/memory"
+	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/sources"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -97,11 +98,19 @@ func stubScreener(t *testing.T, disposition string, urgency float64) *reflex.Eva
 }
 
 type sourceFlow struct {
-	rt    *KarmaxRuntime
-	a     *agent.Agent
-	brain *recordingBrain
-	mem   *memory.Manager
-	db    *store.Store
+	rt       *KarmaxRuntime
+	a        *agent.Agent
+	brain    *recordingBrain
+	mem      *memory.Manager
+	db       *store.Store
+	mu       sync.Mutex
+	operator []string // what reached the operator's WhatsApp
+}
+
+func (f *sourceFlow) toOperator() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.operator...)
 }
 
 func newSourceFlow(t *testing.T, disposition string, urgency float64) *sourceFlow {
@@ -120,11 +129,19 @@ func newSourceFlow(t *testing.T, disposition string, urgency float64) *sourceFlo
 	if err != nil {
 		t.Fatal(err)
 	}
+	f := &sourceFlow{a: a, mem: mem, db: db, brain: newRecordingBrain()}
 	rt := &KarmaxRuntime{store: db, log: zap.NewNop(), bus: b, agents: reg, memory: factory,
-		loopDefaultAgent: "nexus", reflex: stubScreener(t, disposition, urgency)}
-	brain := newRecordingBrain()
+		loopDefaultAgent: "nexus", reflex: stubScreener(t, disposition, urgency), policy: policy.Default(),
+		messageOperator: func(text string) error {
+			f.mu.Lock()
+			f.operator = append(f.operator, text)
+			f.mu.Unlock()
+			return nil
+		}}
+	f.rt = rt
 	a.SetScreener(rt.screenEvent)
-	a.SetHarnessBrain(brain)
+	rt.applyOperatingPolicy(a)
+	a.SetHarnessBrain(f.brain)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -132,7 +149,7 @@ func newSourceFlow(t *testing.T, disposition string, urgency float64) *sourceFlo
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = a.Stop() })
-	return &sourceFlow{rt: rt, a: a, brain: brain, mem: mem, db: db}
+	return f
 }
 
 // route publishes the event as a source would and hands it to the router, the
@@ -249,6 +266,7 @@ func TestASourceEventScreenedAsHandleReachesTheTurnWithItsAccount(t *testing.T) 
 // turn is told so.
 func TestAnUrgentSourceEventIsEscalatedToTheTurn(t *testing.T) {
 	f := newSourceFlow(t, "drop", 0)
+	f.brain.reply = "Paged the on-call and opened an incident."
 	e := reviewRequest()
 	e.Urgent = true
 	e.Title = "CloudWatch alarm api-5xx is in ALARM"
@@ -266,5 +284,27 @@ func TestAnUrgentSourceEventIsEscalatedToTheTurn(t *testing.T) {
 	}
 	if !strings.Contains(ctxs[0]+prompts[0], "[TRIAGE]") {
 		t.Errorf("the escalation did not reach the turn:\n%s", ctxs[0])
+	}
+	// The operator hears about it once, with what was done.
+	got := f.toOperator()
+	if len(got) != 1 || !strings.Contains(got[0], "Urgent") || !strings.Contains(got[0], "CloudWatch alarm api-5xx") ||
+		!strings.Contains(got[0], "Paged the on-call") {
+		t.Errorf("the operator was told %q", got)
+	}
+}
+
+// A routine event reaches no one: it is handled, and that is the end of it.
+func TestARoutineSourceEventDoesNotReachTheOperator(t *testing.T) {
+	f := newSourceFlow(t, "handle", 0)
+	evt := f.route(t, reviewRequest())
+	<-f.brain.done
+	f.turnStatus(t, evt.ID)
+	if got := f.toOperator(); len(got) != 0 {
+		t.Errorf("a routine event reached the operator's WhatsApp: %q", got)
+	}
+	// The turn was told the policy it acts under.
+	_, ctxs := f.brain.turns()
+	if !strings.Contains(ctxs[0], "Operating policy") {
+		t.Errorf("the turn was not told the operating policy:\n%s", ctxs[0])
 	}
 }
