@@ -1945,7 +1945,7 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 	// so it is raw machine state — say so, and say that silence is a valid
 	// outcome, rather than leaving the agent to improvise a message about it.
 	if evt.Payload != nil {
-		payloadJSON, _ := json.MarshalIndent(evt.Payload, "", "  ")
+		payloadJSON, _ := json.MarshalIndent(withoutRequestHeaders(evt.Payload), "", "  ")
 		prompt += fmt.Sprintf("Event: %s\nAgent: %s\n\n```json\n%s\n```\n", evt.Kind, evt.AgentID, string(payloadJSON))
 	} else {
 		prompt += fmt.Sprintf("Event: %s\n", evt.Kind)

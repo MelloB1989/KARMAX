@@ -85,3 +85,19 @@ func TestRelatedMemoryComesWithAnEvent(t *testing.T) {
 		t.Error("an event with no subject searched memory")
 	}
 }
+
+// A webhook's request headers can carry a caller's credentials and say nothing
+// about what happened; they do not belong in a model's context.
+func TestAWebhookTurnDoesNotCarryRequestHeaders(t *testing.T) {
+	evt := bus.NewEvent(bus.EventWebhookFired, "nexus", map[string]any{
+		"route": "/trigger", "method": "POST", "body": `{"deploy":"finished"}`,
+		"headers": map[string]any{"Authorization": "Bearer not-a-real-token"},
+	})
+	p := buildPromptFromEvent(evt, nil)
+	if strings.Contains(p, "not-a-real-token") || strings.Contains(p, "Authorization") {
+		t.Errorf("request headers reached the turn:\n%s", p)
+	}
+	if !strings.Contains(p, "deploy") {
+		t.Errorf("the body was lost:\n%s", p)
+	}
+}

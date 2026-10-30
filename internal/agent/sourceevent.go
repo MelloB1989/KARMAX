@@ -169,3 +169,18 @@ func (a *Agent) buildRelatedMemoryContext(evt bus.Event) string {
 		"_Found by searching long-term memory for the event's subject. Old time-sensitive facts may be stale; correct one with memory.correct if this event changes it._\n\n" +
 		strings.Join(lines, "\n") + "\n\n"
 }
+
+// withoutRequestHeaders is a payload minus a webhook's HTTP headers, which can
+// carry the caller's credentials and say nothing about what happened.
+func withoutRequestHeaders(payload map[string]any) map[string]any {
+	if _, ok := payload["headers"]; !ok {
+		return payload
+	}
+	out := make(map[string]any, len(payload))
+	for k, v := range payload {
+		if k != "headers" {
+			out[k] = v
+		}
+	}
+	return out
+}
