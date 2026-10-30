@@ -947,6 +947,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			})
 		}
 
+		// AWS: every usable profile's CloudWatch alarms and spend, as events
+		// to the primary agent. KARMAX_SOURCE_AWS=off turns it off. See
+		// awssource.go and internal/sources/aws.
+		registerAWSSource(os.Getenv, home, s, b, a0.ID, toolReg, log)
+
 		// Brain monitor: pings the actual brain the agent depends on — the
 		// harness (Claude Code via the supervisor; see
 		// docs/CLAUDE-ONLY-ORCHESTRATOR.md), not the metered API path nothing
