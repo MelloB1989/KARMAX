@@ -279,3 +279,35 @@ func TestTagsKeepToTheServersRules(t *testing.T) {
 		t.Errorf("len=%d last=%q; want 32 tags with the new one kept", len(got), got[len(got)-1])
 	}
 }
+
+// A task is filed in the month it happened. A backfill writes August's
+// commitments in October, and filing them by when they were written put them
+// beside this month's live ones.
+func TestATaskIsFiledInTheMonthItHappened(t *testing.T) {
+	e := MemoryEntry{Category: "task", Tags: []string{"priya"}, Content: "Priya asked for repo access.",
+		CreatedAt:  time.Date(2026, 10, 30, 21, 0, 0, 0, time.UTC),
+		OccurredAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
+	if got := PathFor(e, nil); got != "incidents/2026/08/priya.md" {
+		t.Errorf("PathFor = %q, want incidents/2026/08/priya.md", got)
+	}
+}
+
+// The categories sessions are told to use are the plural ones; filing them as
+// unknown put every such fact in facts/context beside the loop logs.
+func TestPluralCategoriesAreFiledWhereTheirSingularsAre(t *testing.T) {
+	for cat, want := range map[string]string{
+		"people": "facts/people", "person": "facts/people", "projects": "facts/projects",
+		"decisions": "facts/decisions", "preferences": "facts/operator",
+	} {
+		if got := topicFor(cat, time.Time{}); got != want {
+			t.Errorf("topicFor(%q) = %q, want %q", cat, got, want)
+		}
+	}
+}
+
+func TestAPluralCategoryIsNotTheSubject(t *testing.T) {
+	e := MemoryEntry{Category: "people", Tags: []string{"people"}, Content: "Omar moved to Fabrikam in October."}
+	if got := PathFor(e, nil); got != "facts/people/omar.md" {
+		t.Errorf("PathFor = %q, want facts/people/omar.md", got)
+	}
+}

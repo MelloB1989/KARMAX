@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +25,7 @@ They agreed on Friday.
 
 ## 2026-10-09 — Fleet at 14:00: four tasks working
 
-ZeroDocs is still building.`
+The docs site is still building.`
 
 const callSection = "facts/context/chat.md#2026-10-08-quinns-call-with-omar-at-1947-ist"
 
@@ -41,7 +42,7 @@ func TestForgettingASectionHasTheStoreCutIt(t *testing.T) {
 	if strings.Contains(got, "They agreed on Friday") {
 		t.Errorf("the section is still there:\n%s", got)
 	}
-	for _, kept := range []string{"Lead about the chat.", "The APK ask is still open.", "ZeroDocs is still building."} {
+	for _, kept := range []string{"Lead about the chat.", "The APK ask is still open.", "The docs site is still building."} {
 		if !strings.Contains(got, kept) {
 			t.Errorf("forgetting one section took %q with it:\n%s", kept, got)
 		}
@@ -115,5 +116,49 @@ func TestAWriteAfterAForgetDoesNotBringTheSectionBack(t *testing.T) {
 		if !strings.Contains(got, kept) {
 			t.Errorf("%q was lost:\n%s", kept, got)
 		}
+	}
+}
+
+// Correcting ONE fact replaces it within its document: the corrected statement
+// is added, the old section goes, and every other fact stays.
+func TestCorrectingASectionReplacesJustThatFact(t *testing.T) {
+	st := &slowStore{files: map[string]string{"facts/context/chat.md": chatDoc}, delay: 40 * time.Millisecond}
+	srv := httptest.NewServer(http.HandlerFunc(st.handler))
+	t.Cleanup(srv.Close)
+	m, _ := managerWithGitLoom(t, srv.URL)
+
+	replaced, err := m.Correct(context.Background(), callSection, "Quinn's call with Omar moved to Saturday 2026-10-10.")
+	if err != nil {
+		t.Fatalf("Correct: %v", err)
+	}
+	if !replaced {
+		t.Error("a single fact was not reported replaced")
+	}
+	got := st.final("facts/context/chat.md")
+	if strings.Contains(got, "They agreed on Friday") {
+		t.Errorf("the corrected fact is still there:\n%s", got)
+	}
+	for _, want := range []string{"moved to Saturday", "The APK ask is still open.", "The docs site is still building.", "Lead about the chat."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q is missing:\n%s", want, got)
+		}
+	}
+	if _, ok := st.files["facts/context/chat.md#2026-10-08-quinns-call-with-omar-at-1947-ist"]; ok {
+		t.Error("the correction was written to a file named after the section")
+	}
+}
+
+// "Nothing there" and "a document of several facts" both used to come back as
+// not-removed, so a caller told the operator a memory was kept for holding
+// several facts when it did not exist at all.
+func TestForgetFactOfNothingIsNotStored(t *testing.T) {
+	st := &slowStore{files: map[string]string{}}
+	srv := httptest.NewServer(http.HandlerFunc(st.handler))
+	t.Cleanup(srv.Close)
+	m, _ := managerWithGitLoom(t, srv.URL)
+
+	removed, err := m.ForgetFact(context.Background(), "facts/people/nobody.md")
+	if removed || !errors.Is(err, ErrNotStored) {
+		t.Fatalf("ForgetFact of nothing = %v, %v; want ErrNotStored", removed, err)
 	}
 }

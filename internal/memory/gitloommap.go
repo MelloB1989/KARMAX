@@ -29,13 +29,13 @@ import (
 // standing fact about the operator's world.
 func topicFor(category string, when time.Time) string {
 	switch strings.ToLower(strings.TrimSpace(category)) {
-	case "relationship":
+	case "relationship", "people", "person":
 		return "facts/people"
-	case "project":
+	case "project", "projects":
 		return "facts/projects"
-	case "decision":
+	case "decision", "decisions":
 		return "facts/decisions"
-	case "preference", "user_info":
+	case "preference", "preferences", "user_info":
 		return "facts/operator"
 	case "reference":
 		return "facts/reference"
@@ -102,6 +102,7 @@ var genericTags = map[string]bool{
 	"relationship": true, "project": true, "task": true, "context": true,
 	"decision": true, "preference": true, "user_info": true, "reference": true,
 	"feedback": true, "memory": true, "reviewed": true,
+	"people": true, "person": true, "projects": true, "decisions": true, "preferences": true,
 	"high": true, "medium": true, "low": true, "critical": true,
 	// Provenance, not subject: these say which loop wrote the memory, and 184
 	// entries carry "loop" as their first tag. Treating it as the subject files
@@ -193,8 +194,11 @@ func cuesFor(e MemoryEntry) []string {
 //
 // Two memories about the same subject deliberately return the SAME path: they
 // belong in one file, as separate sections. See Merge.
+//
+// A task is filed in the month it happened, which is when it was written only
+// for a live write: a backfill writes August's commitments in October.
 func PathFor(e MemoryEntry, _ map[string]bool) string {
-	return fmt.Sprintf("%s/%s.md", topicFor(e.Category, e.CreatedAt), subjectOf(e))
+	return fmt.Sprintf("%s/%s.md", topicFor(e.Category, EventTime(e)), subjectOf(e))
 }
 
 // sectionTitle names one entry's section within a merged file.

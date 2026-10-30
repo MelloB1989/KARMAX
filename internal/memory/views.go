@@ -206,7 +206,7 @@ func (m *Manager) ForgetFact(ctx context.Context, handle string) (bool, error) {
 		return false, err
 	}
 	if stored == nil {
-		return false, nil // already gone
+		return false, fmt.Errorf("%w: %s", ErrNotStored, handle)
 	}
 	if CountFacts(stored.Content) > 1 {
 		return false, nil
@@ -232,6 +232,19 @@ func (m *Manager) Correct(ctx context.Context, handle, content string) (replaced
 	m.mu.Unlock()
 	if remote == nil {
 		return true, m.db.UpdateMemoryEntry(handle, content)
+	}
+
+	// One fact inside a document: the corrected statement joins the document
+	// and the old section leaves it. Writing the correction AT the section
+	// handle would name a file "x.md#slug", which the store refuses.
+	if file, _, ok := splitSectionPath(handle); ok {
+		if err := remote.append(ctx, file, content); err != nil {
+			return false, err
+		}
+		if err := remote.forget(ctx, handle); err != nil && !errors.Is(err, ErrNotStored) {
+			return false, fmt.Errorf("memory: the correction was added to %s but the old fact is still there: %w", file, err)
+		}
+		return true, nil
 	}
 
 	stored, err := remote.load(ctx, handle)
