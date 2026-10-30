@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -160,5 +161,47 @@ func TestForgetFactOfNothingIsNotStored(t *testing.T) {
 	removed, err := m.ForgetFact(context.Background(), "facts/people/nobody.md")
 	if removed || !errors.Is(err, ErrNotStored) {
 		t.Fatalf("ForgetFact of nothing = %v, %v; want ErrNotStored", removed, err)
+	}
+}
+
+// An incident keeps its expiry when another fact folds into it. Rewritten
+// without it, a time-bound task became permanent the first time anything else
+// about it was written.
+func TestAFoldKeepsAnIncidentsExpiry(t *testing.T) {
+	var mu sync.Mutex
+	var ttl string
+	expires := time.Now().Add(10 * 24 * time.Hour)
+	srv := fakeGitLoom(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, map[string]any{"path": "incidents/2026/08/priya.md", "content": "Demo with Priya needs a new date.",
+				"expires_at": expires.Unix(), "updated_at": time.Now().Unix() - 3600})
+		case http.MethodPost:
+			var body struct {
+				Memories []struct {
+					TTL string `json:"ttl"`
+				} `json:"memories"`
+			}
+			_ = decodeJSON(r, &body)
+			mu.Lock()
+			if len(body.Memories) > 0 {
+				ttl = body.Memories[0].TTL
+			}
+			mu.Unlock()
+			writeJSON(w, map[string]any{"written": 1})
+		default:
+			return false
+		}
+		return true
+	})
+	m, _ := managerWithGitLoom(t, srv.URL)
+	if err := m.Write(MemoryEntry{Content: "Priya moved the demo to Friday.", Category: "task", Tags: []string{"priya"},
+		OccurredAt: time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if ttl != "10d" && ttl != "11d" {
+		t.Errorf("ttl written = %q, want the ten days the incident had left", ttl)
 	}
 }

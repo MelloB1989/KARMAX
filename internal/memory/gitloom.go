@@ -265,12 +265,25 @@ func (g *gitloomBackend) foldOntoStored(ctx context.Context, m gitloom.NewMemory
 	merged.Tags = unionTags(userTags(existing), merged.Tags)
 	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
 	merged.Related = unionStrings(existing.Related, merged.Related, 32)
+	keepExpiry(&merged, existing)
 	// The file is dated by its newest fact.
 	latest := laterOf(existing.OccurredAt, at)
 	if !latest.IsZero() {
 		merged.OccurredAt = gitloom.At(latest)
 	}
 	return merged, latest, nil
+}
+
+// keepExpiry carries an incident's remaining time into a rewrite of it. The
+// write replaces the whole file, frontmatter included, so a fold that does not
+// restate the TTL makes a time-bound task permanent.
+func keepExpiry(m *gitloom.NewMemory, existing *gitloom.StoredMemory) {
+	if m.TTL != "" || existing.ExpiresAt.IsZero() || !strings.HasPrefix(m.Path, "incidents/") {
+		return
+	}
+	if left := time.Until(existing.ExpiresAt); left > 0 {
+		m.TTL = fmt.Sprintf("%dd", int(left.Hours()/24)+1)
+	}
 }
 
 // isNotFound reports the API's "no memory at that path", which is the normal

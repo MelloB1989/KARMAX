@@ -413,6 +413,7 @@ func (g *gitloomBackend) append(ctx context.Context, path, content string) error
 	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
 	merged.Related = unionStrings(existing.Related, merged.Related, 32)
 	merged.Confidence = existing.Confidence
+	keepExpiry(&merged, existing)
 	occurred := laterOf(existing.OccurredAt, now)
 	merged.OccurredAt = gitloom.At(occurred)
 	return g.put(cctx, merged, occurred)
