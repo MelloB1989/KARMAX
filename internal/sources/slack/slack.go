@@ -524,13 +524,36 @@ func (s *Source) readConv(ctx context.Context, t *team, c *conv, res *Result) er
 	// Oldest first, so events reach the agent in the order they were said.
 	sort.Slice(msgs, func(i, j int) bool { return tsAfter(msgs[j].TS, msgs[i].TS) })
 	newest := cursor
+	var chatter []sources.Event
 	for _, m := range msgs {
 		if newest == "" || tsAfter(m.TS, newest) {
 			newest = m.TS
 		}
-		if err := s.offer(ctx, t, c, m, res); err != nil {
+		e, ok := s.event(ctx, t, c, m)
+		if !ok {
+			continue
+		}
+		if first, err := s.seen.First(e.Key); err != nil {
+			return err
+		} else if !first {
+			continue
+		}
+		// A channel's ordinary talk goes out as one event per read; a DM or
+		// a mention is someone asking and goes out on its own.
+		if e.Type == "message.channel" {
+			chatter = append(chatter, e)
+			continue
+		}
+		if err := s.publish(e); err != nil {
 			return err
 		}
+		res.Published++
+	}
+	if len(chatter) > 0 {
+		if err := s.publish(batch(c, chatter)); err != nil {
+			return err
+		}
+		res.Published++
 	}
 	if newest != "" && newest != cursor {
 		if err := s.kv.KVSet(cursorGroup, key, newest, 0); err != nil {
@@ -544,6 +567,36 @@ func (s *Source) readConv(ctx context.Context, t *team, c *conv, res *Result) er
 		c.nextDue = now.Add(s.cfg.DormantEvery)
 	}
 	return nil
+}
+
+// batch folds a channel's new messages into one event: the last message's,
+// with every line in the summary and the messages in its data.
+func batch(c *conv, evs []sources.Event) sources.Event {
+	if len(evs) == 1 {
+		return evs[0]
+	}
+	first, last := evs[0], evs[len(evs)-1]
+	lines := make([]string, 0, len(evs))
+	msgs := make([]map[string]any, 0, len(evs))
+	for _, e := range evs {
+		lines = append(lines, fmt.Sprintf("%v: %v", e.Data["user_name"], e.Data["said"]))
+		msgs = append(msgs, map[string]any{"user": e.Data["user"], "user_name": e.Data["user_name"],
+			"ts": e.Data["ts"], "thread_ts": e.Data["thread_ts"], "text": e.Data["text"], "url": e.URL})
+	}
+	data := make(map[string]any, len(last.Data)+2)
+	for k, v := range last.Data {
+		data[k] = v
+	}
+	data["messages"], data["count"] = msgs, len(evs)
+	data["thread_ts"] = "" // an answer to the conversation goes in the channel
+
+	e := last
+	e.Data, e.URL = data, first.URL
+	e.Title = fmt.Sprintf("#%s — %d new messages; last from %v: %s", c.name, len(evs), last.Data["user_name"],
+		clip(firstLine(fmt.Sprint(last.Data["said"])), 120))
+	e.Summary = clip(fmt.Sprintf("New in #%s on the %v Slack:\n%s", c.name, firstNonEmpty(fmt.Sprint(last.Data["team"]),
+		fmt.Sprint(last.Data["workspace"])), strings.Join(lines, "\n")), 6000)
+	return e
 }
 
 // offer publishes a message if it is an event and new.
@@ -643,6 +696,7 @@ func (s *Source) event(ctx context.Context, t *team, c *conv, m message) (source
 			"ts":           m.TS,
 			"thread_ts":    reply,
 			"text":         text,
+			"said":         clip(readable, 1000),
 			"mentioned":    mentioned,
 			"reply_with":   "slack.send_as_operator with this workspace, channel and thread_ts",
 		},

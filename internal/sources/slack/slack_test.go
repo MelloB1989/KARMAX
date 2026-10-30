@@ -533,6 +533,51 @@ func TestKarmaxRepliesAsTheOperatorInAThread(t *testing.T) {
 	}
 }
 
+// A busy channel is one event per read, not one per line: the agent sees the
+// conversation, and a mention in it still stands on its own.
+func TestChannelChatterIsOneEventPerChannelPerRead(t *testing.T) {
+	f := newFakeSlack(t)
+	w := northwind(f)
+	w.history["C0ENG"] = append(w.history["C0ENG"],
+		map[string]any{"type": "message", "user": "U0ALICE", "text": "staging is back", "ts": ts(8, 1)},
+		map[string]any{"type": "message", "user": "U0BOB", "text": "thanks <@U0ALICE>", "ts": ts(7, 1)},
+	)
+	var got []sources.Event
+	s := newTestSource(f, newKV(), &got)
+
+	if _, err := s.Tick(context.Background(), []Workspace{{UserToken: "xoxp-northwind", BotToken: "xoxb-northwind"}}); err != nil {
+		t.Fatal(err)
+	}
+	var chatter []sources.Event
+	mentions := 0
+	for _, e := range got {
+		switch e.Type {
+		case "message.channel":
+			chatter = append(chatter, e)
+		case "message.mention":
+			mentions++
+		}
+	}
+	if len(chatter) != 1 || mentions != 1 {
+		t.Fatalf("%d chatter events and %d mentions, want 1 and 1", len(chatter), mentions)
+	}
+	c := chatter[0]
+	if c.Urgent || !strings.Contains(c.Title, "#eng") || !strings.Contains(c.Title, "3 new messages") {
+		t.Errorf("chatter title %q urgent %v", c.Title, c.Urgent)
+	}
+	for _, said := range []string{"Bob Sample: deploy is green", "Alice Example: staging is back", "Bob Sample: thanks @Alice Example"} {
+		if !strings.Contains(c.Summary, said) {
+			t.Errorf("chatter summary lacks %q:\n%s", said, c.Summary)
+		}
+	}
+	if msgs, _ := c.Data["messages"].([]map[string]any); len(msgs) != 3 {
+		t.Errorf("chatter data carries %d messages, want 3", len(msgs))
+	}
+	if c.Key != "T0NW:C0ENG:"+ts(7, 1) {
+		t.Errorf("chatter key %q is not the last message's", c.Key)
+	}
+}
+
 // A bot writing in a DM is a notice, not a person asking. KARMAX's own bot
 // answering the operator in their DM with it is never an event: while the
 // bot cannot be identified the workspace waits rather than risk hearing it.
