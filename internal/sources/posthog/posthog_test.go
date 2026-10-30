@@ -28,6 +28,8 @@ type fakePostHog struct {
 	daily    map[string][][]any
 	queries  []string // HogQL received, in order
 	paths    []string
+	// noAlertScope answers the alerts API 403, as for a key without alert:read.
+	noAlertScope bool
 }
 
 var errorColumns = []string{"issue", "recent", "before", "first_seen", "issue_id", "exc_type", "exc_message", "types", "vals"}
@@ -81,6 +83,11 @@ func (f *fakePostHog) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"columns": []string{"event", "y", "prior"}, "results": f.daily[parts[2]]})
 	case len(parts) == 4 && parts[3] == "alerts":
+		if f.noAlertScope {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"type":"authentication_error","code":"permission_denied"}`))
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"results": f.alerts[parts[2]]})
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -360,5 +367,21 @@ func TestTheHostIsTheAPIHost(t *testing.T) {
 		if got := APIHost(in); got != want {
 			t.Errorf("APIHost(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A key without alert:read still watches errors; the gap is reported, not a
+// failure every poll.
+func TestAKeyWithoutAlertScopeStillWatchesErrors(t *testing.T) {
+	h := newHarness(t, "101")
+	h.f.noAlertScope = true
+	h.f.errors["101"] = [][]any{{"iss-a", 120, 168, "2026-10-20T10:00:00Z", "iss-a", "TypeError", "cart is undefined", nil, nil}}
+	h.tick(t)
+	if len(h.ofType("error.spike")) != 1 {
+		t.Fatalf("errors were not watched: %+v", h.got)
+	}
+	st := h.src.Status()
+	if len(st) != 1 || !strings.Contains(st[0].Note, "alert:read") {
+		t.Errorf("status %+v should say alerts need alert:read", st)
 	}
 }

@@ -141,6 +141,7 @@ type accountState struct {
 	pausedUntil time.Time
 	lastOK      time.Time
 	lastErr     string
+	note        string // a partial gap, such as alerts not being readable
 }
 
 type project struct {
@@ -180,6 +181,7 @@ type Status struct {
 	Projects    []string
 	LastOK      time.Time
 	LastError   string
+	Note        string
 	PausedUntil time.Time
 }
 
@@ -293,7 +295,7 @@ func (s *Source) checkAccount(ctx context.Context, a Account, st *accountState, 
 			}
 			st.errorsAt[p.ID] = now
 		}
-		if err := s.checkAlerts(ctx, a, p, res); err != nil {
+		if err := s.checkAlerts(ctx, a, p, st, res); err != nil {
 			return err
 		}
 		if !s.cfg.AnomalyOff {
@@ -481,7 +483,7 @@ func firstOf(s string) string {
 	return s
 }
 
-func (s *Source) checkAlerts(ctx context.Context, a Account, p project, res *Result) error {
+func (s *Source) checkAlerts(ctx context.Context, a Account, p project, st *accountState, res *Result) error {
 	var list struct {
 		Results []struct {
 			ID      string          `json:"id"`
@@ -493,8 +495,16 @@ func (s *Source) checkAlerts(ctx context.Context, a Account, p project, res *Res
 	}
 	if err := s.do(ctx, a, http.MethodGet, "/api/projects/"+url.PathEscape(p.ID)+"/alerts/?limit=100", nil, &list); err != nil {
 		var he *httpError
-		if errors.As(err, &he) && he.Status == http.StatusNotFound {
+		switch {
+		case errors.As(err, &he) && he.Status == http.StatusNotFound:
 			return nil // an instance without alerts
+		case errors.As(err, &he) && he.Status == http.StatusForbidden:
+			// Errors are still watched; the gap is said in health, not as a
+			// failure every poll.
+			s.mu.Lock()
+			st.note = "insight alerts are not watched: the key lacks alert:read"
+			s.mu.Unlock()
+			return nil
 		}
 		return err
 	}
@@ -762,7 +772,7 @@ func (s *Source) Status() []Status {
 			names = append(names, p.Name)
 		}
 		out = append(out, Status{Integration: integration, Projects: names, LastOK: st.lastOK,
-			LastError: st.lastErr, PausedUntil: st.pausedUntil})
+			LastError: st.lastErr, PausedUntil: st.pausedUntil, Note: st.note})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Integration < out[j].Integration })
 	return out

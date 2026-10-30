@@ -102,7 +102,7 @@ type KV interface {
 const (
 	cursorGroup = "slack-source-cursor"
 	seenGroup   = "slack-source-seen"
-	seenTTL     = 14 * 24 * time.Hour
+	seenTTL     = 3 * 24 * time.Hour // cursors keep reads from overlapping; this covers search and restarts
 )
 
 // Source polls Slack workspaces for what concerns the operator.
@@ -141,7 +141,7 @@ type team struct {
 	token, bot  string
 
 	id, name, base, account string
-	self, selfName          string
+	self                    string
 	botUser, botID          string
 
 	convs    map[string]*conv
@@ -150,6 +150,7 @@ type team struct {
 
 	pausedUntil time.Time
 	searchOff   string
+	botNote     string
 	lastOK      time.Time
 	lastErr     string
 }
@@ -290,43 +291,58 @@ func (s *Source) team(w Workspace) *team {
 // identify learns who the operator is in this workspace, and which bot is
 // KARMAX's own.
 func (s *Source) identify(ctx context.Context, t *team) error {
-	if t.id != "" {
-		return nil
+	s.mu.Lock()
+	id, token, bot, botUser := t.id, t.token, t.bot, t.botUser
+	s.mu.Unlock()
+
+	if id == "" {
+		var me struct {
+			UserID string `json:"user_id"`
+			Team   string `json:"team"`
+			TeamID string `json:"team_id"`
+			URL    string `json:"url"`
+		}
+		if err := s.call(ctx, token, "auth.test", nil, &me); err != nil {
+			return err
+		}
+		base := strings.TrimSpace(me.URL)
+		if base != "" && !strings.HasSuffix(base, "/") {
+			base += "/"
+		}
+		account := strings.ToLower(me.TeamID)
+		if u, err := url.Parse(base); err == nil && u.Host != "" {
+			account, _, _ = strings.Cut(u.Host, ".")
+		}
+		s.mu.Lock()
+		t.id, t.name, t.base, t.account, t.self = me.TeamID, me.Team, base, account, me.UserID
+		s.mu.Unlock()
+		s.userName(ctx, t, me.UserID) // so a mention of the operator reads as their name
 	}
-	var me struct {
-		UserID string `json:"user_id"`
-		Team   string `json:"team"`
-		TeamID string `json:"team_id"`
-		URL    string `json:"url"`
-	}
-	if err := s.call(ctx, t.token, "auth.test", nil, &me); err != nil {
-		return err
-	}
-	base := strings.TrimSpace(me.URL)
-	if base != "" && !strings.HasSuffix(base, "/") {
-		base += "/"
-	}
-	account := strings.ToLower(me.TeamID)
-	if u, err := url.Parse(base); err == nil && u.Host != "" {
-		account, _, _ = strings.Cut(u.Host, ".")
-	}
-	var botUser, botID string
-	if t.bot != "" {
+
+	// Without the bot's identity, KARMAX's own bot replying in a DM with the
+	// operator would be heard as someone else — so a pause waits for it, and
+	// only a token Slack refuses outright is read past, with a note.
+	if bot != "" && botUser == "" {
 		var b struct {
 			UserID string `json:"user_id"`
 			BotID  string `json:"bot_id"`
 		}
-		// Best effort: without it the bot's own messages are still skipped
-		// by the comms channel's conversation, only not recognised here.
-		if s.call(ctx, t.bot, "auth.test", nil, &b) == nil {
-			botUser, botID = b.UserID, b.BotID
+		err := s.call(ctx, bot, "auth.test", nil, &b)
+		var api *apiError
+		switch {
+		case err == nil:
+			s.mu.Lock()
+			t.botUser, t.botID, t.botNote = b.UserID, b.BotID, ""
+			s.mu.Unlock()
+		case errors.As(err, &api):
+			s.mu.Lock()
+			t.botNote = "the bot token was refused (" + api.Code + "), so KARMAX's own bot cannot be told apart; " +
+				"DMs from bots are never urgent"
+			s.mu.Unlock()
+		default:
+			return err
 		}
 	}
-	s.mu.Lock()
-	t.id, t.name, t.base, t.account, t.self = me.TeamID, me.Team, base, account, me.UserID
-	t.botUser, t.botID = botUser, botID
-	s.mu.Unlock()
-	t.selfName = s.userName(ctx, t, me.UserID)
 	return nil
 }
 
@@ -585,7 +601,7 @@ func (s *Source) event(ctx context.Context, t *team, c *conv, m message) (source
 		typ, where = "message.dm", "a direct message"
 		title = fmt.Sprintf("Slack DM from %s: %s", who, snippet)
 		// Slackbot's reminders and notices are not a person asking.
-		urgent = m.User != "USLACKBOT"
+		urgent = m.User != "USLACKBOT" && m.BotID == "" && m.Subtype != "bot_message"
 	case c.kind == "group_dm":
 		typ, where = "message.group_dm", "a group DM"
 		title = fmt.Sprintf("Slack group DM from %s: %s", who, snippet)
@@ -775,9 +791,15 @@ func (s *Source) Status() []Status {
 	defer s.mu.Unlock()
 	var out []Status
 	for _, t := range s.teams {
+		var notes []string
+		for _, n := range []string{t.searchOff, t.botNote} {
+			if n != "" {
+				notes = append(notes, n)
+			}
+		}
 		out = append(out, Status{
 			Integration: t.integration, Account: t.account, Team: t.name, Conversations: len(t.convs),
-			LastOK: t.lastOK, LastError: t.lastErr, PausedUntil: t.pausedUntil, Note: t.searchOff,
+			LastOK: t.lastOK, LastError: t.lastErr, PausedUntil: t.pausedUntil, Note: strings.Join(notes, "; "),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Account < out[j].Account })

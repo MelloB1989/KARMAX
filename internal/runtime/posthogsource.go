@@ -66,7 +66,7 @@ func (rt *KarmaxRuntime) registerPostHogSource(reg *integration.Registry) {
 	src := posthogsrc.New(cfg, rt.store, func(e sources.Event) error {
 		return rt.bus.Publish(e.BusEvent(agentID))
 	})
-	var lastOff string
+	var lastOff, lastNotes string
 	loopkit.Register(loopkit.Loop{
 		Name: "posthog-source",
 		Description: "Watches every PostHog project the operator's key can see: new and spiking errors and firing " +
@@ -84,6 +84,18 @@ func (rt *KarmaxRuntime) registerPostHogSource(reg *integration.Registry) {
 			}
 			if res.Published > 0 {
 				k.Logf("posthog-source: %d projects, %d events", res.Projects, res.Published)
+			}
+			var notes []string
+			for _, st := range src.Status() {
+				if st.Note != "" {
+					notes = append(notes, st.Integration+": "+st.Note)
+				}
+			}
+			if n := strings.Join(notes, "; "); n != lastNotes {
+				if n != "" {
+					k.Logf("posthog-source: %s", n)
+				}
+				lastNotes = n
 			}
 			return err
 		},

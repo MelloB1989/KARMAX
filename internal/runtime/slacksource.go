@@ -76,7 +76,7 @@ func (rt *KarmaxRuntime) registerSlackSource(reg *integration.Registry) {
 	}
 	rt.lendToSource(slacksrc.Name, tool)
 
-	var lastOff string
+	var lastOff, lastNotes string
 	loopkit.Register(loopkit.Loop{
 		Name: "slack-source",
 		Description: "Reads the operator's Slack in every connected workspace — DMs, mentions and the channels " +
@@ -96,6 +96,18 @@ func (rt *KarmaxRuntime) registerSlackSource(reg *integration.Registry) {
 			}
 			if res.Published > 0 {
 				k.Logf("slack-source: %d workspaces, %d conversations read, %d events", res.Workspaces, res.Read, res.Published)
+			}
+			var notes []string
+			for _, st := range src.Status() {
+				if st.Note != "" {
+					notes = append(notes, st.Account+": "+st.Note)
+				}
+			}
+			if n := strings.Join(notes, "; "); n != lastNotes {
+				if n != "" {
+					k.Logf("slack-source: %s", n)
+				}
+				lastNotes = n
 			}
 			return err
 		},

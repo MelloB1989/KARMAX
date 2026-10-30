@@ -532,3 +532,62 @@ func TestKarmaxRepliesAsTheOperatorInAThread(t *testing.T) {
 		t.Error("a workspace nobody configured was accepted")
 	}
 }
+
+// A bot writing in a DM is a notice, not a person asking. KARMAX's own bot
+// answering the operator in their DM with it is never an event: while the
+// bot cannot be identified the workspace waits rather than risk hearing it.
+func TestABotInADirectMessageIsNotAPersonAsking(t *testing.T) {
+	f := newFakeSlack(t)
+	w := northwind(f)
+	w.convs = append(w.convs, map[string]any{"id": "D0CI", "is_im": true, "user": "U0CIBOT"},
+		map[string]any{"id": "D0KARMAX", "is_im": true, "user": "U0KARMAXBOT"})
+	w.history["D0CI"] = []map[string]any{{"type": "message", "subtype": "bot_message", "bot_id": "B0CI",
+		"username": "Build Bot", "text": "build 812 failed", "ts": ts(4, 1)}}
+	w.history["D0KARMAX"] = []map[string]any{{"type": "message", "user": "U0KARMAXBOT", "bot_id": "B0KARMAX",
+		"text": "done: the deck is reviewed", "ts": ts(2, 1)}}
+	bot := f.ws["xoxb-northwind"]
+	bot.limited = true
+	var got []sources.Event
+	s := newTestSource(f, newKV(), &got)
+	ws := []Workspace{{UserToken: "xoxp-northwind", BotToken: "xoxb-northwind"}}
+
+	if _, err := s.Tick(context.Background(), ws); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("published %d events before KARMAX's bot could be told apart", len(got))
+	}
+	bot.limited = false
+	s.Now = func() time.Time { return clock.Add(3 * time.Minute) }
+	if _, err := s.Tick(context.Background(), ws); err != nil {
+		t.Fatal(err)
+	}
+	ci := false
+	for _, e := range got {
+		if e.Data["channel"] == "D0KARMAX" {
+			t.Errorf("KARMAX's own bot was heard as %q", e.Title)
+		}
+		if e.Data["channel"] == "D0CI" {
+			ci = true
+			if e.Urgent || !strings.Contains(e.Title, "Build Bot") {
+				t.Errorf("a bot's DM: urgent=%v title %q", e.Urgent, e.Title)
+			}
+		}
+	}
+	if !ci {
+		t.Error("the build bot's DM was not published at all")
+	}
+
+	// A bot token Slack refuses does not silence the operator's DMs; it is noted.
+	f2 := newFakeSlack(t)
+	northwind(f2)
+	delete(f2.ws, "xoxb-northwind")
+	var got2 []sources.Event
+	s2 := newTestSource(f2, newKV(), &got2)
+	if _, err := s2.Tick(context.Background(), ws); err != nil {
+		t.Fatal(err)
+	}
+	if len(got2) == 0 || !strings.Contains(s2.Status()[0].Note, "bot token") {
+		t.Errorf("with a refused bot token: %d events, note %q", len(got2), s2.Status()[0].Note)
+	}
+}
