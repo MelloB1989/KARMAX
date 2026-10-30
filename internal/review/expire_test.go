@@ -78,6 +78,31 @@ func TestUnansweredQuestionsExpireAndTheLoopAsksAgain(t *testing.T) {
 	}
 }
 
+// A loop's log stops changing when its month ends. That is not a fact gone
+// stale, and the operator is not asked whether last month's log still holds.
+func TestALoopsLogIsNotAStalenessCandidate(t *testing.T) {
+	old := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/v1/retrieve") {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		writeJSON(w, map[string]any{"memories": []any{
+			map[string]any{"path": "facts/context/night-watch/2026-09.md", "tier": "facts", "updated_at": old,
+				"content": "(night-watch, 29 Sep) group-a [reminded]: still waiting on Omer for the Friday call"},
+			map[string]any{"path": "facts/a.md", "tier": "facts", "updated_at": old,
+				"content": "Omer will get back by Friday about the deadline"},
+		}})
+	}))
+	defer srv.Close()
+
+	r := reviewerWithGitLoom(t, srv.URL)
+	got := r.staleMemories(context.Background(), time.Now().Add(-4*24*time.Hour))
+	if len(got) != 1 || got[0].id != "facts/a.md" {
+		t.Errorf("candidates = %+v, want only the fact", got)
+	}
+}
+
 func TestExpiryDefaultsToAWeekAndCanBeTurnedOff(t *testing.T) {
 	if got := (&Reviewer{}).expireAfter(); got != 7*24*time.Hour {
 		t.Errorf("default expiry = %v, want a week", got)

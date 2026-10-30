@@ -121,6 +121,28 @@ func TestALoopLogIsFiledUnderItsLoopWhateverItsName(t *testing.T) {
 	}
 }
 
+// A log's documents are known by their path, so readers that look for facts —
+// the staleness review, the merge pass — can leave a loop's record alone.
+func TestALoopLogsDocumentsAreKnownByTheirPath(t *testing.T) {
+	e := LoopLog("night-watch", "(night-watch) quiet")
+	e.OccurredAt = time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
+	base := PathFor(e, nil)
+	for _, p := range []string{base, logPart(base, 2), logPart(base, 12) + "#2026-10-30-night-watch-quiet"} {
+		if !IsLoopLogPath(p) {
+			t.Errorf("%s is not recognised as a loop's log", p)
+		}
+	}
+	for _, p := range []string{
+		"facts/context/night-watch.md", "facts/context/2026-10-25.md", "facts/projects/contoso.md",
+		"facts/projects/contoso/2026-10.md", "incidents/2026/10/contoso.md", "facts/context/night-watch/notes.md",
+		"facts/context/a/b/2026-10.md",
+	} {
+		if IsLoopLogPath(p) {
+			t.Errorf("%s is taken for a loop's log", p)
+		}
+	}
+}
+
 // setLogDocCap bounds loop-log documents for one test.
 func setLogDocCap(n int) func() {
 	was := logDocCap

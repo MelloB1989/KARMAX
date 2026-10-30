@@ -309,6 +309,11 @@ func (r *Reviewer) staleMemories(ctx context.Context, cutoff time.Time) []candid
 		if e.Pinned || e.CreatedAt.IsZero() || e.CreatedAt.After(cutoff) || !looksTimeSensitive(e.Content) {
 			continue
 		}
+		// A loop's log stops changing when its month ends; that is a record
+		// complete, not a fact gone stale.
+		if memory.IsLoopLogPath(e.ID) {
+			continue
+		}
 		out = append(out, candidate{kind: "memory", id: e.ID, text: oneLine(e.Content, 400), at: e.CreatedAt})
 		if len(out) >= 40 {
 			break

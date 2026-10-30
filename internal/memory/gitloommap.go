@@ -229,6 +229,17 @@ func IsLoopLog(e MemoryEntry) bool {
 	return strings.EqualFold(strings.TrimSpace(e.Category), CategoryLog)
 }
 
+// logPathRe is the shape PathFor and logPart give a loop's log documents.
+var logPathRe = regexp.MustCompile(`^facts/context/[a-z0-9-]+/\d{4}-\d{2}(-part-\d+)?\.md$`)
+
+// IsLoopLogPath reports a path (or a section of one) in a loop's log. Readers
+// looking for facts — what has gone stale, what duplicates what — use it to
+// leave a loop's record alone: last month's log is not a fact gone stale.
+func IsLoopLogPath(path string) bool {
+	file, _, _ := strings.Cut(path, "#")
+	return logPathRe.MatchString(file)
+}
+
 // logSubject is the loop a log entry belongs to: its first tag that is not
 // the "loop" marker. Not subjectOf, which skips names that describe the filing
 // system — and a loop is free to be called "summary".
