@@ -260,16 +260,21 @@ func (m *Manager) Correct(ctx context.Context, handle, content string) (replaced
 // CountFacts reports how many separate facts a memory's markdown holds.
 //
 // Sections are what KARMAX writes one fact into, so counting the ## headers is
-// counting the facts. A file with none is a single fact written as prose.
+// counting the facts — plus the opening paragraph, which is how a document's
+// FIRST fact is written: with no header. A file with no headers is one fact.
 func CountFacts(content string) int {
-	n := 0
+	n, lead := 0, false
 	for _, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "## ") {
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(t, "## "):
 			n++
+		case n == 0 && t != "" && !strings.HasPrefix(t, "#"):
+			lead = true
 		}
 	}
-	if n == 0 {
-		return 1
+	if lead || n == 0 {
+		n++
 	}
 	return n
 }

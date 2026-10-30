@@ -289,6 +289,46 @@ type slowStore struct {
 	// prev chains applications so they land in arrival order, as a per-namespace
 	// write queue does.
 	prev chan struct{}
+	// lag, when set, makes reads disagree as the store's retrieve workers do:
+	// after a change ONE read sees it, and the rest serve a snapshot that old.
+	lag       time.Duration
+	snaps     []storeSnap
+	freshNext bool
+}
+
+type storeSnap struct {
+	at    time.Time
+	files map[string]string
+}
+
+// snap records the store's state after a change; called with mu held.
+func (s *slowStore) snap() {
+	if s.lag == 0 {
+		return
+	}
+	c := make(map[string]string, len(s.files))
+	for k, v := range s.files {
+		c[k] = v
+	}
+	s.snaps = append(s.snaps, storeSnap{at: time.Now(), files: c})
+	s.freshNext = true
+}
+
+// view is what a read sees; called with mu held.
+func (s *slowStore) view(path string) map[string]string {
+	if s.lag == 0 || s.freshNext {
+		s.freshNext = false
+		return s.files
+	}
+	cut := time.Now().Add(-s.lag)
+	v := map[string]string{}
+	for _, sn := range s.snaps {
+		if sn.at.After(cut) {
+			break
+		}
+		v = sn.files
+	}
+	return v
 }
 
 func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +356,7 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 			for _, m := range body.Memories {
 				s.files[m.Path] = m.Content
 			}
+			s.snap()
 			s.mu.Unlock()
 		}()
 		writeJSON(w, map[string]any{"written": 1})
@@ -346,6 +387,7 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 					s.files[file] = rest
 				}
 			}
+			s.snap()
 			s.mu.Unlock()
 		}()
 		w.WriteHeader(http.StatusAccepted)
@@ -354,17 +396,23 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Query().Get("path")
 		file, slug, isSection := strings.Cut(p, "#")
 		s.mu.Lock()
-		c, ok := s.files[file]
+		c, ok := s.view(p)[file]
 		s.mu.Unlock()
+		title := ""
 		if ok && isSection {
 			ok = cutSection(c, slug) != c
+			for _, l := range strings.Split(c, "\n") {
+				if strings.HasPrefix(l, "## ") && serverSlug(strings.TrimPrefix(l, "## ")) == slug {
+					title = strings.TrimPrefix(l, "## ")
+				}
+			}
 		}
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			writeJSON(w, map[string]any{"error": map[string]any{"code": "not_found", "message": "no memory"}})
 			return
 		}
-		writeJSON(w, map[string]any{"path": p, "content": c, "updated_at": time.Now().Unix() - 3600})
+		writeJSON(w, map[string]any{"path": p, "title": title, "content": c, "updated_at": time.Now().Unix() - 3600})
 	default:
 		http.NotFound(w, r)
 	}

@@ -19,6 +19,11 @@ const pendingTTL = 2 * time.Minute
 type pendingWrite struct {
 	stored gitloom.StoredMemory
 	at     time.Time
+	// gone is a document KARMAX forgot: absent, whatever an older copy says.
+	gone bool
+	// cut are the headers of sections KARMAX forgot from the document, cut
+	// again from any copy that still holds them.
+	cut []string
 }
 
 // lockPath serialises read-modify-write on one path.
@@ -43,10 +48,64 @@ func (g *gitloomBackend) remember(m gitloom.NewMemory, occurred, sentAt time.Tim
 			delete(g.pending, p)
 		}
 	}
-	g.pending[m.Path] = pendingWrite{at: sentAt, stored: gitloom.StoredMemory{
+	// A section forgotten a moment ago is still cut from older copies after
+	// the document is written again.
+	var cut []string
+	if prev, ok := g.pending[m.Path]; ok {
+		cut = prev.cut
+	}
+	g.pending[m.Path] = pendingWrite{at: sentAt, cut: cut, stored: gitloom.StoredMemory{
 		Path: m.Path, Content: m.Content, UserTags: m.Tags, Cues: m.Cues, Related: m.Related,
 		Confidence: m.Confidence, OccurredAt: occurred, UpdatedAt: sentAt,
 	}}
+}
+
+// forgotten records a forget, so the reads that follow agree with it.
+//
+// The store's readers do not all see a change at once: one can answer that a
+// forgotten fact is gone while another still serves the document from before,
+// and the next write to the document folds onto whichever it reads. Without
+// this a forget was undone by the very next write. base is the document as it
+// stood (nil for a whole document); header names the section cut from it.
+func (g *gitloomBackend) forgotten(path string, base *gitloom.StoredMemory, header string) {
+	g.pmu.Lock()
+	defer g.pmu.Unlock()
+	if header == "" {
+		g.pending[path] = pendingWrite{at: time.Now(), gone: true}
+		return
+	}
+	w := pendingWrite{at: time.Now(), cut: []string{header}}
+	if prev, ok := g.pending[path]; ok && !prev.gone {
+		w.cut = append(prev.cut, header)
+	}
+	if base != nil {
+		w.stored = *base
+		w.stored.Content = cutSections(base.Content, w.cut)
+		w.stored.UpdatedAt = w.at
+	}
+	g.pending[path] = w
+}
+
+// cutSections removes the "## " sections with these headers from a document.
+func cutSections(doc string, headers []string) string {
+	if len(headers) == 0 {
+		return doc
+	}
+	drop := map[string]bool{}
+	for _, h := range headers {
+		drop[strings.TrimSpace(h)] = true
+	}
+	var kept []string
+	skipping := false
+	for _, l := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(l, "## ") {
+			skipping = drop[strings.TrimSpace(strings.TrimPrefix(l, "## "))]
+		}
+		if !skipping {
+			kept = append(kept, l)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 func (g *gitloomBackend) dropPending(path string) {
@@ -74,6 +133,22 @@ func (g *gitloomBackend) current(ctx context.Context, path string) (*gitloom.Sto
 	existing, err := g.client.Get(ctx, path, &gitloom.RecallOptions{Namespace: g.cfg.Namespace})
 	w, ok := g.pendingFor(path)
 	if !ok {
+		return existing, err
+	}
+	if w.gone {
+		// Forgotten: absent, unless someone has written it since.
+		if err == nil && existing != nil && firstTime(stamp(existing.UpdatedAt, existing.Updated)).After(w.at) {
+			return existing, nil
+		}
+		return nil, &gitloom.APIError{Status: 404, Code: "not_found", Message: "forgotten"}
+	}
+	if err == nil && existing != nil && len(w.cut) > 0 {
+		c := *existing
+		c.Content = cutSections(existing.Content, w.cut)
+		existing = &c
+	}
+	if strings.TrimSpace(w.stored.Content) == "" {
+		// Only a cut is known, not the document: the server's copy, cut.
 		return existing, err
 	}
 	if err != nil {

@@ -201,16 +201,32 @@ func (g *gitloomBackend) write(ctx context.Context, e MemoryEntry, path string, 
 //
 // A handle that names nothing is ErrNotStored, never a quiet success. And the
 // call waits for the forget to land: the next write to the document folds onto
-// what is stored, so a forget still in the queue — or KARMAX's own memory of
-// what it last wrote there — would carry the fact straight back.
+// what is stored, so a forget still in the queue — or a reader still serving
+// the document from before — would carry the fact straight back. See forgotten.
 func (g *gitloomBackend) forget(ctx context.Context, handle string) error {
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
-	file, _, _ := strings.Cut(handle, "#")
+	file, _, isSection := strings.Cut(handle, "#")
 	defer g.lockPath(file)()
 	opts := &gitloom.RecallOptions{Namespace: g.cfg.Namespace}
-	if _, err := g.client.Get(cctx, handle, opts); err != nil {
+	// What is there now, as KARMAX knows it: a document just written may not
+	// have reached every reader yet, and one just forgotten may still be served.
+	var (
+		base   *gitloom.StoredMemory
+		header string
+		err    error
+	)
+	if isSection {
+		var sec *gitloom.StoredMemory
+		if sec, err = g.client.Get(cctx, handle, opts); err == nil {
+			header = sec.Title
+			base, _ = g.current(cctx, file)
+		}
+	} else {
+		_, err = g.current(cctx, handle)
+	}
+	if err != nil {
 		if isAbsent(err) {
 			return fmt.Errorf("%w: %s", ErrNotStored, handle)
 		}
@@ -221,7 +237,11 @@ func (g *gitloomBackend) forget(ctx context.Context, handle string) error {
 		g.setHealth(false, err)
 		return err
 	}
-	g.dropPending(file)
+	if isSection && header == "" {
+		g.dropPending(file) // no header to cut it by; the server's word alone
+	} else {
+		g.forgotten(file, base, header)
+	}
 	g.setHealth(true, nil)
 
 	for {

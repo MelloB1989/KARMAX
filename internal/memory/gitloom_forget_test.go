@@ -205,3 +205,70 @@ func TestAFoldKeepsAnIncidentsExpiry(t *testing.T) {
 		t.Errorf("ttl written = %q, want the ten days the incident had left", ttl)
 	}
 }
+
+// The store's readers do not all see a change at once: one can answer that a
+// forgotten fact is gone while another still serves the document from before.
+// Folding the next write onto that older copy carried the fact straight back.
+func TestAForgetIsNotUndoneByAStaleRead(t *testing.T) {
+	const lag = 300 * time.Millisecond
+	st := &slowStore{files: map[string]string{}, delay: 20 * time.Millisecond, lag: lag}
+	srv := httptest.NewServer(http.HandlerFunc(st.handler))
+	t.Cleanup(srv.Close)
+	m, _ := managerWithGitLoom(t, srv.URL)
+	// Every reader holds what was written, so the stale one serves the fact
+	// about to be forgotten.
+	settle := func() { time.Sleep(lag + 100*time.Millisecond) }
+	write := func(fact, subject string) {
+		t.Helper()
+		if err := m.Write(MemoryEntry{Content: fact, Category: "project", Tags: []string{subject}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// One fact of several.
+	write("alpha is first", "subject")
+	write("bravo met Quinn at 19:47 IST", "subject")
+	doc := st.final("facts/projects/subject.md")
+	settle()
+	slug := ""
+	for _, l := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(l, "## ") && strings.Contains(l, "bravo") {
+			slug = serverSlug(strings.TrimPrefix(l, "## "))
+		}
+	}
+	if err := m.Forget("facts/projects/subject.md#" + slug); err != nil {
+		t.Fatalf("Forget section: %v", err)
+	}
+	write("charlie is third", "subject")
+	if got := st.final("facts/projects/subject.md"); strings.Contains(got, "bravo") || !strings.Contains(got, "charlie") || !strings.Contains(got, "alpha") {
+		t.Errorf("after forgetting a section and writing again:\n%s", got)
+	}
+
+	// A whole document.
+	write("delta is alone", "other")
+	st.final("facts/projects/other.md")
+	settle()
+	if err := m.Forget("facts/projects/other.md"); err != nil {
+		t.Fatalf("Forget document: %v", err)
+	}
+	write("echo is new", "other")
+	if got := st.final("facts/projects/other.md"); strings.Contains(got, "delta") || !strings.Contains(got, "echo") {
+		t.Errorf("after forgetting a document and writing again:\n%s", got)
+	}
+}
+
+// A document's first fact is written as its opening paragraph, with no header;
+// the next ones as sections. Counting only headers took a document of two facts
+// for one, and forgetting "it" took both.
+func TestTheOpeningParagraphIsAFact(t *testing.T) {
+	for doc, want := range map[string]int{
+		"Basil is watered on Sundays.": 1,
+		"Basil is watered on Sundays.\n\n## 2026-10-30 — Basil is watered on Wednesdays\n\nWednesdays.": 2,
+		"## a\n\none\n\n## b\n\ntwo": 2,
+		"\n\n## a\n\none": 1,
+	} {
+		if got := CountFacts(doc); got != want {
+			t.Errorf("CountFacts(%q) = %d, want %d", doc, got, want)
+		}
+	}
+}
