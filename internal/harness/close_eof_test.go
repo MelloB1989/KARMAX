@@ -67,9 +67,16 @@ func TestCloseGivesALaunchedSessionTimeToExitOnEOF(t *testing.T) {
 
 // A local session is still signalled straight away, as it always was: Close
 // is also how a running turn is interrupted, and that must not wait.
+//
+// The fake handles SIGINT itself and waits with `wait`, which a trapped signal
+// interrupts. It used to wait in a plain foreground `sleep`, and bash defers a
+// SIGINT that arrives while it waits on a foreground child, then carries on
+// when the child exits normally — so whenever the signal landed after bash had
+// started the sleep rather than before (1 run in 40, more under load), the
+// marker was written although Close had signalled at once.
 func TestCloseStillSignalsALocalSessionAtOnce(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "clean")
-	bin := writeScript(t, "while IFS= read -r line; do "+resultLine+"done\nsleep 0.5\ntouch "+marker+"\n")
+	bin := writeScript(t, "trap 'exit 130' INT\nwhile IFS= read -r line; do "+resultLine+"done\nsleep 0.5 & wait $!\ntouch "+marker+"\n")
 	sess := openOne(t, bin, Policy{TurnTimeout: 5 * time.Second})
 
 	sess.Close()
