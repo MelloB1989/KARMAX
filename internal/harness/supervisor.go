@@ -257,9 +257,11 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	}
 
 	now := time.Now()
-	if errors.Is(err, ErrSessionBusy) {
+	if errors.Is(err, ErrSessionBusy) || errors.Is(err, ErrTurnNotSent) {
 		// Nothing was written and nothing failed: the session is busy with a
-		// turn another session asked for, and killing it would lose that.
+		// turn someone else asked for, or this caller ran out of time before
+		// it wrote anything. Killing it would lose the other turn, or a
+		// healthy session for nothing.
 		return turn, err
 	}
 	if err != nil {
@@ -727,6 +729,18 @@ func (s *Supervisor) Shutdown() {
 		}
 		s.Close(k)
 	}
+}
+
+// spawnGrace covers starting or resuming a process before a turn is written.
+const spawnGrace = 30 * time.Second
+
+// TurnBudget is the longest SendWith can take for kind: waiting out the turn
+// ahead of it (a caller's, or one the session started by itself — at most
+// the kind's TurnTimeout), the turn itself (TurnTimeout again), and starting
+// the process. A caller bounding the call with less cuts off turns the kind's
+// own configuration still allows.
+func (s *Supervisor) TurnBudget(kind string) time.Duration {
+	return 2*s.policy(kind).TurnTimeout + spawnGrace
 }
 
 func (s *Supervisor) policy(kind string) Policy {

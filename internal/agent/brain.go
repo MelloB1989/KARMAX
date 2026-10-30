@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/MelloB1989/karma/models"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -38,3 +39,24 @@ type Brain interface {
 // change. If a method is added to MainModelSession that the harness cannot
 // honour, this line is what fails, at compile time, rather than at 2am.
 var _ Brain = (*MainModelSession)(nil)
+
+// defaultTurnBudget bounds one turn of a brain that does not say how long its
+// turns may take. A hung provider must never wedge a conversation's worker.
+const defaultTurnBudget = 3 * time.Minute
+
+// turnBudget is how long the agent gives b for one turn.
+//
+// A brain that knows its own limit (TurnBudget) is given it, and never less
+// than the default. The agent's three minutes used to be imposed on every
+// brain, including a harness session configured for longer and one that
+// first has to wait out a turn another session started — so a turn the
+// orchestrator finished inside its own configured time was cut off by the
+// agent's, and the operator was told to send the message again.
+func turnBudget(b Brain) time.Duration {
+	if tb, ok := b.(interface{ TurnBudget() time.Duration }); ok {
+		if d := tb.TurnBudget(); d > defaultTurnBudget {
+			return d
+		}
+	}
+	return defaultTurnBudget
+}

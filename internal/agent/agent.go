@@ -1182,7 +1182,11 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// Bound the model call: a hung/slow provider must never wedge the single
 		// inbox worker forever (that silently deafens the whole agent). On
 		// timeout the turn fails and the loop moves on to the next message.
-		turnCtx, turnCancel := context.WithTimeout(a.ctx, 3*time.Minute)
+		// The bound is the brain's own (turnBudget): a harness session has a
+		// configured turn timeout, and a shorter one here cut off turns it was
+		// still entitled to finish.
+		brain := a.brainFor(evt)
+		turnCtx, turnCancel := context.WithTimeout(a.ctx, turnBudget(brain))
 		// Mark whose behalf this turn acts on, for connectors that authenticate
 		// as an individual rather than as the install. Established from WHO SENT
 		// the message, before the model sees anything — never from a tool
@@ -1190,7 +1194,6 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		turnCtx = connectorkit.WithActor(turnCtx, a.actingMember(evt))
 		turnCtx = memory.WithSource(turnCtx, a.memorySource(evt))
 		lent := a.lentTools(evt)
-		brain := a.brainFor(evt)
 		brain.SetTurnContext(dynamicCtx)
 		response, toolCalls, err := brain.ProcessMessageWithheld(turnCtx, userPrompt, lent, nil)
 		turnCancel()
@@ -1218,7 +1221,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 				"1. ACTUALLY DO IT — call the correct tool this turn (comms.send / reminder.add / scheduler.add / claude_code.call / etc.). Delegate to claude_code if it needs the shell, files, or research.\n" +
 				"2. If you literally CANNOT (you're missing information — e.g. you don't have the credentials/file/detail it needs), say so plainly in ONE sentence and ask the one specific thing you need. Never a vague \"standing by\".\n" +
 				"Do not just acknowledge again. Act or state the blocker."
-			rctx, rcancel := context.WithTimeout(a.ctx, 3*time.Minute)
+			rctx, rcancel := context.WithTimeout(a.ctx, turnBudget(brain))
 			resp2, tc2, err2 := brain.ProcessMessageWithheld(rctx, nudge, nil, nil)
 			rcancel()
 			if err2 == nil && strings.TrimSpace(resp2) != "" {

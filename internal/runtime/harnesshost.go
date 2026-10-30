@@ -577,19 +577,27 @@ func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (age
 		MCPConfig:    browserMCPConfig(ctx, h.browser, kind),
 		SystemPrompt: h.prompts[key],
 	})
+	calls := make([]agent.HarnessToolCall, 0, len(turn.ToolCalls))
+	for _, tc := range turn.ToolCalls {
+		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input, Failed: tc.Failed})
+	}
 	if err != nil {
 		var open harness.ErrBreakerOpen
 		if asBreakerOpen(err, &open) {
 			// Not an error to the caller: the brain falls back on this.
 			return agent.HarnessTurn{Available: false, Reason: open.Reason}, nil
 		}
-		return agent.HarnessTurn{Available: false, Reason: err.Error()}, err
-	}
-	calls := make([]agent.HarnessToolCall, 0, len(turn.ToolCalls))
-	for _, tc := range turn.ToolCalls {
-		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input, Failed: tc.Failed})
+		// What the turn did before it failed travels with the failure: the
+		// brain must not hand a turn that already acted to its fallback.
+		return agent.HarnessTurn{Available: false, Reason: err.Error(), ToolCalls: calls}, err
 	}
 	return agent.HarnessTurn{Available: true, Text: turn.Text, ToolCalls: calls}, nil
+}
+
+// TurnBudget is the longest a turn of kind can take, for the brain to bound
+// its turn by rather than by a figure of its own.
+func (h harnessSenderFor) TurnBudget(kind string) time.Duration {
+	return h.sup.TurnBudget(kind)
 }
 
 // wireHarnessBrains points each agent's thinking at a harness session.
