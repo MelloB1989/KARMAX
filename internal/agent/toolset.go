@@ -25,6 +25,8 @@ var defaultCoreTools = []string{
 	"subagent.spawn",
 	"memory.retrieve",
 	"memory.ingest",
+	"memory.forget",
+	"memory.correct",
 	"profile.update",
 	"scheduler.add",
 	"whatsapp.read",

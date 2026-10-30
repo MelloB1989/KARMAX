@@ -280,6 +280,14 @@ func (a *Agent) initModels() error {
 		AgentID:   a.def.ID,
 	})
 
+	// And memory.correct, so "that's wrong, it's X" is one call that replaces
+	// the fact rather than two the agent has to remember to make.
+	allTools = append(allTools, &builtin.MemoryCorrectTool{
+		Store:     a.store,
+		MemoryMgr: a.memory,
+		AgentID:   a.def.ID,
+	})
+
 	// Add review.resolve so the operator can answer staleness check-ins from any
 	// channel (the open questions are injected into context below).
 	allTools = append(allTools, &builtin.ReviewResolveTool{

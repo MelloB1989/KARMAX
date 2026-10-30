@@ -324,9 +324,10 @@ Rules that keep memory usable rather than merely large:
   not a summary of a conversation, not "he said ok".
 - Include WHO said it when that matters. A third party's request recorded as the
   operator's instruction becomes a standing order nobody gave.
-- When a fact CHANGES, ingest the corrected version and retire the old one with
-  ` + "`karmax tool call memory.forget id=<path>`" + `. A stale fact left beside its
-  correction will be retrieved instead of it.
+- When a fact CHANGES, replace it in one call:
+  ` + "`karmax tool call memory.correct id=<path> content=\"<the corrected fact>\"`" + `.
+  When it is simply no longer true, ` + "`karmax tool call memory.forget id=<path>`" + `.
+  A stale fact left beside its correction will be retrieved instead of it.
 - Do not re-derive a list you already store. Update the existing fact.
 
 ## Honesty

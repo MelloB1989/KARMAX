@@ -153,15 +153,25 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 	// could never dedup against another new one, while still matching a stale
 	// legacy row — so the same fact could be saved twice AND a genuinely new
 	// one silently dropped, which is both failure modes at once.
+	//
+	// Similar is not the same. A correction differs from what it corrects by a
+	// word or two — a new email, a moved date — so skipping everything close
+	// dropped every correction while reporting success. Only a fact that adds
+	// nothing to one already held is skipped; a close one is saved, and the
+	// agent told which memory it may replace.
 	existingEntries := existingMemories(mgr, searchKey)
-	for _, e := range existingEntries {
+	var replaces *memory.MemoryEntry
+	for i, e := range existingEntries {
 		sim := wordOverlap(content, e.Content)
-		if sim > 0.7 {
+		if sim > 0.7 && addsNothing(content, e.Content) {
 			excerpt := e.Content
 			if len(excerpt) > 120 {
 				excerpt = excerpt[:120] + "..."
 			}
 			return tools.SuccessResult(fmt.Sprintf("Similar memory already exists: %q. Skipping.", excerpt)), nil
+		}
+		if sim > 0.7 && replaces == nil && e.ID != "" {
+			replaces = &existingEntries[i]
 		}
 	}
 
@@ -169,7 +179,7 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 	existingNodes, _ := t.Store.SearchPageIndexNodes(namespace, searchKey, 20)
 	for _, n := range existingNodes {
 		sim := wordOverlap(content, n.SearchText)
-		if sim > 0.7 {
+		if sim > 0.7 && addsNothing(content, n.SearchText) {
 			excerpt := n.SearchText
 			if len(excerpt) > 120 {
 				excerpt = excerpt[:120] + "..."
@@ -214,6 +224,10 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 	}
 
 	extra := partialWarning
+	if replaces != nil {
+		extra += fmt.Sprintf(" It is close to an existing memory %s: %q. If this replaces it, call memory.forget id=%s.",
+			replaces.ID, truncateStr(stripTagPrefix(replaces.Content), 100), replaces.ID)
+	}
 	if pinned {
 		extra += " (pinned)"
 	}
@@ -222,6 +236,18 @@ func (t *MemoryIngestTool) Execute(ctx context.Context, input map[string]any) (t
 	}
 	return tools.SuccessResult(fmt.Sprintf("Memory saved [%s/%s]: %s%s",
 		category, importance, truncateStr(content, 80), extra)), nil
+}
+
+// addsNothing reports whether every word of a fact is already in another, so
+// storing it would add nothing.
+func addsNothing(fact, existing string) bool {
+	have := wordSet(strings.ToLower(existing))
+	for w := range wordSet(strings.ToLower(fact)) {
+		if !have[w] {
+			return false
+		}
+	}
+	return true
 }
 
 // importanceToInt maps the importance label to its stored priority (1=low..4=critical).

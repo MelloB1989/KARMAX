@@ -44,8 +44,8 @@ func (t *MemoryForgetTool) Execute(ctx context.Context, input map[string]any) (t
 	// in GitLoom, and deleting from one leaves the other to return it at the
 	// next query.
 	if id != "" {
-		if err := t.MemoryMgr.Forget(id); err != nil {
-			return tools.ErrorResult(fmt.Errorf("delete memory %s: %w", id, err)), nil
+		if err := t.forgetOne(ctx, id); err != nil {
+			return tools.ErrorResult(err), nil
 		}
 		return tools.SuccessResult(fmt.Sprintf("Forgot memory %s.", id)), nil
 	}
@@ -79,14 +79,28 @@ func (t *MemoryForgetTool) Execute(ctx context.Context, input map[string]any) (t
 	if top == nil {
 		return tools.SuccessResult("No matching memory found to forget."), nil
 	}
-	if err := t.MemoryMgr.Forget(top.Entry.ID); err != nil {
-		return tools.ErrorResult(fmt.Errorf("delete memory %s: %w", top.Entry.ID, err)), nil
+	if err := t.forgetOne(ctx, top.Entry.ID); err != nil {
+		return tools.ErrorResult(err), nil
 	}
 	msg := fmt.Sprintf("Forgot: %q (id %s).", truncateStr(stripTagPrefix(top.Entry.Content), 100), top.Entry.ID)
 	if len(others) > 0 {
 		msg += " Other close matches were NOT deleted (pass their id to forget too): " + strings.Join(others, "; ")
 	}
 	return tools.SuccessResult(msg), nil
+}
+
+// forgetOne removes ONE fact. A handle naming a document of several facts is
+// refused rather than deleted: a document is everything known about a subject,
+// and retiring one wrong fact must not take the rest with it.
+func (t *MemoryForgetTool) forgetOne(ctx context.Context, id string) error {
+	removed, err := t.MemoryMgr.ForgetFact(ctx, id)
+	if err != nil {
+		return fmt.Errorf("delete memory %s: %w", id, err)
+	}
+	if !removed {
+		return fmt.Errorf("%s holds several facts; forget the one that is wrong by its section id (%s#<section>, as memory.retrieve shows it), or use memory.correct", id, id)
+	}
+	return nil
 }
 
 // stripTagPrefix removes leading "[category][importance]" tags for display.
