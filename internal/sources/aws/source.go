@@ -14,6 +14,7 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -151,10 +152,13 @@ func (s *Source) apiFor(ctx context.Context, p Profile, region string) (API, err
 
 // failure is the health of a profile that could not be used.
 func failure(p Profile, err error) Health {
-	if isAuth(err) {
+	var auth *AuthError
+	if errors.As(err, &auth) {
+		// The fix first: it is what the reader needs, and a long SDK error
+		// after it may be cut.
 		fix := p.LoginFix()
 		return Health{Profile: p.Name, Status: StatusFailed, Fix: fix,
-			Detail: "not logged in (" + clip(err.Error(), 160) + "); run: " + fix}
+			Detail: "not logged in; run: " + fix + " (" + clip(auth.Err.Error(), 160) + ")"}
 	}
 	return Health{Profile: p.Name, Status: StatusDegraded, Detail: clip(err.Error(), 240)}
 }

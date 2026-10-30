@@ -32,7 +32,8 @@ const callTimeout = 45 * time.Second
 // and credentials files the aws CLI does: SSO sessions, `aws login`, static
 // keys and assumed roles alike. Credentials stay inside the SDK; nothing
 // here reads, logs or returns them.
-func SDKDialer(configFile, credentialsFile string) Dialer {
+func SDKDialer(c Config) Dialer {
+	configFile, credentialsFile := c.ConfigFile, c.CredentialsFile
 	return func(ctx context.Context, p Profile, region string) (API, error) {
 		opts := []func(*config.LoadOptions) error{
 			config.WithSharedConfigProfile(p.Name),
@@ -50,12 +51,13 @@ func SDKDialer(configFile, credentialsFile string) Dialer {
 		if err != nil {
 			return nil, &AuthError{Err: err}
 		}
-		return &sdkAPI{cfg: cfg}, nil
+		return &sdkAPI{cfg: cfg, includeCredits: c.IncludeCredits}, nil
 	}
 }
 
 type sdkAPI struct {
-	cfg sdkaws.Config
+	cfg            sdkaws.Config
+	includeCredits bool
 
 	mu      sync.Mutex
 	account string
@@ -300,15 +302,27 @@ func (a *sdkAPI) CostByService(ctx context.Context, from, to string) ([]ServiceC
 	return out, nil
 }
 
-// costPages reads daily unblended cost over [from, to), page by page.
-func (a *sdkAPI) costPages(ctx context.Context, from, to string, group []cetypes.GroupDefinition, each func(cetypes.ResultByTime)) error {
-	ce := costexplorer.NewFromConfig(a.cfg)
+// costInput asks for daily unblended cost over [from, to), before credits
+// and refunds unless they are to be counted in.
+func costInput(from, to string, group []cetypes.GroupDefinition, includeCredits bool) *costexplorer.GetCostAndUsageInput {
 	in := &costexplorer.GetCostAndUsageInput{
 		TimePeriod:  &cetypes.DateInterval{Start: sdkaws.String(from), End: sdkaws.String(to)},
 		Granularity: cetypes.GranularityDaily,
 		Metrics:     []string{"UnblendedCost"},
 		GroupBy:     group,
 	}
+	if !includeCredits {
+		in.Filter = &cetypes.Expression{Not: &cetypes.Expression{Dimensions: &cetypes.DimensionValues{
+			Key: cetypes.DimensionRecordType, Values: []string{"Credit", "Refund"},
+		}}}
+	}
+	return in
+}
+
+// costPages reads daily unblended cost over [from, to), page by page.
+func (a *sdkAPI) costPages(ctx context.Context, from, to string, group []cetypes.GroupDefinition, each func(cetypes.ResultByTime)) error {
+	ce := costexplorer.NewFromConfig(a.cfg)
+	in := costInput(from, to, group, a.includeCredits)
 	for {
 		out, err := ce.GetCostAndUsage(ctx, in)
 		if err != nil {

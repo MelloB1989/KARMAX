@@ -30,6 +30,15 @@ func TestTheSourceCanBeTurnedOff(t *testing.T) {
 	}
 }
 
+func TestCreditsCanBeCountedIn(t *testing.T) {
+	if c, _ := ConfigFromEnv(envOf(nil), "/home/example"); c.IncludeCredits {
+		t.Error("credits are counted in by default")
+	}
+	if c, _ := ConfigFromEnv(envOf(map[string]string{"KARMAX_AWS_COST_INCLUDE_CREDITS": "1"}), "/home/example"); !c.IncludeCredits {
+		t.Error("KARMAX_AWS_COST_INCLUDE_CREDITS=1 was ignored")
+	}
+}
+
 func TestEverySettingComesFromTheEnvironment(t *testing.T) {
 	c, _ := ConfigFromEnv(envOf(map[string]string{
 		"AWS_CONFIG_FILE":               "/etc/example/aws-config",

@@ -30,6 +30,10 @@ type Config struct {
 	// full read a day; each look is one billed Cost Explorer call. 0 turns
 	// rechecks off.
 	CostRecheck time.Duration
+	// IncludeCredits counts credits and refunds against spend. Off by
+	// default: an account running on credits would otherwise read as costing
+	// nothing, and a spike burning through credits would go unseen.
+	IncludeCredits bool
 }
 
 // Defaults.
@@ -70,6 +74,7 @@ func (c Config) withDefaults() Config {
 //	KARMAX_AWS_COST_SPIKE_FLOOR    ...and above this amount (default 5)
 //	KARMAX_AWS_COST_TRAILING_DAYS  days in the trailing mean (default 7)
 //	KARMAX_AWS_COST_RECHECK        how often to look at today's cost again (default 6h; 0 or off for never)
+//	KARMAX_AWS_COST_INCLUDE_CREDITS=1  count credits and refunds against spend (default: spend before credits)
 func ConfigFromEnv(getenv func(string) string, home string) (Config, bool) {
 	env := func(k string) string { return strings.TrimSpace(getenv(k)) }
 	if strings.EqualFold(env("KARMAX_SOURCE_AWS"), "off") {
@@ -113,6 +118,7 @@ func ConfigFromEnv(getenv func(string) string, home string) (Config, bool) {
 	if n, err := strconv.Atoi(env("KARMAX_AWS_COST_TRAILING_DAYS")); err == nil && n > 0 {
 		c.TrailingDays = n
 	}
+	c.IncludeCredits, _ = strconv.ParseBool(env("KARMAX_AWS_COST_INCLUDE_CREDITS"))
 	switch v := env("KARMAX_AWS_COST_RECHECK"); {
 	case strings.EqualFold(v, "off") || v == "0":
 		c.CostRecheck = 0

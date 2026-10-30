@@ -58,3 +58,20 @@ func TestErrorsAreToldApartByWhatFixesThem(t *testing.T) {
 		})
 	}
 }
+
+// Credits and refunds are left out of what an account is said to spend, or an
+// account running on credits would read as costing nothing, spikes included.
+func TestSpendIsCountedBeforeCredits(t *testing.T) {
+	in := costInput("2026-10-01", "2026-11-01", nil, false)
+	if in.Filter == nil || in.Filter.Not == nil || in.Filter.Not.Dimensions == nil ||
+		in.Filter.Not.Dimensions.Key != "RECORD_TYPE" {
+		t.Fatalf("filter = %+v, want credits and refunds left out", in.Filter)
+	}
+	got := in.Filter.Not.Dimensions.Values
+	if len(got) != 2 || got[0] != "Credit" || got[1] != "Refund" {
+		t.Errorf("left out = %v", got)
+	}
+	if with := costInput("2026-10-01", "2026-11-01", nil, true); with.Filter != nil {
+		t.Errorf("credits included still filters: %+v", with.Filter)
+	}
+}
