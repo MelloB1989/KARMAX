@@ -22,7 +22,6 @@ require (
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
-	github.com/jomei/notionapi v1.13.3
 	github.com/mattn/go-sqlite3 v1.14.48
 	github.com/michimani/gotwi v0.18.4
 	github.com/robfig/cron/v3 v3.0.1

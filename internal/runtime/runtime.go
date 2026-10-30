@@ -32,14 +32,10 @@ import (
 	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
 	googleworkspaceconn "github.com/MelloB1989/karmax/internal/connectors/googleworkspace"
 	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
-	jiraconn "github.com/MelloB1989/karmax/internal/connectors/jira"
-	kekaconn "github.com/MelloB1989/karmax/internal/connectors/keka"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	lyznconn "github.com/MelloB1989/karmax/internal/connectors/lyzn"
-	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
-	youtrackconn "github.com/MelloB1989/karmax/internal/connectors/youtrack"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integrations"
@@ -199,7 +195,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	for _, account := range splitCSV(os.Getenv("KARMAX_GITHUB_ACCOUNTS")) {
 		connHost.Register(githubconn.New(account))
 	}
-	connHost.Register(notionconn.New())
 	// LYZN hears a promise and this machine keeps it. Paired with a
 	// six-character code rather than a key, because the product it talks to
 	// has no login for a laptop to hold — the code is redeemed once, for a
@@ -213,8 +208,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// that catches a missing app-level token, and adds the few tools that are
 	// about the workspace rather than about a conversation.
 	connHost.Register(slackconn.New())
-	// HR: the org chart, leave and attendance, read-only.
-	connHost.Register(kekaconn.New())
 	// Google is PER EMPLOYEE: the org registers one OAuth app and each person
 	// authorises their own account against it. The host resolves whose token to
 	// use from who is being acted for.
@@ -246,19 +239,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 		return uc, nil
 	})
-	// The tracker this operator actually uses. Registered alongside Jira rather
-	// than instead of it: an org can run both, and which one a team files into
-	// is not KARMAX's call to make.
-	connHost.Register(youtrackconn.New(""))
-	for _, account := range splitCSV(os.Getenv("KARMAX_YOUTRACK_ACCOUNTS")) {
-		connHost.Register(youtrackconn.New(account))
-	}
-	// The tracker the developer agent lives in. Same multi-account shape as
-	// GitHub, because an org with two Jira sites has two of everything.
-	connHost.Register(jiraconn.New(""))
-	for _, account := range splitCSV(os.Getenv("KARMAX_JIRA_ACCOUNTS")) {
-		connHost.Register(jiraconn.New(account))
-	}
 	// Registered so it can be seen and connected, but it stays off until
 	// KARMAX_ENABLE_INSTAGRAM=true: it drives an unofficial API that can get the
 	// operator's personal account restricted, and that is not a default.
