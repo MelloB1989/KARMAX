@@ -1194,7 +1194,8 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		turnCtx = connectorkit.WithActor(turnCtx, a.actingMember(evt))
 		turnCtx = memory.WithSource(turnCtx, a.memorySource(evt))
 		lent := a.lentTools(evt)
-		brain.SetTurnContext(dynamicCtx)
+		// With the call, not parked on the brain: other conversations share it.
+		turnCtx = WithTurnContext(turnCtx, dynamicCtx)
 		response, toolCalls, err := brain.ProcessMessageWithheld(turnCtx, userPrompt, lent, nil)
 		turnCancel()
 		ackCancel()
@@ -1499,8 +1500,8 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 		zap.Int("total", len(dynamicCtx)), zap.Int("system", len(a.def.SystemPrompt)))
 
 	brain := a.thinkingBrain()
-	brain.SetTurnContext(dynamicCtx)
-	response, toolCalls, err := brain.ProcessMessageWithheld(ctx, text, lent, withhold)
+	// With the call, not parked on the brain: other conversations share it.
+	response, toolCalls, err := brain.ProcessMessageWithheld(WithTurnContext(ctx, dynamicCtx), text, lent, withhold)
 	if err != nil {
 		return "", nil, fmt.Errorf("chat: %w", err)
 	}

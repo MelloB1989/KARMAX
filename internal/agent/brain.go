@@ -60,3 +60,23 @@ func turnBudget(b Brain) time.Duration {
 	}
 	return defaultTurnBudget
 }
+
+type turnContextKey struct{}
+
+// WithTurnContext carries a turn's dynamic context — the clock, the profile,
+// what the agent has just done, what memory turned up — with the call itself.
+//
+// Conversations run concurrently and share one brain, so a context parked on
+// the brain (SetTurnContext) and collected by the next call could be
+// collected by another conversation's call; handing it over also took the
+// API session's lock, which made a harness turn wait for an unrelated one.
+// A brain prefers this to anything SetTurnContext left.
+func WithTurnContext(ctx context.Context, dynamicContext string) context.Context {
+	return context.WithValue(ctx, turnContextKey{}, dynamicContext)
+}
+
+// turnContextFrom returns the context WithTurnContext attached, if any.
+func turnContextFrom(ctx context.Context) (string, bool) {
+	s, ok := ctx.Value(turnContextKey{}).(string)
+	return s, ok
+}

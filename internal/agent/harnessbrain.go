@@ -98,10 +98,13 @@ func (h *harnessBrain) SetTurnContext(dynamicContext string) {
 func (h *harnessBrain) ProcessMessageWithheld(ctx context.Context, userMessage string,
 	lent []tools.Tool, withhold map[string]bool) (string, []karmahelper.ToolCallRecord, error) {
 
-	h.mu.Lock()
-	dyn := h.turnCtx
-	h.turnCtx = ""
-	h.mu.Unlock()
+	dyn, carried := turnContextFrom(ctx)
+	if !carried {
+		h.mu.Lock()
+		dyn = h.turnCtx
+		h.turnCtx = ""
+		h.mu.Unlock()
+	}
 
 	prompt := composeHarnessPrompt(dyn, userMessage, lent, withhold)
 
