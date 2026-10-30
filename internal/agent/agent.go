@@ -1177,7 +1177,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt) + a.buildRelatedMemoryContext(evt)
 
 	// Combine dynamic context and inject into the main session
-	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildOperatingContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).contextFor(a.operatingPolicy())
+	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.operatingContextFor(evt) + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).contextFor(a.operatingPolicy())
 	if dynamicCtx != "" && a.mainSession == nil {
 		userPrompt = dynamicCtx + userPrompt
 	}

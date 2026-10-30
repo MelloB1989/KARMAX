@@ -24,7 +24,8 @@ import (
 // model remembering to send it, and one message per turn cannot be promised by
 // a model that sends as it goes.
 
-// policyState is the agent's copy of the policy and what it has reported.
+// policyState is what the agent acts for the operator under: the policy, what
+// it has reported, and the accounts it acts through (accounts.go).
 type policyState struct {
 	mu     sync.Mutex
 	policy *policy.Policy
@@ -32,6 +33,10 @@ type policyState struct {
 	// reported holds the outbound messages already listed for the operator, so
 	// two turns ending close together do not both list the same send.
 	reported map[string]time.Time
+	// accounts reads what is connected; seen is the source accounts events
+	// have arrived from, with when.
+	accounts func() []AccountInfo
+	seen     map[string]time.Time
 }
 
 // SetPolicy installs the operating policy. Without one the agent runs on the
@@ -254,5 +259,16 @@ func withoutSentLines(response string) string {
 }
 
 // buildOperatingContext is what the agent needs to act for the operator, beyond
-// who they are: the policy it acts under.
-func (a *Agent) buildOperatingContext() string { return a.buildPolicyContext() }
+// who they are: the policy it acts under, and the accounts it acts through.
+func (a *Agent) buildOperatingContext() string {
+	return a.buildPolicyContext() + a.buildAccountsContext()
+}
+
+// operatingContextFor is buildOperatingContext for an event's turn, noting the
+// account an event from one of the operator's accounts arrived from.
+func (a *Agent) operatingContextFor(evt bus.Event) string {
+	if src, ok := sources.FromBusEvent(evt); ok {
+		a.noteSourceAccount(src, time.Now())
+	}
+	return a.buildOperatingContext()
+}

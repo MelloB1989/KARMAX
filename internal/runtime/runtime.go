@@ -1303,6 +1303,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		a.SetScreener(rt.screenEvent)
 		a.SetDecider(rt.decide)
 		rt.applyOperatingPolicy(a)
+		a.SetAccounts(accountsFrom(integrationReg))
 	}
 
 	// The tools were registered before the agents; this is the runtime they

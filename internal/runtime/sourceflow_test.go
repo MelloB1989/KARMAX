@@ -260,6 +260,10 @@ func TestASourceEventScreenedAsHandleReachesTheTurnWithItsAccount(t *testing.T) 
 	if !strings.Contains(ctxs[0]+p, "releases every Friday") {
 		t.Errorf("related memory did not reach the turn:\nctx:\n%s\nprompt:\n%s", ctxs[0], p)
 	}
+	// And the turn knows which accounts it acts through, this one included.
+	if !strings.Contains(ctxs[0], "Accounts you act through") || !strings.Contains(ctxs[0], "github:octo-work") {
+		t.Errorf("the accounts section did not reach the turn:\n%s", ctxs[0])
+	}
 }
 
 // An urgent event is escalated whatever the screener thought of it, and the
