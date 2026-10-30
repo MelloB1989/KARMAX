@@ -437,10 +437,6 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			cp := *tt
 			cp.AgentID = a.def.ID
 			out = append(out, &cp)
-		case *builtin.CodexTool:
-			cp := *tt
-			cp.AgentID = a.def.ID
-			out = append(out, &cp)
 		case *builtin.ProposeTool:
 			cp := *tt
 			cp.AgentID = a.def.ID

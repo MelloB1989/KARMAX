@@ -548,7 +548,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.ToolSearchTool{Registry: toolReg})
 	toolReg.Register(&builtin.VoiceCallTool{Voice: voiceReg})
 	toolReg.Register(&builtin.CostTool{Store: s, BudgetUSDPerMonth: cfg.Karmax.BudgetUSDPerMonth})
-	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{
 		SendFunc:         commsMgr.Send,
 		DefaultChannelID: commsMgr.DefaultChannelID,
