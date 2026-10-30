@@ -119,6 +119,9 @@ func newHarness(t *testing.T, cfg Config) *harness {
 	if cfg.Since.IsZero() {
 		cfg.Since = t0.Add(-time.Hour)
 	}
+	if cfg.Location == nil {
+		cfg.Location = time.UTC
+	}
 	sent := func(chat, text string, _ time.Time) bool { return h.sent[chat+"|"+text] }
 	h.s = New(cfg, h.src, h.mem, h.cur, sent, h.ask.ask, zap.NewNop())
 	return h
@@ -367,5 +370,26 @@ func TestALongHistoryIsReadInBatches(t *testing.T) {
 		if strings.Count(seen, fmt.Sprintf("message number %d ", i)) != 1 {
 			t.Errorf("message %d was read %d times", i, strings.Count(seen, fmt.Sprintf("message number %d ", i)))
 		}
+	}
+}
+
+// A message is shown, and its fact dated, in the operator's own day: 21:00 UTC
+// is already tomorrow in India, and a fact dated by the UTC day is a day off.
+func TestTimesAreTheOperatorsOwn(t *testing.T) {
+	ist := time.FixedZone("IST", 5*3600+1800)
+	h := newHarness(t, Config{Location: ist})
+	at := time.Date(2026, 10, 29, 21, 0, 0, 0, time.UTC)
+	h.chat("111@s.whatsapp.net", "Omar", false, msg("a", "111@s.whatsapp.net", "111@s.whatsapp.net", "call moved to tomorrow 10am", at, false))
+	h.src.chats[0].LastMessageAt = at
+	h.ask.replies = []string{`{"ops":[{"op":"add","fact":"Omar moved the call to 2026-10-31 10:00.","subject":"omar","category":"task","when":"2026-10-30"}]}`}
+
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.ask.prompts[0], "2026-10-30 02:30 Omar:") {
+		t.Errorf("message not shown in the operator's zone:\n%s", h.ask.prompts[0])
+	}
+	if len(h.mem.writes) != 1 || !h.mem.writes[0].OccurredAt.Equal(time.Date(2026, 10, 30, 0, 0, 0, 0, ist)) {
+		t.Errorf("dated %v, want 2026-10-30 in IST", h.mem.writes)
 	}
 }

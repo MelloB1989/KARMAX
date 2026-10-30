@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/wamemory"
 )
@@ -23,8 +24,8 @@ func waMemoryConfig(getenv func(string) string, karmaxHome string, now time.Time
 	if strings.EqualFold(strings.TrimSpace(getenv("KARMAX_WA_MEMORY")), "off") {
 		return wamemory.Config{}, false
 	}
-	cfg := wamemory.Config{Since: now.AddDate(0, 0, -7), OperatorJIDs: operatorJIDs}
-	if d, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(getenv("KARMAX_WA_MEMORY_SINCE")), time.Local); err == nil {
+	cfg := wamemory.Config{Since: now.AddDate(0, 0, -7), OperatorJIDs: operatorJIDs, Location: memory.OperatorLocation()}
+	if d, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(getenv("KARMAX_WA_MEMORY_SINCE")), cfg.Location); err == nil {
 		cfg.Since = d
 	}
 	if n, err := strconv.Atoi(strings.TrimSpace(getenv("KARMAX_WA_MEMORY_BATCHES"))); err == nil && n > 0 {

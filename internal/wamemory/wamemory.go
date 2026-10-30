@@ -92,6 +92,9 @@ type Config struct {
 	// BatchChars and BatchMessages bound one batch.
 	BatchChars    int
 	BatchMessages int
+	// Location is the operator's zone: messages are shown, and facts dated,
+	// by the operator's own day. Nil is the machine's zone.
+	Location *time.Location
 }
 
 // Result is what one tick did.
@@ -130,6 +133,9 @@ func New(cfg Config, src Source, mem Memory, cur Cursors, sent func(chat, text s
 	}
 	if cfg.BatchMessages <= 0 {
 		cfg.BatchMessages = 150
+	}
+	if cfg.Location == nil {
+		cfg.Location = time.Local
 	}
 	if sent == nil {
 		sent = func(string, string, time.Time) bool { return false }
@@ -281,7 +287,7 @@ func (s *Syncer) line(ctx context.Context, chat Chat, m Message, names map[strin
 	if len(text) > s.cfg.BatchChars {
 		text = text[:s.cfg.BatchChars] + "…"
 	}
-	return m.At.UTC().Format("2006-01-02 15:04") + " " + s.speaker(ctx, chat, m, names) + ": " + text
+	return m.At.In(s.cfg.Location).Format("2006-01-02 15:04") + " " + s.speaker(ctx, chat, m, names) + ": " + text
 }
 
 func (s *Syncer) speaker(ctx context.Context, chat Chat, m Message, names map[string]string) string {

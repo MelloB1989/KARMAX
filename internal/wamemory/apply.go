@@ -84,7 +84,7 @@ func (s *Syncer) entry(o op, at time.Time) (memory.MemoryEntry, bool) {
 		return memory.MemoryEntry{}, false
 	}
 	when := at
-	if d, err := time.Parse("2006-01-02", strings.TrimSpace(o.When)); err == nil {
+	if d, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(o.When), s.cfg.Location); err == nil {
 		when = d
 	}
 	return memory.MemoryEntry{
