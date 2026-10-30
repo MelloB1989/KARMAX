@@ -302,3 +302,21 @@ reflex:
 
   # Limit screening to certain event kinds. Empty screens everything.
   kinds: []
+
+# How KARMAX acts for you, and when it reaches you. Read by the agent's turn
+# (it is told this policy every turn), the propose tool, the WhatsApp mirror of
+# app notifications and approvals, and the daemon's own alerts. Everything that
+# does not reach WhatsApp is still logged to the app.
+policy:
+  autonomy: act                 # act: act, then report (default) · ask: propose first
+  # Still asks first under "act", over WhatsApp. Plain words: the model reads them.
+  hard_floor:
+    - deleting repositories, data or cloud resources
+    - payments or spending money
+    - sharing secrets, credentials or keys
+  # What reaches your personal WhatsApp: approvals (on the hard floor), urgent
+  # (a source's urgent flag, or screening urgency at the threshold), sent (one
+  # line per turn listing what was sent as you), notifications (everything
+  # else — off by default). [] sends nothing.
+  whatsapp: [approvals, urgent, sent]
+  urgency_threshold: 0.90

@@ -3,6 +3,7 @@ package config
 import (
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/orgops"
+	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/reflex"
 )
 
@@ -20,6 +21,9 @@ type KarmaxConfig struct {
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 	Harness  HarnessConfig         `yaml:"harness"`
 	Reflex   reflex.Config         `yaml:"reflex"`
+	// Policy is how KARMAX acts for the operator and when it reaches them:
+	// act then report, the hard floor, and what reaches their WhatsApp.
+	Policy policy.Config `yaml:"policy"`
 	// OrgOps is the org engineering office: PR review, standards, repo
 	// factory, knowledge store and incident autopilot for a GitHub org.
 	OrgOps orgops.Config `yaml:"org_ops"`
