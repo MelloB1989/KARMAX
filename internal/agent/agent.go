@@ -745,12 +745,18 @@ func (a *Agent) buildTimeContext() string {
 		now.Format("Monday, 2 January 2006, 3:04 PM"), now.Format("2006-01-02 MST"))
 }
 
+// expiredReviewsShownFor is how long after a question expires unanswered it is
+// still shown, so a late reply to it can be matched.
+const expiredReviewsShownFor = 7 * 24 * time.Hour
+
 func (a *Agent) buildReviewContext() string {
 	ns := a.def.Memory.Namespace
 	if ns == "" {
 		ns = a.def.ID
 	}
-	reviews, err := a.store.ListOpenReviews(ns, 8)
+	// Open questions, and the ones that expired unanswered lately: a reply a
+	// day after a question expired is still the operator's answer to it.
+	reviews, err := a.store.ListAnswerableReviews(ns, time.Now().Add(-expiredReviewsShownFor), 12)
 	if err != nil || len(reviews) == 0 {
 		return ""
 	}
@@ -758,7 +764,11 @@ func (a *Agent) buildReviewContext() string {
 	sb.WriteString("## Open review questions (staleness check-ins awaiting the operator's answer)\n\n")
 	sb.WriteString("You asked the operator these 'is it still relevant?' questions. If their message answers one, call `review.resolve` with the matching id and what the answer means (kept/updated/forgotten/done/dropped). Do NOT re-ask; do not treat these as new tasks.\n\n")
 	for _, r := range reviews {
-		sb.WriteString(fmt.Sprintf("- id=%s :: %s\n", r.ID, truncateStr(r.Question, 200)))
+		late := ""
+		if r.Status != "open" {
+			late = " (expired unanswered; still take an answer to it)"
+		}
+		sb.WriteString(fmt.Sprintf("- id=%s :: %s%s\n", r.ID, truncateStr(r.Question, 200), late))
 	}
 	sb.WriteString("\n")
 	return sb.String()

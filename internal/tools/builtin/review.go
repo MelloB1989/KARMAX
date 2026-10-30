@@ -59,8 +59,10 @@ func (t *ReviewResolveTool) Execute(ctx context.Context, input map[string]any) (
 	if rev == nil {
 		return tools.ErrorResult(fmt.Errorf("no review %s", id)), nil
 	}
-	if rev.Status != "open" {
-		// Already answered elsewhere — reply-anywhere means this is fine.
+	if !rev.Answerable() {
+		// Already answered elsewhere — reply-anywhere means this is fine. A
+		// question that expired unanswered is still answerable: the operator's
+		// answer is taken whenever it comes.
 		return tools.SuccessResult(map[string]any{"status": "already_resolved"}), nil
 	}
 
@@ -97,12 +99,20 @@ func (t *ReviewResolveTool) Execute(ctx context.Context, input map[string]any) (
 			}
 		case "updated":
 			if strings.TrimSpace(newContent) != "" {
-				// Rewritten in place rather than deleted-and-rewritten: the
-				// memory keeps its tags, cues and relationships, and a correction
-				// does not cost the operator everything that made the fact
-				// findable.
-				if uerr := t.MemoryMgr.Update(ctx, rev.TargetID, strings.TrimSpace(newContent)); uerr == nil {
+				// Correct, not Update: the handle may name a subject whose
+				// document holds many facts, and rewriting all of it with the
+				// one corrected sentence erased the rest. Correct replaces a
+				// single fact, and adds the correction beside a subject's
+				// others — keeping the tags, cues and links that make it
+				// findable either way.
+				replaced, uerr := t.MemoryMgr.Correct(ctx, rev.TargetID, strings.TrimSpace(newContent))
+				switch {
+				case uerr != nil:
+					applied = "review closed; the memory could not be updated: " + uerr.Error()
+				case replaced:
 					applied = "review closed; memory updated"
+				default:
+					applied = "review closed; the correction was added beside the subject's other facts"
 				}
 			}
 		}
