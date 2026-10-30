@@ -21,7 +21,6 @@ import (
 	"github.com/MelloB1989/karmax/internal/config"
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	googleworkspaceconn "github.com/MelloB1989/karmax/internal/connectors/googleworkspace"
-	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
@@ -56,7 +55,6 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	for _, account := range splitCSV(os.Getenv("KARMAX_GITHUB_ACCOUNTS")) {
 		reg.Register(integration.FromConnector(githubconn.New(account), account))
 	}
-	reg.Register(integration.FromConnector(instagramconn.New(), ""))
 	// The public accounts. Registered with no forbidden-names list, because this
 	// registry only ever asks them to authenticate and report health — the list
 	// is supplied by the runtime, which is where posting actually happens.

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +30,6 @@ import (
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
 	googleworkspaceconn "github.com/MelloB1989/karmax/internal/connectors/googleworkspace"
-	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	lyznconn "github.com/MelloB1989/karmax/internal/connectors/lyzn"
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
@@ -239,54 +237,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 		return uc, nil
 	})
-	// Registered so it can be seen and connected, but it stays off until
-	// KARMAX_ENABLE_INSTAGRAM=true: it drives an unofficial API that can get the
-	// operator's personal account restricted, and that is not a default.
-	igConn := instagramconn.New()
-	// The ledger is what makes the send tools available at all: without
-	// somewhere durable to record who has been contacted, they refuse rather
-	// than risk contacting somebody twice.
-	igConn.SetLedger(s)
-	// Signing into Instagram in the shared browser is the whole of connecting
-	// it: the sessionid is read from the browser's jar when it is needed, and
-	// never stored, logged or shown to a model.
-	igConn.SetBrowserSession(func(ctx context.Context) (string, error) {
-		cookies, err := browser.Shared(dataDir).Cookies(ctx, "www.instagram.com")
-		if errors.Is(err, browser.ErrNotRunning) {
-			return "", nil
-		}
-		if err != nil {
-			return "", err
-		}
-		for _, c := range cookies {
-			if c.Name == "sessionid" {
-				return c.Value, nil
-			}
-		}
-		return "", nil
-	})
-	// The Apps page and the loop gate read the recorded verdict, which would
-	// otherwise say "not connected" for up to a probe interval after it works.
-	igConn.OnSignIn(func() { connHost.Probe(context.Background(), "instagram") })
-	if instagramconn.Enabled() {
-		// Turned on, it needs no stored credential — the browser is one — so
-		// its tools exist from the start rather than after a login that the
-		// desktop app never asks anybody to do.
-		connHost.RegisterUnconditional(igConn)
-		go func() {
-			// The first use downloads Python and instagrapi. Paid now, in the
-			// background, not by whichever call happens to be first.
-			if err := igConn.Prepare(context.Background()); err != nil {
-				log.Warn("instagram: could not set up the helper", zap.Error(err))
-				return
-			}
-			if h, err := s.ConnectorHealthFor("instagram"); err == nil && h != nil && h.Status == "failed" {
-				connHost.Probe(context.Background(), "instagram")
-			}
-		}()
-	} else {
-		connHost.Register(igConn)
-	}
 	// The public accounts. These are the only integrations that can make
 	// something visible to strangers with nobody having read it, so both are
 	// handed the list of names a post may not contain — built from this
