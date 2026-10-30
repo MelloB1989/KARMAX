@@ -97,6 +97,26 @@ type Session struct {
 	// one in the table, and both the eviction and the idle reaper would close
 	// it — which is exactly what "harness exited mid-turn" was.
 	busy atomic.Bool
+
+	// reportedCost is the process's running total_cost_usd as of its last
+	// result. The CLI reports that total, not the turn's own cost, so each
+	// turn is charged the difference (turnCost).
+	costMu       sync.Mutex
+	reportedCost float64
+}
+
+// turnCost is what a turn added, given the process's running total at its
+// end. Charging the total itself counted every earlier turn again, so a
+// session's recorded cost grew with the square of its turns.
+func (s *Session) turnCost(total float64) float64 {
+	s.costMu.Lock()
+	defer s.costMu.Unlock()
+	d := total - s.reportedCost
+	if d < 0 {
+		d = total // a total that went down started counting again
+	}
+	s.reportedCost = total
+	return d
 }
 
 // extraArgs returns the flags granting the tools in opt, for when MCPConfig
@@ -319,6 +339,7 @@ func (s *Session) dispatch(ev event) bool {
 	if ev.Result == "" {
 		b.turn.Text = strings.TrimSpace(b.text.String())
 	}
+	b.turn.CostUSD = s.turnCost(ev.TotalCostUSD)
 	close(b.done)
 	// Off the reader: a handler that sends to this same session would
 	// otherwise wait on events nobody is left to read.
@@ -661,6 +682,7 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 				if ev.Result == "" {
 					turn.Text = strings.TrimSpace(sb.String())
 				}
+				turn.CostUSD = s.turnCost(ev.TotalCostUSD)
 				return turn, turn.Err
 			}
 		}
