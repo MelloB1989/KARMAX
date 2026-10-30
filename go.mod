@@ -6,12 +6,10 @@ require (
 	github.com/GitLoomHQ/gitloom-go v0.6.1
 	github.com/MelloB1989/karma v1.27.0
 	github.com/MelloB1989/wacli v0.3.0
-	github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36
 	github.com/aws/aws-sdk-go-v2 v1.45.1
 	github.com/aws/aws-sdk-go-v2/config v1.29.9
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.84.1
 	github.com/aws/aws-sdk-go-v2/service/ecs v1.93.0
-	github.com/bwmarrin/discordgo v0.29.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0

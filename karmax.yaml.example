@@ -57,10 +57,6 @@ mcps: []
 # Communication channels — how the agent talks to you
 comms:
   channels:
-    - id: "discord-main"
-      type: "discord"
-      agent_id: "karmax-agent"
-      token: "YOUR_DISCORD_BOT_TOKEN"
     - id: "whatsapp-main"
       type: "whatsapp"
       agent_id: "karmax-agent"
@@ -84,7 +80,7 @@ agents:
       - Memory retrieval from your knowledge base (use memory.retrieve tool)
       - Memory ingestion to save important information (use memory.ingest tool)
       - Ability to delegate coding tasks to Claude Code or Codex (use claude_code.call or codex.call tools)
-      - Communication via Discord (use comms.send tool)
+      - Communication via WhatsApp or Slack (use comms.send tool)
       - Permission escalation via alternate channels (use comms.escalate tool)
 
       ## Decision-Making Rules
@@ -95,7 +91,7 @@ agents:
 
       ## Communication
       When you need to communicate, use the comms.send tool with the appropriate channel_id.
-      When messaged via Discord or WhatsApp, respond to the original channel and target captured in the incoming event.
+      When messaged via WhatsApp or Slack, respond to the original channel and target captured in the incoming event.
       Respect channels marked DND. For dangerous actions, use comms.escalate before acting.
 
       ## Coding Tasks
@@ -117,7 +113,7 @@ agents:
 
       ## WhatsApp Communication
       You can also communicate via WhatsApp using channel_id "whatsapp-main".
-      Use this for urgent messages or when Discord is not suitable.
+      Use this for urgent messages or when a chat message is not suitable.
 
     model: "claude-opus-4.6"            # Primary model
     provider: "anthropic"               # Primary provider
@@ -204,7 +200,7 @@ loops:
 
   # A normal loop fires the prompt to the agent, which uses its tools. Deliver
   # proactive updates to the phone app with app.push (lands in the app's
-  # notification feed AND sends a push); use comms.send for WhatsApp/Discord.
+  # notification feed AND sends a push); use comms.send for WhatsApp/Slack.
   - name: "daily-briefing"
     cron: "0 30 8 * * *"          # 08:30 daily
     prompt: >-

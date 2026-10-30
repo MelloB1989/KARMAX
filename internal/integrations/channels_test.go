@@ -7,13 +7,13 @@ import (
 )
 
 func TestSupportedChannelTypesCoversWhatIsImplemented(t *testing.T) {
-	// Discord and Telegram are implemented (discordgo, gotgbot) and started by
-	// the runtime; they were simply invisible until something was configured.
+	// A channel type the runtime starts is listed even before one is
+	// configured; otherwise it is invisible until somebody guesses its name.
 	got := map[string]bool{}
 	for _, n := range SupportedChannelTypes() {
 		got[n] = true
 	}
-	for _, want := range []string{"discord", "slack", "telegram"} {
+	for _, want := range []string{"slack"} {
 		if !got[want] {
 			t.Errorf("%s is implemented but not listed as supported", want)
 		}
@@ -22,11 +22,11 @@ func TestSupportedChannelTypesCoversWhatIsImplemented(t *testing.T) {
 
 func TestUnconfiguredChannelTypesExcludesWhatIsConfigured(t *testing.T) {
 	cfg := &config.KarmaxConfig{Comms: config.CommsConfig{Channels: []config.ChannelConfig{
-		{ID: "discord-main", Type: "Discord"}, // case must not matter
+		{ID: "slack-main", Type: "Slack"}, // case must not matter
 	}}}
 	for _, n := range UnconfiguredChannelTypes(cfg) {
-		if n == "discord" {
-			t.Error("discord is configured and must not be reported as missing")
+		if n == "slack" {
+			t.Error("slack is configured and must not be reported as missing")
 		}
 	}
 }

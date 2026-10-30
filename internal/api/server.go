@@ -1121,21 +1121,6 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		add("whatsapp", "WhatsApp", "off", "not configured")
 	}
 
-	// Discord
-	discord := false
-	if s.cfg != nil {
-		for _, ch := range s.cfg.Comms.Channels {
-			if ch.Type == "discord" && strings.TrimSpace(ch.Token) != "" {
-				discord = true
-			}
-		}
-	}
-	if discord {
-		add("discord", "Discord", "configured", "bot token set")
-	} else {
-		add("discord", "Discord", "off", "not configured")
-	}
-
 	// Google, through gogcli.
 	if gog := lookGoogleCLI(); gog != "" {
 		add("google", "Google", "available", gog)

@@ -125,20 +125,6 @@ func trunc(s string, max int) string {
 	return s[:max] + "…"
 }
 
-// discord is a bot token.
-func discord(id string) integration.Integration {
-	return integration.APIKey(integration.Manifest{
-		ID:          id,
-		Name:        "Discord",
-		Description: "A Discord bot KARMAX talks through.",
-		Kind:        integration.KindChannel,
-		SetupURL:    "https://discord.com/developers/applications",
-		Config: []connectorkit.ConfigField{
-			{Key: "token", Description: "the bot token", Required: true, Secret: true},
-		},
-	}, "token", checkBearer("https://discord.com/api/v10/users/@me", "token", "Bot "))
-}
-
 // slack needs two tokens: an app-level one to open the socket and a bot one to
 // post. Both are asked for, because being handed one and told "invalid auth" is
 // the least helpful possible outcome.
@@ -156,49 +142,6 @@ func slack(id string) integration.Integration {
 	}, "bot_token", checkSlack)
 }
 
-// telegram is a bot token from BotFather.
-func telegram(id string) integration.Integration {
-	return integration.APIKey(integration.Manifest{
-		ID:          id,
-		Name:        "Telegram",
-		Description: "A Telegram bot KARMAX talks through.",
-		Kind:        integration.KindChannel,
-		SetupURL:    "https://t.me/BotFather",
-		Config: []connectorkit.ConfigField{
-			{Key: "token", Description: "the token BotFather gave you", Required: true, Secret: true},
-		},
-	}, "token", checkTelegram)
-}
-
-// checkBearer verifies a token by calling an endpoint that needs one.
-//
-// A health check has to make a real call. "The config field is non-empty" is
-// not health — it is exactly the state an expired token is also in.
-func checkBearer(url, field, prefix string) func(context.Context, connectorkit.Credentials) error {
-	return func(ctx context.Context, c connectorkit.Credentials) error {
-		token := strings.TrimSpace(c.Get(field))
-		if token == "" {
-			return fmt.Errorf("no %s configured", field)
-		}
-		_, err := get(ctx, url, map[string]string{"Authorization": prefix + token})
-		return err
-	}
-}
-
-func checkTelegram(ctx context.Context, c connectorkit.Credentials) error {
-	token := strings.TrimSpace(c.Get("token"))
-	if token == "" {
-		return fmt.Errorf("no bot token configured")
-	}
-	body, err := get(ctx, "https://api.telegram.org/bot"+token+"/getMe", nil)
-	if err != nil {
-		return err
-	}
-	// Telegram answers 200 with {"ok":false} rather than a status code, so the
-	// body is the only thing that distinguishes a live token from a dead one.
-	return expectJSONOK(body, "Telegram")
-}
-
 func checkSlack(ctx context.Context, c connectorkit.Credentials) error {
 	token := strings.TrimSpace(c.Get("bot_token"))
 	if token == "" {
@@ -209,14 +152,14 @@ func checkSlack(ctx context.Context, c connectorkit.Credentials) error {
 	if err != nil {
 		return err
 	}
-	// Same shape as Telegram: a revoked Slack app returns 200 with
+	// A revoked Slack app returns 200 with
 	// {"ok":false,"error":"invalid_auth"}, so checking the status code alone
 	// would report it as working.
 	return expectJSONOK(body, "Slack")
 }
 
-// expectJSONOK reads the {"ok":bool,"error":string} envelope both Slack and
-// Telegram use to report failure inside a 200.
+// expectJSONOK reads the {"ok":bool,"error":string} envelope Slack uses to
+// report failure inside a 200.
 func expectJSONOK(body []byte, who string) error {
 	var res struct {
 		OK          bool   `json:"ok"`
@@ -288,17 +231,14 @@ func firstNonEmpty(vals ...string) string {
 // "what could I connect that I have not", and a second copy written by hand is
 // a copy that drifts.
 var channelIntegrations = map[string]func(id string) integration.Integration{
-	"discord":  discord,
-	"slack":    slack,
-	"telegram": telegram,
+	"slack": slack,
 }
 
 // SupportedChannelTypes names every channel type KARMAX can run, sorted.
 //
 // Registration is per configured channel, which means a supported channel type
 // nobody has configured is absent from `karmax integrations` and therefore
-// indistinguishable from one KARMAX cannot do at all. Discord and Telegram have
-// been implemented and wired the whole time; the operator had no way to find out.
+// indistinguishable from one KARMAX cannot do at all.
 func SupportedChannelTypes() []string {
 	out := make([]string, 0, len(channelIntegrations))
 	for name := range channelIntegrations {

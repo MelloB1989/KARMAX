@@ -20,9 +20,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/clock"
 	"github.com/MelloB1989/karmax/internal/comms"
-	"github.com/MelloB1989/karmax/internal/comms/discord"
 	"github.com/MelloB1989/karmax/internal/comms/slack"
-	"github.com/MelloB1989/karmax/internal/comms/telegram"
 	"github.com/MelloB1989/karmax/internal/comms/webhookchat"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
@@ -375,36 +373,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	var webhookChannels []*webhookchat.Channel
 	for _, chCfg := range cfg.Comms.Channels {
 		switch chCfg.Type {
-		case "discord":
-			token := credential(chCfg.ID, "token", chCfg.Token)
-			if unconfiguredChannel(log, chCfg.ID, "discord", token) {
-				continue
-			}
-			ch := discord.New(chCfg.ID, token, log)
-			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
-				DND: dndEnabled(chCfg.Settings),
-			}); err != nil {
-				log.Error("failed to register comms channel",
-					zap.String("id", chCfg.ID),
-					zap.Error(err),
-				)
-			}
-		case "telegram":
-			// Long-polling: no public URL or tunnel needed, so it works on the
-			// same self-hosted boxes as the rest of KARMAX.
-			token := credential(chCfg.ID, "token", chCfg.Token)
-			if unconfiguredChannel(log, chCfg.ID, "telegram", token) {
-				continue
-			}
-			ch := telegram.New(chCfg.ID, token, log)
-			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
-				DND: dndEnabled(chCfg.Settings),
-			}); err != nil {
-				log.Error("failed to register comms channel",
-					zap.String("id", chCfg.ID),
-					zap.Error(err),
-				)
-			}
 		case "slack":
 			// Socket Mode: Slack dials out from us, so like Telegram this needs no
 			// public URL. Two tokens — xapp- opens the socket, xoxb- posts messages.
