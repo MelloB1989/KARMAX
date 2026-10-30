@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -257,6 +258,29 @@ func TestOnlyExpiredLoginsIsNotAFailedPoll(t *testing.T) {
 	}
 	if len(rep.Fixes) != 1 || rep.Fixes[0] != "aws sso login --sso-session example-sso" {
 		t.Errorf("fixes = %v", rep.Fixes)
+	}
+}
+
+// A profile without a region has no alarms to read, but it is not a login to
+// redo: it is skipped for alarms with the hint, and its cost is still read.
+func TestAProfileWithoutARegionIsSkippedForAlarmsOnly(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := dir + "/config"
+	if err := os.WriteFile(cfgFile, []byte("[profile bare]\nsso_session = example-sso\nsso_account_id = 111122223333\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	acct := &fakeAPI{account: "111122223333", days: flat(10)}
+	h := newHarness(t, costConfig(), map[string]*fakeAPI{"bare": acct})
+	h.src.cfg.ConfigFile = cfgFile
+	rep, err := h.src.PollAlarms(context.Background())
+	if err != nil || len(rep.Fixes) != 0 {
+		t.Fatalf("poll = %+v, %v; a missing region is not a login to redo", rep, err)
+	}
+	if hl := h.health("bare"); hl.Status != StatusSkipped || !strings.Contains(hl.Detail, "aws configure set region") {
+		t.Errorf("health = %+v", hl)
+	}
+	if _, err := h.src.PollCost(context.Background()); err != nil || acct.count("DailyCost") != 1 {
+		t.Errorf("cost read %d times, %v", acct.count("DailyCost"), err)
 	}
 }
 

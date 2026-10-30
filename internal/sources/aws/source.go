@@ -185,8 +185,10 @@ func (s *Source) plan(ctx context.Context, perRegion bool) ([]reader, map[string
 			region = billingRegion
 		}
 		if region == "" {
-			health[p.Name] = Health{Profile: p.Name, Status: StatusFailed,
-				Detail: "no region in the AWS config", Fix: "aws configure set region <region> --profile " + p.Name}
+			// Alarms only: cost is read in the billing region whatever the
+			// profile says. A config gap, not a login to redo.
+			health[p.Name] = Health{Profile: p.Name, Status: StatusSkipped,
+				Detail: "no region in the AWS config, so no alarms read; to read them: aws configure set region <region> --profile " + p.Name}
 			continue
 		}
 		account := p.AccountID
