@@ -68,6 +68,8 @@ type gitloomBackend struct {
 	pmu       sync.Mutex
 	pathLocks map[string]*sync.Mutex
 	pending   map[string]pendingWrite
+	// logFull is, per loop-log month, the last part known to be full.
+	logFull map[string]int
 }
 
 // GitLoomConfigFromEnv reads the remote memory settings. Returns ok=false when
@@ -113,6 +115,7 @@ func newGitLoomBackend(cfg GitLoomConfig, log *zap.Logger) *gitloomBackend {
 
 		pathLocks: map[string]*sync.Mutex{},
 		pending:   map[string]pendingWrite{},
+		logFull:   map[string]int{},
 	}
 }
 
@@ -184,17 +187,67 @@ func (g *gitloomBackend) write(ctx context.Context, e MemoryEntry, path string, 
 		g.setHealth(false, err)
 		return err
 	}
+	if IsLoopLog(e) {
+		return g.writeLog(cctx, e, path, related)
+	}
+	_, err := g.writeAt(cctx, e, path, related, 0)
+	return err
+}
+
+// writeAt folds one memory into the document at path and writes the result,
+// unless it would change nothing. With a limit, a document the memory would
+// take past it is left as it is and reported full; a document with nothing
+// in it yet takes the memory whatever its size.
+func (g *gitloomBackend) writeAt(ctx context.Context, e MemoryEntry, path string, related []string, limit int) (full bool, err error) {
 	defer g.lockPath(path)()
-	merged, occurred, changed, err := g.foldOntoStored(cctx, ToGitLoom(e, path, related), EventTime(e))
+	m := ToGitLoom(e, path, related)
+	merged, occurred, changed, err := g.foldOntoStored(ctx, m, EventTime(e))
 	if err != nil {
 		g.setHealth(false, err)
-		return err
+		return false, err
 	}
 	if !changed {
 		g.skipped(path)
-		return nil
+		return false, nil
 	}
-	return g.put(cctx, merged, occurred)
+	// Longer than the memory alone means it was folded onto what is there.
+	if limit > 0 && len(merged.Content) > limit && !sameText(merged.Content, m.Content) {
+		return true, nil
+	}
+	return false, g.put(ctx, merged, occurred)
+}
+
+// writeLog files a loop's log entry in the first part of its month's log with
+// room for it. See CategoryLog.
+func (g *gitloomBackend) writeLog(ctx context.Context, e MemoryEntry, base string, related []string) error {
+	for part := g.openLogPart(base); part <= maxLogParts; part++ {
+		full, err := g.writeAt(ctx, e, logPart(base, part), related, logDocCap)
+		if err != nil || !full {
+			return err
+		}
+		g.logPartFull(base, part)
+	}
+	return fmt.Errorf("gitloom: %s has %d full parts; refusing to start another", base, maxLogParts)
+}
+
+// maxLogParts stops a log that cannot be read right from probing forever.
+const maxLogParts = 500
+
+// openLogPart is the first part of a log not known to be full. Remembered
+// rather than found by reading each time: reads are not monotonic, and a
+// reader still serving a part from before it filled would take it back.
+func (g *gitloomBackend) openLogPart(base string) int {
+	g.pmu.Lock()
+	defer g.pmu.Unlock()
+	return g.logFull[base] + 1
+}
+
+func (g *gitloomBackend) logPartFull(base string, part int) {
+	g.pmu.Lock()
+	defer g.pmu.Unlock()
+	if part > g.logFull[base] {
+		g.logFull[base] = part
+	}
 }
 
 // skipped records a write that would have changed nothing. Every write makes

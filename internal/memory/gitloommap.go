@@ -198,7 +198,61 @@ func cuesFor(e MemoryEntry) []string {
 // A task is filed in the month it happened, which is when it was written only
 // for a live write: a backfill writes August's commitments in October.
 func PathFor(e MemoryEntry, _ map[string]bool) string {
+	if IsLoopLog(e) {
+		when := EventTime(e)
+		if when.IsZero() {
+			when = time.Now()
+		}
+		return fmt.Sprintf("facts/context/%s/%s.md", logSubject(e), when.Format("2006-01"))
+	}
 	return fmt.Sprintf("%s/%s.md", topicFor(e.Category, EventTime(e)), subjectOf(e))
+}
+
+// CategoryLog is a loop's record of what it did, as opposed to a fact about
+// the operator's world.
+//
+// A loop files a line on every run. Filed like a fact — everything about one
+// subject in one document — a loop's record grew without end towards the
+// store's request limit, past which nothing more could be written to it. A log
+// is instead filed by month (facts/context/<loop>/<yyyy-mm>.md), and a month
+// that fills continues in a new part, so no document of it grows past
+// logDocCap. That is the policy for every loop, whatever it is called.
+const CategoryLog = "log"
+
+// LoopLog is the entry a loop files about one of its runs.
+func LoopLog(loop, line string) MemoryEntry {
+	return MemoryEntry{Role: "assistant", Content: line, Tags: []string{"loop", loop}, Category: CategoryLog}
+}
+
+// IsLoopLog reports an entry filed as a loop's record.
+func IsLoopLog(e MemoryEntry) bool {
+	return strings.EqualFold(strings.TrimSpace(e.Category), CategoryLog)
+}
+
+// logSubject is the loop a log entry belongs to: its first tag that is not
+// the "loop" marker. Not subjectOf, which skips names that describe the filing
+// system — and a loop is free to be called "summary".
+func logSubject(e MemoryEntry) string {
+	for _, t := range e.Tags {
+		if s := slugify(t); s != "" && s != "loop" && s != CategoryLog {
+			return s
+		}
+	}
+	return subjectOf(e)
+}
+
+// logDocCap bounds one document of a loop's log. The store refuses a request
+// over 256KB, and escaping can make a document's JSON well over its own size
+// (an emoji is twelve bytes as \u escapes), so this leaves room.
+var logDocCap = 96 << 10
+
+// logPart is the path of part n of the log document at base: base itself,
+// then <base>-part-2.md and on.
+func logPart(base string, n int) string {
+	if n <= 1 {
+		return base
+	}
+	return fmt.Sprintf("%s-part-%d.md", strings.TrimSuffix(base, ".md"), n)
 }
 
 // sectionTitle names one entry's section within a merged file.

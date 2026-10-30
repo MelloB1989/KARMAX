@@ -2032,11 +2032,8 @@ func (a *Agent) runHarnessLoop(evt bus.Event) (bool, error) {
 	}
 
 	if a.memory != nil {
-		if werr := a.memory.Write(memory.MemoryEntry{
-			Role:    "assistant",
-			Content: out,
-			Tags:    []string{"loop", loopName},
-		}); werr != nil {
+		// The loop's log, not a fact: see memory.CategoryLog.
+		if werr := a.memory.Write(memory.LoopLog(loopName, out)); werr != nil {
 			a.log.Warn("harness loop ingest failed", zap.String("loop", loopName), zap.Error(werr))
 		}
 	}

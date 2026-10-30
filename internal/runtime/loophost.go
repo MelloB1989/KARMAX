@@ -710,7 +710,8 @@ func (k *loopKit) Remember(fact string) error {
 	if k.mem == nil {
 		return fmt.Errorf("memory unavailable")
 	}
-	return k.mem.Write(memory.MemoryEntry{Role: "assistant", Content: fact, Tags: []string{"loop", k.loopName}})
+	// The loop's log, not a fact: see memory.CategoryLog.
+	return k.mem.Write(memory.LoopLog(k.loopName, fact))
 }
 
 func (k *loopKit) Recall(query string, limit int) ([]string, error) {
