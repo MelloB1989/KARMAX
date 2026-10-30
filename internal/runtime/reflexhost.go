@@ -10,6 +10,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/reflex"
+	"github.com/MelloB1989/karmax/internal/sources"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -93,6 +94,13 @@ func (rt *KarmaxRuntime) hintFor(evt bus.Event) reflex.Hint {
 		// Anything the operator did not say is screened on its merits. A timer
 		// or a scheduled job is the daemon talking to itself.
 		h.Operator = false
+		// An account's event carries its source's own urgency, which the
+		// screener may not overrule: it is a fact about the event, like who
+		// sent a message.
+		if src, ok := sources.FromBusEvent(evt); ok {
+			h.Channel = src.Ref()
+			h.Urgent = src.Urgent
+		}
 	}
 	return h
 }
@@ -137,40 +145,94 @@ func annotate(evt *bus.Event, v reflex.Verdict) {
 // This is the verdict that pays for itself twice: the fact is kept, and the
 // brain is never woken to keep it.
 func (rt *KarmaxRuntime) rememberEvent(evt bus.Event, v reflex.Verdict) {
-	content := rememberableText(evt)
-	if content == "" {
-		rt.log.Debug("reflex wanted to remember an event with nothing to store",
-			zap.String("event", evt.ID))
-		return
-	}
 	agentID := evt.AgentID
 	if agentID == "" {
 		agentID = rt.loopDefaultAgent
+	}
+	entry, ok := memoryEntryForEvent(evt, v, agentID)
+	if !ok {
+		rt.log.Debug("reflex wanted to remember an event with nothing to store",
+			zap.String("event", evt.ID))
+		return
 	}
 	mgr := rt.memory.For(agentID, "")
 	if mgr == nil {
 		return
 	}
-	importance := 2
-	if v.Urgency >= 0.66 {
-		importance = 3
-	}
-	if err := mgr.Write(memory.MemoryEntry{
-		ID:         uuid.New().String(),
-		AgentID:    agentID,
-		Role:       "system",
-		Content:    content,
-		Tags:       []string{"reflex", string(evt.Kind)},
-		Category:   "observation",
-		Importance: importance,
-		CreatedAt:  time.Now(),
-	}); err != nil {
+	if err := mgr.Write(entry); err != nil {
 		rt.log.Warn("reflex could not file a fact",
 			zap.String("event", evt.ID), zap.Error(err))
 		return
 	}
 	rt.log.Info("reflex filed an event to memory without waking the agent",
 		zap.String("kind", string(evt.Kind)), zap.String("event", evt.ID))
+}
+
+// memoryEntryForEvent is the fact an event is filed as.
+//
+// Long-term memory keeps one document per subject, named after the entry's
+// first tag, and files it by category. The tags used to be ["reflex", kind],
+// so every fact reflex ever filed — a pull request, a meeting, an alarm — went
+// into one document called "reflex". An account's event is filed under what it
+// is ABOUT (the repository, the person), with the source and account beside it
+// as cues; anything else under where it came from.
+func memoryEntryForEvent(evt bus.Event, v reflex.Verdict, agentID string) (memory.MemoryEntry, bool) {
+	importance := 2
+	if v.Urgency >= 0.66 {
+		importance = 3
+	}
+	entry := memory.MemoryEntry{
+		ID:         uuid.New().String(),
+		AgentID:    agentID,
+		Role:       "system",
+		Importance: importance,
+		CreatedAt:  time.Now(),
+	}
+	if src, ok := sources.FromBusEvent(evt); ok {
+		entry.Content = src.Fact()
+		if entry.Content == "" {
+			return memory.MemoryEntry{}, false
+		}
+		entry.Category = src.Category()
+		entry.Tags = compactTags(src.Subject(), src.Source, src.Account, src.Type, "reflex")
+		entry.OccurredAt = src.At
+		if src.Urgent && entry.Importance < 3 {
+			entry.Importance = 3
+		}
+		return entry, true
+	}
+	entry.Content = rememberableText(evt)
+	if entry.Content == "" {
+		return memory.MemoryEntry{}, false
+	}
+	entry.Category = "context"
+	entry.Tags = compactTags(eventOrigin(evt), "reflex")
+	return entry, true
+}
+
+// eventOrigin names where an event that is not an account's came from: the
+// webhook route it was posted to, else its kind.
+func eventOrigin(evt bus.Event) string {
+	if route, _ := evt.Payload["route"].(string); strings.Trim(route, "/ ") != "" {
+		return strings.Trim(route, "/ ")
+	}
+	return string(evt.Kind)
+}
+
+// compactTags drops empty and repeated tags, keeping order: the first is the
+// subject memory files the fact under.
+func compactTags(tags ...string) []string {
+	out := make([]string, 0, len(tags))
+	seen := map[string]bool{}
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[strings.ToLower(t)] {
+			continue
+		}
+		seen[strings.ToLower(t)] = true
+		out = append(out, t)
+	}
+	return out
 }
 
 // rememberableText pulls the human-readable part of an event.

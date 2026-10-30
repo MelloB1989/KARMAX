@@ -12,6 +12,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/memory"
+	"github.com/MelloB1989/karmax/internal/sources"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
@@ -1159,7 +1160,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	commsCtx := a.buildCommsContext()
 
 	// Retrieve relevant long-term context before complex requests.
-	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
+	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt) + a.buildRelatedMemoryContext(evt)
 
 	// Combine dynamic context and inject into the main session
 	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).context()
@@ -1211,7 +1212,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// sent/removed/scheduled something while calling zero tools. If the reply
 		// asserts a completed action but nothing actually ran this turn, re-prompt
 		// ONCE to force a real tool call (or an honest "here's what's blocking").
-		if len(toolCalls) == 0 && (claimsCompletedAction(response) || looksPassiveStall(response)) {
+		if demandsAction(evt) && len(toolCalls) == 0 && (claimsCompletedAction(response) || looksPassiveStall(response)) {
 			a.log.Warn("act-evidence: reply asserts/defers action with no tool call; re-prompting",
 				zap.String("agent", a.def.ID), zap.String("reply", truncateStr(response, 80)))
 			nudge := "SYSTEM: Your last reply either claimed to do something or promised to (\"on it\", \"standing by\", \"I'll send it\", etc.) but you called NO tool — so NOTHING actually happened. This is unacceptable: the operator gave you an instruction and you did nothing. Right now, do ONE of exactly these:\n" +
@@ -1634,6 +1635,11 @@ func shouldRetrieveMemory(evt bus.Event, userPrompt string) bool {
 	if evt.Kind != bus.EventCommsMessage && evt.Kind != bus.EventUserDefined && evt.Kind != bus.EventWebhookFired {
 		return false
 	}
+	// An account's event brings its related memory by direct search instead
+	// (buildRelatedMemoryContext); a model per notification is the wrong price.
+	if _, ok := sources.FromBusEvent(evt); ok {
+		return false
+	}
 
 	query := strings.ToLower(memoryQueryFromEvent(evt, userPrompt))
 	if len(query) > 180 {
@@ -1833,6 +1839,12 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 	}
 
 	prompt += "## Current Task\n\n"
+
+	// An event from one of the operator's accounts: what happened, and on
+	// which account — the account is what the agent acts through.
+	if src, ok := sources.FromBusEvent(evt); ok {
+		return prompt + renderSourceEvent(src)
+	}
 
 	// Loops and other prompt-carrying events surface their instruction directly
 	// so the agent acts on the prompt rather than parsing raw event JSON.
