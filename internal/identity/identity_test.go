@@ -159,6 +159,43 @@ func TestOtherChatsTeachNothing(t *testing.T) {
 	}
 }
 
+// The preamble put ahead of a loop's prompt names who sent the message the run
+// is about, and says what to do with anything further down that disagrees.
+//
+// The co-founder incident in one line: a monitor prompt said the operator
+// was speaking AND carried a stored note saying "this is a message from
+// <co-founder>, not <operator>". The model went with the note. Nothing told
+// it which of the two to believe.
+func TestThePreambleNamesTheSenderAndOutranksWhatFollows(t *testing.T) {
+	d := priya()
+	p := d.Preamble("123456789:4@lid", "Omar")
+	for _, want := range []string{
+		"sent by your operator, Priya",
+		"15550001111", "123456789@lid", "15550002222",
+		"wrong",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("preamble lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "Omar") {
+		t.Errorf("the operator's account label leaked in as a name:\n%s", p)
+	}
+
+	other := d.Preamble("15550003333@s.whatsapp.net", "Omar")
+	if !strings.Contains(other, "Omar") || !strings.Contains(other, "NOT your operator") {
+		t.Errorf("a third party's preamble:\n%s", other)
+	}
+
+	if none := d.Preamble("", ""); strings.Contains(none, "sent by") || !strings.Contains(none, "Priya") {
+		t.Errorf("a run with no message still names the operator, and no sender:\n%s", none)
+	}
+	var nilDir *Directory
+	if nilDir.Preamble("15550001111", "") != "" {
+		t.Error("nil directory produced a preamble")
+	}
+}
+
 func TestNameFromEnvPrefersTheGeneralSetting(t *testing.T) {
 	env := map[string]string{
 		"KARMAX_LOOP_WA_MONITOR_OPERATOR_NAME": "Omar",

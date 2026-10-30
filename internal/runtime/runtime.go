@@ -42,6 +42,7 @@ import (
 	youtrackconn "github.com/MelloB1989/karmax/internal/connectors/youtrack"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/identity"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memmerge"
@@ -83,6 +84,10 @@ type KarmaxRuntime struct {
 	comms     *comms.Manager
 	api       *api.Server
 	console   *api.ConsoleServer
+
+	// who is the one answer to "who is speaking": the operator's name and
+	// accounts and the linked account KARMAX sends from. See internal/identity.
+	who *identity.Directory
 
 	// apiBrowserToken and apiBaseURL let a harness this instance spawns (for a
 	// loop or a LYZN task — see loophost.go's HarnessWith) call back into this

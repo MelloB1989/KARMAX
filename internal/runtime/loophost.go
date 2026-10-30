@@ -573,6 +573,7 @@ func (k *loopKit) Observe(ctx context.Context, prompt string) (string, error) {
 // AskWithTools is Ask with tools lent to the agent for that turn — the way a
 // WASM workflow hands the agent its own tools to answer with.
 func (k *loopKit) AskWithTools(ctx context.Context, prompt string, lent []tools.Tool) (string, error) {
+	prompt = k.withIdentity(prompt)
 	ag, ok := k.rt.agents.Get(k.agentID)
 	if !ok || ag == nil {
 		return "", fmt.Errorf("agent %q unavailable", k.agentID)
@@ -600,7 +601,7 @@ func (k *loopKit) AskWithTools(ctx context.Context, prompt string, lent []tools.
 		return "", err
 	}
 	k.Logf("model gateway unreachable (%v); falling back to the harness", err)
-	out, herr := k.Harness(ctx, prompt)
+	out, herr := k.harness(ctx, prompt)
 	if herr != nil {
 		// Report the original failure: the gateway being down is the cause,
 		// and the harness error is a symptom of the workaround.
@@ -629,7 +630,13 @@ func isTransportFailure(err error) bool {
 }
 
 func (k *loopKit) Harness(ctx context.Context, prompt string) (string, error) {
-	res, err := k.HarnessWith(ctx, loopkit.HarnessSpec{Prompt: prompt, Ephemeral: true})
+	return k.harness(ctx, k.withIdentity(prompt))
+}
+
+// harness runs a prompt that already carries the identity preamble — the
+// fallback path of Ask and Gateway, which added it themselves.
+func (k *loopKit) harness(ctx context.Context, prompt string) (string, error) {
+	res, err := k.harnessWith(ctx, loopkit.HarnessSpec{Prompt: prompt, Ephemeral: true})
 	if err != nil {
 		return "", err
 	}
@@ -638,6 +645,11 @@ func (k *loopKit) Harness(ctx context.Context, prompt string) (string, error) {
 
 // HarnessWith is Harness with a caller-chosen session and working directory.
 func (k *loopKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (loopkit.HarnessResult, error) {
+	spec.Prompt = k.withIdentity(spec.Prompt)
+	return k.harnessWith(ctx, spec)
+}
+
+func (k *loopKit) harnessWith(ctx context.Context, spec loopkit.HarnessSpec) (loopkit.HarnessResult, error) {
 	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID, Namespace: k.namespace,
 		MemoryMgr: k.mem, Browser: browser.Shared(k.rt.cfg.Karmax.DataDir),
 		DataDir: k.rt.cfg.Karmax.DataDir,
@@ -897,6 +909,7 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 	if len(k.rt.cfg.Agents) == 0 {
 		return "", fmt.Errorf("no agent configured")
 	}
+	prompt = k.withIdentity(prompt)
 
 	// A warm harness session first, when one is available.
 	//
@@ -971,7 +984,7 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 		// the tools it was given.
 		if isTransportFailure(err) && len(lentTools) == 0 {
 			k.Logf("gateway unreachable (%v); falling back to the harness", err)
-			if out, herr := k.Harness(ctx, prompt); herr == nil {
+			if out, herr := k.harness(ctx, prompt); herr == nil {
 				return out, nil
 			}
 		}
@@ -981,6 +994,7 @@ func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.To
 }
 
 func (k *loopKit) Summarize(ctx context.Context, prompt string) (string, error) {
+	prompt = k.summaryPrompt(prompt)
 	// A warm session first, one per loop. Summarising is exactly the kind of
 	// work a session is good at — short, frequent, and cheaper each time the
 	// same conversation handles it than a fresh process would be.
