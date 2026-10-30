@@ -83,6 +83,8 @@ type KarmaxRuntime struct {
 	comms     *comms.Manager
 	api       *api.Server
 	console   *api.ConsoleServer
+	// google is the Google Calendar and Chat sources (googlesource.go).
+	google *googleSources
 
 	// apiBrowserToken and apiBaseURL let a harness this instance spawns (for a
 	// loop or a LYZN task — see loophost.go's HarnessWith) call back into this
@@ -850,6 +852,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// current. Aggressive cadence, but capped + latched so it never spams. Needs
 	// the store + the agent's model + the WhatsApp channel, so it's a runtime
 	// loop like memory-maintenance.
+	var googleSrc *googleSources
 	if len(cfg.Agents) > 0 {
 		a0 := cfg.Agents[0]
 		ns := a0.Memory.Namespace
@@ -946,6 +949,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				},
 			})
 		}
+
+		// Google Calendar and Chat: every signed-in account's events to the
+		// primary agent, and the actions to answer them. See googlesource.go.
+		googleSrc = startGoogleSources(s, b, toolReg, integrationReg, a0.ID, log)
 
 		// Brain monitor: pings the actual brain the agent depends on — the
 		// harness (Claude Code via the supervisor; see
@@ -1255,6 +1262,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		api:          apiSrv,
 		console:      consoleSrv,
 
+		google:          googleSrc,
 		apiBrowserToken: apiBrowserToken,
 		apiBaseURL:      apiBaseURL,
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,13 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 	disabled := loopinstall.LoadDisabledLoops()
 	for _, e := range entries {
 		if !e.Enabled || disabled[e.Name] {
+			continue
+		}
+		// A compiled-in source now does this workflow's job; running both
+		// would act on the same message twice. See nativeReplacements.
+		if supersededByNative(e.Name, os.Getenv) {
+			rt.log.Info("installed loop stands down for the compiled-in source that replaces it",
+				zap.String("loop", e.Name), zap.String("switch", nativeReplacements[e.Name]+"=off runs it again"))
 			continue
 		}
 		// Verified again on load, against the lockfile rather than only against
@@ -502,6 +510,8 @@ var outboundTools = map[string]bool{
 	"comms_send": true, "comms_escalate": true,
 	"whatsapp_place_call": true, "call_start": true,
 	"x_post": true, "linkedin_post": true, "instagram_post": true,
+	// Google Chat messages, and calendar changes Google mails to the guests.
+	"gchat_send": true, "gcal_respond": true, "gcal_reschedule": true, "gcal_create": true,
 }
 
 // Session gives a signed loop the same long-lived harness conversation the
