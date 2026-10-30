@@ -277,6 +277,14 @@ loops:
       open coding sessions, anything pending from WhatsApp). You MUST deliver it by calling the
       app.push tool (title "Morning briefing") — that is the required final step.
 
+# The coding harness (Claude Code) every model session runs on.
+# harness:
+#   enabled: true
+#   # The only MCP servers a session starts (--strict-mcp-config). Unset, every
+#   # session also starts the servers in your own Claude config and plugins.
+#   mcp_servers:
+#     fleet: { type: stdio, command: fleetctl, args: [mcp] }
+
 # System One. Every event is screened by a cheap, fast probability model before
 # the expensive brain looks at it: one call answers what to do with it, how
 # urgent it is, what acting on it risks, whether it is worth remembering, and

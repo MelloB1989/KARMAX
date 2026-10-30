@@ -98,6 +98,11 @@ type Config struct {
 	// FallbackModel is handed to the CLI so it degrades on its own when a
 	// model is overloaded, without a round trip through here.
 	FallbackModel string
+	// OnlyMCPConfig, when set, is the --mcp-config every session starts with
+	// under --strict-mcp-config: these servers and no others. Without it a
+	// session also starts every MCP server in the operator's own Claude
+	// config and plugins — processes per session that KARMAX never calls.
+	OnlyMCPConfig string
 	// OnBackgroundTurn hears every turn a session ran without being asked —
 	// a message from another session arriving while it was idle starts one.
 	// The turn is already accounted (usage, breaker, audit) before this is
@@ -400,7 +405,7 @@ func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Polic
 	}
 	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
 		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig, SystemPrompt: opt.SystemPrompt,
-		Name: pol.Name, Launch: pol.Launch}
+		Name: pol.Name, Launch: pol.Launch, OnlyMCPConfig: s.cfg.OnlyMCPConfig}
 	sess.onBackground = func(t Turn) { s.background(key, kind, t) }
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup

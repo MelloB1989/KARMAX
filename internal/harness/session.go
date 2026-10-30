@@ -40,6 +40,9 @@ type Session struct {
 	// MCPConfig is threaded from Options the same way Model and Thinking are,
 	// taking effect on the next spawn.
 	MCPConfig string
+	// OnlyMCPConfig is Config.OnlyMCPConfig, fixed at spawn: when set, the
+	// session runs these MCP servers (plus MCPConfig's) and no others.
+	OnlyMCPConfig string
 	// SystemPrompt is passed as --append-system-prompt, fixed at spawn like
 	// the rest. It is part of the process, so a changed value needs a respawn
 	// (needsRespawn); --resume keeps the transcript, not the old prompt.
@@ -141,6 +144,11 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	// KARMAX to observe and react to in time.
 	if fallbackModel != "" && fallbackModel != s.Model {
 		args = append(args, "--fallback-model", fallbackModel)
+	}
+	if s.OnlyMCPConfig != "" {
+		// A repeated --mcp-config adds to this one, so a per-session server
+		// (extraArgs) still joins the allowed set.
+		args = append(args, "--strict-mcp-config", "--mcp-config", s.OnlyMCPConfig)
 	}
 	// No positional prompt here to collide with; still appended last, and tested.
 	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig, SystemPrompt: s.SystemPrompt})...)

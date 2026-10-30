@@ -1,6 +1,9 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/orgops"
 	"github.com/MelloB1989/karmax/internal/reflex"
@@ -65,6 +68,23 @@ type HarnessConfig struct {
 	WorkdirRoot string `yaml:"workdir_root"`
 	// Kinds are the per-use-case policies, keyed by kind name.
 	Kinds map[string]HarnessKindConfig `yaml:"kinds"`
+	// MCPServers, when set, are the only MCP servers a session runs, each in
+	// Claude Code's own shape (type, command, args, env). Unset, a session
+	// also starts every server in the operator's own Claude config and its
+	// plugins, which is a set of processes per session that KARMAX never calls.
+	MCPServers map[string]map[string]any `yaml:"mcp_servers"`
+}
+
+// MCPConfigJSON is MCPServers as a --mcp-config value, "" when none are set.
+func (h HarnessConfig) MCPConfigJSON() (string, error) {
+	if len(h.MCPServers) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(map[string]any{"mcpServers": h.MCPServers})
+	if err != nil {
+		return "", fmt.Errorf("harness.mcp_servers: %w", err)
+	}
+	return string(b), nil
 }
 
 // HarnessKindConfig is one session policy.
