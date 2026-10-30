@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/MelloB1989/karmax/internal/mcp"
-	"github.com/MelloB1989/karmax/internal/orgops"
 	"github.com/MelloB1989/karmax/internal/reflex"
 )
 
@@ -23,9 +22,6 @@ type KarmaxConfig struct {
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 	Harness  HarnessConfig         `yaml:"harness"`
 	Reflex   reflex.Config         `yaml:"reflex"`
-	// OrgOps is the org engineering office: PR review, standards, repo
-	// factory, knowledge store and incident autopilot for a GitHub org.
-	OrgOps orgops.Config `yaml:"org_ops"`
 	// Which services this install manages. Omitted means every one compiled
 	// in, so an upgrade never switches somebody's integrations off.
 	Connectors   RegistryConfig `yaml:"connectors"`

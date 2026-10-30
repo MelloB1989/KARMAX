@@ -47,7 +47,6 @@ import (
 	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/mesh"
-	"github.com/MelloB1989/karmax/internal/orgops"
 	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/review"
@@ -114,9 +113,6 @@ type KarmaxRuntime struct {
 	// routedKinds are the event kinds that reach agent inboxes, computed at
 	// construction and consumed once the runtime starts.
 	routedKinds []bus.EventKind
-	// officeClaims reports whether the org office handles a chat message itself.
-	// Nil when org_ops is off.
-	officeClaims func(eventID string, payload map[string]any) bool
 
 	// recipeLoops are the YAML recipes currently loaded from disk.
 	recipeMu sync.RWMutex
@@ -620,8 +616,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&taskListTool{ref: harnessRT})
 	toolReg.Register(&taskUpdateTool{ref: harnessRT})
 
-	orgOffice := setupOrgOps(cfg, b, s, toolReg, log)
-
 	// apiBrowserToken/apiBaseURL are minted here — before either
 	// ClaudeCodeTool registration in this function needs them — and threaded
 	// through to the API server itself further down, when cfg.API.Enabled.
@@ -1086,10 +1080,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	for _, ch := range webhookChannels {
 		wh.AddHandler(ch.InboundPath(), ch.HandleInbound)
 	}
-	if orgOffice != nil {
-		wh.AddHandler(orgOffice.Config().AlertPath, orgOffice.AlertHandler())
-		wh.AddHandler(orgops.WebhookPath, orgOffice.GitHubWebhookHandler())
-	}
 
 	// Issue trackers and code hosts are event sources, not conversations: each
 	// delivery becomes one normalised tracker.event on the bus for loops to judge.
@@ -1239,7 +1229,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}(),
 		voice:        voiceReg,
 		routedKinds:  routedKinds,
-		officeClaims: officeClaimFn(orgOffice),
 		mesh:         meshNode,
 		pending:      newPendingTriggers(),
 		startedAt:    startedAt,
@@ -1693,12 +1682,6 @@ func (rt *KarmaxRuntime) routeToAgent(evt bus.Event) error {
 		rt.log.Warn("skipped an event too old to act on",
 			zap.String("kind", string(evt.Kind)), zap.String("event", evt.ID),
 			zap.Duration("age", age.Round(time.Minute)))
-		return nil
-	}
-	// A chat message the org office will act on is the office's alone.
-	// Decided here, before the agent sees it, so the two never race to
-	// answer the same "approve".
-	if evt.Kind == bus.EventCommsMessage && rt.officeClaims != nil && rt.officeClaims(evt.ID, evt.Payload) {
 		return nil
 	}
 	a, ok := rt.agents.Get(evt.AgentID)
