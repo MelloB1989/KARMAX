@@ -345,22 +345,33 @@ var client = &http.Client{Timeout: 30 * time.Second}
 // exists to get right — a generic client reads that as "forbidden" and gives up
 // on a credential that is fine.
 func call(ctx context.Context, cr connectorkit.Credentials, method, path string, body []byte, out any) (connectorkit.RateLimit, error) {
+	token, err := tokenFor(ctx, cr)
+	if err != nil {
+		return connectorkit.RateLimit{}, err
+	}
+	return callAt(ctx, api, token, method, path, "", body, out)
+}
+
+// callAt is call against any account's API with that account's token, which
+// is how one connector acts as several gh logins on several hosts. accept
+// replaces the JSON media type (a diff, say), and out may be a *string for a
+// body that is not JSON.
+func callAt(ctx context.Context, base, token, method, path, accept string, body []byte, out any) (connectorkit.RateLimit, error) {
 	var rl connectorkit.RateLimit
 
 	var reader io.Reader
 	if body != nil {
 		reader = strings.NewReader(string(body))
 	}
-	req, err := http.NewRequestWithContext(ctx, method, api+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, reader)
 	if err != nil {
 		return rl, err
 	}
-	token, err := tokenFor(ctx, cr)
-	if err != nil {
-		return rl, err
+	if accept == "" {
+		accept = "application/vnd.github+json"
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "karmax-connector/1")
 	if body != nil {
@@ -385,6 +396,10 @@ func call(ctx context.Context, cr connectorkit.Credentials, method, path string,
 		return rl, fmt.Errorf("github: %s not found, or the token cannot see it", path)
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		return rl, fmt.Errorf("github: %s %s: %s", method, path, strings.TrimSpace(string(raw)))
+	}
+	if s, ok := out.(*string); ok {
+		*s = string(raw)
+		return rl, nil
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {

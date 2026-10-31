@@ -957,6 +957,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		// awssource.go and internal/sources/aws.
 		registerAWSSource(os.Getenv, home, s, b, a0.ID, toolReg, log)
 
+		// GitHub → events, and acting as the right login: every account gh
+		// is logged in to. Before the agents bind their tools. See
+		// githubsource.go; KARMAX_SOURCE_GITHUB=off stops the polling.
+		registerGitHubSource(os.Getenv, s, b, toolReg, integrationReg, a0.ID, log)
+
 		// Brain monitor: pings the actual brain the agent depends on — the
 		// harness (Claude Code via the supervisor; see
 		// docs/CLAUDE-ONLY-ORCHESTRATOR.md), not the metered API path nothing

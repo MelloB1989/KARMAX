@@ -58,6 +58,9 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	for _, account := range splitCSV(os.Getenv("KARMAX_GITHUB_ACCOUNTS")) {
 		reg.Register(integration.FromConnector(githubconn.New(account), account))
 	}
+	// Every login the gh CLI holds, each with its own health: the GitHub
+	// source reads them and the github.* acting tools act as them.
+	registerGitHubLogins(context.Background(), reg, GhLogins(), nil)
 	reg.Register(integration.FromConnector(notionconn.New(), ""))
 	reg.Register(integration.FromConnector(instagramconn.New(), ""))
 	// The public accounts. Registered with no forbidden-names list, because this
