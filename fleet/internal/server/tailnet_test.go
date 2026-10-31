@@ -313,6 +313,30 @@ func TestACallerOutranksAToken(t *testing.T) {
 // whatever the runs; again when it names another fleetctl; and never another
 // server. Without claude it says what to run later. Here curl, fleetctl and
 // claude are fakes on PATH, in a home of the test's own.
+// fakeCurl is curl for the install scripts: what it downloads is a fleetctl
+// that logs each command line to $LOG.
+const fakeCurl = `#!/bin/sh
+while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift ;; esac; shift; done
+printf '#!/bin/sh\necho "fleetctl $*" >>"$LOG"\n' >"$out"
+`
+
+// fakeClaude is claude for the install scripts: it keeps each MCP server's
+// command in $STATE/<name>.
+const fakeClaude = `#!/bin/sh
+echo "claude $*" >>"$LOG"
+case "$1 $2" in
+"mcp get")
+	[ -f "$STATE/$3" ] || { echo "No MCP server named \"$3\"." >&2; exit 1; }
+	printf '%s:\n  Scope: User config\n  Type: stdio\n  Command: %s\n  Args: mcp\n' "$3" "$(cat "$STATE/$3")" ;;
+"mcp remove")
+	[ -f "$STATE/$5" ] || exit 1
+	rm "$STATE/$5" ;;
+"mcp add")
+	[ ! -f "$STATE/$5" ] || { echo "MCP server $5 already exists in user config" >&2; exit 1; }
+	echo "$7" >"$STATE/$5" ;;
+esac
+`
+
 func TestTheInstallScriptRegistersTheMCPServerOnceAndReplacesAStalePath(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
@@ -329,26 +353,7 @@ func TestTheInstallScriptRegistersTheMCPServerOnceAndReplacesAStalePath(t *testi
 			t.Fatal(err)
 		}
 	}
-	curl := `#!/bin/sh
-while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift ;; esac; shift; done
-printf '#!/bin/sh\necho "fleetctl $*" >>"$LOG"\n' >"$out"
-`
-	// claude keeps each server's command in $STATE/<name>.
-	claude := `#!/bin/sh
-echo "claude $*" >>"$LOG"
-case "$1 $2" in
-"mcp get")
-	[ -f "$STATE/$3" ] || { echo "No MCP server named \"$3\"." >&2; exit 1; }
-	printf '%s:\n  Scope: User config\n  Type: stdio\n  Command: %s\n  Args: mcp\n' "$3" "$(cat "$STATE/$3")" ;;
-"mcp remove")
-	[ -f "$STATE/$5" ] || exit 1
-	rm "$STATE/$5" ;;
-"mcp add")
-	[ ! -f "$STATE/$5" ] || { echo "MCP server $5 already exists in user config" >&2; exit 1; }
-	echo "$7" >"$STATE/$5" ;;
-esac
-`
-	for p, body := range map[string]string{bin + "/curl": curl, noClaude + "/curl": curl, bin + "/claude": claude} {
+	for p, body := range map[string]string{bin + "/curl": fakeCurl, noClaude + "/curl": fakeCurl, bin + "/claude": fakeClaude} {
 		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -406,6 +411,190 @@ esac
 	}
 }
 
+// However often it runs, the script leaves one fleetctl: it replaces the one
+// on PATH where it is, and removes a copy an earlier run left in its other
+// place. A first run before ~/.local/bin was on PATH used /usr/local/bin, and
+// Claude Code's installer puts ~/.local/bin on PATH.
+func TestTheInstallScriptKeepsOneFleetctl(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	_, h, _ := tailnetSetup(t)
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "install.sh")
+	if err := os.WriteFile(script, tdo(t, h, "GET", "/install.sh", ramIP, "", "").Body.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakes, state := filepath.Join(tmp, "fake"), filepath.Join(tmp, "mcp")
+	home := filepath.Join(tmp, "home")
+	local, system := filepath.Join(home, ".local", "bin"), filepath.Join(tmp, "usr-local-bin")
+	for _, d := range []string{fakes, state, local, system} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, body := range map[string]string{fakes + "/curl": fakeCurl, fakes + "/claude": fakeClaude} {
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	install := func(path ...string) string {
+		t.Helper()
+		sh := exec.Command("sh", script)
+		sh.Env = []string{"PATH=" + strings.Join(append(append([]string{fakes}, path...), "/usr/bin", "/bin"), ":"),
+			"HOME=" + home, "FLEETCTL_SYSTEM_DIR=" + system, "LOG=" + filepath.Join(tmp, "log"), "STATE=" + state}
+		b, err := sh.CombinedOutput()
+		if err != nil {
+			t.Fatalf("install.sh: %v\n%s", err, b)
+		}
+		return string(b)
+	}
+	copies := func() []string {
+		var out []string
+		for _, d := range []string{local, system} {
+			ents, _ := os.ReadDir(d)
+			for _, e := range ents {
+				if strings.Contains(e.Name(), "fleetctl") {
+					out = append(out, filepath.Join(d, e.Name()))
+				}
+			}
+		}
+		return out
+	}
+	one := func(when, want string) {
+		t.Helper()
+		if got := copies(); len(got) != 1 || got[0] != want {
+			t.Fatalf("%s: fleetctl copies %q, want only %s", when, got, want)
+		}
+		if b, _ := os.ReadFile(want); !strings.Contains(string(b), `echo "fleetctl $*"`) {
+			t.Fatalf("%s: %s is not the new build: %q", when, want, b)
+		}
+	}
+
+	install(system)
+	one("first run, ~/.local/bin not on PATH", system+"/fleetctl")
+	install(local, system)
+	one("~/.local/bin on PATH since", system+"/fleetctl")
+	install(local, system)
+	one("run again", system+"/fleetctl")
+
+	// What an older script left: a copy in each place. The one first on
+	// PATH is the one that runs, so it stays.
+	if err := os.WriteFile(local+"/fleetctl", []byte("#!/bin/sh\necho old\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := install(local, system)
+	one("a copy in each place", local+"/fleetctl")
+	if !strings.Contains(out, "removed an older fleetctl: "+system+"/fleetctl") {
+		t.Fatalf("the removal is not said:\n%s", out)
+	}
+
+	// One it may not remove is named, with what to run.
+	if os.Geteuid() == 0 {
+		return // root writes anywhere
+	}
+	if err := os.WriteFile(system+"/fleetctl", []byte("#!/bin/sh\necho old\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(system, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(system, 0o755) })
+	out = install(system, local)
+	if b, _ := os.ReadFile(local + "/fleetctl"); !strings.Contains(string(b), `echo "fleetctl $*"`) {
+		t.Fatalf("not installed in ~/.local/bin: %q\n%s", b, out)
+	}
+	if !strings.Contains(out, "sudo rm "+system+"/fleetctl") {
+		t.Fatalf("the copy that shadows it is not named:\n%s", out)
+	}
+}
+
+// The Windows script, run by PowerShell, leaves one fleetctl.exe however
+// often it runs, and nothing beside it. Windows does not overwrite a running
+// exe (Claude Code keeps fleetctl mcp running), so the old one is renamed
+// aside and removed, or removed by the next run if it still runs. The
+// script keeps its settings to itself: irm | iex runs it in the caller's
+// session.
+func TestTheWindowsInstallScriptKeepsOneFleetctl(t *testing.T) {
+	pwsh, err := exec.LookPath("pwsh")
+	if err != nil {
+		t.Skip("no pwsh")
+	}
+	_, h, _ := tailnetSetup(t)
+	tmp := t.TempDir()
+	fakes, state, appdata := filepath.Join(tmp, "fake"), filepath.Join(tmp, "mcp"), filepath.Join(tmp, "appdata")
+	for _, d := range []string{fakes, state, appdata} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	build := filepath.Join(tmp, "build")
+	for p, body := range map[string]string{fakes + "/claude": fakeClaude, build: "#!/bin/sh\necho \"fleetctl $*\" >>\"$LOG\"\n"} {
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The download is the build; then the script as irm | iex runs it, and
+	// the session's settings after it.
+	run := `function Invoke-WebRequest { param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing) & /bin/cp $env:BUILD $OutFile }
+$ErrorActionPreference = 'Continue'
+Get-Content -Raw $env:SCRIPT | Invoke-Expression
+"after: $ErrorActionPreference $(Test-Path variable:exe)"
+`
+	script, runner := filepath.Join(tmp, "install.ps1"), filepath.Join(tmp, "run.ps1")
+	if err := os.WriteFile(script, tdo(t, h, "GET", "/install.ps1", ramIP, "", "").Body.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runner, []byte(run), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(appdata, "fleetctl")
+	install := func() string {
+		t.Helper()
+		ps := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-File", runner)
+		ps.Env = []string{"PATH=" + fakes + ":/usr/bin:/bin", "HOME=" + tmp, "LOCALAPPDATA=" + appdata, "PROCESSOR_ARCHITECTURE=AMD64",
+			"BUILD=" + build, "SCRIPT=" + script, "LOG=" + filepath.Join(tmp, "log"), "STATE=" + state}
+		b, err := ps.CombinedOutput()
+		if err != nil {
+			t.Fatalf("install.ps1: %v\n%s", err, b)
+		}
+		return string(b)
+	}
+	only := func(when string) {
+		t.Helper()
+		ents, _ := os.ReadDir(dir)
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		if len(names) != 1 || names[0] != "fleetctl.exe" {
+			t.Fatalf("%s: %s holds %q, want only fleetctl.exe", when, dir, names)
+		}
+	}
+
+	out := install()
+	only("first run")
+	if !strings.Contains(out, "registered the fleet MCP server with Claude Code: "+filepath.Join(dir, "fleetctl.exe")+" mcp") {
+		t.Fatalf("first run:\n%s", out)
+	}
+	if !strings.Contains(out, "after: Continue False") {
+		t.Fatalf("the script changed the caller's session:\n%s", out)
+	}
+	install()
+	only("run again")
+	// What a run left while the old one still ran, and a cut download.
+	for _, n := range []string{"fleetctl.exe.old-638000000000000000", "fleetctl.exe.new"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out = install()
+	only("after a run that could not remove the old one")
+	if !strings.Contains(out, "already has the fleet MCP server") {
+		t.Fatalf("third run re-registered:\n%s", out)
+	}
+}
+
 // The Windows script does the same in PowerShell, and quotes the -- so a
 // script shim for claude still gets it.
 func TestTheWindowsInstallScriptRegistersTheMCPServer(t *testing.T) {
@@ -416,7 +605,7 @@ func TestTheWindowsInstallScriptRegistersTheMCPServer(t *testing.T) {
 		"if (Get-Command claude -ErrorAction SilentlyContinue) {",
 		"$got = (& claude mcp get fleet 2>$null | Out-String)",
 		"if ($got -match ('(?m)Command: ' + [regex]::Escape($exe) + '\\s*$')) {",
-		"& claude mcp remove --scope user fleet 2>$null | Out-Null\n    & claude mcp add --scope user fleet '--' $exe mcp | Out-Null",
+		"& claude mcp remove --scope user fleet 2>$null | Out-Null\n      & claude mcp add --scope user fleet '--' $exe mcp | Out-Null",
 		`Write-Host "claude was not found: once Claude Code is installed, run  $add"`,
 	} {
 		if !strings.Contains(ps, want) {

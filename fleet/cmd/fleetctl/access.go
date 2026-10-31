@@ -102,7 +102,7 @@ func printAccess(w io.Writer, l fleetapi.AccessList, now time.Time) {
 		return
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Asked, not tagged (fleetctl access lend <device> <agent>…, or admin):")
+	fmt.Fprintln(w, "Asked, not tagged (fleetctl access admin <device>, or lend <device> <agent>…; the device in full):")
 	tw = tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "DEVICE\tLOGIN\tASKED\tLAST")
 	for _, k := range l.Knocks {

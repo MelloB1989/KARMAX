@@ -53,7 +53,8 @@ func TestAnUntaggedDeviceIsRefusedAndKnocks(t *testing.T) {
 		t.Fatalf("untagged: %+v %v", d, err)
 	}
 	if msg := access.Refusal(friend); !strings.Contains(msg, "this device (friend-laptop.tail1234.ts.net, friend@example.com) may not use this fleet yet.") ||
-		!strings.Contains(msg, "fleetctl access lend friend-laptop <agent>") {
+		!strings.Contains(msg, "fleetctl access admin friend-laptop.tail1234.ts.net\n") ||
+		!strings.Contains(msg, "fleetctl access lend friend-laptop.tail1234.ts.net <agent>") {
 		t.Fatalf("refusal: %s", msg)
 	}
 	knock(t, s, friend, t0)
@@ -198,7 +199,7 @@ func TestTheFirstKnockInADayIsTheOnlyOneTold(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(told) != 2 || !strings.Contains(told[0], "friend-laptop (friend@example.com) asked for fleet access") {
+	if len(told) != 2 || !strings.Contains(told[0], "friend-laptop (friend@example.com) asked for fleet access: fleetctl access admin friend-laptop.tail1234.ts.net") {
 		t.Fatalf("told: %q", told)
 	}
 	if err := access.Knocked(s, op, t0.Add(26*time.Hour), tell); err != nil || len(told) != 3 {

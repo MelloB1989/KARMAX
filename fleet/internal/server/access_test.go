@@ -396,7 +396,7 @@ func TestALoginAloneIsNotAdmin(t *testing.T) {
 func TestAnUntaggedDeviceIsToldHowToAsk(t *testing.T) {
 	_, h, _ := tailnetSetup(t)
 	rec := tdo(t, h, "GET", "/v1/status", outIP, "", "")
-	if rec.Code != 403 || !strings.Contains(rec.Body.String(), "fleetctl access lend stranger-laptop") {
+	if rec.Code != 403 || !strings.Contains(rec.Body.String(), "fleetctl access admin stranger-laptop.tail9abc.ts.net") {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }

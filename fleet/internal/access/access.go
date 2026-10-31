@@ -62,8 +62,10 @@ func Resolve(s Store, w tailnet.Who) (fleetapi.Device, error) {
 // Refusal is what an untagged device is told: who fleetd sees, and what the
 // operator runs to let it in.
 func Refusal(w tailnet.Who) string {
-	return fmt.Sprintf("this device (%s, %s) may not use this fleet yet.\nAsk the fleet's operator to run: fleetctl access lend %s <agent>",
-		w.Node, w.Login, Short(w.Node))
+	name := strings.TrimSuffix(w.Node, ".")
+	return fmt.Sprintf("this device (%s, %s) may not use this fleet yet. Its request is recorded.\n"+
+		"The fleet's operator lets it in, on the fleet's host, with\n  fleetctl access admin %s\nor lends it agents with\n  fleetctl access lend %s <agent>…",
+		w.Node, w.Login, name, name)
 }
 
 // Short is a tailnet name's first label: friend-laptop for
@@ -229,7 +231,9 @@ func Knocked(s Store, w tailnet.Who, now time.Time, tell func(text string)) erro
 		return err
 	}
 	if first && tell != nil {
-		tell(fmt.Sprintf("%s (%s) asked for fleet access: fleetctl access lend %s <agent>, or admin", Short(w.Node), w.Login, Short(w.Node)))
+		name := strings.TrimSuffix(w.Node, ".") // in full: a short name can be two devices
+		tell(fmt.Sprintf("%s (%s) asked for fleet access: fleetctl access admin %s, or fleetctl access lend %s <agent>…",
+			Short(w.Node), w.Login, name, name))
 	}
 	return nil
 }

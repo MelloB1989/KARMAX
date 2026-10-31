@@ -118,28 +118,54 @@ url='{{URL}}'
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case $os in
 linux | darwin) ;;
-*) echo "fleetctl: no build for $os; on Windows, in PowerShell: irm $url/install.ps1 | iex" >&2; exit 1 ;;
+mingw* | msys* | cygwin*)
+	# Git Bash and the like on Windows: the Windows build, installed where
+	# PowerShell installs it, so there is one either way.
+	exec powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm '$url/install.ps1' | iex" ;;
+*) echo "fleetctl: no build for $os; on Windows: powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm $url/install.ps1 | iex\"" >&2; exit 1 ;;
 esac
 case $(uname -m) in
 x86_64 | amd64) arch=amd64 ;;
 arm64 | aarch64) arch=arm64 ;;
 *) echo "fleetctl: no build for $(uname -m)" >&2; exit 1 ;;
 esac
+# One fleetctl per machine, however often this runs. An upgrade replaces the
+# fleetctl on PATH where it is; a first install goes to ~/.local/bin when it
+# is on PATH, else /usr/local/bin when writable. A copy an earlier run left in
+# the other of the two is removed: Claude Code's installer puts ~/.local/bin
+# on PATH, which moved a later run's choice. FLEETCTL_SYSTEM_DIR stands in for
+# /usr/local/bin in tests.
+system=${FLEETCTL_SYSTEM_DIR:-/usr/local/bin}
 dir=${FLEETCTL_DIR:-}
+if [ -z "$dir" ]; then
+	on=$(command -v fleetctl 2>/dev/null || true)
+	case $on in
+	/*/fleetctl) if [ -w "${on%/*}" ]; then dir=${on%/*}; fi ;;
+	esac
+fi
 if [ -z "$dir" ]; then
 	case ":$PATH:" in
 	*":$HOME/.local/bin:"*) dir=$HOME/.local/bin ;;
-	*) if [ -w /usr/local/bin ]; then dir=/usr/local/bin; else dir=$HOME/.local/bin; fi ;;
+	*) if [ -w "$system" ]; then dir=$system; else dir=$HOME/.local/bin; fi ;;
 	esac
 fi
 mkdir -p "$dir"
 tmp=$(mktemp "$dir/.fleetctl.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
 curl -fsSL "$url/dl/fleetctl-$os-$arch" -o "$tmp"
 chmod 755 "$tmp"
 mv -f "$tmp" "$dir/fleetctl"
-trap - EXIT
+trap - EXIT HUP INT TERM
 echo "fleetctl installed in $dir"
+for d in "$HOME/.local/bin" "$system"; do
+	if [ "$d" = "$dir" ] || [ ! -f "$d/fleetctl" ]; then continue; fi
+	if [ -w "$d" ] && rm -f "$d/fleetctl"; then
+		echo "removed an older fleetctl: $d/fleetctl"
+	else
+		echo "an older fleetctl is left at $d/fleetctl, and this one may not remove it: sudo rm $d/fleetctl" >&2
+	fi
+done
 "$dir/fleetctl" connect "$url"
 "$dir/fleetctl" skill install --force
 # The fleet MCP server, in Claude Code's user config: left alone when it is
@@ -166,49 +192,74 @@ else
 	echo "claude was not found: once Claude Code is installed, run  $add"
 fi
 case ":$PATH:" in
-*":$dir:"*) ;;
+*":$dir:"*)
+	on=$(command -v fleetctl 2>/dev/null || true)
+	if [ "$on" != "$dir/fleetctl" ]; then
+		echo "$on comes first on your PATH, not this fleetctl: remove it (sudo rm $on)" >&2
+	fi
+	;;
 *) echo "$dir is not on your PATH: add  export PATH=\"$dir:\$PATH\"  to your shell's profile" ;;
 esac
 `
 
 const installPs1 = `# Installs fleetctl for the fleet at {{URL}}, connects it, installs its
-# Claude Code skills and registers its MCP server with Claude Code.
-# Run in PowerShell: irm {{URL}}/install.ps1 | iex
-$ErrorActionPreference = 'Stop'
-$url = '{{URL}}'
-$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-$dir = Join-Path $env:LOCALAPPDATA 'fleetctl'
-New-Item -ItemType Directory -Force -Path $dir | Out-Null
-$exe = Join-Path $dir 'fleetctl.exe'
-Invoke-WebRequest -UseBasicParsing -Uri "$url/dl/fleetctl-windows-$arch.exe" -OutFile $exe
-$path = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (-not (($path -split ';') -contains $dir)) {
-  [Environment]::SetEnvironmentVariable('Path', "$path;$dir", 'User')
-  $env:Path += ";$dir"
-}
-& $exe connect $url
-& $exe skill install --force
-# The fleet MCP server, in Claude Code's user config: left alone when it is
-# this fleetctl already, replaced when it is another path. '--' is quoted so
-# PowerShell passes it on to claude (an npm shim is a script).
-$add = "claude mcp add --scope user fleet -- $exe mcp"
-if (Get-Command claude -ErrorAction SilentlyContinue) {
-  $ErrorActionPreference = 'Continue'
-  $got = (& claude mcp get fleet 2>$null | Out-String)
-  if ($got -match ('(?m)Command: ' + [regex]::Escape($exe) + '\s*$')) {
-    Write-Host "Claude Code already has the fleet MCP server: $exe mcp"
-  } else {
-    & claude mcp remove --scope user fleet 2>$null | Out-Null
-    & claude mcp add --scope user fleet '--' $exe mcp | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-      Write-Host "registered the fleet MCP server with Claude Code: $exe mcp"
-    } else {
-      Write-Host "claude could not register the fleet MCP server; run later:  $add"
-    }
-  }
+# Claude Code skills and registers its MCP server with Claude Code. Run it
+# again to upgrade: there is one fleetctl, %LOCALAPPDATA%\fleetctl\fleetctl.exe.
+# In PowerShell:  irm {{URL}}/install.ps1 | iex
+# In cmd:         powershell -NoProfile -ExecutionPolicy Bypass -Command "irm {{URL}}/install.ps1 | iex"
+# iex runs this in the caller's session: the block keeps its settings to it.
+& {
   $ErrorActionPreference = 'Stop'
-} else {
-  Write-Host "claude was not found: once Claude Code is installed, run  $add"
+  $ProgressPreference = 'SilentlyContinue' # Windows PowerShell's progress bar slows a download to a crawl
+  $url = '{{URL}}'
+  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+  $dir = Join-Path $env:LOCALAPPDATA 'fleetctl'
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $exe = Join-Path $dir 'fleetctl.exe'
+  # Windows does not overwrite a running exe, and Claude Code keeps fleetctl
+  # mcp running, but it lets one be renamed: the old one steps aside and is
+  # removed, now or, while it still runs, by the next run. So is a download a
+  # run did not finish. (-like, not -Filter: Windows' own wildcard matches
+  # fleetctl.exe itself for fleetctl.exe.*.)
+  Get-ChildItem -Path $dir | Where-Object { $_.Name -like 'fleetctl.exe.*' } | Remove-Item -Force -ErrorAction SilentlyContinue
+  $new = "$exe.new"
+  Invoke-WebRequest -UseBasicParsing -Uri "$url/dl/fleetctl-windows-$arch.exe" -OutFile $new
+  if (Test-Path $exe) {
+    $old = "$exe.old-" + [DateTime]::UtcNow.Ticks
+    Move-Item -Force $exe $old
+    Remove-Item -Force -ErrorAction SilentlyContinue $old
+  }
+  Move-Item -Force $new $exe
+  $path = [Environment]::GetEnvironmentVariable('Path', 'User')
+  $parts = @(($path -split ';') | Where-Object { $_ })
+  if ($parts -notcontains $dir) {
+    [Environment]::SetEnvironmentVariable('Path', ((@($parts) + $dir) -join ';'), 'User')
+    $env:Path += ";$dir"
+  }
+  & $exe connect $url
+  & $exe skill install --force
+  # The fleet MCP server, in Claude Code's user config: left alone when it is
+  # this fleetctl already, replaced when it is another path. '--' is quoted so
+  # PowerShell passes it on to claude (an npm shim is a script).
+  $add = "claude mcp add --scope user fleet -- $exe mcp"
+  if (Get-Command claude -ErrorAction SilentlyContinue) {
+    $ErrorActionPreference = 'Continue'
+    $got = (& claude mcp get fleet 2>$null | Out-String)
+    if ($got -match ('(?m)Command: ' + [regex]::Escape($exe) + '\s*$')) {
+      Write-Host "Claude Code already has the fleet MCP server: $exe mcp"
+    } else {
+      & claude mcp remove --scope user fleet 2>$null | Out-Null
+      & claude mcp add --scope user fleet '--' $exe mcp | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        Write-Host "registered the fleet MCP server with Claude Code: $exe mcp"
+      } else {
+        Write-Host "claude could not register the fleet MCP server; run later:  $add"
+      }
+    }
+    $ErrorActionPreference = 'Stop'
+  } else {
+    Write-Host "claude was not found: once Claude Code is installed, run  $add"
+  }
+  Write-Host "fleetctl installed in $dir; open a new terminal to have it on your PATH"
 }
-Write-Host "fleetctl installed in $dir; open a new terminal to have it on your PATH"
 `
