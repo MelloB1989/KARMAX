@@ -193,7 +193,13 @@ func (a *Agent) sentSince(since time.Time) []string {
 			continue
 		}
 		a.ops.reported[r.ID] = time.Now()
-		out = append(out, fmt.Sprintf("%s → %s: “%s”", channelLabel(r.ChannelType), a.recipientName(r.ChannelID),
+		label := channelLabel(r.ChannelType)
+		// A send recorded with the login it was made as (the GitHub acting
+		// tools record theirs) says which of the operator's accounts spoke.
+		if as := strings.TrimSpace(r.SenderName); as != "" {
+			label += " as " + as
+		}
+		out = append(out, fmt.Sprintf("%s → %s: “%s”", label, a.recipientName(r.ChannelID),
 			truncateStr(strings.Join(strings.Fields(r.Content), " "), 90)))
 	}
 	return out
@@ -228,6 +234,8 @@ func channelLabel(t string) string {
 	switch strings.ToLower(t) {
 	case "whatsapp":
 		return "WhatsApp"
+	case "github":
+		return "GitHub"
 	case "":
 		return "message"
 	default:

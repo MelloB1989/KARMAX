@@ -85,10 +85,16 @@ func TestATurnReportsWhatWasSentAsTheOperator(t *testing.T) {
 	outbound(t, a, "m2", testOperatorChat, "", "a reply to the operator")
 	outbound(t, a, "m3", "15555550199@s.whatsapp.net", "loop", "a loop's post")
 	outbound(t, a, "m4", "15555550188@s.whatsapp.net", "", ackMessage)
+	// What the GitHub acting tools record: done as one of the operator's logins.
+	if err := a.store.SaveChannelMessage(store.StoredChannelMessage{ID: "g1", ChannelID: "contoso/app#12",
+		ChannelType: "github", SenderName: "octo-work", Direction: "outbound", Content: "commented on: LGTM"}); err != nil {
+		t.Fatal(err)
+	}
 
 	report := a.turnReport(accountEvent(false), since,
 		"Approved the fix and told Dana.\nSENT: github/octo-work → acme/api#12: approving review")
-	for _, want := range []string{"Sent as you", "Dana Reyes", "Reviewing it now", "github/octo-work → acme/api#12: approving review"} {
+	for _, want := range []string{"Sent as you", "Dana Reyes", "Reviewing it now", "github/octo-work → acme/api#12: approving review",
+		"GitHub as octo-work → contoso/app#12: “commented on: LGTM”"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report omits %q:\n%s", want, report)
 		}
