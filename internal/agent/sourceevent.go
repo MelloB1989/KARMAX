@@ -55,9 +55,16 @@ func renderSourceEvent(e sources.Event) string {
 		b.WriteString("Details:\n" + details)
 	}
 	fmt.Fprintf(&b, "\nThis arrived on the operator's %s account %q. Anything you do about it — a reply, a comment, a lookup — goes through THAT account: the accounts section of your context says which tools act as which account. Never act through a different account unless the operator asked.\n", e.Source, e.Account)
-	b.WriteString("- Decide what it needs and do it. Act on the operator's behalf as the operating policy in your context allows, including replying to people as them.\n" +
-		"- File what is durable (who, what, when, a decision, a deadline) with memory.ingest, one fact per call; skip what is transient.\n" +
-		"- If it needs nothing, stop there. Whether the operator hears about it is the operating policy's call, not a reflex.\n")
+	b.WriteString("- Decide what it needs and do it. Act on the operator's behalf as the operating policy in your context allows, including replying to people as them.\n")
+	if e.MemorySynced {
+		// The conversation is read into memory whole — this message, the
+		// replies, and what KARMAX sends in it — by its memory loop. A fact
+		// filed here as well is the same fact twice.
+		b.WriteString("- Do not file what this message says with memory.ingest: this conversation is read into long-term memory by its own memory loop, which files what is durable in it — this message, the replies, and anything you send. File only what you learned elsewhere while handling it.\n")
+	} else {
+		b.WriteString("- File what is durable (who, what, when, a decision, a deadline) with memory.ingest, one fact per call; skip what is transient.\n")
+	}
+	b.WriteString("- If it needs nothing, stop there. Whether the operator hears about it is the operating policy's call, not a reflex.\n")
 	return b.String()
 }
 

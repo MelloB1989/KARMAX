@@ -100,7 +100,7 @@ harness:
     chat:    { model: sonnet, idle: 10m, max_turns: 40, turn_timeout: 45s, max_cost_usd: 0.50 }
     agent:   { model: sonnet, idle: 30m, max_turns: 100, turn_timeout: 3m,  max_cost_usd: 2.00 }
     task:    { model: opus,   idle: 0s,  max_turns: 1,   turn_timeout: 10m, max_cost_usd: 5.00 }
-    extract: { model: sonnet, idle: 5m,  max_turns: 4,   turn_timeout: 3m, ephemeral: true }   # wa-memory: one WhatsApp batch per session
+    extract: { model: sonnet, idle: 5m,  max_turns: 4,   turn_timeout: 3m, ephemeral: true }   # wa-memory, gchat-memory: one chat batch per session
 ```
 
 `max_turns` and `max_cost_usd` are per-session circuit breakers — a session that

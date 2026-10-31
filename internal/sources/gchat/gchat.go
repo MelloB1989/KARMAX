@@ -22,6 +22,9 @@ import (
 	"github.com/MelloB1989/karmax/internal/sources"
 )
 
+// SourceName is the source the Chat events carry.
+const SourceName = "gchat"
+
 // Space is one space, group chat or DM.
 type Space struct {
 	Name        string // spaces/AAAA
@@ -293,7 +296,12 @@ func (w *Watcher) Tick(ctx context.Context, account string, publish func(sources
 }
 
 // own reports whether the operator wrote m.
-func (w *Watcher) own(me Me, m Message) bool {
+func (w *Watcher) own(me Me, m Message) bool { return me.Wrote(m) }
+
+// Wrote reports whether the account's own Chat user wrote m: by the sender's
+// user when both sides have one, and by name only when the path gives no user
+// at all.
+func (me Me) Wrote(m Message) bool {
 	if m.Sender != "" && me.User != "" {
 		return m.Sender == me.User
 	}
@@ -382,7 +390,7 @@ func (w *Watcher) event(account string, me Me, sp Space, m Message, p Person) so
 	dm := sp.Type == "DIRECT_MESSAGE"
 	mention := mentionsMe(me, m)
 
-	e := sources.Event{Source: "gchat", Account: account, Key: "gchat|" + strings.ToLower(account) + "|" + m.Name,
+	e := sources.Event{Source: SourceName, Account: account, Key: SourceName + "|" + strings.ToLower(account) + "|" + m.Name,
 		URL: spaceURL(sp), At: m.Created}
 	switch {
 	case dm:

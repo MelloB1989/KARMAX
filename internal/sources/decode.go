@@ -36,6 +36,7 @@ func FromBusEvent(evt bus.Event) (Event, bool) {
 	}
 	e.Urgent, _ = evt.Payload["urgent"].(bool)
 	e.Backlog, _ = evt.Payload["backlog"].(bool)
+	e.MemorySynced, _ = evt.Payload[memorySyncedKey].(bool)
 	if d, ok := evt.Payload["data"].(map[string]any); ok {
 		e.Data = d
 	}
@@ -57,14 +58,75 @@ var subjectKeys = []string{
 // person, the project. Long-term memory keeps one file per subject, so this is
 // what keeps an account's facts beside everything else known about the same
 // thing instead of in one heap per source.
+//
+// For each key a readable name wins over the id it stands for — "sender_name"
+// over "sender", "channel_name" over "channel" — and a value that is only an
+// id ("users/1047…", "spaces/AAAA…", "C0123ABCD45") is never a subject: memory
+// would keep a document for an id nobody reads.
 func (e Event) Subject() string {
 	for _, k := range subjectKeys {
-		if s, _ := e.Data[k].(string); strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
+		for _, field := range []string{k + "_display_name", k + "_name", k} {
+			if s, _ := e.Data[field].(string); strings.TrimSpace(s) != "" && !looksLikeID(s) {
+				return strings.TrimSpace(s)
+			}
 		}
 	}
 	return strings.TrimSpace(e.Source + " " + e.Account)
 }
+
+// looksLikeID reports a value that identifies something without naming it: a
+// number, a resource name whose last part is an id ("users/1047…",
+// "spaces/AAAAMpdlehY", "people/c8812…"), or a service's opaque token
+// ("C0123ABCD45"). Anything with a space in it is a name.
+func looksLikeID(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" || strings.ContainsAny(v, " \t\n") {
+		return false
+	}
+	if allDigits(v) {
+		return true
+	}
+	// A resource name: a lowercase collection ("users", "spaces") and an id.
+	if parts := strings.Split(v, "/"); len(parts) >= 2 && isCollection(parts[0]) && opaqueToken(parts[len(parts)-1]) {
+		return true
+	}
+	// A bare token of capitals and digits, as Slack and others mint them.
+	return alnum(v) && len(v) >= 8 && countOf(v, isDigit) >= 2 && countOf(v, isLower) == 0
+}
+
+// opaqueToken is a path's last part when it is an id: digits, or letters and
+// digits no one would write as a word (several digits, or several capitals).
+func opaqueToken(s string) bool {
+	if allDigits(s) {
+		return true
+	}
+	return alnum(s) && len(s) >= 6 && (countOf(s, isDigit) >= 3 || countOf(s, isUpper) >= 3)
+}
+
+// isCollection is a resource collection's name: lowercase letters, plural.
+func isCollection(s string) bool {
+	return len(s) > 1 && strings.HasSuffix(s, "s") && countOf(s, isLower) == len(s)
+}
+
+func allDigits(s string) bool { return s != "" && countOf(s, isDigit) == len(s) }
+
+func alnum(s string) bool {
+	return countOf(s, func(r rune) bool { return isDigit(r) || isLower(r) || isUpper(r) }) == len(s)
+}
+
+func countOf(s string, f func(rune) bool) int {
+	n := 0
+	for _, r := range s {
+		if f(r) {
+			n++
+		}
+	}
+	return n
+}
+
+func isDigit(r rune) bool { return r >= '0' && r <= '9' }
+func isLower(r rune) bool { return r >= 'a' && r <= 'z' }
+func isUpper(r rune) bool { return r >= 'A' && r <= 'Z' }
 
 // knownCategories are the categories long-term memory files by.
 var knownCategories = map[string]bool{

@@ -323,3 +323,26 @@ func TestSenderNamesAreLookedUpOnce(t *testing.T) {
 		t.Errorf("looked the same sender up %d times", n)
 	}
 }
+
+// Who wrote a message is decided by the account's own Chat user when both
+// sides have one; a name decides only when the path gives no user at all.
+func TestMeWrote(t *testing.T) {
+	me := Me{User: "users/100", Name: "Quinn Avery"}
+	for _, c := range []struct {
+		m    Message
+		want bool
+	}{
+		{Message{Sender: "users/100"}, true},
+		{Message{Sender: "users/7", SenderName: "Quinn Avery"}, false},
+		{Message{SenderName: "quinn avery "}, true},
+		{Message{SenderName: "Dana Reyes"}, false},
+		{Message{}, false},
+	} {
+		if got := me.Wrote(c.m); got != c.want {
+			t.Errorf("Wrote(%+v) = %v, want %v", c.m, got, c.want)
+		}
+	}
+	if (Me{Name: "Quinn Avery"}).Wrote(Message{Sender: "users/100", SenderName: "Quinn Avery"}) {
+		t.Error("with no user of its own, the account claimed a message that names its user")
+	}
+}

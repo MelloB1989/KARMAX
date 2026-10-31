@@ -1,4 +1,4 @@
-package wamemory
+package chatmemory
 
 import (
 	"context"
@@ -41,7 +41,10 @@ func fakeWacli(t *testing.T, msgs []time.Time) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(map[string]any{"messages": out})
 		case "/chats":
 			_ = json.NewEncoder(w).Encode(map[string]any{"chats": []map[string]any{
-				{"jid": "1@g.us", "name": "Team", "is_group": true, "last_message_at": "2026-10-30T21:41:45+05:30"}}})
+				{"jid": "1@g.us", "name": "Team", "is_group": true, "last_message_at": "2026-10-30T21:41:45+05:30"},
+				{"jid": "3@newsletter", "name": "News", "is_group": false, "last_message_at": "2026-10-30T21:41:45+05:30"},
+				{"jid": "status@broadcast", "name": "", "is_group": false, "last_message_at": "2026-10-30T21:41:45+05:30"},
+				{"jid": "919990001111@s.whatsapp.net", "name": "", "is_group": false, "last_message_at": "2026-10-30T20:00:00+05:30"}}})
 		case "/resolve":
 			_ = json.NewEncoder(w).Encode(map[string]any{"matches": []map[string]any{
 				{"jid": "777@lid", "name": "Priya Raman", "match_type": "jid_exact"}}})
@@ -64,7 +67,7 @@ func TestMessagesAreTheOldestAfterTheCursor(t *testing.T) {
 	src := NewWacli(fakeWacli(t, msgs).URL)
 	src.now = func() time.Time { return start.Add(500 * 37 * time.Minute) }
 
-	got, err := src.Messages(context.Background(), "1@g.us", start.Add(-time.Second), 20)
+	got, err := src.Messages(context.Background(), Chat{ID: "1@g.us"}, start.Add(-time.Second), 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +87,7 @@ func TestMessagesAcrossAQuietStretch(t *testing.T) {
 	src := NewWacli(fakeWacli(t, []time.Time{later, later.Add(time.Minute)}).URL)
 	src.now = func() time.Time { return later.Add(time.Hour) }
 
-	got, err := src.Messages(context.Background(), "1@g.us", start, 20)
+	got, err := src.Messages(context.Background(), Chat{ID: "1@g.us"}, start, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,17 +101,26 @@ func TestNoMessagesAfterTheLastOne(t *testing.T) {
 	src := NewWacli(fakeWacli(t, []time.Time{start}).URL)
 	src.now = func() time.Time { return start.Add(time.Hour) }
 
-	got, err := src.Messages(context.Background(), "1@g.us", start, 20)
+	got, err := src.Messages(context.Background(), Chat{ID: "1@g.us"}, start, 20)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("got %v, %v; want nothing", got, err)
 	}
 }
 
+// Channels and status updates are broadcast at the operator, not said to
+// them, so they are not listed; a direct chat with no name is named by its
+// number.
 func TestChatsAndNames(t *testing.T) {
 	src := NewWacli(fakeWacli(t, nil).URL)
 	chats, err := src.Chats(context.Background())
-	if err != nil || len(chats) != 1 || chats[0].Name != "Team" || !chats[0].IsGroup || chats[0].LastMessageAt.IsZero() {
-		t.Fatalf("chats = %+v, %v", chats, err)
+	if err != nil || len(chats) != 2 {
+		t.Fatalf("chats = %+v, %v; want the group and the direct chat", chats, err)
+	}
+	if c := chats[0]; c.Name != "Team" || !c.IsGroup || c.LastMessageAt.IsZero() {
+		t.Errorf("group = %+v", c)
+	}
+	if c := chats[1]; c.Name != "+919990001111" || c.IsGroup {
+		t.Errorf("direct chat = %+v; want it named by its number", c)
 	}
 	if n := src.Name(context.Background(), "777:4@lid"); n != "Priya Raman" {
 		t.Errorf("name = %q", n)

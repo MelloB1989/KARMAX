@@ -1,4 +1,4 @@
-package wamemory
+package chatmemory
 
 import (
 	"context"
@@ -17,15 +17,19 @@ var t0 = time.Date(2026, 10, 29, 21, 0, 0, 0, time.UTC)
 
 type fakeSource struct {
 	chats []Chat
-	msgs  map[string][]Message
+	msgs  map[string][]Message // by account|chat
 	names map[string]string
+	reads map[string]int // Messages calls, by account|chat
 }
+
+func srcKey(c Chat) string { return c.Account + "|" + c.ID }
 
 func (f *fakeSource) Chats(context.Context) ([]Chat, error) { return f.chats, nil }
 
-func (f *fakeSource) Messages(_ context.Context, chat string, after time.Time, limit int) ([]Message, error) {
+func (f *fakeSource) Messages(_ context.Context, c Chat, after time.Time, limit int) ([]Message, error) {
+	f.reads[srcKey(c)]++
 	var out []Message
-	for _, m := range f.msgs[chat] {
+	for _, m := range f.msgs[srcKey(c)] {
 		if m.At.After(after) {
 			out = append(out, m)
 		}
@@ -36,7 +40,7 @@ func (f *fakeSource) Messages(_ context.Context, chat string, after time.Time, l
 	return out, nil
 }
 
-func (f *fakeSource) Name(_ context.Context, jid string) string { return f.names[jid] }
+func (f *fakeSource) Name(_ context.Context, id string) string { return f.names[id] }
 
 type fakeMemory struct {
 	mu        sync.Mutex
@@ -92,7 +96,7 @@ func (r *recorder) ask(_ context.Context, prompt string) (string, error) {
 }
 
 func msg(id, chat, sender, text string, at time.Time, fromMe bool) Message {
-	return Message{ID: id, ChatJID: chat, SenderJID: sender, Content: text, At: at, FromMe: fromMe}
+	return Message{ID: id, Chat: chat, Sender: sender, Content: text, At: at, FromMe: fromMe}
 }
 
 type harness struct {
@@ -107,7 +111,7 @@ type harness struct {
 func newHarness(t *testing.T, cfg Config) *harness {
 	t.Helper()
 	h := &harness{
-		src:  &fakeSource{msgs: map[string][]Message{}, names: map[string]string{}},
+		src:  &fakeSource{msgs: map[string][]Message{}, names: map[string]string{}, reads: map[string]int{}},
 		mem:  &fakeMemory{multi: map[string]bool{}},
 		cur:  memCursors{},
 		ask:  &recorder{},
@@ -116,26 +120,37 @@ func newHarness(t *testing.T, cfg Config) *harness {
 	if cfg.Operator == "" {
 		cfg.Operator = "Quinn"
 	}
-	if cfg.Since.IsZero() {
+	if cfg.Service == "" {
+		cfg.Name, cfg.Service, cfg.Tag = "wa-memory", "WhatsApp", "whatsapp"
+	}
+	if cfg.Since.IsZero() && cfg.FirstLook == nil {
 		cfg.Since = t0.Add(-time.Hour)
 	}
 	if cfg.Location == nil {
 		cfg.Location = time.UTC
 	}
-	sent := func(chat, text string, _ time.Time) bool { return h.sent[chat+"|"+text] }
+	sent := func(c Chat, text string, _ time.Time) bool { return h.sent[c.ID+"|"+text] }
 	h.s = New(cfg, h.src, h.mem, h.cur, sent, h.ask.ask, zap.NewNop())
 	return h
 }
 
 func (h *harness) chat(jid, name string, group bool, msgs ...Message) {
+	h.add(Chat{ID: jid, Name: name, IsGroup: group}, msgs...)
+}
+
+// add lists a chat whose last activity is its last message.
+func (h *harness) add(c Chat, msgs ...Message) {
 	last := t0
 	for _, m := range msgs {
 		if m.At.After(last) {
 			last = m.At
 		}
 	}
-	h.src.chats = append(h.src.chats, Chat{JID: jid, Name: name, IsGroup: group, LastMessageAt: last})
-	h.src.msgs[jid] = msgs
+	if c.LastMessageAt.IsZero() {
+		c.LastMessageAt = last
+	}
+	h.src.chats = append(h.src.chats, c)
+	h.src.msgs[srcKey(c)] = msgs
 }
 
 func TestAFactSaidInAChatIsFiledUnderItsSubject(t *testing.T) {
@@ -246,7 +261,7 @@ func TestEachMessageIsReadOnce(t *testing.T) {
 		t.Fatalf("the same messages were read %d times", len(h.ask.prompts))
 	}
 
-	h.src.msgs["111@s.whatsapp.net"] = append(h.src.msgs["111@s.whatsapp.net"],
+	h.src.msgs["|111@s.whatsapp.net"] = append(h.src.msgs["|111@s.whatsapp.net"],
 		msg("c", "111@s.whatsapp.net", "111@s.whatsapp.net", "third message", t0.Add(2*time.Minute), false))
 	h.src.chats[0].LastMessageAt = t0.Add(2 * time.Minute)
 	if _, err := h.s.Tick(context.Background()); err != nil {
@@ -276,7 +291,7 @@ func TestMessagesAreReadAgainWhenTheModelFails(t *testing.T) {
 }
 
 func TestSpeakersAreNamedForWhoTheyAre(t *testing.T) {
-	h := newHarness(t, Config{OperatorJIDs: []string{"555@lid"}})
+	h := newHarness(t, Config{OperatorIDs: []string{"555@lid"}})
 	h.src.names["777@lid"] = "Priya Raman"
 	h.sent["1@g.us|I'll send the brief tonight"] = true
 	h.chat("1@g.us", "Contoso core", true,
@@ -290,7 +305,7 @@ func TestSpeakersAreNamedForWhoTheyAre(t *testing.T) {
 	}
 	p := h.ask.prompts[0]
 	for _, want := range []string{"Priya Raman: can we move the call?", "Quinn: sure, 9pm works",
-		"KARMAX (on Quinn's account): I'll send the brief tonight", "Quinn: from my other phone", "Contoso core (group)"} {
+		"KARMAX (on Quinn's account): I'll send the brief tonight", "Quinn: from my other phone", "CHAT: Contoso core (a WhatsApp group)"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, p)
 		}
@@ -308,8 +323,8 @@ func TestSpeakersAreNamedForWhoTheyAre(t *testing.T) {
 // it has learned), and the instructions forbid the fact outright.
 func TestTheOperatorKeepsOneNameWhateverTheirAccountIsCalled(t *testing.T) {
 	h := newHarness(t, Config{
-		OperatorJIDs: []string{"555@lid"},
-		IsOperator:   func(jid string) bool { return strings.HasPrefix(jid, "444") },
+		OperatorIDs: []string{"555@lid"},
+		IsOperator:  func(jid string) bool { return strings.HasPrefix(jid, "444") },
 	})
 	h.src.names["444@lid"] = "Omar" // a label on one of the operator's accounts
 	h.chat("1@g.us", "Contoso core", true,
@@ -327,12 +342,10 @@ func TestTheOperatorKeepsOneNameWhateverTheirAccountIsCalled(t *testing.T) {
 	}
 }
 
-func TestDeniedChatsAndChannelsAreSkipped(t *testing.T) {
+func TestDeniedChatsAreSkipped(t *testing.T) {
 	h := newHarness(t, Config{Deny: []string{"Memes", "222@g.us"}})
 	h.chat("1@g.us", "Memes", true, msg("a", "1@g.us", "9@lid", "lol", t0, false))
 	h.chat("222@g.us", "Spam", true, msg("b", "222@g.us", "9@lid", "buy now", t0, false))
-	h.chat("3@newsletter", "News", false, msg("c", "3@newsletter", "3@newsletter", "headline", t0, false))
-	h.chat("status@broadcast", "", false, msg("d", "status@broadcast", "9@lid", "story", t0, false))
 
 	if _, err := h.s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
@@ -421,5 +434,153 @@ func TestTimesAreTheOperatorsOwn(t *testing.T) {
 	}
 	if len(h.mem.writes) != 1 || !h.mem.writes[0].OccurredAt.Equal(time.Date(2026, 10, 30, 0, 0, 0, 0, ist)) {
 		t.Errorf("dated %v, want 2026-10-30 in IST", h.mem.writes)
+	}
+}
+
+// The syncer reads any chat service. The prompt names the service where it
+// matters, never assumes WhatsApp, and what it files is tagged with the
+// service it came from.
+func TestTheServiceIsNamedWhereItMatters(t *testing.T) {
+	h := newHarness(t, Config{Name: "gchat-memory", Service: "Google Chat", Tag: "gchat"})
+	h.add(Chat{ID: "spaces/AAAA", Account: "quinn@example.org", Name: "Launch crew", IsGroup: true, Kind: "space"},
+		msg("spaces/AAAA/messages/1", "spaces/AAAA", "users/7", "the launch moved to 2026-11-12", t0, false))
+	h.src.names["users/7"] = "Dana Reyes"
+	h.ask.replies = []string{`{"ops":[{"op":"add","fact":"The launch moved to 2026-11-12.","subject":"launch","category":"project"}]}`}
+
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := h.ask.prompts[0]
+	for _, want := range []string{"Quinn's Google Chat", "CHAT: Launch crew (a Google Chat space)", "Dana Reyes: the launch moved"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "WhatsApp") {
+		t.Errorf("a Google Chat prompt assumes WhatsApp:\n%s", p)
+	}
+	if len(h.mem.writes) != 1 {
+		t.Fatalf("writes = %d", len(h.mem.writes))
+	}
+	if w := h.mem.writes[0]; w.Role != "gchat" || len(w.Tags) != 2 || w.Tags[1] != "gchat" {
+		t.Errorf("filed with role %q tags %v; want the service's tag", w.Role, w.Tags)
+	}
+}
+
+// One service, several of the operator's logins: the same space id on two
+// accounts is two conversations, each with its own cursor.
+func TestChatsOnDifferentAccountsKeepTheirOwnCursors(t *testing.T) {
+	h := newHarness(t, Config{Service: "Google Chat", Tag: "gchat"})
+	h.add(Chat{ID: "spaces/AAAA", Account: "quinn@example.org", Name: "Ops", IsGroup: true},
+		msg("1", "spaces/AAAA", "users/7", "work account note", t0, false))
+	h.add(Chat{ID: "spaces/AAAA", Account: "quinn@example.net", Name: "Ops", IsGroup: true},
+		msg("1", "spaces/AAAA", "users/8", "side project note", t0, false))
+
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	seen := strings.Join(h.ask.prompts, "\n")
+	if !strings.Contains(seen, "work account note") || !strings.Contains(seen, "side project note") {
+		t.Fatalf("one account's chat hid the other's:\n%s", seen)
+	}
+	if len(h.cur) != 2 {
+		t.Errorf("cursors = %v; want one per account", h.cur)
+	}
+}
+
+// With no fixed start, a chat never read begins a lookback before KARMAX
+// first looked at its account: a restart does not move the start, and an
+// account added later gets its own week.
+func TestAChatWithNoCursorStartsALookbackBeforeItsAccountWasFirstSeen(t *testing.T) {
+	looked := map[string]time.Time{"quinn@example.org": t0}
+	asked := 0
+	h := newHarness(t, Config{Service: "Google Chat", Tag: "gchat", Lookback: 7 * 24 * time.Hour,
+		FirstLook: func(account string) (time.Time, error) { asked++; return looked[account], nil }})
+	h.add(Chat{ID: "spaces/AAAA", Account: "quinn@example.org", Name: "Ops", IsGroup: true},
+		msg("old", "spaces/AAAA", "users/7", "from eight days before", t0.Add(-8*24*time.Hour), false),
+		msg("new", "spaces/AAAA", "users/7", "from six days before", t0.Add(-6*24*time.Hour), false))
+
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := h.ask.prompts[0]
+	if strings.Contains(p, "eight days") || !strings.Contains(p, "six days") {
+		t.Errorf("backfill window wrong:\n%s", p)
+	}
+	if asked == 0 {
+		t.Error("the account's first look was never asked")
+	}
+}
+
+// A message that carries its sender's name is shown by it; the service is
+// asked only when it does not.
+func TestAMessagesOwnSenderNameIsUsed(t *testing.T) {
+	h := newHarness(t, Config{})
+	h.src.names["users/7"] = "a stale label"
+	m := msg("a", "spaces/AAAA", "users/7", "standup moves to 10:30", t0, false)
+	m.SenderName = "Dana Reyes"
+	h.add(Chat{ID: "spaces/AAAA", Name: "Ops", IsGroup: true}, m)
+
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.ask.prompts[0]; !strings.Contains(p, "Dana Reyes: standup moves") {
+		t.Errorf("the message's own sender name was not used:\n%s", p)
+	}
+}
+
+// A direct chat the service gives no name is named for the other person in it.
+func TestAnUnnamedDirectChatIsNamedForTheOtherPerson(t *testing.T) {
+	h := newHarness(t, Config{Service: "Google Chat", Tag: "gchat"})
+	h.src.names["users/7"] = "Dana Reyes"
+	h.add(Chat{ID: "spaces/DDDD", Account: "quinn@example.org", Kind: "direct message"},
+		msg("a", "spaces/DDDD", "users/1", "are we still on for friday?", t0, true),
+		msg("b", "spaces/DDDD", "users/7", "yes, 4pm at the office", t0.Add(time.Minute), false))
+
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := h.ask.prompts[0]
+	for _, want := range []string{"CHAT: Dana Reyes (a Google Chat direct message)", "Quinn: are we still on", "Dana Reyes: yes, 4pm"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+}
+
+// A sender nobody can name is shown by their id: a phone number as one, any
+// other id as itself.
+func TestASenderWithNoNameIsShownByTheirID(t *testing.T) {
+	h := newHarness(t, Config{})
+	h.add(Chat{ID: "spaces/AAAA", Name: "Ops", IsGroup: true},
+		msg("a", "spaces/AAAA", "users/7", "first", t0, false),
+		msg("b", "spaces/AAAA", "919990001111@s.whatsapp.net", "second", t0.Add(time.Minute), false))
+
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := h.ask.prompts[0]
+	if !strings.Contains(p, " users/7: first") || !strings.Contains(p, " +919990001111: second") {
+		t.Errorf("unnamed senders shown wrongly:\n%s", p)
+	}
+}
+
+// A chat whose last activity was not a message — a reaction, someone joining —
+// is read once, not again every tick.
+func TestAChatWhoseLastActivityWasNotAMessageIsNotReadAgain(t *testing.T) {
+	h := newHarness(t, Config{})
+	h.add(Chat{ID: "spaces/AAAA", Name: "Ops", IsGroup: true, LastMessageAt: t0.Add(5 * time.Minute)},
+		msg("a", "spaces/AAAA", "users/7", "the only message", t0, false))
+
+	for i := 0; i < 3; i++ {
+		if _, err := h.s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := h.src.reads["|spaces/AAAA"]; n > 2 {
+		t.Errorf("a quiet chat was read %d times in 3 ticks", n)
+	}
+	if len(h.ask.prompts) != 1 {
+		t.Errorf("prompts = %d, want the one message read once", len(h.ask.prompts))
 	}
 }

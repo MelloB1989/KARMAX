@@ -1,4 +1,4 @@
-package wamemory
+package chatmemory
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 // recallK is how many existing memories one batch is set beside.
 const recallK = 12
 
-const instructions = `You keep %[1]s's long-term memory in step with %[1]s's WhatsApp. Below are new messages from one chat, and what memory already holds that may be related to them.
+const instructions = `You keep %[1]s's long-term memory in step with %[1]s's %[2]s. Below are new messages from one conversation, and what memory already holds that may be related to them.
 
 Decide what in these messages is worth knowing months from now, and what it changes in memory:
 - add: a durable fact memory does not hold yet — a commitment, decision, deadline, plan, a change in a project's status, a fact about a person (role, company, relationship, where they are, what they are working on), or a preference %[1]s stated.
@@ -52,16 +52,16 @@ func (s *Syncer) extract(ctx context.Context, chat Chat, lines []string, at time
 	shown := s.recall(chat, lines)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, instructions, s.cfg.Operator)
-	kind := "direct chat"
-	if chat.IsGroup {
-		kind = "group"
+	service := s.cfg.Service
+	if service == "" {
+		service = "chats"
 	}
-	name := chat.Name
-	if name == "" {
-		name = "+" + bare(chat.JID)
+	fmt.Fprintf(&b, instructions, s.cfg.Operator, service)
+	if chat.Name != "" {
+		fmt.Fprintf(&b, "\nCHAT: %s (%s)\n\nMEMORY:\n", chat.Name, s.where(chat))
+	} else {
+		fmt.Fprintf(&b, "\nCHAT: %s\n\nMEMORY:\n", s.where(chat))
 	}
-	fmt.Fprintf(&b, "\nCHAT: %s (%s)\n\nMEMORY:\n", name, kind)
 	if len(shown) == 0 {
 		b.WriteString("(nothing related)\n")
 	}
@@ -75,13 +75,13 @@ func (s *Syncer) extract(ctx context.Context, chat Chat, lines []string, at time
 
 	reply, err := s.ask(ctx, b.String())
 	if err != nil {
-		return fmt.Errorf("wa-memory: extract %s: %w", chat.JID, err)
+		return fmt.Errorf("%s: extract %s: %w", s.cfg.Name, key(chat), err)
 	}
 	ops, err := parseOps(reply)
 	if err != nil {
 		// A reply that is not the JSON asked for changes nothing, and asking
 		// again would most likely get the same reply.
-		s.log.Warn("wa-memory: unreadable extraction; batch skipped", zapChat(chat), zapErr(err))
+		s.log.Warn(s.cfg.Name+": unreadable extraction; batch skipped", zapChat(chat), zapErr(err))
 		return nil
 	}
 	s.apply(ctx, ops, shown, at, res)
@@ -97,7 +97,7 @@ func (s *Syncer) recall(chat Chat, lines []string) []memory.SearchResult {
 	}
 	hits, err := s.mem.SearchWith(q, recallK, memory.SearchOpts{})
 	if err != nil {
-		s.log.Warn("wa-memory: recall failed; extracting without it", zapChat(chat), zapErr(err))
+		s.log.Warn(s.cfg.Name+": recall failed; extracting without it", zapChat(chat), zapErr(err))
 		return nil
 	}
 	seen := map[string]bool{}
@@ -110,6 +110,23 @@ func (s *Syncer) recall(chat Chat, lines []string) []memory.SearchResult {
 		out = append(out, h)
 	}
 	return out
+}
+
+// where is what kind of conversation a chat is, on which service: "a
+// WhatsApp group", "a Google Chat space".
+func (s *Syncer) where(c Chat) string {
+	kind := c.Kind
+	if kind == "" {
+		kind = "direct chat"
+		if c.IsGroup {
+			kind = "group"
+		}
+	}
+	what := strings.TrimSpace(s.cfg.Service + " " + kind)
+	if strings.ContainsRune("AEIOUaeiou", rune(what[0])) {
+		return "an " + what
+	}
+	return "a " + what
 }
 
 // parseOps reads the model's JSON, tolerating a code fence or prose around it.

@@ -90,6 +90,22 @@ func TestAnEventIsFiledUnderWhatItIsAbout(t *testing.T) {
 		{"a repo", Event{Source: "github", Account: "octo", Data: map[string]any{"repo": "acme/api"}}, "acme/api"},
 		{"a person", Event{Source: "gchat", Account: "me@example.test", Data: map[string]any{"from": "Dana Reyes"}}, "Dana Reyes"},
 		{"nothing to go on", Event{Source: "aws", Account: "prod"}, "aws prod"},
+		// A person's or place's name wins over the id it stands for, for any
+		// source: memory files one document per subject, and "users/1234…"
+		// is nobody's.
+		{"a Chat sender by name", Event{Source: "gchat", Account: "me@example.test", Data: map[string]any{
+			"sender": "users/104729384756102938475", "sender_name": "Mateo Ruiz",
+			"space": "spaces/AAAAMpdlehY", "space_name": "Launch crew"}}, "Mateo Ruiz"},
+		{"a Chat space by name when the sender has none", Event{Source: "gchat", Account: "me@example.test", Data: map[string]any{
+			"sender": "users/104729384756102938475", "space": "spaces/AAAAMpdlehY", "space_name": "Launch crew"}}, "Launch crew"},
+		{"ids alone are no subject", Event{Source: "gchat", Account: "me@example.test", Data: map[string]any{
+			"sender": "users/104729384756102938475", "space": "spaces/AAAAMpdlehY"}}, "gchat me@example.test"},
+		{"a Slack channel by name", Event{Source: "slack", Account: "acme", Data: map[string]any{
+			"channel": "C0123ABCD45", "channel_name": "launch-planning"}}, "launch-planning"},
+		{"a numeric id", Event{Source: "x", Account: "y", Data: map[string]any{"person": "1234567890", "channel": "ops"}}, "ops"},
+		{"a repository is not an id", Event{Source: "github", Account: "octo", Data: map[string]any{"repo": "ops/service2"}}, "ops/service2"},
+		{"a display name with a digit is a name", Event{Source: "gchat", Account: "me@example.test", Data: map[string]any{
+			"sender": "users/1047", "sender_name": "Team 42"}}, "Team 42"},
 	}
 	for _, c := range cases {
 		if got := c.e.Subject(); got != c.want {

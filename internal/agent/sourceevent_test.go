@@ -75,6 +75,30 @@ func TestABacklogItemIsRenderedAsContext(t *testing.T) {
 	}
 }
 
+// A message from a conversation a memory loop already reads is acted on, not
+// filed again: the loop files what is durable in it, and a second copy from
+// the turn would be a duplicate fact.
+func TestAMemorySyncedEventIsNotFiledAgain(t *testing.T) {
+	e := sources.Event{Source: "gchat", Account: "rowan@example.test", Type: "dm",
+		Title: "Chat DM from Mateo: can you send the deck?", At: time.Now()}
+	plain := buildPromptFromEvent(e.BusEvent("nexus"), nil)
+	if !strings.Contains(plain, "File what is durable") {
+		t.Fatalf("an ordinary event lost its filing instruction:\n%s", plain)
+	}
+
+	e.MemorySynced = true
+	p := buildPromptFromEvent(e.BusEvent("nexus"), nil)
+	if strings.Contains(p, "File what is durable") {
+		t.Errorf("a memory-synced event was told to file what it says:\n%s", p)
+	}
+	if !strings.Contains(p, "Do not file what this message says") {
+		t.Errorf("the turn was not told the conversation is already read into memory:\n%s", p)
+	}
+	if !strings.Contains(p, "Decide what it needs and do it") {
+		t.Errorf("a memory-synced event is still to be acted on:\n%s", p)
+	}
+}
+
 // An LLM memory retrieval on every account event would spend a model turn per
 // notification; the event's subject is searched directly instead.
 func TestASourceEventDoesNotSpendAModelOnRetrieval(t *testing.T) {

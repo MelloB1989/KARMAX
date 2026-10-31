@@ -27,6 +27,10 @@ import (
 // screening in series behind every other; here they are concurrent across
 // conversations and ordered within one.
 func (rt *KarmaxRuntime) screenEvent(ctx context.Context, evt bus.Event) (bus.Event, bool) {
+	// Every event turn passes here, screened or not, so this is where an
+	// event from a conversation a memory loop reads learns it: the turn acts
+	// on it and leaves filing what it says to the loop.
+	evt = rt.memorySynced.Mark(evt)
 	if !rt.reflex.Available() {
 		return evt, true
 	}
@@ -50,6 +54,14 @@ func (rt *KarmaxRuntime) screenEvent(ctx context.Context, evt bus.Event) (bus.Ev
 		return evt, false
 
 	case reflex.ActionRemember:
+		if src, ok := sources.FromBusEvent(evt); ok && src.MemorySynced {
+			// Its conversation is read into memory whole by a memory loop,
+			// which files what is durable in it; a fact filed here too is the
+			// same fact twice. Nothing else is asked of it, so it ends here.
+			rt.log.Debug("reflex left a remembered event to its memory loop",
+				zap.String("source", src.Source), zap.String("event", evt.ID))
+			return evt, false
+		}
 		rt.rememberEvent(evt, v)
 		return evt, false
 	}
