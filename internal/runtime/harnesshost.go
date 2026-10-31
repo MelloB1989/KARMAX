@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -618,10 +619,23 @@ func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (age
 			return agent.HarnessTurn{Available: false, Reason: open.Reason}, nil
 		}
 		// What the turn did before it failed travels with the failure: the
-		// brain must not hand a turn that already acted to its fallback.
-		return agent.HarnessTurn{Available: false, Reason: err.Error(), ToolCalls: calls}, err
+		// brain must not hand a turn that already acted to its fallback. A
+		// turn that was written and ran out of time says so: for a request,
+		// that is work longer than a turn, which a task continues.
+		return agent.HarnessTurn{Available: false, Reason: err.Error(), ToolCalls: calls,
+			TimedOut: turnRanOutOfTime(err)}, err
 	}
 	return agent.HarnessTurn{Available: true, Text: turn.Text, ToolCalls: calls}, nil
+}
+
+// turnRanOutOfTime reports whether a harness call failed because a written
+// turn's time ran out — its kind's timeout or its caller's deadline — rather
+// than because it never ran (busy, not sent) or broke.
+func turnRanOutOfTime(err error) bool {
+	if err == nil || errors.Is(err, harness.ErrSessionBusy) || errors.Is(err, harness.ErrTurnNotSent) {
+		return false
+	}
+	return errors.Is(err, harness.ErrTurnTimedOut) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // TurnBudget is the longest a turn of kind can take, for the brain to bound

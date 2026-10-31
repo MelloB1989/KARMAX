@@ -26,6 +26,9 @@ type HarnessTurn struct {
 	ToolCalls []HarnessToolCall
 	Available bool   // false when the breaker is open
 	Reason    string // why, when it is not
+	// TimedOut: the turn was written and its time ran out before it ended —
+	// the work is longer than a turn, not broken.
+	TimedOut bool
 }
 
 // HarnessToolCall is a tool the harness invoked during a turn.
@@ -120,9 +123,16 @@ func (h *harnessBrain) ProcessMessageWithheld(ctx context.Context, userMessage s
 		// ran, messages may have gone. The fallback has none of that
 		// conversation, so handing it the same message is how one "go ahead"
 		// gets done twice. What it did goes back with the failure, so the
-		// operator can be told it rather than asked to send it again.
+		// operator can be told it rather than asked to send it again — or,
+		// for a request, so the work continues as a task (ErrUnfinished).
 		if n := len(turn.ToolCalls); n > 0 {
-			return "", harnessRecords(turn.ToolCalls), fmt.Errorf("harness turn failed after %d tool call(s), so it is not run again on the fallback: %w", n, err)
+			return "", harnessRecords(turn.ToolCalls), fmt.Errorf("harness turn failed after %d tool call(s), so it is not run again on the fallback: %w", n, &unfinishedError{err})
+		}
+		// A request whose turn simply ran out of time is longer than a turn.
+		// A lighter, shorter model will not do in less time what this one
+		// could not; the request continues as a task instead.
+		if turn.TimedOut && RequestFrom(ctx) != nil {
+			return "", nil, &unfinishedError{err}
 		}
 		// Nothing left to answer with: the fallback would only start a
 		// process to fail in the same instant, and its "deadline exceeded"
@@ -141,6 +151,13 @@ func (h *harnessBrain) ProcessMessageWithheld(ctx context.Context, userMessage s
 	// like an agent that promised things and did nothing.
 	return turn.Text, harnessRecords(turn.ToolCalls), nil
 }
+
+// unfinishedError is a harness failure that is ErrUnfinished: it reads as
+// the failure itself, and is both.
+type unfinishedError struct{ err error }
+
+func (e *unfinishedError) Error() string   { return e.err.Error() }
+func (e *unfinishedError) Unwrap() []error { return []error{e.err, ErrUnfinished} }
 
 // harnessRecords maps a harness turn's tool calls to the records the rest of
 // the agent reads.

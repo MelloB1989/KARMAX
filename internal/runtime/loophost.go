@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
@@ -552,6 +554,10 @@ type loopKit struct {
 	// executionID identifies this piece of work across every attempt at it, so
 	// checkpoints from a failed attempt are visible to the next one.
 	executionID string
+	// run is what this run has settled about the request behind it: once a
+	// task owns it, or the full agent gave up on it, nothing else in the run
+	// answers it again (loopask.go). Nil for a kit outside a run.
+	run *loopRunState
 }
 
 // var _ loopkit.Kit = (*loopKit)(nil) catches a missing/mismatched method at
@@ -578,7 +584,24 @@ func (k *loopKit) AskWithTools(ctx context.Context, prompt string, lent []tools.
 	if !ok || ag == nil {
 		return "", fmt.Errorf("agent %q unavailable", k.agentID)
 	}
+	// A workflow's ask is a request to the full agent: journalled before it
+	// starts, and continued as a task — answering where its message came
+	// from — when the turn cannot finish it (loopask.go).
+	req := k.askRequest(prompt)
+	if req != nil {
+		ctx = agent.WithRequest(ctx, req)
+		lent = k.withTaskTools(ag, lent)
+	}
 	out, calls, err := ag.ChatDetailed(ctx, prompt, lent)
+	k.noteOwner(req)
+	if err != nil && req != nil && errors.Is(err, agent.ErrUnfinished) {
+		// The agent worked on it and could not finish, and no task could take
+		// it over. A lighter, shorter model will not do what it could not, so
+		// nothing else in this run tries; the operator is told plainly.
+		k.run.gaveUp(err.Error())
+		k.rt.tellRequestFailed(req, err)
+		return "", err
+	}
 	if err == nil {
 		// Work the turn STARTED but did not finish — a background delegation —
 		// completes as an event long after this returns. Recording the job now
@@ -650,6 +673,9 @@ func (k *loopKit) HarnessWith(ctx context.Context, spec loopkit.HarnessSpec) (lo
 }
 
 func (k *loopKit) harnessWith(ctx context.Context, spec loopkit.HarnessSpec) (loopkit.HarnessResult, error) {
+	if err := k.run.refusal("harness"); err != nil {
+		return loopkit.HarnessResult{}, err
+	}
 	tool := &builtin.ClaudeCodeTool{Store: k.rt.store, AgentID: k.agentID, Namespace: k.namespace,
 		MemoryMgr: k.mem, Browser: browser.Shared(k.rt.cfg.Karmax.DataDir),
 		DataDir: k.rt.cfg.Karmax.DataDir,
@@ -913,6 +939,11 @@ func (a *loopToolAdapter) Execute(ctx context.Context, input map[string]any) (to
 // should try before escalating to the Claude Code harness. Any tools the loop
 // passes live only for this call.
 func (k *loopKit) Gateway(ctx context.Context, prompt string, lent ...loopkit.Tool) (string, error) {
+	// The run's request already belongs to a task, or the full agent gave up
+	// on it: a lighter model answering it again is a second, worse owner.
+	if err := k.run.refusal("gateway"); err != nil {
+		return "", err
+	}
 	if len(k.rt.cfg.Agents) == 0 {
 		return "", fmt.Errorf("no agent configured")
 	}

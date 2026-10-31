@@ -3,12 +3,15 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"github.com/MelloB1989/karmax/internal/comms"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -58,13 +61,13 @@ func (rt *KarmaxRuntime) startTaskRunner(ctx context.Context) {
 		rt.log.Info("task runner: not started — the harness is the only engine that can work a task")
 		return
 	}
+	kick := rt.taskKicks()
 	go func() {
-		// Anything left "working" belongs to a process that is gone.
-		if n, err := rt.store.ReleaseStuckTasks(time.Now().Add(-taskStuckAfter)); err != nil {
-			rt.log.Warn("could not release tasks the daemon died during", zap.Error(err))
-		} else if n > 0 {
-			rt.log.Info("released tasks the daemon died during", zap.Int64("count", n))
-		}
+		rt.releaseInterruptedTasks()
+		// Results recorded as owed before the daemon went down are delivered
+		// first; then what was due runs now, not a tick later.
+		rt.deliverOwedResults()
+		rt.runDueTasks(ctx)
 
 		t := time.NewTicker(90 * time.Second)
 		defer t.Stop()
@@ -74,11 +77,50 @@ func (rt *KarmaxRuntime) startTaskRunner(ctx context.Context) {
 				return
 			case <-t.C:
 				rt.runDueTasks(ctx)
+			case <-kick:
+				// A request just became a task: its requester was told "on it",
+				// and the work should not wait for the next tick to start.
+				rt.runDueTasks(ctx)
 			}
 		}
 	}()
 }
 
+// releaseInterruptedTasks makes every task this process did not claim due
+// again. At start, anything marked working belongs to a process that is gone
+// — however recently its round began — and its session resumes from its own
+// transcript on the next round.
+func (rt *KarmaxRuntime) releaseInterruptedTasks() {
+	cutoff := rt.startedAt
+	if cutoff.IsZero() {
+		cutoff = time.Now().Add(-taskStuckAfter)
+	}
+	if n, err := rt.store.ReleaseStuckTasks(cutoff); err != nil {
+		rt.log.Warn("could not release tasks the daemon died during", zap.Error(err))
+	} else if n > 0 {
+		rt.log.Info("released tasks the daemon died during", zap.Int64("count", n))
+	}
+}
+
+// taskKicks is the channel that wakes the runner early.
+func (rt *KarmaxRuntime) taskKicks() chan struct{} {
+	rt.taskKickOnce.Do(func() { rt.taskKick = make(chan struct{}, 1) })
+	return rt.taskKick
+}
+
+// kickTasks wakes the runner now. Never blocks: a wake already pending
+// covers this one.
+func (rt *KarmaxRuntime) kickTasks() {
+	select {
+	case rt.taskKicks() <- struct{}{}:
+	default:
+	}
+}
+
+// runDueTasks starts a round for each task that is due, up to tasksPerRound
+// at once. Rounds run beside each other rather than in a line: a round can
+// take a quarter of an hour, and a request that just became a task — whose
+// requester was told "on it" — must not wait for someone else's round to end.
 func (rt *KarmaxRuntime) runDueTasks(ctx context.Context) {
 	due, err := rt.store.DueTasks(time.Now(), tasksPerRound)
 	if err != nil {
@@ -91,8 +133,42 @@ func (rt *KarmaxRuntime) runDueTasks(ctx context.Context) {
 			return
 		default:
 		}
-		rt.runTaskRound(ctx, task)
+		if !rt.taskRounds.start(task.ID) {
+			continue // already in a round, or every slot is busy
+		}
+		go func(task store.Task) {
+			defer rt.taskRounds.done(task.ID)
+			rt.runTaskRound(ctx, task)
+			// A slot came free: whatever is due next need not wait a tick.
+			rt.kickTasks()
+		}(task)
 	}
+}
+
+// taskRounds are the rounds in flight, at most tasksPerRound of them, and
+// never two of one task.
+type taskRounds struct {
+	mu      sync.Mutex
+	running map[string]bool
+}
+
+func (r *taskRounds) start(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running == nil {
+		r.running = map[string]bool{}
+	}
+	if r.running[id] || len(r.running) >= tasksPerRound {
+		return false
+	}
+	r.running[id] = true
+	return true
+}
+
+func (r *taskRounds) done(id string) {
+	r.mu.Lock()
+	delete(r.running, id)
+	r.mu.Unlock()
 }
 
 // runTaskRound gives one task one turn of attention.
@@ -101,13 +177,18 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 		rt.log.Error("giving up on a task that will not finish",
 			zap.String("task", task.ID), zap.String("title", task.Title),
 			zap.Int("rounds", task.Attempts))
-		_ = rt.store.UpdateTask(task.ID, store.TaskUpdate{
+		text := fmt.Sprintf("I could not finish this after %d rounds and have stopped: %s",
+			task.Attempts, task.Title)
+		update := store.TaskUpdate{
 			Status:    store.TaskFailed,
 			LastError: fmt.Sprintf("no progress after %d rounds", task.Attempts),
-		})
-		rt.reportTask(task, store.TaskFailed,
-			fmt.Sprintf("I could not finish this after %d rounds and have stopped: %s",
-				task.Attempts, task.Title))
+		}
+		if task.RequestID != "" {
+			rt.completeRequestRound(task, update, store.TaskFailed, text+"\n\n"+firstLines(task.Progress, 6), nil)
+			return
+		}
+		_ = rt.store.UpdateTask(task.ID, update)
+		rt.reportTask(task, store.TaskFailed, text)
 		return
 	}
 
@@ -128,6 +209,11 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 		taskPrompt(task), harness.Options{
 			Workdir:      task.Workdir,
 			Instructions: taskBrief(task, rt.policy),
+			// A round whose time ran out may still finish. What it did then is
+			// where the next round starts, not lost.
+			OnLate: func(t harness.Turn) {
+				rt.appendLate(task.ID, "The last round finished after its time ran out", agentTurn(t))
+			},
 		})
 	if err != nil {
 		// Quota, a dead process, a timeout. None of them mean the task is over
@@ -138,13 +224,28 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 		_ = rt.store.UpdateTask(task.ID, store.TaskUpdate{
 			Status: store.TaskWorking, LastError: err.Error(), NextActionAt: &retryAt,
 		})
+		// Someone is waiting on a request task. When rounds keep failing,
+		// they hear it once — what failed and what happens next — rather
+		// than silence until it succeeds or is given up on hours later.
+		if task.RequestID != "" && task.LastError != "" {
+			rt.tellStalled(task, err)
+		}
 		return
 	}
 
 	status, report, progress := parseTaskTurn(turn.Text)
+	files := parseTaskFiles(turn.Text)
 	rt.log.Info("task round finished",
 		zap.String("task", task.ID), zap.String("status", status),
 		zap.Int("round", task.Attempts+1), zap.Bool("reporting", report != ""))
+
+	// What was added to the task while the round ran — the rest of the turn
+	// it was taken over from, arriving late — is kept for the next round.
+	if cur, found, _ := rt.store.GetTask(task.ID); found {
+		if extra, ok := strings.CutPrefix(cur.Progress, task.Progress); ok && strings.TrimSpace(extra) != "" {
+			progress = strings.TrimSpace(progress + "\n\n" + strings.TrimSpace(extra))
+		}
+	}
 
 	update := store.TaskUpdate{Status: status, Progress: progress}
 	if status == store.TaskWorking {
@@ -155,10 +256,6 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 	}
 	// Blocked, done and failed all stop the clock. Blocked comes back when the
 	// operator answers, which arrives as an ordinary message.
-
-	if err := rt.store.UpdateTask(task.ID, update); err != nil {
-		rt.log.Warn("could not record a task round", zap.String("task", task.ID), zap.Error(err))
-	}
 
 	// Every round offers its outcome; whether the operator hears it is Jev's call.
 	text := report
@@ -172,7 +269,168 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 			text = clip(strings.TrimSpace(progress), 500)
 		}
 	}
+
+	// A request's outcome is owed to whoever asked, not offered: it is
+	// recorded with the round and delivered once (completeRequestRound).
+	if task.RequestID != "" && status != store.TaskWorking {
+		rt.completeRequestRound(task, update, status, text, files)
+		return
+	}
+
+	if err := rt.store.UpdateTask(task.ID, update); err != nil {
+		rt.log.Warn("could not record a task round", zap.String("task", task.ID), zap.Error(err))
+	}
 	rt.reportTask(task, status, text)
+}
+
+// completeRequestRound records a request task's finished, failed or blocked
+// round together with what it owes the requester, then delivers it. The
+// result and every file are written as owed in the same transaction as the
+// round, so a crash anywhere after this point is finished by
+// deliverOwedResults on the next start — and the ledger keeps a result that
+// already went out from going out again.
+func (rt *KarmaxRuntime) completeRequestRound(task store.Task, update store.TaskUpdate, status, text string, files []string) {
+	round := task.Attempts + 1
+	if status == store.TaskBlocked {
+		text = "I need something from you to carry on with \"" + task.Title + "\":\n\n" + text
+	}
+	owed := []store.Delivery{{Key: fmt.Sprintf("task:%s:%d:00", task.ID, round),
+		ChannelID: task.ChannelID, Target: task.Target, Content: strings.TrimSpace(text)}}
+	for i, path := range files {
+		owed = append(owed, store.Delivery{Key: fmt.Sprintf("task:%s:%d:%02d", task.ID, round, i+1),
+			ChannelID: task.ChannelID, Target: task.Target, Content: comms.FileMessage(path), FilePath: path})
+	}
+	update.Reported = strings.TrimSpace(text)
+	if err := rt.store.CompleteTaskRound(task.ID, update, owed); err != nil {
+		// Not recorded, so not delivered either: the task is still claimed, and
+		// is picked up again when its claim lapses.
+		rt.log.Error("could not record a request task's outcome", zap.String("task", task.ID), zap.Error(err))
+		return
+	}
+	rt.log.Info("a request task finished a round its requester is owed",
+		zap.String("task", task.ID), zap.String("request", task.RequestID), zap.String("status", status),
+		zap.Int("files", len(files)))
+	rt.taskHooks.markReported(task.ID)
+	rt.deliverOwedResults()
+}
+
+// tellStalled tells a request task's requester, once, that its rounds are
+// failing and it is still being retried.
+func (rt *KarmaxRuntime) tellStalled(task store.Task, cause error) {
+	text := fmt.Sprintf("Still on \"%s\", but the last attempts failed (%s). I'm retrying and will send the result "+
+		"when it's done, or tell you if I have to stop.", clip(task.Title, 120), clip(rootCauseText(cause), 200))
+	d := store.Delivery{Key: "task:" + task.ID + ":stalled", ChannelID: task.ChannelID, Target: task.Target, Content: text}
+	if task.ChannelID == "" || task.Target == "" {
+		rt.notifyOnce(d.Key, task.AgentID, "alert", task.Title, text)
+		return
+	}
+	if _, err := rt.deliverOnce(d, comms.ProducerStatus); err != nil {
+		rt.log.Warn("could not tell a requester their task is stalled", zap.String("task", task.ID), zap.Error(err))
+	}
+}
+
+// deliverOwedResults sends every task result recorded as owed and not yet
+// delivered: just after a round, and at start for what a crash cut off.
+func (rt *KarmaxRuntime) deliverOwedResults() {
+	rt.owedMu.Lock()
+	defer rt.owedMu.Unlock()
+	owed, err := rt.store.OwedDeliveries("task:")
+	if err != nil {
+		rt.log.Warn("could not read the results owed to requesters", zap.Error(err))
+		return
+	}
+	for _, d := range owed {
+		if err := rt.deliverOwed(d); err != nil {
+			rt.log.Warn("could not deliver a task's result; it stays owed", zap.String("key", d.Key), zap.Error(err))
+		}
+	}
+}
+
+// deliverOwed sends one owed result where its request came from: the chat
+// it was asked in, or the operator in the app.
+func (rt *KarmaxRuntime) deliverOwed(d store.Delivery) error {
+	if d.ChannelID == "" || d.Target == "" {
+		title := "Task update"
+		if parts := strings.SplitN(d.Key, ":", 3); len(parts) >= 2 {
+			if t, found, _ := rt.store.GetTask(parts[1]); found {
+				title = t.Title
+			}
+		}
+		body := d.Content
+		if d.FilePath != "" {
+			body = "File ready: " + d.FilePath
+		}
+		_, err := rt.deliverWith(d, func() error {
+			builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "info", title, body)
+			return nil
+		})
+		return err
+	}
+	if d.FilePath != "" {
+		_, err := rt.deliverWith(d, func() error { return rt.sendFileTo(d.ChannelID, d.Target, d.FilePath) })
+		return err
+	}
+	_, err := rt.deliverWith(d, func() error { return rt.sendFrom(comms.ProducerLoop, d.ChannelID, d.Target, d.Content) })
+	return err
+}
+
+// appendLate gives a task what a turn of its, or the turn it was taken over
+// from, said and did after its caller stopped waiting.
+func (rt *KarmaxRuntime) appendLate(taskID, heading string, t agent.HarnessTurn) {
+	text := strings.TrimSpace(t.Text)
+	var did []string
+	for _, tc := range t.ToolCalls {
+		if !tc.Failed {
+			did = append(did, tc.Name)
+		}
+	}
+	if text == "" && len(did) == 0 {
+		return
+	}
+	note := "\n\n## " + heading + "\n\n"
+	if text != "" {
+		note += clip(text, 2000) + "\n"
+	}
+	if len(did) > 0 {
+		note += "It ran: " + strings.Join(did, ", ") + "\n"
+	}
+	note += "Check whether that already did the work before doing it again."
+	if err := rt.appendTaskProgress(taskID, note); err != nil {
+		rt.log.Warn("could not give a task what a late turn did", zap.String("task", taskID), zap.Error(err))
+		return
+	}
+	rt.log.Info("a late turn's result went to its task", zap.String("task", taskID), zap.Int("len", len(text)))
+}
+
+// agentTurn is a harness turn in the agent's terms.
+func agentTurn(t harness.Turn) agent.HarnessTurn {
+	calls := make([]agent.HarnessToolCall, 0, len(t.ToolCalls))
+	for _, tc := range t.ToolCalls {
+		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input, Failed: tc.Failed})
+	}
+	return agent.HarnessTurn{Available: true, Text: t.Text, ToolCalls: calls}
+}
+
+// fileLine is how a round names a file its requester should receive.
+var fileLine = regexp.MustCompile(`(?im)^\s*FILE:\s*(\S.*?)\s*$`)
+
+// parseTaskFiles reads the files a round names for delivery: absolute paths
+// to files that exist.
+func parseTaskFiles(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range fileLine.FindAllStringSubmatch(text, -1) {
+		p := strings.Trim(strings.TrimSpace(m[1]), "`'\"")
+		if !filepath.IsAbs(p) || seen[p] {
+			continue
+		}
+		if st, err := os.Stat(p); err != nil || st.IsDir() {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // reportTask tells the operator, on the channel the task came from, if Jev
@@ -262,8 +520,9 @@ func (rt *KarmaxRuntime) sendTaskText(channelID, target, text string) error {
 
 // taskHooks are the runner's seams: the Jev call and the channel send.
 type taskHooks struct {
-	decide func(ctx context.Context, state any, qs loopkit.Questions) (*loopkit.Decision, error)
-	send   func(channelID, target, text string) error
+	decide   func(ctx context.Context, state any, qs loopkit.Questions) (*loopkit.Decision, error)
+	send     func(channelID, target, text string) error
+	sendFile func(channelID, target, path string) error
 
 	mu       sync.Mutex
 	lastSent map[string]time.Time
@@ -308,6 +567,13 @@ func taskPrompt(t store.Task) string {
 		"Use `done` only when the whole task is finished and you have verified it. Use `blocked` " +
 		"only when you genuinely cannot proceed without an answer from the operator, and say what " +
 		"you need in REPORT. Anything else is `working`.")
+	if t.RequestID != "" {
+		b.WriteString("\n\nSomebody is waiting for this (see your brief). When you end the task — done, " +
+			"failed or blocked — your REPORT is sent to them exactly as you write it, so make it the " +
+			"answer itself, not a note about it. Name each file they should receive on its own line, " +
+			"`FILE: /absolute/path`, and KARMAX sends it with the REPORT. Do not send the result to them " +
+			"yourself — not with wacli, comms.send or anything else — or they get it twice.")
+	}
 	return b.String()
 }
 
@@ -317,6 +583,42 @@ func taskPrompt(t store.Task) string {
 // particular job accumulates in that file instead of being re-stated every
 // round.
 func taskBrief(t store.Task, p policy.Policy) string {
+	return taskBriefBase(t, p) + requestBrief(t)
+}
+
+// requestBrief is what a task that continues a request adds to its brief:
+// who is waiting and what the conversation knew when it was handed over.
+func requestBrief(t store.Task) string {
+	if t.RequestID == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`
+## Somebody is waiting for this
+
+This task continues a request that could not be finished in the turn that
+received it. The person who asked was told it is underway, and is waiting for
+the result. KARMAX delivers it to them — your final REPORT, and every file you
+name with a FILE: line — exactly once, even across restarts. So do not send the
+result to them yourself, whatever the original request says about replying:
+that is what KARMAX's delivery does. Messages to other people that are part of
+the work itself are yours to send as usual.
+
+Other passes over the same chat are told this task owns the request, so you
+are its only owner: nothing else will answer it, and you must not leave it
+unanswered. If you cannot finish, end STATUS: failed (or blocked, with what you
+need) and say plainly in REPORT what was done and what was not.
+`)
+	if ctx := strings.TrimSpace(t.Context); ctx != "" {
+		b.WriteString("\n## What the conversation knew when it was handed over\n\n")
+		b.WriteString(ctx)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// taskBriefBase is the brief every task gets.
+func taskBriefBase(t store.Task, p policy.Policy) string {
 	return `# A task you own
 
 The operator handed you this and expects it finished. You are not advising them

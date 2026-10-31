@@ -36,6 +36,13 @@ const (
 	TaskCancelled = "cancelled"
 )
 
+// TaskDelegated is a background Claude Code delegation in flight. Its process
+// dies with the daemon, so the row is what a restart resumes it from: the
+// session id (SessionKey) it runs under, its input (Progress, as JSON), and
+// whose request it serves (RequestID, ChannelID, Target). Owned by the
+// delegation, never by the due-tasks poller.
+const TaskDelegated = "delegated"
+
 // Task is one piece of work owned until it is finished.
 type Task struct {
 	ID, AgentID, Title, Goal, Status string
@@ -45,17 +52,26 @@ type Task struct {
 	Attempts                         int
 	NextActionAt                     *time.Time
 	CreatedAt, UpdatedAt             time.Time
+	// RequestID is the request this task continues — the turn journal's
+	// event_id for it — when it was taken over from a turn; empty for a
+	// task created on its own. Its result is owed to that request's origin
+	// (ChannelID and Target, or the app when they are empty).
+	RequestID string
+	// Context is the conversation the work needs: what the turn that took
+	// the request knew. Written into the task's brief once.
+	Context string
 }
 
 const taskColumns = `id, agent_id, title, goal, status, session_key, workdir, channel_id, target,
-	progress, reported, last_error, attempts, next_action_at, created_at, updated_at`
+	progress, reported, last_error, attempts, next_action_at, created_at, updated_at,
+	request_id, context`
 
 func scanTask(row rowScanner) (Task, error) {
 	var t Task
 	var next sql.NullTime
 	if err := row.Scan(&t.ID, &t.AgentID, &t.Title, &t.Goal, &t.Status, &t.SessionKey,
 		&t.Workdir, &t.ChannelID, &t.Target, &t.Progress, &t.Reported, &t.LastError,
-		&t.Attempts, &next, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.Attempts, &next, &t.CreatedAt, &t.UpdatedAt, &t.RequestID, &t.Context); err != nil {
 		return Task{}, err
 	}
 	if next.Valid {
@@ -68,6 +84,17 @@ func scanTask(row rowScanner) (Task, error) {
 // CreateTask records work to be owned. Due immediately unless told otherwise,
 // because the common case is the operator asking for something now.
 func (s *Store) CreateTask(t Task) (Task, error) {
+	t = prepareTask(t)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.exec(insertTaskSQL, taskArgs(t)...); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// prepareTask fills what a new task is given by default.
+func prepareTask(t Task) Task {
 	if t.ID == "" {
 		t.ID = uuid.New().String()
 	}
@@ -82,19 +109,17 @@ func (s *Store) CreateTask(t Task) (Task, error) {
 	}
 	now := time.Now()
 	t.CreatedAt, t.UpdatedAt = now, now
+	return t
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.exec(`
-INSERT INTO tasks (`+taskColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.AgentID, t.Title, t.Goal, t.Status, t.SessionKey, t.Workdir,
+const insertTaskSQL = `
+INSERT INTO tasks (` + taskColumns + `)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+func taskArgs(t Task) []any {
+	return []any{t.ID, t.AgentID, t.Title, t.Goal, t.Status, t.SessionKey, t.Workdir,
 		t.ChannelID, t.Target, t.Progress, t.Reported, t.LastError,
-		t.Attempts, t.NextActionAt, t.CreatedAt, t.UpdatedAt)
-	if err != nil {
-		return Task{}, err
-	}
-	return t, nil
+		t.Attempts, t.NextActionAt, t.CreatedAt, t.UpdatedAt, t.RequestID, t.Context}
 }
 
 // DueTasks returns work that should be picked up now, oldest first.
@@ -211,7 +236,13 @@ type TaskUpdate struct {
 func (s *Store) UpdateTask(id string, u TaskUpdate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	q, args := updateTaskSQL(id, u)
+	_, err := s.exec(q, args...)
+	return err
+}
 
+// updateTaskSQL is UpdateTask's statement.
+func updateTaskSQL(id string, u TaskUpdate) (string, []any) {
 	sets := []string{"updated_at = ?"}
 	args := []any{time.Now()}
 	if u.Status != "" {
@@ -244,9 +275,7 @@ func (s *Store) UpdateTask(id string, u TaskUpdate) error {
 		sets = append(sets, "attempts = attempts + 1")
 	}
 	args = append(args, id)
-
-	_, err := s.exec(`UPDATE tasks SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
-	return err
+	return `UPDATE tasks SET ` + strings.Join(sets, ", ") + ` WHERE id = ?`, args
 }
 
 // TaskProgress is a long run's ledger, JSON-encoded into the progress column.

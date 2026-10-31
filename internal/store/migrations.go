@@ -1008,6 +1008,30 @@ var migrations = []string{
 		alerted     INTEGER NOT NULL DEFAULT 0,
 		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
 	)`,
+
+	// 035_requests — a request a turn could not finish continues as a task.
+	// request_id names the request it continues (the turn journal's
+	// event_id); context is the conversation the work needs, written once
+	// into the task's brief rather than replayed every round.
+	`ALTER TABLE tasks ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE tasks ADD COLUMN context TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX IF NOT EXISTS idx_tasks_request ON tasks(request_id)`,
+
+	// What was delivered to whom, so an answer reaches its requester once:
+	// a row is claimed ('sending') before the send and marked 'sent' after.
+	// A restart that finds one still sending looks at the chat before it
+	// sends again. A task's result is written here in the same transaction
+	// that records the round, so a result owed is never forgotten.
+	`CREATE TABLE IF NOT EXISTS deliveries (
+		delivery_key TEXT PRIMARY KEY,
+		channel_id   TEXT NOT NULL DEFAULT '',
+		target       TEXT NOT NULL DEFAULT '',
+		content      TEXT NOT NULL DEFAULT '',
+		file_path    TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT 'sending',
+		created_at   DATETIME NOT NULL,
+		sent_at      DATETIME
+	)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

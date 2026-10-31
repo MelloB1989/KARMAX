@@ -294,6 +294,10 @@ var ErrSessionBusy = errors.New("harness: the session is busy with a turn anothe
 // Nothing reached the session, which is left exactly as it was.
 var ErrTurnNotSent = errors.New("harness: the caller's time ran out before its turn was sent")
 
+// ErrTurnTimedOut is a turn that was written and ran past its kind's turn
+// timeout: the work is longer than a turn, not broken.
+var ErrTurnTimedOut = errors.New("harness turn timed out")
+
 // dropClaimIfIdle clears the claim open() made for a caller leaving without a
 // turn — only when no turn is running, since a running turn owns the flag and
 // clears it when it ends. Leaving it set would make an idle session look busy
@@ -742,7 +746,7 @@ func (s *Session) send(ctx context.Context, text string, timeout time.Duration, 
 			// same transcript. Whatever the process still says about this
 			// turn goes to the background path, as the rest of it (giveUp).
 			s.giveUp(onLate)
-			return turn, fmt.Errorf("harness turn timed out after %s", timeout)
+			return turn, fmt.Errorf("%w after %s", ErrTurnTimedOut, timeout)
 		case ev, ok := <-s.events:
 			if !ok {
 				return turn, fmt.Errorf("harness exited mid-turn")

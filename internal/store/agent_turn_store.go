@@ -26,6 +26,10 @@ const (
 	TurnFailed      = "failed"
 	TurnInterrupted = "interrupted"
 	TurnDead        = "dead"
+	// TurnHandedOff is a turn whose request a task took over (see
+	// TakeOverRequest). Final: the task owns the work from then on, so the
+	// turn is neither finished over nor resumed.
+	TurnHandedOff = "handed_off"
 )
 
 // AgentTurn is one attempt at handling one event.
@@ -100,14 +104,15 @@ ON CONFLICT(event_id) DO UPDATE SET
 WHERE agent_turns.status IN ('interrupted', 'failed')`
 }
 
-// FinishAgentTurn closes a turn.
+// FinishAgentTurn closes a turn. A turn whose request was handed to a task
+// keeps saying so: the turn ending afterwards does not make it its own again.
 func (s *Store) FinishAgentTurn(eventID, status, errMsg string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
 	_, err := s.exec(`
-UPDATE agent_turns SET status = ?, finished_at = ?, error = ? WHERE event_id = ?`,
+UPDATE agent_turns SET status = ?, finished_at = ?, error = ? WHERE event_id = ? AND status != 'handed_off'`,
 		status, now, errMsg, eventID)
 	return err
 }

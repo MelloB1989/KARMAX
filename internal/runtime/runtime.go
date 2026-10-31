@@ -144,6 +144,14 @@ type KarmaxRuntime struct {
 	waChannel *whatsapp.WhatsAppChannel
 
 	taskHooks taskHooks
+	// taskKick wakes the task runner early, when a request has just become a
+	// task (requests.go).
+	taskKick     chan struct{}
+	taskKickOnce sync.Once
+	// owedMu keeps two deliveries of owed results from racing on one row.
+	owedMu sync.Mutex
+	// taskRounds are the task rounds in flight (taskrunner.go).
+	taskRounds taskRounds
 	// messageOperator delivers text to the operator's own chat, for things
 	// that finish after whoever asked for them has gone — a call that ended
 	// before the task it handed off came back. Nil when there is no channel.
@@ -1257,6 +1265,13 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	if rt.harness != nil {
 		rt.wireHarnessBrains()
 	}
+	// A request a turn cannot finish continues as a task (requests.go). Only
+	// with a harness to work tasks; without one, requests run as before.
+	if owner := rt.requestOwner(); owner != nil {
+		for _, a := range rt.agents.List() {
+			a.SetTaskOwner(owner)
+		}
+	}
 
 	// Start health checks for all agents
 	for _, a := range rt.agents.List() {
@@ -1447,6 +1462,11 @@ func (rt *KarmaxRuntime) routeToAgent(evt bus.Event) error {
 	if !ok {
 		return nil
 	}
+	// A delegation started for a request a task now owns reports to that
+	// task, not to a turn that no longer knows who asked.
+	if rt.delegationToTask(evt) {
+		return nil
+	}
 	if !rt.openTurn(evt) {
 		// Already in flight — a redelivery of something still running.
 		return nil
@@ -1529,6 +1549,23 @@ func (rt *KarmaxRuntime) resumeInterruptedTurns() {
 			builtin.PushAppNotification(rt.store, t.AgentID, "alert",
 				"A task was abandoned",
 				fmt.Sprintf("%s kept failing across %d restarts and will not be retried.", t.EventKind, t.Attempt))
+			continue
+		}
+		// A request whose caller died with the daemon — a workflow's ask, the
+		// app's chat — has nobody to hand an answer back to and no event to
+		// redeliver. It continues as a task, which replies where it came from.
+		if t.EventKind == agent.RequestAsk || t.EventKind == agent.RequestChat {
+			if rt.requestOwner() != nil && rt.recoverRequest(t) {
+				rt.log.Info("an interrupted request continues as a task", zap.String("request", t.EventID))
+			}
+			continue
+		}
+		// A request a task already owns is that task's: the model handed it
+		// over with task.create before the daemon went down.
+		if task, found, _ := rt.store.GetTaskForRequest(t.EventID); found {
+			rt.log.Info("not resuming a turn whose request a task owns",
+				zap.String("event", t.EventID), zap.String("task", task.ID))
+			_ = rt.store.FinishAgentTurn(t.EventID, store.TurnHandedOff, "continued as task "+task.ID)
 			continue
 		}
 		var evt bus.Event
@@ -1851,7 +1888,11 @@ func (rt *KarmaxRuntime) turnAlreadySpoke(t store.AgentTurn) bool {
 		return false
 	}
 	for _, m := range msgs {
-		if m.Direction == string(comms.Outbound) && !m.CreatedAt.Before(t.StartedAt) {
+		// Only an answer counts. The slow-turn "on it" goes out six seconds
+		// into every long turn, and counting it as the reply left a request
+		// the daemon died during unanswered for good.
+		if m.Direction == string(comms.Outbound) && !m.CreatedAt.Before(t.StartedAt) &&
+			comms.IsAnswerProducer(m.SenderID) {
 			return true
 		}
 	}
