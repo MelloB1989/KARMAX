@@ -280,6 +280,14 @@ any point resumes on the next start and nothing is done or said twice:
 | after a round's result was recorded, before delivery | the result is owed (`deliveries`), and sent |
 | after delivery, before it was recorded | the chat shows it went out, so it is recorded and not sent again |
 | during a background delegation | resumed from its row: same session when its transcript exists, else afresh under the same id; its end is announced once (derived event id) |
+| after a loop was triggered by an event, before its run ended (triaging, queued behind a busy loop, mid-run) | the event (`loop_triggers`, written before the subscriber returns) is replayed with its payload, marked `replayed` — unless the run had already sent something (the operator is told instead), the request it handed the message to owns it, or it is too old |
+
+Sends made around comms — a shell's `wacli send`, a workflow's
+`whatsapp_send_message`, a task session delivering its result itself — are
+recorded from wacli's echo (producer `wacli`), and wacli's own history is
+asked whether a message went out, so the duplicate guard and a cut-off
+delivery see them. A request task's own sends to its requester (read from
+the round's tool calls) are not delivered again.
 
 ## Failure modes, and what happens
 
