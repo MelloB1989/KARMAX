@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MelloB1989/karma/ai"
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/broker"
@@ -296,33 +295,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		if p.APIKey != "" {
 			os.Setenv("GOOGLE_API_KEY", p.APIKey)
 		}
-	}
-
-	// Azure OpenAI, for any agent configured with provider "azure-openai" —
-	// registered once here so resolveProvider's case (pkg/karmahelper) has
-	// something to dispatch to. Azure speaks the OpenAI wire format but wants
-	// the DEPLOYMENT name where OpenAI wants the model name.
-	//
-	// Whoever created the resource chose those deployment names, so they cannot
-	// be known at compile time. Default each model to a deployment of the same
-	// name — the usual convention, and what the portal suggests — and let
-	// ai.providers.azure_openai.deployments override the ones that differ.
-	//
-	// This used to be a hardcoded map, which meant a name from ONE resource was
-	// compiled in for everybody: gpt-5-mini was pinned to "karmax-gpt-5-mini"
-	// and 404'd with DeploymentNotFound on every other resource. The main model
-	// happened to match, so the agent answered normally while memory retrieval
-	// and summarisation failed underneath — the worst shape of wrong, because
-	// nothing looked broken.
-	if p, ok := cfg.AI.Providers["azure_openai"]; ok && p.BaseURL != "" && p.APIKey != "" {
-		models := azureDeployments(p, log)
-		ai.RegisterCustomProvider(ai.CustomProvider{
-			Provider:       ai.Provider("azure-openai"),
-			DefaultBaseURL: p.BaseURL,
-			APIKey:         p.APIKey,
-			Models:         models,
-			SupportsMCP:    true,
-		})
 	}
 
 	mcpBridge := mcp.NewBridge(log)
@@ -1811,27 +1783,6 @@ func (rt *KarmaxRuntime) turnAlreadySpoke(t store.AgentTurn) bool {
 		}
 	}
 	return false
-}
-
-// azureDeployments resolves the model→deployment map for Azure OpenAI.
-//
-// Each model defaults to a deployment of the same name, which is the usual
-// convention; ai.providers.azure_openai.deployments overrides the ones whose
-// resource owner named them otherwise.
-func azureDeployments(p config.ProviderConfig, log *zap.Logger) map[ai.BaseModel]string {
-	models := map[ai.BaseModel]string{
-		ai.GPT5:     "gpt-5",
-		ai.GPT5Mini: "gpt-5-mini",
-	}
-	for model, deployment := range p.Deployments {
-		if model == "" || deployment == "" {
-			log.Warn("ignoring empty azure deployment mapping",
-				zap.String("model", model), zap.String("deployment", deployment))
-			continue
-		}
-		models[karmahelper.ResolveModel(model)] = deployment
-	}
-	return models
 }
 
 // voiceFallbackDefs converts the configured call fallbacks.
