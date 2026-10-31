@@ -13,7 +13,8 @@ import (
 )
 
 // Tools are the actions KARMAX takes as the operator on Google: answer, move
-// and create calendar events, and write in Chat — each as a named account.
+// and create calendar events, write in Chat, and read, answer, send and file
+// email — each as a named account.
 //
 // bound is the account the tools act as when a call names none: the account
 // an event came from, when the tools are lent for that event's turn. Unbound
@@ -28,12 +29,14 @@ func Tools(c *Client, loc *time.Location, bound string, sent tools.SentRecorder)
 		loc = time.UTC
 	}
 	b := base{c: c, loc: loc, bound: strings.ToLower(strings.TrimSpace(bound)), sent: sent}
-	return []tools.Tool{&accountsTool{b}, &sendTool{b}, &respondTool{b}, &rescheduleTool{b}, &createTool{b}}
+	out := []tools.Tool{&accountsTool{b}, &sendTool{b}, &respondTool{b}, &rescheduleTool{b}, &createTool{b}}
+	return append(out, gmailTools(b)...)
 }
 
 // ToolNames lists the names Tools returns, for callers that grant them.
 func ToolNames() []string {
-	return []string{"google.accounts", "gchat.send", "gcal.respond", "gcal.reschedule", "gcal.create"}
+	out := []string{"google.accounts", "gchat.send", "gcal.respond", "gcal.reschedule", "gcal.create"}
+	return append(out, gmailToolNames()...)
 }
 
 type base struct {
@@ -90,7 +93,7 @@ func (b base) account(ctx context.Context, in map[string]any) (string, error) {
 	emails := b.c.h.Accounts(ctx).Emails()
 	switch len(emails) {
 	case 0:
-		return "", fmt.Errorf("no Google account is signed in on this host; add one with `gog auth add you@example.com --services calendar,chat`")
+		return "", fmt.Errorf("no Google account is signed in on this host; add one with `gog auth add you@example.com --services calendar,chat,gmail`")
 	case 1:
 		return emails[0], nil
 	}
@@ -159,7 +162,7 @@ type accountsTool struct{ base }
 func (t *accountsTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name: "google.accounts",
-		Description: "List the operator's Google accounts this host can act as for Calendar and Chat, " +
+		Description: "List the operator's Google accounts this host can act as for Calendar, Chat and Gmail, " +
 			"how each is reached (gog or gws), and — for any that is signed out — the exact command that fixes it.",
 		Parameters: json.RawMessage(`{"type": "object", "properties": {}}`),
 	}
@@ -193,7 +196,7 @@ func (t *accountsTool) Execute(ctx context.Context, _ map[string]any) (tools.Too
 		res["errors"] = d.Errors
 	}
 	if len(out) == 0 {
-		res["hint"] = "No Google account is signed in. Add one with `gog auth add you@example.com --services calendar,chat` (or `gws auth login`)."
+		res["hint"] = "No Google account is signed in. Add one with `gog auth add you@example.com --services calendar,chat,gmail` (or `gws auth login`)."
 	}
 	return tools.SuccessResult(res), nil
 }
