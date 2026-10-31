@@ -39,6 +39,15 @@ otlp_listen: 0.0.0.0:4318    # the agents' OpenTelemetry
 #   key_env: GITLOOM_API_KEY     # its key, in the env file; it never leaves fleetd
 #   namespace: mira              # the orchestrator's namespace
 
+# The AWS account fleetctl tui's AWS tab shows (admins only); fleetd reads it with the aws CLI v2.
+# No section: no AWS tab data. Read-only keys are enough (ReadOnlyAccess, or ViewOnlyAccess + ce:Get*).
+# aws:
+#   keys_csv: ~/code/secrets/aws/reader_accessKeys.csv  # the IAM console's access-key CSV; only the aws CLI sees the key
+#   regions: [ap-south-1, us-east-1]   # the default; [all] is every region the account has enabled
+#   every: 5m                          # resources are read again this old
+#   cost_every: 6h                     # Cost Explorer charges $0.01 a call; a cost read is three
+#   # cli: ~/.local/bin/aws            # default: the PATH's aws, else ~/.local/bin/aws
+
 # Under code, but never for an agent to read: an empty read-only tmpfs covers each.
 hide_from_agents: [secrets]
 
@@ -134,7 +143,15 @@ thresholds:                 # every default shown
   relay_text: 720h
   host_samples: 168h
 
-# console:                   # the fleet console: a live panel on one host (docs/superpowers/specs/2026-10-11-fleet-console-design.md).
+cleanup:                     # what finished work left behind, deleted once unused (fleetctl cleanup [--dry-run])
+  every: 24h                 # fleetd runs a pass this often (enabled: false: only fleetctl cleanup does)
+  stale: 168h                # nothing in an item used this long: it goes, unless it holds work found nowhere else
+
+desk:                        # your own tmux sessions on fleetd's machine (fleetctl tui, fleetctl ssh desk:<name>); admins only
+  socket: fleet-desk         # its tmux server (tmux -L), in a systemd scope of its own; never your default server
+  # enabled: false           # on by default; sessions come back, Claude Code resumed, after the machine restarts
+
+# console:                  # the fleet console: a live panel on one host (docs/superpowers/specs/2026-10-11-fleet-console-design.md).
 #   host: pc2                # the host that runs fleet-console; its agents get live views, the rest recorded data only
 #   fleetd_url: http://192.168.1.10:7879   # fleetd's relay listener, as that host reaches it
 #   token_env: FLEET_CONSOLE_TOKEN         # its console-scope token for fleetd, in env_file

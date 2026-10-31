@@ -325,8 +325,40 @@ archive manifests.
 
 **Restore:** `fleetctl restore <archive-id>` puts the transcript back in that agent's `~/.claude/projects/…`,
 archives whatever is current, writes the id to `/work/.fleet/next` and restarts the pane. Same agent by
-default — its worktrees live on its private volume. Retention: forever (compressed transcripts are
-small); `fleetctl archive prune --older 180d` exists for when they aren't.
+default — its worktrees live on its private volume. Retention: until the cleanup pass (below) finds
+one older than `cleanup.stale` whose task is closed; `fleetctl archive prune --older 180d` cuts sooner.
+
+### Cleanup — what finished work leaves behind
+
+Agents keep what tasks leave: worktrees and clones in `/work`, scratch, downloads in `/work/inbox`,
+toolchains under the shared code's `.worktrees/<agent>`, and caches in the container (Go's build and
+module caches, npm, pnpm, pip, Playwright's browsers). fleetd deletes them once nothing has used them for
+`cleanup.stale` (default a week), in one pass every `cleanup.every` (default a day, the first 15 minutes
+after fleetd starts), or now with `fleetctl cleanup [--dry-run] [--json]` (full scope; `POST /v1/cleanup`;
+one pass at a time, 409 while one runs).
+
+- **What a pass looks at.** Every agent's container whose slots have no task and none at work, and that
+  is not out of reach: the entries of `/work` (not `.fleet`, fleetd's and agent-run's own files; not
+  `.claude`, Claude Code's for sessions in `/work`; not `code`, a sandbox's code volume; no mount), of `/work/wt`, `/work/inbox` and `/work/.secrets`, and
+  its caches. On fleetd's machine, the shared code's `.worktrees/<agent>` and a slot's `<agent>-<k>` for
+  those same agents; nothing else under `.worktrees` is the pass's. And fleetd's session archives older
+  than the cutoff whose task is closed (an open task may still restore one).
+- **Unused** is nothing in the item written, changed (ctime) or read (a file's atime; reading a
+  directory does not count, the walk itself reads them) since `now − stale`, judged by `find` in one
+  file system. Go's build cache goes by entry, by mtime (Go marks a used entry so); Go's module cache by
+  module version and download zip; any other cache directory by what sits in it.
+- **Never deleted: work found nowhere else.** An item holding a git checkout with changes not committed
+  (`git status --porcelain`, untracked files included), or commits no remote has (a worktree's HEAD;
+  a repository of its own, every branch), is kept, listed, and you are told once (an alert, one per
+  item, until it goes or comes back). A squash-merged branch whose remote branch was deleted and pruned
+  looks unpushed: it is kept and told, for you to delete. Worktrees go through `git worktree remove
+  -f -f`, so their repository forgets them, lock and all.
+- **Where it runs.** `internal/cleanup`'s one shell script, in each container (`docker exec`, a host's
+  agents one after another) and on fleetd's machine for the shared code, so no `find` over NFS. A pass
+  is the event `fleet.cleanup`: bytes freed per place, what it kept and why, where it did not look.
+- **Config.** `cleanup: {every: 24h, stale: 168h}`; `enabled: false` stops the schedule (fleetctl
+  cleanup still runs). `every` is at least an hour, `stale` at least a day: less deletes what an
+  agent between two tasks still uses.
 
 ## Fleet ledger — logs, metadata, status, quota
 
@@ -493,13 +525,20 @@ device's tag decides what it may do.
   still works, so it can be repaired.
 - **Install.** fleetd serves fleetctl to any person's device on the tailnet, tagged or not, so they can
   knock with it: `curl -fsSL http://<kali>.<tailnet>.ts.net:7878/install.sh | sh`
-  (Windows: `irm http://<kali>.<tailnet>.ts.net:7878/install.ps1 | iex`) downloads the build for
+  (Windows: `irm http://<kali>.<tailnet>.ts.net:7878/install.ps1 | iex` in PowerShell, or
+  `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm …/install.ps1 | iex"` in cmd; the sh
+  script hands Git Bash to it) downloads the build for
   their OS from `/dl/`, runs `fleetctl connect` (saved in their config dir; it prints who fleetd knows
   them as), and `fleetctl skill install` (the fleet skill; fleet-memory too for an admin). Then, if
   `claude` is on their PATH, it registers the MCP server in their Claude Code user config:
   `claude mcp add --scope user fleet -- <installed fleetctl> mcp`. A `fleet` server already there with
   the same fleetctl is left alone; one with another path is removed and added again; no other server is
-  touched. It prints one line saying which, or, without `claude`, the command to run later. The builds come from `fleet/scripts/dist.sh`, into
+  touched. It prints one line saying which, or, without `claude`, the command to run later. Run again,
+  it upgrades in place and leaves one fleetctl: install.sh replaces the fleetctl on PATH where it is,
+  and removes a copy an earlier run left in its other place (`~/.local/bin` or `/usr/local/bin`; one it
+  may not remove is named, with the `sudo rm`). install.ps1 keeps one `%LOCALAPPDATA%\fleetctl\fleetctl.exe`:
+  a running one (Claude Code keeps `fleetctl mcp` running) is renamed aside and removed, now or on the
+  next run, and its settings stay out of the caller's session. The builds come from `fleet/scripts/dist.sh`, into
   `~/.karmax/fleet/dist`; rerun it after changing fleetctl.
 - **What the agents can read.** An admin device can brief any agent, and an ordinary agent reads all
   of `~/code` and pushes as the fleet's GitHub account; a guest briefs only its lent sandboxes. Credentials kept under `~/code` are hidden from
@@ -678,6 +717,19 @@ says which keys leave while a session is open.
 In `fleetctl tui`, `s` on the Fleet tab is `--shell` in the selected agent's container and `t` is
 `--type`; on the Screens tab `s` watches the selected tile's session and `t` types into it.
 
+**Sessions tab** (admins). The TUI's third tab is [the desk](#the-desk--your-own-sessions-on-fleetds-machine)
+as a grid of live screens, like Screens: a tile per session in its order, polled every 2 seconds while the
+tab is shown. Each tile has a dot (green running, amber while Claude Code is in a turn, grey stopped), the
+directory, the command (claude, opus, sonnet, shell…), `↻ restored` for a while after a restart brought it
+back, and `● N attached`; a failed poll keeps the screens, marked `⚠ 14s old`. `⏎` (or `a`) attaches with
+the keyboard and `w` watches; `Ctrl-]` (a watcher: `q`, `Esc`) comes back to the TUI, which polls at once.
+`alt+1`–`alt+9` attach the Nth session (the digits stay the tab keys), `z` zooms a tile to the whole tab,
+`x` ends a session after asking (its Claude Code session stays on disk), `r` polls now. `n` opens the launch
+form: a directory completed from fleetd's machine as you type (`tab` takes the highlighted one and goes
+into it, `↑↓` choose; before you type, the recent ones), a command (Claude, Claude Opus, Claude Sonnet,
+Shell or Custom…) and a name (the directory's when empty). `⏎` launches and attaches at once; `ctrl+a` in
+the form turns attaching off.
+
 - One typist per worker. A second `--type` is told who holds it (`held by …`) and exits 1; an admin may
   `--force`, which turns the holder into a watcher (it is told so, and watches on).
 - Watchers are many and never resize the session. A watcher that sends nothing for 12 hours is closed.
@@ -698,6 +750,102 @@ failed capture never blanks a screen it already shows: the tile keeps it, marked
 `SendMessage` / `tell`, never `prompt`. From your phone, go through the orchestrator. If you later want
 operator-authority prompts from WhatsApp, make it a fixed command KARMAX parses itself, not a tool the
 model can reach for.
+
+## The desk — your own sessions on fleetd's machine
+
+The desk is the operator's tmux sessions on fleetd's own machine (Kali), not in any agent container: each
+runs a command in a directory, Claude Code by default. You launch them from `fleetctl tui` (or
+`POST /v1/desk`), attach and detach like any worker with `fleetctl ssh desk:<name>` (`--type`, `--shell`),
+and after the machine restarts every session comes back in the same order, its Claude Code session
+resumed. It is for admins only: guests, agents and the console are refused, and the console's screens never
+show a desk session. Code: `internal/desk`; routes: `internal/server/desk.go`.
+
+```yaml
+desk:
+  socket: fleet-desk     # its tmux server: tmux -L fleet-desk, never your default one
+  # enabled: false       # on by default
+```
+
+- **Launch.** A directory (`~` expanded, relative ones under home; it must exist), a name (from the
+  directory's name when empty, made of letters, digits, `-` and `_`, and made unique with `-2`, `-3`…) and
+  a command: empty or `claude` is Claude Code with a session id fleetd chooses (`--session-id <uuid>`);
+  `claude --model opus` adds its arguments; `shell` is a login shell; anything else runs as given. Every
+  command runs in your login shell (`$SHELL -lc '<command>; exec $SHELL -l'`), so PATH and the rest are
+  yours, and the session stays when the command ends. A session starts detached, 200×50, in its
+  directory. Its environment is fleetd's without fleetd's own (`FLEET_*`, systemd's per-service variables,
+  anything named like a token or secret); the login shell adds yours.
+- **Its own tmux server, outside fleetd's cgroup.** fleetd is a systemd user service, and stopping or
+  restarting it kills everything in its cgroup. So the desk's tmux server is started with
+  `systemd-run --user --scope --collect --unit=fleet-desk-<hex> tmux -L fleet-desk new-session …`: it lives
+  in a scope of its own, and sessions made later are its children. When `systemd-run` is not there (or
+  cannot reach the user manager) the server starts plainly, and fleetd says in its log that a restart of
+  fleetd will end it. You can attach locally too: `tmux -L fleet-desk attach -t <name>`.
+- **The record.** `desk.json` in fleetd's state directory (0600, written whole by rename): each session's
+  name, directory, command, order, creation, Claude Code session id and last restore, and the machine's
+  boot id (`/proc/sys/kernel/random/boot_id`).
+- **Following Claude Code.** Its session id changes after `/clear` or `/resume`. On every list, and every
+  30 seconds on its own, fleetd walks each pane's process tree (`/proc/<pid>/task/*/children`) for a
+  claude process and reads `~/.claude/sessions/<pid>.json`, Claude Code's own file (accepted only when its
+  `procStart` is the process's start time, as a pid is reused): its `sessionId` becomes the session's, and
+  its `status` busy is the list's `busy`.
+- **After a restart.** When fleetd starts (and every 30 seconds after), a boot id other than the recorded
+  one means the machine restarted: every recorded session that is not running is made again, in order, in
+  its directory, Claude Code with `claude --resume <its session> <its other arguments>` (whatever chose a
+  session at the launch, `--resume`, `--continue`, `--session-id`, is replaced). A session never written to
+  has no transcript to resume, so it starts afresh with the same id. One that cannot come back (its
+  directory is gone) is listed with why, until you end it. On the same boot, a session that is not running
+  was closed by you (you exited its shell, or killed it): it is forgotten, never brought back.
+- **Ending.** `DELETE /v1/desk/<name>` kills the tmux session and forgets it; the rest close up the order.
+- **Listing.** `GET /v1/desk?lines=N`: the sessions in order, running or not, attached clients, and with
+  `lines` (at most 500) each screen's last lines with ANSI: one `tmux list-sessions` and one
+  `capture-pane` per session. `GET /v1/desk/dirs?prefix=P` completes the launch form's directory: up to 30;
+  nothing typed is home, `~/code` and the latest sessions' directories; a directory is its subdirectories;
+  anything else is the directories beside it that start so, in any case; dot-directories only when what is
+  typed starts with a dot.
+- **Terminals.** `fleetctl ssh desk:<name>` goes through the same `GET /v1/term/{worker}` as an agent, but
+  fleetd runs it here, no container: watch is `tmux -L fleet-desk attach -t =<name> -f
+  read-only,ignore-size`, `--type` attaches (the window takes your terminal's size, and keeps it when you
+  leave), `--shell` is your login shell in the session's directory. The processes carry `FLEET_TERM=<id>`,
+  as in a container, and fleetd ends them when you leave.
+
+Deploying it needs nothing beyond fleetd: lingering is on already (`loginctl enable-linger`, for fleetd
+itself), which keeps the user manager, and so the desk's scope, up while you are logged out and starts
+them at boot.
+
+## The AWS account — `fleetctl tui`'s AWS tab
+
+The AWS tab (admins only) shows one AWS account at a glance: who fleetd reads it as, the month so far,
+the forecast to the month's end against last month, the last 14 days' spend and the services it went on,
+a count per service, and every resource in a table to filter (`/` text, `s` service, `r` read again past
+the cache, `e` what could not be read). fleetd reads it with the AWS CLI v2 (`GET /v1/aws`); code:
+`internal/awsdash`, route: `internal/server/aws.go`.
+
+```yaml
+aws:
+  keys_csv: ~/code/secrets/aws/reader_accessKeys.csv  # the CSV the IAM console downloads for an access key
+  # regions: [ap-south-1, us-east-1]   # the default; [all] is every region the account has enabled
+  # every: 5m                          # resources are read again this old (at least 1m)
+  # cost_every: 6h                     # Cost Explorer, which charges per call (at least 1h)
+  # cli: ~/.local/bin/aws              # default: the PATH's aws, else ~/.local/bin/aws
+```
+
+- **Keys.** fleetd reads the CSV at each read and hands the key to the `aws` process in its environment
+  alone, with none of fleetd's own `AWS_*` settings and no config or credentials file; no log, error or
+  report carries it (a key ID in an AWS error is blanked). Read-only keys are enough: `ReadOnlyAccess`
+  (or `ViewOnlyAccess` plus `ce:Get*`).
+- **What it reads.** `sts get-caller-identity`; in each region EC2 instances, Lambda functions (never
+  their environment), RDS instances, ECS clusters (with services and running tasks), EKS clusters,
+  DynamoDB tables, load balancers, API Gateway (HTTP and REST), ECR repositories, Cognito user pools, SQS
+  queues and SNS topics; once, S3 buckets (with their regions) and CloudFront distributions. Eight calls
+  at a time, 30 s each; a part that fails (a service in a region: `AccessDenied`, a timeout) is listed and
+  the rest shown. Keys that do not work stop the read at the first call.
+- **Cost.** Cost Explorer (us-east-1): every day since the first of last month by record type, this month
+  by service, and the forecast. Amounts are what was used: credits and refunds are left out and shown
+  apart, or an account on credits would show $0. Each call is charged $0.01, so a cost read (three calls)
+  happens every `cost_every` (6h: about $0.12 a day), and `r` reads it again only once it is an hour old.
+  A new account has no forecast yet; that is not an error.
+- **Sharing.** The read is fleetd's, cached and shared: callers at once share one read, and a caller who
+  leaves does not end it. The tab reads when shown, then every 5 minutes while shown.
 
 ## Hosts
 

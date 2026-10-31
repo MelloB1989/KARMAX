@@ -1,0 +1,40 @@
+devbox · 4 sessions · 1 working · 1 attached                                                                            
+┏━ 1 ● api  ~/code/api ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ opus ━┓╭─ 2 ● web  ~/code/web ─────────────────────────── claude ─╮
+┃ ⏺ I'll add a token-bucket limiter as middleware, keyed on┃│                                                          │
+┃                                                          ┃│   /help for help, /status for your current setup         │
+┃ ⏺ Read(internal/http/router.go)                          ┃│                                                          │
+┃   ⎿  Read 142 lines                                      ┃│   cwd: /home/op/code/web                                 │
+┃                                                          ┃│                                                          │
+┃ ⏺ Write(internal/http/ratelimit.go)                      ┃│ > /resume                                                │
+┃   ⎿  Wrote 58 lines to internal/http/ratelimit.go        ┃│   ⎿  Resumed: checkout page shows tax and shipping before│
+┃                                                          ┃│                                                          │
+┃ ⏺ Bash(go test ./internal/http/...)                      ┃│ ⏺ Picking up where we left off: the checkout summary now │
+┃   ⎿  Running…                                            ┃│   and shipping before the pay button, and the tests pass.│
+┃                                                          ┃│                                                          │
+┃ ✶ Percolating… (47s · ↑ 2.1k tokens · esc to interrupt)  ┃│   Left: the empty-cart state. Shall I do that next?      │
+┃                                                          ┃│                                                          │
+┃ ╭────────────────────────────────────────────────────────┃│ ╭────────────────────────────────────────────────────────│
+┃ │ >                                                      ┃│ │ >                                                      │
+┃ ╰────────────────────────────────────────────────────────┃│ ╰────────────────────────────────────────────────────────│
+┃   ⏵⏵ accept edits on (shift+tab to cycle)                ┃│   ? for shortcuts                                        │
+┗━ ⠋ working ━━━━━━━━━━━━━━━━━━━━ ● 1 attached · up 2h10m ━┛╰─ ready ──────────────────────── ↻ restored 3m · up 1d2h ─╯
+╭─ 3 ● infra  ~/code/infra ──────────────────────── shell ─╮╭─ 4 ● notes  ~/code/notes ─────────────────────── sonnet ─╮
+│ op@devbox:~/code/infra$ terraform plan -out tf.plan      ││                                                          │
+│ aws_s3_bucket.assets: Refreshing state... [id=assets-exam││   cwd: /home/op/code/notes                               │
+│ aws_iam_role.deploy: Refreshing state... [id=deploy-examp││                                                          │
+│                                                          ││ > turn this week's incident notes into a short postmortem│
+│ Terraform will perform the following actions:            ││                                                          │
+│                                                          ││ ⏺ Read(incidents/2026-10-*.md)                           │
+│   # aws_s3_bucket_lifecycle_configuration.assets will be ││   ⎿  Read 4 files                                        │
+│   + resource "aws_s3_bucket_lifecycle_configuration" "ass││                                                          │
+│       + bucket = "assets-example"                        ││ ⏺ Wrote postmortem-2026-10.md (41 lines):                │
+│       + id     = (known after apply)                     ││   • three incidents, all the queue worker's retry storm  │
+│     }                                                    ││   • fixed: jittered backoff, at most 5 retries           │
+│                                                          ││   • open: alert when the queue is deeper than 10k        │
+│ Plan: 1 to add, 0 to change, 0 to destroy.               ││                                                          │
+│                                                          ││ ╭────────────────────────────────────────────────────────│
+│ Saved the plan to: tf.plan                               ││ │ >                                                      │
+│                                                          ││ ╰────────────────────────────────────────────────────────│
+│ op@devbox:~/code/infra$                                  ││   ? for shortcuts                                        │
+╰─ running ─────────────────────────────────────── up 45m ─╯╰─ ready ────────────────────────────────────────── up 4h ─╯
+                                                                                                                        

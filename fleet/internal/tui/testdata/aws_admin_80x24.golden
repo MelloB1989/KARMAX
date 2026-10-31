@@ -1,0 +1,24 @@
+╭─ Account ────────╮╭─ Month to date ──╮╭─ Forecast ───────╮╭─ Last month ─────╮
+│ 123456789012     ││ $412.38          ││ $511.62 ▲ 9.3%   ││ $468.20          │
+│ fleet-reader     ││ ▅▅▆▆▅▃▂▅▆▇█▆▃▁   ││ Oct 31 · vs Sep  ││ Sep · $15.61/day │
+╰──────────────────╯╰──────────────────╯╰──────────────────╯╰──────────────────╯
+Top · EC2 $186.40 · RDS $92.15 · EC2 other $38.70 · S3 $24.10 · …               
+apigateway 2   cloudfront 1 deployed/1 in progress   cognito 1   dynamodb 3     
+ec2 3 running/1 pending/1 stopped   ecr 3   ecs 1   elb 2   lambda 12           
+rds 2 available/1 stopped   s3 8   sns 2   sqs 3                                
+Resources 47                                        read 3m ago · cost 2h14m ago
+  SERVICE    REGION     NAME / ID              TYPE            STATE      AGE   
+▸ apigateway ap-south-1 payments-api a1b2c3d4… HTTP            —          214d  
+  apigateway us-east-1  legacy-rest r3st0exam… REST            —          1.7y  
+  cloudfront global     cdn.example.com E1EXA…                 Deployed   12d   
+  cloudfront global     static.example.com E2…                 InProgress 9m    
+  cognito    ap-south-1 example-users ap-sout…                 —          1.1y  
+  dynamodb   ap-south-1 feature-flags                          —          —     
+  dynamodb   ap-south-1 rate-limits                            —          —     
+  dynamodb   ap-south-1 sessions                               —          —     
+  ec2        ap-south-1 api-prod-1 i-0a1b2c3d… t3.medium       running    41d   
+  ec2        ap-south-1 api-prod-2 i-0a1b2c3d… t3.medium       running    41d   
+  ec2        ap-south-1 bastion i-0a1b2c3d4e5… t3.micro        stopped    1.1y  
+  ec2        ap-south-1 worker-batch i-0a1b2c… c6i.large       running    6d    
+  ec2        us-east-1  staging-web i-0f9e8d7… t3.small        pending    2m    
+▲ 2 parts could not be read — e to show                                         

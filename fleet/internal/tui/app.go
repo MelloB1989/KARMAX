@@ -31,7 +31,7 @@ func Run(ctx context.Context, opts Options) error {
 
 // defaultTabs is the TUI's tabs in order; task 6's tabs are appended by name.
 func defaultTabs() []Tab {
-	return []Tab{newFleet(), newScreens(), newTasks(), newEvents(), newQuota(), newHosts(), newAccess()}
+	return []Tab{newFleet(), newScreens(), newSessions(), newTasks(), newEvents(), newQuota(), newAWS(), newHosts(), newAccess()}
 }
 
 const (
@@ -435,7 +435,8 @@ func (a *App) top(w int) string {
 }
 
 // tabBar is the numbered tabs, the shown one lit, and the link state.
-// When they do not fit, the tabs close up.
+// When they do not fit, the tabs close up, then the others are cut to three
+// letters, then to their numbers: the shown one and a knock stay whole.
 func (a *App) tabBar(w int) string {
 	t := a.c.Theme
 	state := paint(t.Green, "● ") + t.Muted.Render("live")
@@ -445,18 +446,25 @@ func (a *App) tabBar(w int) string {
 	case a.c.Snap == nil:
 		state = t.Muted.Render("○ connecting")
 	}
-	tabs := func(compact bool) string {
+	// short is how much of the others' titles is shown: all, 3 letters, none.
+	tabs := func(compact bool, short int) string {
 		cur := a.current()
 		var b strings.Builder
 		for i, tb := range a.visible() {
 			if i > 0 && !compact {
 				b.WriteString(" ")
 			}
+			title := tb.Title()
+			if short >= 0 && len([]rune(title)) > short {
+				title = string([]rune(title)[:short])
+			}
 			switch {
 			case tb == cur:
 				b.WriteString(lipgloss.NewStyle().Foreground(t.Ground).Background(t.Amber).Bold(true).Render(fmt.Sprintf(" %d %s ", i+1, tb.Title())))
+			case compact && title == "":
+				b.WriteString(t.Muted.Render(fmt.Sprintf(" %d", i+1)))
 			case compact:
-				b.WriteString(t.Muted.Render(fmt.Sprintf(" %d ", i+1)) + lipgloss.NewStyle().Foreground(t.Text).Render(tb.Title()))
+				b.WriteString(t.Muted.Render(fmt.Sprintf(" %d ", i+1)) + lipgloss.NewStyle().Foreground(t.Text).Render(title))
 			default:
 				b.WriteString(t.Muted.Render(fmt.Sprintf(" %d ", i+1)) + lipgloss.NewStyle().Foreground(t.Text).Render(tb.Title()+" "))
 			}
@@ -470,13 +478,21 @@ func (a *App) tabBar(w int) string {
 		}
 		return b.String()
 	}
-	bar := tabs(false)
+	bar := tabs(false, -1)
 	if lipgloss.Width(bar)+lipgloss.Width(state)+1 > w {
-		bar = tabs(true)
+		bar = tabs(true, -1)
 	}
 	if lipgloss.Width(bar)+lipgloss.Width(state)+1 > w {
 		state = strings.Fields(ansi.Strip(state))[0]
 		state = paint(map[bool]color.Color{true: t.Alert, false: t.Green}[a.err != nil], state)
+	}
+	for _, short := range []int{3, 0} {
+		if lipgloss.Width(bar)+lipgloss.Width(state)+1 > w {
+			bar = tabs(true, short)
+		}
+	}
+	if lipgloss.Width(bar)+lipgloss.Width(state)+1 > w {
+		state = "" // the tabs (and a knock) first: the banner says when fleetd is gone
 	}
 	return spread(bar, state, w)
 }

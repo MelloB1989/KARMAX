@@ -82,7 +82,45 @@ type Config struct {
 	Memory *Memory `yaml:"memory"`
 	// SandboxNet is the network sandbox agents run on.
 	SandboxNet SandboxNet `yaml:"sandbox"`
+	// Cleanup deletes what finished work left behind.
+	Cleanup Cleanup `yaml:"cleanup"`
+	// Desk is the operator's tmux sessions on fleetd's own machine.
+	Desk Desk `yaml:"desk"`
+	// AWS is the account fleetctl's AWS tab shows (aws.go); nil means none.
+	AWS *AWS `yaml:"aws"`
 }
+
+// Desk is the desk: the operator's tmux sessions on fleetd's own machine,
+// Claude Code (or a shell) in a directory each, brought back after the
+// machine restarts (internal/desk). Admins only.
+type Desk struct {
+	// Enabled serves it; on unless set false.
+	Enabled *bool `yaml:"enabled"`
+	// Socket is its tmux server's (tmux -L); default fleet-desk. Never the
+	// operator's own default server.
+	Socket string `yaml:"socket"`
+}
+
+// On reports whether fleetd serves the desk.
+func (d Desk) On() bool { return d.Enabled == nil || *d.Enabled }
+
+// Cleanup is fleetd's pass over what finished work left behind: agents'
+// task checkouts and scratch, their caches, their checkouts under the shared
+// code, and session archives (internal/cleanup, daemon/cleanup.go).
+type Cleanup struct {
+	// Enabled runs it every Every; on unless set false. fleetctl cleanup
+	// runs it whenever asked, either way.
+	Enabled *bool `yaml:"enabled"`
+	// Every is how often; default 24h, at least an hour.
+	Every time.Duration `yaml:"every"`
+	// Stale is how long nothing in an item may have been used before it
+	// goes; default a week (168h), at least a day: less deletes what an
+	// agent between two tasks still uses.
+	Stale time.Duration `yaml:"stale"`
+}
+
+// On reports whether the cleanup runs on its own.
+func (c Cleanup) On() bool { return c.Enabled == nil || *c.Enabled }
 
 // SandboxNet is fleet-sandbox, the Docker bridge sandbox agents run on: it
 // reaches the internet and fleetd's relay and telemetry ports, and nothing
@@ -514,6 +552,14 @@ func (c *Config) defaults() {
 	dur(&th.QuotaRaw, 7*24*time.Hour)
 	dur(&th.RelayText, 30*24*time.Hour)
 	dur(&th.HostSamples, 7*24*time.Hour)
+	dur(&c.Cleanup.Every, 24*time.Hour)
+	dur(&c.Cleanup.Stale, 7*24*time.Hour)
+	if c.AWS != nil {
+		c.AWS.defaults(c.Home)
+	}
+	if c.Desk.Socket == "" {
+		c.Desk.Socket = "fleet-desk"
+	}
 	if th.RestartFailures <= 0 {
 		th.RestartFailures = 3
 	}
@@ -550,6 +596,20 @@ func (c *Config) validate() error {
 	}
 	if len(c.Agents) == 0 {
 		return fmt.Errorf("no agents")
+	}
+	if c.Cleanup.Every < time.Hour {
+		return fmt.Errorf("cleanup: every %s: want at least 1h", c.Cleanup.Every)
+	}
+	if c.Cleanup.Stale < 24*time.Hour {
+		return fmt.Errorf("cleanup: stale %s: want at least 24h, or it deletes what an agent between two tasks still uses", c.Cleanup.Stale)
+	}
+	if c.AWS != nil {
+		if err := c.AWS.validate(); err != nil {
+			return err
+		}
+	}
+	if !hostAlias.MatchString(c.Desk.Socket) {
+		return fmt.Errorf("desk: socket %q: want a tmux socket name (letters, digits, . _ -), not a path", c.Desk.Socket)
 	}
 	seenToken := map[string]string{}
 	if !c.Orchestrator.Native {

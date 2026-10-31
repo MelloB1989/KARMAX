@@ -22,6 +22,11 @@ type Client interface {
 	SetModel(ctx context.Context, worker, model string) error // admins
 	Access(ctx context.Context) (*AccessList, error)          // admins
 	ChangeAccess(ctx context.Context, c AccessChange) (*AccessList, error)
+	AWS(ctx context.Context, refresh bool) (*AWSReport, error) // admins
+	Desk(ctx context.Context, lines int) (*DeskList, error)    // admins
+	DeskCreate(ctx context.Context, c DeskCreate) (*DeskSession, error)
+	DeskEnd(ctx context.Context, name string) error
+	DeskDirs(ctx context.Context, prefix string) ([]string, error)
 }
 
 // TaskDetail is GET /v1/tasks/{id} (daemon.TaskResult), field for field.

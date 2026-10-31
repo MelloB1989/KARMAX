@@ -20,6 +20,7 @@ import (
 
 	"github.com/MelloB1989/karmax/fleet/internal/agent"
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
+	"github.com/MelloB1989/karmax/fleet/internal/cleanup"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/reconcile"
@@ -85,6 +86,13 @@ type Fleet struct {
 	states map[string]reconcile.State
 
 	lastRetain time.Time
+	// The cleanup pass (cleanup.go): one at a time, the scheduled one's
+	// last start, and where its script runs (tests replace both).
+	cleanMu     sync.Mutex
+	cleanWG     sync.WaitGroup
+	lastCleanup time.Time
+	cleanIn     func(ctx context.Context, worker, script string, args ...string) ([]byte, error)
+	cleanHere   func(ctx context.Context, args ...string) ([]byte, error)
 	// probedAt is when the sandboxes' networks were last probed (sandbox.go).
 	probedAt time.Time
 	// alerted is when each alert text last went out (firstAlert).
@@ -122,6 +130,8 @@ type Fleet struct {
 	HostStats func(ctx context.Context, host string) ([]ledger.HostSample, error)
 	// Karmax, when set, is the KARMAX gateway's door to KARMAX's tools.
 	Karmax Gateway
+	// AWSDash, when set, reads the operator's AWS account (aws.go).
+	AWSDash AWSReader
 	// Log receives fleetd's own diagnostics.
 	Log func(format string, args ...any)
 	// vault seals the secrets the operator hands agents (secrets.go).
@@ -149,6 +159,7 @@ func New(cfg *config.Config, db *ledger.DB, box func(string) Box, push Pusher, n
 		resendFailed: map[string]time.Time{}, resendFails: map[string]int{}, outboxAlerted: map[string]bool{}, asks: map[string]*ask{},
 		vault: vault.New(filepath.Join(cfg.StateDir, vault.KeyFile)), watch: newStream(), hosts: newHostSeries()}
 	f.hostExec = f.rshHost
+	f.cleanIn, f.cleanHere, f.lastCleanup = f.rshHost, cleanup.Local, lastCleanupAt(db)
 	for _, name := range append(cfg.WorkerNames(), cfg.Orchestrator.Name, "") {
 		f.sendMus[name] = &sync.Mutex{}
 	}
@@ -296,6 +307,7 @@ func (f *Fleet) Tick(ctx context.Context, now time.Time) {
 		}
 		f.lastRetain = now
 	}
+	f.scheduleCleanup(ctx, now)
 }
 
 func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {

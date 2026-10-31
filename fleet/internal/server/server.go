@@ -31,6 +31,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/filexfer"
+	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 	"github.com/MelloB1989/karmax/fleet/internal/guide"
 	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
@@ -82,6 +83,9 @@ type Ops interface {
 	Archives(since time.Time) ([]*archive.Manifest, error)
 	Archive(id string) (*daemon.ArchiveDetail, error)
 	PruneArchives(before time.Time) (int, error)
+	// Cleanup is a cleanup pass now (fleet.yaml cleanup); dry deletes
+	// nothing.
+	Cleanup(ctx context.Context, dryRun bool, now time.Time) (fleetapi.CleanupReport, error)
 	Render() (string, error)
 
 	SecretPut(name string, value []byte, now time.Time) error
@@ -104,6 +108,7 @@ type Ops interface {
 	watchOps  // watch.go
 	TermOps   // term.go: terminals and screen previews
 	AccessOps // access.go
+	AWSOps    // aws.go
 }
 
 // Tokens are the bearer tokens, one per scope. Sandboxes are the sandbox
@@ -911,6 +916,30 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 		n, err := ops.PruneArchives(before)
 		return map[string]int{"removed": n}, err
 	}, fullOnly...)
+	// A pass walks every agent's /work and caches: minutes. It is the
+	// fleet's, not the caller's: one who gives up (or fleetd stopping) is
+	// answered at once, and the pass goes on to its end.
+	route("POST "+fleetapi.PathCleanup, long(func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in fleetapi.CleanupRequest
+		if err := body(r, &in); err != nil {
+			return nil, err
+		}
+		type result struct {
+			rep fleetapi.CleanupReport
+			err error
+		}
+		done := make(chan result, 1)
+		go func() {
+			rep, err := ops.Cleanup(r.Context(), in.DryRun, time.Now())
+			done <- result{rep, err}
+		}()
+		select {
+		case x := <-done:
+			return x.rep, x.err
+		case <-r.Context().Done():
+			return nil, context.Cause(r.Context())
+		}
+	}), fullOnly...)
 	route("GET /v1/memory/recall", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		if err := operatorWork(r, ops); err != nil {
 			return nil, err
@@ -1035,6 +1064,8 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 	// Terminals and screen previews (term.go, screens.go).
 	termRoutes(route, long, ops)
 	screensRoutes(route, ops)
+	awsRoutes(route, ops) // aws.go
+	deskRoutes(route, ops)
 
 	return withSandbox(tok, ops.IsWorker, withAgent(tok, ops.IsWorker, mux))
 }

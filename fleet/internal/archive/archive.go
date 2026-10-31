@@ -247,6 +247,9 @@ func writeSync(path string, b []byte) error {
 	return f.Close()
 }
 
+// Dir is an archive's directory under the archive root.
+func Dir(root, id string) (string, error) { return dirOf(root, id) }
+
 func dirOf(root, id string) (string, error) {
 	clean := filepath.Clean(id)
 	if !fs.ValidPath(clean) || strings.Count(clean, "/") != 1 {

@@ -1,12 +1,14 @@
 package term
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -347,5 +349,50 @@ func TestTheCommandPerMode(t *testing.T) {
 		if got := strings.Join(Argv(tg, mode, "id1"), " "); got != want {
 			t.Errorf("%s:\n got %s\nwant %s", mode, got, want)
 		}
+	}
+}
+
+// A desk session lives on fleetd's own machine: no exec prefix, its tmux
+// server on its own socket, a shell in its directory. The marker is there
+// all the same, and the client never takes $TMUX for its server.
+func TestADeskTargetRunsHere(t *testing.T) {
+	tg := Target{Worker: "desk:api", Socket: "fleet-desk", Pane: "api", Dir: "/home/op/code/api", Shell: "/bin/zsh"}
+	for mode, want := range map[fleetapi.TermMode]string{
+		fleetapi.TermWatch: "env -u TMUX FLEET_TERM=id1 tmux -L fleet-desk attach -t =api -f read-only,ignore-size",
+		fleetapi.TermType:  "env -u TMUX FLEET_TERM=id1 tmux -L fleet-desk attach -t =api",
+		fleetapi.TermShell: `env -u TMUX FLEET_TERM=id1 sh -c cd -- "$1" 2>/dev/null || cd; exec "$2" -l sh /home/op/code/api /bin/zsh`,
+	} {
+		if got := strings.Join(Argv(tg, mode, "id1"), " "); got != want {
+			t.Errorf("%s:\n got %s\nwant %s", mode, got, want)
+		}
+	}
+	tg.Shell = ""
+	if got := Argv(tg, fleetapi.TermShell, "id1"); got[len(got)-1] != "/bin/sh" {
+		t.Errorf("no shell: %q, want /bin/sh", got)
+	}
+}
+
+// Cleanup finds what a killed desk session left on this machine by its
+// marker, as it does in a container.
+func TestCleanupEndsADeskSessionsLeftovers(t *testing.T) {
+	cmd := exec.Command("env", Marker+"=leftover-"+strconv.Itoa(os.Getpid()), "sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	// Until env has exec'd sleep, nothing carries the marker yet.
+	marker := []byte(Marker + "=leftover-" + strconv.Itoa(os.Getpid()))
+	for wait := time.Now().Add(5 * time.Second); time.Now().Before(wait); time.Sleep(10 * time.Millisecond) {
+		if b, _ := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/environ"); bytes.Contains(b, marker) {
+			break
+		}
+	}
+	Cleanup(Target{Worker: "desk:api", Socket: "fleet-desk", Pane: "api"}, "leftover-"+strconv.Itoa(os.Getpid()))
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cmd.Process.Kill()
+		t.Fatal("the process with the marker still runs")
 	}
 }

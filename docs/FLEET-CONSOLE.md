@@ -233,6 +233,7 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `GET /v1/archives` | full, console | `fleetctl archive ls` | list archived sessions |
 | `GET /v1/archives/{id...}` | full | `fleetctl archive show` | one archive |
 | `DELETE /v1/archives` | full | `fleetctl archive prune` | delete archives older than a cutoff |
+| `POST /v1/cleanup` | full | `fleetctl cleanup` | a cleanup pass now (`dry_run`: delete nothing): what finished work left unused for `cleanup.stale`, deleted or kept, per place; 409 while a pass runs |
 | `POST /v1/up` | full | `fleetctl up` | docker compose up for hosts (the plan and `--when-idle` are host-side) |
 | `POST /v1/down` | full | `fleetctl down` | docker compose down for hosts |
 | `POST /v1/render` | full | `fleetctl render` | regenerate env files, compose files and briefs |
@@ -255,6 +256,11 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `GET /v1/watch` | full, console, guest | `fleetctl tui` | the TUI's one stream: a long poll (`since`, the last snapshot's `seq`) answered at once when fleetd has another snapshot, else when the next is made, and after 25 s at most; one `fleetapi.Snapshot` (workers with their activity, tasks, events, quota with burn and run-out, today, hosts, fleetd) cut to the caller: a guest sees only its lent agents and its own tasks |
 | `GET /v1/term/{worker}` | full, guest | `fleetctl ssh`, `attach` | a WebSocket to the worker's session: `mode` watch (read-only, never resizes it), type (the one keyboard; `held` frame when someone has it, `force=1` for an admin, who turns the holder into a watcher with a `released` frame) or shell (`bash -l` in `/work`); `cols`, `rows`. Terminal bytes are binary frames, `fleetapi.TermFrame` JSON text frames; each session is a `fleet.term` event. A guest only on a lent agent |
 | `GET /v1/screens` | full, console, guest | `fleetctl tui` (Screens) | each worker's last `lines` (default 40) with ANSI, for `workers` (a comma list; none is all) the caller may use: one exec per container, shared for 2 s, at most two per host at once |
+| `GET /v1/desk` | full | `fleetctl tui` (Sessions) | the desk: the operator's tmux sessions on fleetd's machine, in order, each with its dir, command, Claude Code session, clients and, with `lines` (at most 500), its screen. `fleetctl ssh desk:<name>` attaches through `GET /v1/term/{worker}`, for admins only |
+| `POST /v1/desk` | full | `fleetctl tui` (Sessions) | start a session (`fleetapi.DeskCreate`: `dir`, `name` from the dir when empty, `command` claude by default, `shell`, or any command) in the operator's login shell; 400 for a dir that is not one |
+| `DELETE /v1/desk/{name}` | full | `fleetctl tui` (Sessions) | end a session and forget it; 404 for no such session |
+| `GET /v1/desk/dirs` | full | `fleetctl tui` (Sessions) | up to 30 directories on fleetd's machine completing `prefix`, for the launch form |
+| `GET /v1/aws` | full | `fleetctl tui` (AWS) | the operator's AWS account (`fleetapi.AWSReport`): who fleetd reads as, the month's cost (Cost Explorer, read every `cost_every`), every resource in the regions (read every `every`; `refresh=1` at once), and the parts that could not be read. Callers at once share one read; 404 without `aws:` in fleet.yaml |
 <!-- routes:end -->
 
 `guest` is a device on the tailnet tagged guest (`fleetctl access lend`; no token: Tailscale says which device calls). A guest uses only the sandbox agents lent to its device, runs tasks as its login, at most `tailnet.guest_open` open at once, and the task routes answer it only for its own tasks (403 otherwise); `wait` needs `task`, and `done` closes by task alone. A device tagged admin has `full`; an untagged device is refused, and its request is listed in `fleetctl access` as a knock.

@@ -57,6 +57,9 @@ Roster and records (fleetd):
   activity [--since 24h] [--bucket 15m] [--json]
   today [--json]                      tasks closed and spend since local midnight
   archive ls [--since 7d] [--json] | archive show <id> | archive prune --older 180d
+  cleanup [--dry-run] [--json]        delete what finished work left unused for cleanup.stale (7d): agents'
+                                      checkouts, scratch and caches, the shared code's .worktrees/<agent>, old
+                                      archives; never work found nowhere else. fleetd also runs it daily
 
 Work (fleetd):
   run <brief…|-> [--repo R] [--agent A] [--model M] [--task ID] [--from NAME] [--queue 30m] [--attach P]… [--wait] [--timeout 2h] [--json] [--brief-file F]
@@ -833,6 +836,8 @@ func run(cmd string, args []string) error {
 
 	case "access":
 		return accessCmd(args)
+	case "cleanup":
+		return cleanupCmd(args)
 	case "mcp":
 		return mcpCmd(args)
 	case "skill":

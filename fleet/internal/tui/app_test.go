@@ -144,25 +144,32 @@ func TestTabsSwitchByNumberAndTab(t *testing.T) {
 	if title() != "Fleet" {
 		t.Fatalf("starts on %s", title())
 	}
-	press(a, "3")
+	var vis []string
+	for _, tb := range a.visible() {
+		vis = append(vis, tb.Title())
+	}
+	last := vis[len(vis)-1]
+	press(a, "4")
 	if title() != "Tasks" {
-		t.Errorf("3 is %s", title())
+		t.Errorf("4 is %s", title())
 	}
 	press(a, "tab")
 	if title() != "Events" {
 		t.Errorf("tab after Tasks is %s", title())
 	}
-	press(a, "shift+tab", "shift+tab", "shift+tab", "shift+tab")
-	if title() != "Access" {
-		t.Errorf("shift+tab wraps to %s", title())
+	press(a, "shift+tab", "shift+tab", "shift+tab", "shift+tab", "shift+tab")
+	if title() != last {
+		t.Errorf("shift+tab wraps to %s, want %s", title(), last)
 	}
-	press(a, "7")
-	if title() != "Access" {
-		t.Errorf("7 is %s", title())
+	press(a, "1", fmt.Sprint(len(vis)))
+	if title() != last {
+		t.Errorf("%d is %s", len(vis), title())
 	}
-	press(a, "9")
-	if title() != "Access" {
-		t.Errorf("9, past the last tab, moved to %s", title())
+	if len(vis) < 9 {
+		press(a, "9")
+		if title() != last {
+			t.Errorf("9, past the last tab, moved to %s", title())
+		}
 	}
 }
 
@@ -171,7 +178,7 @@ func TestATabIsToldWhenItIsShown(t *testing.T) {
 	snap(t, a, f)
 	spy := &spyTab{}
 	a.tabs = append(a.tabs, spy)
-	press(a, "8")
+	press(a, "shift+tab") // from the first tab to the last: the spy
 	if len(spy.got) == 0 {
 		t.Fatal("the shown tab got no message")
 	}
@@ -410,10 +417,10 @@ func golden(t *testing.T, name, v string) {
 func TestGoldenViews(t *testing.T) {
 	for _, role := range []fleetapi.Role{fleetapi.RoleAdmin, fleetapi.RoleGuest} {
 		for _, sz := range [][2]int{{80, 24}, {120, 40}, {200, 60}} {
-			for _, tab := range []struct{ key, name string }{{"1", "fleet"}, {"3", "tasks"}, {"4", "events"}} {
+			for _, tab := range []struct{ title, name string }{{"Fleet", "fleet"}, {"Tasks", "tasks"}, {"Events", "events"}} {
 				a, f := testApp(t, role, sz[0], sz[1], false)
 				snap(t, a, f)
-				press(a, tab.key)
+				goTab(t, a, tab.title)
 				name := fmt.Sprintf("%s_%s_%dx%d", tab.name, role, sz[0], sz[1])
 				v := view(a)
 				checkSize(t, v, sz[0], sz[1])

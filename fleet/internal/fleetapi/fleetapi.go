@@ -16,6 +16,7 @@ const (
 	PathScreens = "/v1/screens" // GET ?workers=a,b&lines=N: a ScreensReply
 	PathTerm    = "/v1/term/"   // GET /v1/term/{worker}?mode=&cols=&rows=: websocket
 	PathAccess  = "/v1/access"  // GET: an AccessList; POST an AccessChange: the new AccessList
+	PathCleanup = "/v1/cleanup" // POST a CleanupRequest: a cleanup pass now, its CleanupReport
 )
 
 // Role is what a caller may do: an admin everything, a guest only the
@@ -303,4 +304,45 @@ const (
 	AccessLend   = "lend"
 	AccessUnlend = "unlend"
 	AccessRevoke = "revoke"
+)
+
+// CleanupRequest is POST /v1/cleanup.
+type CleanupRequest struct {
+	DryRun bool `json:"dry_run"` // say what would go; delete nothing
+}
+
+// CleanupReport is one cleanup pass: what finished work left behind that it
+// deleted (or, dry, would delete) and what it kept, everywhere it looked.
+type CleanupReport struct {
+	At     time.Time     `json:"at"`
+	DryRun bool          `json:"dry_run"`
+	Stale  string        `json:"stale"` // unused this long, an item goes
+	Items  []CleanupItem `json:"items"`
+	// Skipped is where it did not look, and why: an agent at work, a
+	// container it could not reach.
+	Skipped []CleanupSkip `json:"skipped"`
+	Freed   int64         `json:"freed_bytes"` // deleted, or would be
+}
+
+// CleanupItem is one thing a pass did not leave alone. Where is an agent
+// (its container), code (the shared code's .worktrees) or archive (fleetd's
+// session archives).
+type CleanupItem struct {
+	Where  string `json:"where"`
+	Path   string `json:"path"`
+	Action string `json:"action"` // deleted, would_delete or kept
+	Bytes  int64  `json:"bytes"`
+	Why    string `json:"why"`
+}
+
+// CleanupSkip is a place a pass did not look into.
+type CleanupSkip struct {
+	Where string `json:"where"`
+	Why   string `json:"why"`
+}
+
+const (
+	CleanupDeleted = "deleted"
+	CleanupWould   = "would_delete"
+	CleanupKept    = "kept"
 )

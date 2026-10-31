@@ -254,3 +254,46 @@ func (a *apiClient) ChangeAccess(ctx context.Context, c fleetapi.AccessChange) (
 	}
 	return &l, nil
 }
+
+func (a *apiClient) AWS(ctx context.Context, refresh bool) (*fleetapi.AWSReport, error) {
+	p := fleetapi.PathAWS
+	if refresh {
+		p += "?refresh=1"
+	}
+	var r fleetapi.AWSReport
+	// Reading every region and Cost Explorer takes a while when nothing is cached.
+	if err := a.do(ctx, "GET", p, nil, &r, 2*time.Minute); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (a *apiClient) Desk(ctx context.Context, lines int) (*fleetapi.DeskList, error) {
+	var l fleetapi.DeskList
+	if err := a.do(ctx, "GET", fleetapi.PathDesk+"?lines="+fmt.Sprint(lines), nil, &l, callTimeout); err != nil {
+		return nil, err
+	}
+	return &l, nil
+}
+
+func (a *apiClient) DeskCreate(ctx context.Context, c fleetapi.DeskCreate) (*fleetapi.DeskSession, error) {
+	var s fleetapi.DeskSession
+	if err := a.do(ctx, "POST", fleetapi.PathDesk, c, &s, callTimeout); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func (a *apiClient) DeskEnd(ctx context.Context, name string) error {
+	return a.do(ctx, "DELETE", fleetapi.PathDesk+"/"+url.PathEscape(name), nil, nil, callTimeout)
+}
+
+func (a *apiClient) DeskDirs(ctx context.Context, prefix string) ([]string, error) {
+	var d struct {
+		Dirs []string `json:"dirs"`
+	}
+	if err := a.do(ctx, "GET", fleetapi.PathDeskDirs+"?prefix="+url.QueryEscape(prefix), nil, &d, callTimeout); err != nil {
+		return nil, err
+	}
+	return d.Dirs, nil
+}

@@ -25,6 +25,7 @@ type Fake struct {
 	tasks   []Task
 	devices []Device
 	knocks  []Knock
+	desk    []DeskSession
 	Calls   []string
 	// ScreensAsked is the workers of each Screens call, in order.
 	ScreensAsked [][]string

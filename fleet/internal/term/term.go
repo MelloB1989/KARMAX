@@ -36,12 +36,22 @@ type Target struct {
 	Host      string
 	Container target.Container
 	Pane      string // main, main-2
+
+	// Socket, when set, is a tmux server on fleetd's own machine (tmux -L
+	// Socket): a desk session, Pane its tmux session. There is no container
+	// (Container is this machine's); a shell is Shell, a login shell, in Dir.
+	Socket string
+	Dir    string
+	Shell  string
 }
 
 // Argv is the command a mode runs, per the spec's table: watch attaches
 // read-only and never sizes the window; type attaches; shell is a login
 // shell in /work.
 func Argv(t Target, mode fleetapi.TermMode, id string) []string {
+	if t.Socket != "" {
+		return localArgv(t, mode, id)
+	}
 	argv := append([]string{}, t.Container.Exec...)
 	argv = append(argv, "exec", "-it", "-e", Marker+"="+id)
 	switch mode {
@@ -51,6 +61,25 @@ func Argv(t Target, mode fleetapi.TermMode, id string) []string {
 		return append(argv, t.Container.Name, "tmux", "attach", "-t", "="+t.Pane)
 	}
 	return append(argv, t.Container.Name, "tmux", "attach", "-t", "="+t.Pane, "-f", "read-only,ignore-size")
+}
+
+// localArgv is Argv for a desk session, on this machine. The marker is in
+// the environment of what it runs, as in a container; $TMUX (fleetd run from
+// inside tmux) would make the client refuse to attach.
+func localArgv(t Target, mode fleetapi.TermMode, id string) []string {
+	argv := []string{"env", "-u", "TMUX", Marker + "=" + id}
+	switch mode {
+	case fleetapi.TermShell:
+		sh := t.Shell
+		if sh == "" {
+			sh = "/bin/sh"
+		}
+		// A directory removed since falls back to home.
+		return append(argv, "sh", "-c", `cd -- "$1" 2>/dev/null || cd; exec "$2" -l`, "sh", t.Dir, sh)
+	case fleetapi.TermType:
+		return append(argv, "tmux", "-L", t.Socket, "attach", "-t", "="+t.Pane)
+	}
+	return append(argv, "tmux", "-L", t.Socket, "attach", "-t", "="+t.Pane, "-f", "read-only,ignore-size")
 }
 
 // cleanupScript ends every process in the container that carries the

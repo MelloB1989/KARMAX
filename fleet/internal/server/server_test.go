@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/archive"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
+	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/memory"
 )
@@ -21,6 +22,8 @@ type fake struct {
 	calls []string
 	runs  []daemon.RunRequest // as Run was asked
 	mem   *memory.Client      // when set, Recall asks it
+	// cleaning makes Cleanup answer as when a pass is already running.
+	cleaning bool
 }
 
 // IsWorker: the fake's agents (agent-NN) have two slots each.
@@ -186,6 +189,14 @@ func (f *fake) Archive(id string) (*daemon.ArchiveDetail, error) {
 func (f *fake) PruneArchives(time.Time) (int, error) {
 	f.calls = append(f.calls, "prune")
 	return 4, nil
+}
+func (f *fake) Cleanup(_ context.Context, dry bool, _ time.Time) (fleetapi.CleanupReport, error) {
+	f.calls = append(f.calls, fmt.Sprintf("cleanup dry=%v", dry))
+	if f.cleaning {
+		return fleetapi.CleanupReport{}, fmt.Errorf("%w: a cleanup pass is running", daemon.ErrConflict)
+	}
+	return fleetapi.CleanupReport{DryRun: dry, Freed: 2048, Items: []fleetapi.CleanupItem{{Where: "agent-03", Path: "/work/scratch",
+		Action: fleetapi.CleanupDeleted, Bytes: 2048, Why: "unused"}}, Skipped: []fleetapi.CleanupSkip{}}, nil
 }
 func (f *fake) Render() (string, error) { f.calls = append(f.calls, "render"); return "rendered", nil }
 func (f *fake) Up(_ context.Context, h []string) (string, error) {
@@ -526,6 +537,29 @@ func TestArchiveRoutesAreFullOnly(t *testing.T) {
 		t.Errorf("console prune = %d, want 403", rec.Code)
 	}
 	_ = f
+}
+
+// fleetctl cleanup: a pass now, for the full scope only; one already
+// running is a conflict.
+func TestTheCleanupRouteRunsAPassForTheFullScopeOnly(t *testing.T) {
+	f, h := setup(t)
+	rec := do(t, h, "POST", fleetapi.PathCleanup, "full", `{"dry_run":true}`)
+	var rep fleetapi.CleanupReport
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &rep) != nil || !rep.DryRun || rep.Freed != 2048 || len(rep.Items) != 1 {
+		t.Fatalf("dry run = %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "POST", fleetapi.PathCleanup, "full", `{}`); rec.Code != 200 || f.calls[len(f.calls)-1] != "cleanup dry=false" {
+		t.Fatalf("pass = %d %s %v", rec.Code, rec.Body, f.calls)
+	}
+	for _, tok := range []string{"console", "relay"} {
+		if rec := do(t, h, "POST", fleetapi.PathCleanup, tok, `{}`); rec.Code != 403 {
+			t.Errorf("%s = %d, want 403", tok, rec.Code)
+		}
+	}
+	f.cleaning = true
+	if rec := do(t, h, "POST", fleetapi.PathCleanup, "full", `{}`); rec.Code != 409 {
+		t.Errorf("a pass while one runs = %d %s, want 409", rec.Code, rec.Body)
+	}
 }
 
 func TestHostRoutesAreFullOnlyAndReportOutputAndFailure(t *testing.T) {

@@ -1,0 +1,60 @@
+devbox · 4 sessions · 1 working · 1 attached                                                                                                                                                            
+┏━ 1 ● api  ~/code/api ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ opus ━┓╭─ 2 ● web  ~/code/web ─────────────────────────────────────────────────────────────────── claude ─╮
+┃ ✻ Welcome to Claude Code!                                                                        ┃│ ✻ Welcome to Claude Code!                                                                        │
+┃                                                                                                  ┃│                                                                                                  │
+┃   /help for help, /status for your current setup                                                 ┃│   /help for help, /status for your current setup                                                 │
+┃                                                                                                  ┃│                                                                                                  │
+┃   cwd: /home/op/code/api                                                                         ┃│   cwd: /home/op/code/web                                                                         │
+┃                                                                                                  ┃│                                                                                                  │
+┃ > add rate limiting to POST /v1/orders: 100 requests a minute per API key                        ┃│ > /resume                                                                                        │
+┃                                                                                                  ┃│   ⎿  Resumed: checkout page shows tax and shipping before pay                                    │
+┃ ⏺ I'll add a token-bucket limiter as middleware, keyed on the API key.                           ┃│                                                                                                  │
+┃                                                                                                  ┃│ ⏺ Picking up where we left off: the checkout summary now shows tax                               │
+┃ ⏺ Read(internal/http/router.go)                                                                  ┃│   and shipping before the pay button, and the tests pass.                                        │
+┃   ⎿  Read 142 lines                                                                              ┃│                                                                                                  │
+┃                                                                                                  ┃│   Left: the empty-cart state. Shall I do that next?                                              │
+┃ ⏺ Write(internal/http/ratelimit.go)                                                              ┃│                                                                                                  │
+┃   ⎿  Wrote 58 lines to internal/http/ratelimit.go                                                ┃│ ╭────────────────────────────────────────────────────────────────────────────╮                   │
+┃                                                                                                  ┃│ │ >                                                                          │                   │
+┃ ⏺ Bash(go test ./internal/http/...)                                                              ┃│ ╰────────────────────────────────────────────────────────────────────────────╯                   │
+┃   ⎿  Running…                                                                                    ┃│   ? for shortcuts                                                                                │
+┃                                                                                                  ┃│                                                                                                  │
+┃ ✶ Percolating… (47s · ↑ 2.1k tokens · esc to interrupt)                                          ┃│                                                                                                  │
+┃                                                                                                  ┃│                                                                                                  │
+┃ ╭────────────────────────────────────────────────────────────────────────────╮                   ┃│                                                                                                  │
+┃ │ >                                                                          │                   ┃│                                                                                                  │
+┃ ╰────────────────────────────────────────────────────────────────────────────╯                   ┃│                                                                                                  │
+┃   ⏵⏵ accept edits on (shift+tab to cycle)                                                        ┃│                                                                                                  │
+┃                                                                                                  ┃│                                                                                                  │
+┃                                                                                                  ┃│                                                                                                  │
+┗━ ⠋ working ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ ● 1 attached · up 2h10m ━┛╰─ ready ──────────────────────────────────────────────────────────────── ↻ restored 3m · up 1d2h ─╯
+╭─ 3 ● infra  ~/code/infra ──────────────────────────────────────────────────────────────── shell ─╮╭─ 4 ● notes  ~/code/notes ─────────────────────────────────────────────────────────────── sonnet ─╮
+│ op@devbox:~/code/infra$ terraform plan -out tf.plan                                              ││ ✻ Welcome to Claude Code!                                                                        │
+│ aws_s3_bucket.assets: Refreshing state... [id=assets-example]                                    ││                                                                                                  │
+│ aws_iam_role.deploy: Refreshing state... [id=deploy-example]                                     ││   /help for help, /status for your current setup                                                 │
+│                                                                                                  ││                                                                                                  │
+│ Terraform will perform the following actions:                                                    ││   cwd: /home/op/code/notes                                                                       │
+│                                                                                                  ││                                                                                                  │
+│   # aws_s3_bucket_lifecycle_configuration.assets will be created                                 ││ > turn this week's incident notes into a short postmortem                                        │
+│   + resource "aws_s3_bucket_lifecycle_configuration" "assets" {                                  ││                                                                                                  │
+│       + bucket = "assets-example"                                                                ││ ⏺ Read(incidents/2026-10-*.md)                                                                   │
+│       + id     = (known after apply)                                                             ││   ⎿  Read 4 files                                                                                │
+│     }                                                                                            ││                                                                                                  │
+│                                                                                                  ││ ⏺ Wrote postmortem-2026-10.md (41 lines):                                                        │
+│ Plan: 1 to add, 0 to change, 0 to destroy.                                                       ││   • three incidents, all the queue worker's retry storm                                          │
+│                                                                                                  ││   • fixed: jittered backoff, at most 5 retries                                                   │
+│ Saved the plan to: tf.plan                                                                       ││   • open: alert when the queue is deeper than 10k                                                │
+│                                                                                                  ││                                                                                                  │
+│ op@devbox:~/code/infra$                                                                          ││ ╭────────────────────────────────────────────────────────────────────────────╮                   │
+│                                                                                                  ││ │ >                                                                          │                   │
+│                                                                                                  ││ ╰────────────────────────────────────────────────────────────────────────────╯                   │
+│                                                                                                  ││   ? for shortcuts                                                                                │
+│                                                                                                  ││                                                                                                  │
+│                                                                                                  ││                                                                                                  │
+│                                                                                                  ││                                                                                                  │
+│                                                                                                  ││                                                                                                  │
+│                                                                                                  ││                                                                                                  │
+│                                                                                                  ││                                                                                                  │
+│                                                                                                  ││                                                                                                  │
+╰─ running ─────────────────────────────────────────────────────────────────────────────── up 45m ─╯╰─ ready ────────────────────────────────────────────────────────────────────────────────── up 4h ─╯
+                                                                                                                                                                                                        

@@ -48,10 +48,13 @@ func termRoutes(route func(string, func(http.ResponseWriter, *http.Request) (any
 		default:
 			return nil, badRequest{fmt.Errorf("mode %q: want watch, type or shell", mode)}
 		}
+		if _, isDesk := fleetapi.DeskName(worker); isDesk && scopeOf(r) != full { // the operator's alone (desk.go)
+			return nil, forbidden{fmt.Errorf("%s is not yours to use", worker)}
+		}
 		if !mayUseAgent(r, worker) {
 			return nil, forbidden{fmt.Errorf("%s is not yours to use", worker)}
 		}
-		tg, ok := ops.Terminal(worker)
+		tg, ok := terminal(ops, worker)
 		if !ok {
 			return nil, notFound{fmt.Errorf("no agent named %q", worker)}
 		}
@@ -205,6 +208,9 @@ func (z *windowSizer) stop() {
 }
 
 func (z *windowSizer) resize(cols, rows int) {
+	if z.tg.Socket != "" {
+		return // a desk session: tmux sizes it to its typist's terminal itself
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	z.tg.Container.Run(ctx, "tmux", "resize-window", "-t", "="+z.tg.Pane+":", "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))

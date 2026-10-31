@@ -85,7 +85,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer; fleetd is the only process that writes
-	if _, err := db.Exec(schema + secretsSchema + accessSchema); err != nil {
+	if _, err := db.Exec(schema + secretsSchema + accessSchema + cleanupSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ledger schema: %w", err)
 	}

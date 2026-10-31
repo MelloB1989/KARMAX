@@ -21,8 +21,10 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/agent"
+	"github.com/MelloB1989/karmax/fleet/internal/awsdash"
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
+	"github.com/MelloB1989/karmax/fleet/internal/desk"
 	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/memory"
@@ -132,6 +134,12 @@ func run(cfgPath string, once bool) error {
 			log.Printf("memory: %s is not set in %s; memory is off", m.KeyEnv, cfg.EnvFile)
 		}
 	}
+	if a := cfg.AWS; a != nil {
+		// The AWS tab's account: read when asked, the keys only ever in the
+		// aws CLI's environment.
+		f.AWSDash = awsdash.New(awsdash.Options{KeysCSV: a.KeysCSV, Regions: a.Regions, Every: a.Every,
+			CostEvery: a.CostEvery, CLI: awsdash.FindCLI(a.CLI, cfg.Home)})
+	}
 	f.HostStats = func(ctx context.Context, host string) ([]ledger.HostSample, error) {
 		c := target.Container{Exec: cfg.Hosts[host].Exec}
 		out, err := c.Host(ctx, "stats", "--no-stream", "--format", "{{json .}}")
@@ -169,7 +177,15 @@ func run(cfgPath string, once bool) error {
 		return nil
 	}
 
-	api, drain := server.DrainingHandler(f, tokens, orchQuota.Load)
+	// The desk: the operator's tmux sessions on this machine, for admins.
+	var ops server.Ops = f
+	var dk *desk.Manager
+	if cfg.Desk.On() {
+		dk = desk.New(cfg.Desk.Socket, cfg.StateDir)
+		dk.Log = log.Printf
+		ops = server.WithDesk(f, dk)
+	}
+	api, drain := server.DrainingHandler(ops, tokens, orchQuota.Load)
 	var servers []*http.Server
 	serve := func(addr string, h http.Handler, what string, lc net.ListenConfig) {
 		if addr == "" {
@@ -204,6 +220,11 @@ func run(cfgPath string, once bool) error {
 	}
 
 	log.Printf("%d agents (%d workers) on %d hosts, tick %s", len(cfg.Agents), len(cfg.WorkerNames()), len(cfg.Hosts), cfg.Thresholds.Tick)
+	if dk != nil {
+		// After a reboot, its sessions come back while the API serves;
+		// then it follows their Claude Code sessions.
+		go dk.Run(ctx)
+	}
 	tick(ctx)
 	t := time.NewTicker(cfg.Thresholds.Tick)
 	defer t.Stop()

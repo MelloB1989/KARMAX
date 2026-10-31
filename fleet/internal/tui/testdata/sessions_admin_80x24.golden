@@ -1,0 +1,24 @@
+devbox · 4 sessions · 1 working · 1 attached                            ↓ 2 more
+┏━ 1 ● api  ~/code/api ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ opus ━┓
+┃ ⏺ Bash(go test ./internal/http/...)                                          ┃
+┃   ⎿  Running…                                                                ┃
+┃                                                                              ┃
+┃ ✶ Percolating… (47s · ↑ 2.1k tokens · esc to interrupt)                      ┃
+┃                                                                              ┃
+┃ ╭────────────────────────────────────────────────────────────────────────────┃
+┃ │ >                                                                          ┃
+┃ ╰────────────────────────────────────────────────────────────────────────────┃
+┃   ⏵⏵ accept edits on (shift+tab to cycle)                                    ┃
+┗━ ⠋ working ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ ● 1 attached · up 2h10m ━┛
+╭─ 2 ● web  ~/code/web ─────────────────────────────────────────────── claude ─╮
+│ ⏺ Picking up where we left off: the checkout summary now shows tax           │
+│   and shipping before the pay button, and the tests pass.                    │
+│                                                                              │
+│   Left: the empty-cart state. Shall I do that next?                          │
+│                                                                              │
+│ ╭────────────────────────────────────────────────────────────────────────────│
+│ │ >                                                                          │
+│ ╰────────────────────────────────────────────────────────────────────────────│
+│   ? for shortcuts                                                            │
+╰─ ready ──────────────────────────────────────────── ↻ restored 3m · up 1d2h ─╯
+                                                                                

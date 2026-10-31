@@ -45,7 +45,8 @@ func calls(f *fleetapi.Fake) []string { return slices.Clone(f.Calls) }
 func TestRunFormSendsTheRequest(t *testing.T) {
 	a, f := testApp(t, fleetapi.RoleAdmin, 120, 40, false)
 	snap(t, a, f)
-	press(a, "3", "r")
+	goTab(t, a, "Tasks")
+	press(a, "r")
 	if !a.current().Capturing() {
 		t.Fatal("the run form does not hold the keys")
 	}
@@ -74,7 +75,8 @@ func TestRunFormSendsTheRequest(t *testing.T) {
 func TestAnEmptyBriefIsNotSent(t *testing.T) {
 	a, f := testApp(t, fleetapi.RoleAdmin, 120, 40, false)
 	snap(t, a, f)
-	press(a, "3", "r")
+	goTab(t, a, "Tasks")
+	press(a, "r")
 	msgs := pressDo(a, "ctrl+s")
 	if len(calls(f)) != 0 {
 		t.Errorf("an empty brief was sent: %q", calls(f))
@@ -90,7 +92,8 @@ func TestAnEmptyBriefIsNotSent(t *testing.T) {
 func TestAGuestRunsOnlyOnItsLentAgents(t *testing.T) {
 	a, f := testApp(t, fleetapi.RoleGuest, 120, 40, false)
 	snap(t, a, f)
-	press(a, "3", "r")
+	goTab(t, a, "Tasks")
+	press(a, "r")
 	form := a.current().(*tasksTab).form
 	if got := strings.Join(form.agents, ","); got != ",agent-09" {
 		t.Errorf("a guest's agent choices are %q", got)
@@ -100,7 +103,7 @@ func TestAGuestRunsOnlyOnItsLentAgents(t *testing.T) {
 // selectTask moves the Tasks tab's selection to the task with this id.
 func selectTask(t *testing.T, a *App, id string) {
 	t.Helper()
-	press(a, "3")
+	goTab(t, a, "Tasks")
 	for range 10 {
 		tb := a.current().(*tasksTab)
 		if x, ok := tb.selected(&a.c); ok && x.ID == id {
@@ -236,7 +239,8 @@ func TestTheTaskDetailShowsTheThread(t *testing.T) {
 func TestEventsFilterByAgent(t *testing.T) {
 	a, f := testApp(t, fleetapi.RoleAdmin, 120, 40, false)
 	snap(t, a, f)
-	press(a, "4", "/")
+	goTab(t, a, "Events")
+	press(a, "/")
 	if !a.current().Capturing() {
 		t.Fatal("/ opened no filter")
 	}
@@ -262,7 +266,8 @@ func TestEventsFilterByAgent(t *testing.T) {
 func TestSpacePausesTheEvents(t *testing.T) {
 	a, f := testApp(t, fleetapi.RoleAdmin, 120, 40, false)
 	snap(t, a, f)
-	press(a, "4", "space")
+	goTab(t, a, "Events")
+	press(a, "space")
 	s := *a.c.Snap
 	s.Events = s.Events[:1]
 	a.Update(SnapshotMsg{Snap: &s})
@@ -335,7 +340,7 @@ func TestTimesShowInTheViewersZone(t *testing.T) {
 	s.Events = []fleetapi.Event{{ID: 1, At: at, Agent: "agent-01", Kind: "fleet.report", Detail: []byte(`{"text":"hi"}`)}}
 	s.Today.Since = time.Date(2026, 10, 24, 18, 30, 0, 0, time.UTC) // midnight in IST
 	a.Update(SnapshotMsg{Snap: s})
-	press(a, "4")
+	goTab(t, a, "Events")
 	if v := ansi.Strip(view(a)); !strings.Contains(v, "23:07:00") || strings.Contains(v, "17:37") {
 		t.Errorf("an event at 17:37 UTC is not shown at 23:07 IST:\n%s", v)
 	}

@@ -1,0 +1,40 @@
+╭─ Account ──────────────────╮╭─ Month to date ────────────╮╭─ Forecast ─────────────────╮╭─ Last month ───────────────╮
+│ 123456789012               ││ $412.38                    ││ $511.62 ▲ 9.3%             ││ $468.20                    │
+│ fleet-reader · 2 regions   ││ Oct 1–25 · −$25.00 credits ││ by Oct 31 · vs September   ││ September · $15.61/day     │
+╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯
+╭─ Daily · 14 days · avg $16.05 · max $21.36 ──────────────╮╭─ Top services · month to date ───────────────────────────╮
+│    ▁▁▁ ▃▃▃ ▃▃▃             ▁▁▁ ▂▂▂ ▆▆▆ ███ ▃▃▃           ││ EC2            ████████████████████████    $186.40  45%  │
+│███ ███ ███ ███ ███ ▃▃▃ ▂▂▂ ███ ███ ███ ███ ███ ▄▄▄       ││ RDS            ███████████▉············     $92.15  22%  │
+│███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ▆▆▆   ││ EC2 other      █████···················     $38.70   9%  │
+│███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███ ███   ││ S3             ███▏····················     $24.10   6%  │
+│12  13  14  15  16  17  18  19  20  21  22  23  24  25    ││ +9 more · $71.03                                         │
+╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯
+apigateway 2   cloudfront 1 deployed/1 in progress   cognito 1   dynamodb 3   ec2 3 running/1 pending/1 stopped   ecr 3 
+ecs 1   elb 2   lambda 12   rds 2 available/1 stopped   s3 8   sns 2   sqs 3                                            
+Resources 47                                                                                read 3m ago · cost 2h14m ago
+  SERVICE    REGION     NAME / ID                     TYPE            STATE      DETAIL                            AGE  
+▸ apigateway ap-south-1 payments-api a1b2c3d4e5       HTTP            —          https://a1b2c3d4e5.execute-api.a… 214d 
+  apigateway us-east-1  legacy-rest r3st0example      REST            —          EDGE                              1.7y 
+  cloudfront global     cdn.example.com E1EXAMPLE123…                 Deployed   d111111abcdef8.cloudfront.net     12d  
+  cloudfront global     static.example.com E2EXAMPLE…                 InProgress d222222abcdef8.cloudfront.net     9m   
+  cognito    ap-south-1 example-users ap-south-1_EXA…                 —                                            1.1y 
+  dynamodb   ap-south-1 feature-flags                                 —                                            —    
+  dynamodb   ap-south-1 rate-limits                                   —                                            —    
+  dynamodb   ap-south-1 sessions                                      —                                            —    
+  ec2        ap-south-1 api-prod-1 i-0a1b2c3d4e5f600… t3.medium       running    10.0.1.12 · 203.0.113.10          41d  
+  ec2        ap-south-1 api-prod-2 i-0a1b2c3d4e5f600… t3.medium       running    10.0.2.31 · 203.0.113.11          41d  
+  ec2        ap-south-1 bastion i-0a1b2c3d4e5f60004   t3.micro        stopped    10.0.0.5                          1.1y 
+  ec2        ap-south-1 worker-batch i-0a1b2c3d4e5f6… c6i.large       running    10.0.3.7                          6d   
+  ec2        us-east-1  staging-web i-0f9e8d7c6b5a40… t3.small        pending    10.1.0.20                         2m   
+  ecr        ap-south-1 api                                           —          immutable tags                    301d 
+  ecr        ap-south-1 web                                           —          mutable tags                      301d 
+  ecr        ap-south-1 worker                                        —          immutable tags                    122d 
+  ecs        ap-south-1 prod-cluster                                  active     4 services · 7 tasks running      —    
+  elb        ap-south-1 api-prod-alb                  application     active     internet-facing · api-prod-alb-1… 298d 
+  elb        ap-south-1 internal-nlb                  network         active     internal · internal-nlb-09876543… 120d 
+  lambda     ap-south-1 auth-hooks                    nodejs20.x      —          256 MB · arm64                    3d   
+  lambda     ap-south-1 cleanup-sessions              python3.11      —          128 MB · arm64                    90d  
+  lambda     ap-south-1 image-resize                  nodejs20.x      —          1536 MB · x86_64                  17d  
+  lambda     ap-south-1 nightly-report                python3.12      —          512 MB · arm64                    1d   
+  lambda     ap-south-1 pdf-export                    image           —          2048 MB · x86_64                  5d   
+▲ 2 parts could not be read — e to show                                                                                 

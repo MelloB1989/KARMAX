@@ -102,6 +102,9 @@ func TestParseRejectsWhatWouldGoWrongLater(t *testing.T) {
 		"orchestrator slot":   "orchestrator: {host: kali, token_env: O, name: 'agent-01:2'}\nagents: {agent-01: {host: kali, token_env: T}}",
 		"no slots":            "slots: -1\nagents: {agent-01: {host: kali, token_env: T}}",
 		"too many slots":      "agents: {agent-01: {host: kali, token_env: T, slots: 9}}",
+		"cleanup too often":   "cleanup: {every: 5m}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"cleanup too eager":   "cleanup: {stale: 2h}\nagents: {agent-01: {host: kali, token_env: T}}",
+		"desk socket a path":  "desk: {socket: ../default}\nagents: {agent-01: {host: kali, token_env: T}}",
 	}
 	for name, body := range cases {
 		src := "home: /h\nhosts: {kali: {exec: [docker]}}\norchestrator: {host: kali, token_env: O}\n" + body
@@ -410,6 +413,39 @@ func TestFilesCapDefaultsToTwoGiBAndTakesYAML(t *testing.T) {
 	c, err = Parse([]byte(example + "files: {max_bytes: 1048576}\n"))
 	if err != nil || c.Files.MaxBytes != 1<<20 {
 		t.Fatalf("set = %d, %v", c.Files.MaxBytes, err)
+	}
+}
+
+// The cleanup runs once a day and deletes what nothing used for a week,
+// unless fleet.yaml says otherwise or turns it off.
+func TestCleanupDefaultsToDailyAndAWeek(t *testing.T) {
+	c, err := Parse([]byte(example))
+	if err != nil || !c.Cleanup.On() || c.Cleanup.Every != 24*time.Hour || c.Cleanup.Stale != 7*24*time.Hour {
+		t.Fatalf("default = %+v, %v", c.Cleanup, err)
+	}
+	c, err = Parse([]byte(example + "cleanup: {every: 12h, stale: 72h}\n"))
+	if err != nil || !c.Cleanup.On() || c.Cleanup.Every != 12*time.Hour || c.Cleanup.Stale != 72*time.Hour {
+		t.Fatalf("set = %+v, %v", c.Cleanup, err)
+	}
+	c, err = Parse([]byte(example + "cleanup: {enabled: false}\n"))
+	if err != nil || c.Cleanup.On() {
+		t.Fatalf("off = %+v, %v", c.Cleanup, err)
+	}
+}
+
+// The desk is on, on its own tmux socket, unless fleet.yaml turns it off.
+func TestTheDeskIsOnByDefault(t *testing.T) {
+	c, err := Parse([]byte(example))
+	if err != nil || !c.Desk.On() || c.Desk.Socket != "fleet-desk" {
+		t.Fatalf("default = %+v, %v", c.Desk, err)
+	}
+	c, err = Parse([]byte(example + "desk: {socket: my-desk}\n"))
+	if err != nil || !c.Desk.On() || c.Desk.Socket != "my-desk" {
+		t.Fatalf("set = %+v, %v", c.Desk, err)
+	}
+	c, err = Parse([]byte(example + "desk: {enabled: false}\n"))
+	if err != nil || c.Desk.On() {
+		t.Fatalf("off = %+v, %v", c.Desk, err)
 	}
 }
 

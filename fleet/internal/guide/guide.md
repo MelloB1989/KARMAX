@@ -108,7 +108,7 @@ mid-turn, and once per change; a fresh session is asked again. Only an admin may
 ## Files
 
     fleetctl run --attach ./spec.pdf "Build to the spec."     # /work/inbox/<task>/, named in the brief
-    fleetctl cp ./notes.pdf agent-03; fleetctl cp agent-03:/work/out ./results   # /work, /tmp; 2 GiB
+    fleetctl cp ./notes.pdf agent-03; fleetctl cp agent-03:/work/out ./results   # /work, /tmp; 2 GiB; a week unused once its task is done, gone
 
 ## Questions, follow-ups, cancel
 
@@ -159,10 +159,10 @@ skill install` adds the fleet-memory skill that says when to use them; a guest g
 fleetd also listens on the Tailscale network, where it knows your device without a token. The operator tags it
 (`fleetctl access admin <device>`, or `access lend <device> <agent>…` for a guest). Install fleetctl from fleetd:
 
-    curl -fsSL http://<fleetd host>:7878/install.sh | sh        # macOS, Linux
-    irm http://<fleetd host>:7878/install.ps1 | iex             # Windows, in PowerShell
+    curl -fsSL http://<fleetd host>:7878/install.sh | sh        # macOS, Linux, Git Bash on Windows
+    irm http://<fleetd host>:7878/install.ps1 | iex             # Windows PowerShell; in cmd: powershell -c "irm … | iex"
 
-It installs fleetctl, runs `fleetctl connect http://<fleetd host>:7878` (which prints who fleetd knows you
+It installs fleetctl (run again, it upgrades the one you have, in place, and leaves no other copy), runs `fleetctl connect http://<fleetd host>:7878` (which prints who fleetd knows you
 as), installs this guide as your Claude Code skill, and registers fleetctl's MCP server with Claude Code
 (`claude mcp add --scope user fleet -- <fleetctl> mcp`), offering only what your role may use.
 Untagged, every command says how to ask. As a guest you use only the agents lent to your device: `run`, `wait --task`, `result`, `followup`,
