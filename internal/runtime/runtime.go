@@ -814,37 +814,34 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			},
 		})
 
-		// WhatsApp → memory: every chat's new messages, set beside what memory
-		// already holds, become facts added, corrected or retired. A chat never
-		// read before starts at KARMAX_WA_MEMORY_SINCE, which is how the same
-		// loop backfills history. See internal/chatmemory.
+		// Chat services → memory: every conversation's new messages, the
+		// operator's own included, set beside what memory already holds,
+		// become facts added, corrected or retired — one loop per service,
+		// over the same syncer. A chat never read before starts at the loop's
+		// _SINCE, which is how the same loop backfills history. See
+		// chatmemoryhost.go and internal/chatmemory.
 		home, _ := os.UserHomeDir()
-		if waCfg, on := waMemoryConfig(os.Getenv, filepath.Join(home, ".karmax"), time.Now(), operatorChats); on {
-			// The directory's answer, which includes the LIDs it has learned.
-			waCfg.IsOperator = who.IsOperator
-			syncer := chatmemory.New(waCfg, waNames, memFactory.For(a0.ID, ns),
-				kvCursors{s: s}, func(c chatmemory.Chat, text string, at time.Time) bool { return s.SentWhatsApp(c.ID, text, at) },
-				func(ctx context.Context, prompt string) (string, error) {
-					return harnessRT.get().harnessExtract(ctx, "wa-memory", prompt)
-				}, log)
-			loopkit.Register(loopkit.Loop{
-				Name:        "wa-memory",
-				Description: "Reads every WhatsApp chat's new messages and keeps long-term memory in step with them: durable facts added under their person or project, outdated ones corrected, finished ones retired.",
-				Schedule:    loopkit.Every("20m"),
-				Run: func(ctx context.Context, k loopkit.Kit) error {
-					res, err := syncer.Tick(ctx)
-					if res.Batches > 0 || err != nil {
-						k.Logf("wa-memory: %d batches: added %d, corrected %d, forgot %d, refused %d; more to read: %v",
-							res.Batches, res.Added, res.Updated, res.Forgotten, res.Refused, res.More)
-					}
-					return err
-				},
-			})
-		}
+		chatMem := chatMemoryDeps{Store: s, Memory: memFactory.For(a0.ID, ns), Getenv: os.Getenv,
+			Home: filepath.Join(home, ".karmax"), Log: log,
+			Extract: func(ctx context.Context, key, prompt string) (string, error) {
+				return harnessRT.get().harnessExtract(ctx, key, prompt)
+			}}
+		waMemory.start(chatMem, waNames, func(c *chatmemory.Config) {
+			// The configured accounts, and the directory's answer, which
+			// includes the LIDs it has learned.
+			c.OperatorIDs, c.IsOperator = operatorChats, who.IsOperator
+		}, func(c chatmemory.Chat, text string, at time.Time) bool { return s.SentWhatsApp(c.ID, text, at) })
 
 		// Google Calendar and Chat: every signed-in account's events to the
 		// primary agent, and the actions to answer them. See googlesource.go.
 		googleSrc = startGoogleSources(s, b, toolReg, integrationReg, a0.ID, log)
+		// Google Chat → memory, through the same logins. KARMAX's own sends
+		// there are the operator's account too, told apart by the sent-as
+		// ledger.
+		gchatMemory.start(chatMem, googleSrc.chatMemorySource(log), nil,
+			func(c chatmemory.Chat, text string, at time.Time) bool {
+				return s.SentAsOperator(gchatMemory.Tag, c.Account, text, at)
+			})
 
 		// AWS: every usable profile's CloudWatch alarms and spend, as events
 		// to the primary agent. KARMAX_SOURCE_AWS=off turns it off. See

@@ -155,3 +155,26 @@ WHERE direction = 'outbound' AND channel_type = 'whatsapp'
 		at.Add(sentWindow).UTC().Format("2006-01-02 15:04:05")).Scan(&n)
 	return err == nil && n > 0
 }
+
+// SentAsOperator reports whether KARMAX itself sent text on a service as one
+// of the operator's logins around at — as the sent-as recorder keeps every
+// such send, with the login it was made as. KARMAX speaks there through the
+// operator's own account, so the service shows its messages as the
+// operator's; this is how they are told apart.
+func (s *Store) SentAsOperator(service, account, text string, at time.Time) bool {
+	text = strings.Join(strings.Fields(text), " ")
+	account = strings.ToLower(strings.TrimSpace(account))
+	if service == "" || account == "" || text == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	err := s.queryRow(`SELECT COUNT(*) FROM channel_messages
+WHERE direction = 'outbound' AND channel_type = ? AND lower(sender_name) = ?
+  AND trim(content) = ? AND created_at BETWEEN ? AND ?`,
+		service, account, text,
+		at.Add(-sentWindow).UTC().Format("2006-01-02 15:04:05"),
+		at.Add(sentWindow).UTC().Format("2006-01-02 15:04:05")).Scan(&n)
+	return err == nil && n > 0
+}
