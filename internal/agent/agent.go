@@ -431,6 +431,8 @@ func (a *Agent) bindAgentTools(in []tools.Tool) []tools.Tool {
 			// What makes background delegation possible: the result comes back
 			// as an event on a later turn rather than blocking this one.
 			cp.Publish = a.bus.Publish
+			// And whose request it serves, so that result reaches them.
+			cp.Origin = a.delegationOrigin
 			out = append(out, &cp)
 		case *builtin.SelfRemindTool:
 			cp := *tt
@@ -1965,8 +1967,11 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 	}
 
 	// Loops and other prompt-carrying events surface their instruction directly
-	// so the agent acts on the prompt rather than parsing raw event JSON.
-	if loopName, p := extractLoopPrompt(evt); p != "" {
+	// so the agent acts on the prompt rather than parsing raw event JSON. Not
+	// a finished delegation: its "task" is what was delegated, and reading it
+	// as an instruction handed the agent its own old request again — without
+	// the result, and without who was waiting for it.
+	if loopName, p := extractLoopPrompt(evt); p != "" && evt.Kind != bus.EventDelegationDone {
 		if loopName != "" {
 			prompt += fmt.Sprintf("Scheduled task **%s** fired. Decide what to do and act on this instruction:\n\n%s\n", loopName, p)
 		} else {
@@ -1980,17 +1985,28 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 	if evt.Kind == bus.EventDelegationDone && evt.Payload != nil {
 		task, _ := evt.Payload["task"].(string)
 		status, _ := evt.Payload["status"].(string)
+		// Who was waiting: the request the turn that started it was serving.
+		// That turn is long over, so this is the only place it is still known.
+		origin := ""
+		if where, _ := evt.Payload["origin_where"].(string); strings.TrimSpace(where) != "" {
+			origin = "\nIt was started for a request from " + where
+			if target, _ := evt.Payload["origin_target"].(string); target != "" {
+				ch, _ := evt.Payload["origin_channel_id"].(string)
+				origin += fmt.Sprintf(" (channel %s, chat id %s)", ch, target)
+			}
+			origin += ". That is who is waiting: the outcome goes there now, with any file it made.\n"
+		}
 		if status == "failed" {
 			reason, _ := evt.Payload["error"].(string)
-			prompt += fmt.Sprintf("A background task you delegated has FAILED.\n\nTask: %s\n\nError: %s\n\n"+
-				"Decide whether to retry it, do it another way, or tell the operator it could not be done. Do not stay silent.\n",
-				task, truncateStr(reason, 1000))
+			prompt += fmt.Sprintf("A background task you delegated has FAILED.\n\nTask: %s\n\nError: %s\n%s\n"+
+				"Decide whether to retry it, do it another way, or tell whoever asked that it could not be done. Do not stay silent.\n",
+				task, truncateStr(reason, 1000), origin)
 			return prompt
 		}
 		out, _ := evt.Payload["output"].(string)
-		prompt += fmt.Sprintf("A background task you delegated has FINISHED.\n\nTask: %s\n\nResult:\n%s\n\n"+
-			"If the operator is waiting on this, tell them the outcome now. Otherwise act on the result.\n",
-			task, truncateStr(out, 4000))
+		prompt += fmt.Sprintf("A background task you delegated has FINISHED.\n\nTask: %s\n\nResult:\n%s\n%s\n"+
+			"If someone is waiting on this, give them the outcome now. Otherwise act on the result.\n",
+			task, truncateStr(out, 4000), origin)
 		return prompt
 	}
 

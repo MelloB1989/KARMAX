@@ -57,6 +57,10 @@ type ClaudeCodeTool struct {
 	// disables the injection entirely (today's behaviour: no such env vars).
 	EngineAPIURL       string
 	EngineBrowserToken string
+	// Origin names the request the agent is serving when a background
+	// delegation starts, so the delegation's result reaches whoever asked
+	// even after the turn that started it is over. Nil: none is known.
+	Origin func() DelegationOrigin
 }
 
 // browserArgs attaches the operator's browser to one invocation.
@@ -221,38 +225,16 @@ func (t *ClaudeCodeTool) Execute(ctx context.Context, input map[string]any) (too
 }
 
 // startBackground hands the work to a goroutine and returns a handle.
+//
+// The goroutine — and the CLI it runs — dies with the daemon, so the
+// delegation is journalled first (delegation.go): which session it runs
+// under, its input, and whose request it serves. A restart resumes it from
+// there, and its result still reaches whoever asked.
 func (t *ClaudeCodeTool) startBackground(input map[string]any, prompt string) tools.ToolResult {
 	jobID := uuid.New().String()
-	go func() {
-		// Not the caller's context: it dies with the turn, which is the whole
-		// point of running this after the turn is over.
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-		defer cancel()
-
-		res, err := t.run(ctx, input, prompt)
-		payload := map[string]any{
-			"job_id": jobID,
-			"tool":   "claude_code.call",
-			"task":   truncate(prompt, 500),
-		}
-		switch {
-		case err != nil:
-			payload["status"], payload["error"] = "failed", err.Error()
-		case res.IsError:
-			payload["status"], payload["error"] = "failed", res.Error
-		default:
-			payload["status"] = "completed"
-			if out, ok := res.Output.(map[string]any); ok {
-				payload["output"] = out["output"]
-				payload["session_id"] = out["session_id"]
-			}
-		}
-		if err := t.Publish(bus.NewEvent(bus.EventDelegationDone, t.AgentID, payload)); err != nil {
-			// The work happened; only the notification failed, and the log is
-			// the only place left to say so.
-			fmt.Fprintf(os.Stderr, "karmax: background delegation %s finished but could not be announced: %v\n", jobID, err)
-		}
-	}()
+	input = t.pinSession(input, prompt)
+	t.journalDelegation(jobID, input, prompt)
+	go t.runDelegation(jobID, input, prompt)
 
 	return tools.SuccessResult(map[string]any{
 		"status": "started",
@@ -306,6 +288,12 @@ func (t *ClaudeCodeTool) run(ctx context.Context, input map[string]any, prompt s
 			}
 		}
 		resuming = sessionID != ""
+	}
+
+	// A session id minted ahead of the run (a journalled delegation's), for a
+	// session that does not exist yet: started under that id, not resumed.
+	if fresh, _ := input[freshSessionKey].(string); sessionID == "" && sessionKey == "" && looksLikeUUID(fresh) {
+		sessionID, resuming = fresh, false
 	}
 
 	// Ephemeral one-off tasks never reuse or become resumable sessions.

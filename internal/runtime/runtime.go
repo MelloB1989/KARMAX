@@ -1460,6 +1460,11 @@ func (rt *KarmaxRuntime) routeToAgent(evt bus.Event) error {
 	if !ok {
 		return nil
 	}
+	// A delegation started for a request a task now owns reports to that
+	// task, not to a turn that no longer knows who asked.
+	if rt.delegationToTask(evt) {
+		return nil
+	}
 	if !rt.openTurn(evt) {
 		// Already in flight — a redelivery of something still running.
 		return nil

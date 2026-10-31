@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/store"
+	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/pkg/karmahelper"
 	"go.uber.org/zap"
 )
@@ -228,6 +229,16 @@ func (a *Agent) CurrentRequest() *Request {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.current
+}
+
+// delegationOrigin is the request a delegation started now serves: the one
+// the agent's thinking is on.
+func (a *Agent) delegationOrigin() builtin.DelegationOrigin {
+	req := a.CurrentRequest()
+	if req == nil {
+		return builtin.DelegationOrigin{}
+	}
+	return builtin.DelegationOrigin{RequestID: req.ID, ChannelID: req.ChannelID, Target: req.Target, Where: req.Where}
 }
 
 // working marks req as the turn in progress until the returned func is called.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -70,7 +71,7 @@ func (rt *KarmaxRuntime) handOff(h agent.Handoff) (agent.HandoffResult, error) {
 		Goal:      requestGoal(req),
 		Context:   clip(strings.TrimSpace(h.Context), maxTaskContext),
 		ChannelID: req.ChannelID, Target: req.Target,
-		Progress: handoffProgress(h),
+		Progress: handoffProgress(h) + delegationsNote(rt.delegationsFor(req.ID)),
 	}, h.Why)
 	if err != nil {
 		return agent.HandoffResult{}, fmt.Errorf("take the request over: %w", err)
@@ -139,6 +140,21 @@ func handoffProgress(h agent.Handoff) string {
 		b.WriteString("Check what those left behind before redoing any of it.")
 	} else {
 		b.WriteString(" It had done nothing yet that KARMAX can see.")
+	}
+	return b.String()
+}
+
+// delegationsNote tells a task about delegations still working for its
+// request: their results are added to its progress when they finish.
+func delegationsNote(running []string) string {
+	if len(running) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\nStill running for this request, started by that turn (their results are added here when they finish — " +
+		"do not start the same work again; if you need what they produce, end the round STATUS: working and it will be here):\n")
+	for _, r := range running {
+		b.WriteString("- " + r + "\n")
 	}
 	return b.String()
 }
@@ -268,6 +284,81 @@ func (rt *KarmaxRuntime) notifyOnce(key, agentID, kind, title, body string) {
 		builtin.PushAppNotification(rt.store, agentID, kind, title, body)
 		return nil
 	})
+}
+
+// resumeDelegations restarts the background delegations the daemon died
+// during (builtin.ResumeDelegations), each for the agent that started it.
+func (rt *KarmaxRuntime) resumeDelegations() {
+	if rt.store == nil || rt.bus == nil {
+		return
+	}
+	base := builtin.ClaudeCodeTool{Store: rt.store, Publish: rt.bus.Publish}
+	if rt.cfg != nil {
+		base.DataDir = rt.cfg.Karmax.DataDir
+		base.EngineAPIURL, base.EngineBrowserToken = rt.apiBaseURL, rt.apiBrowserToken
+	}
+	if rt.memory != nil {
+		base.MemoryMgr = rt.memory.For(rt.loopDefaultAgent, rt.loopNamespace())
+	}
+	if n := builtin.ResumeDelegations(base); n > 0 {
+		rt.log.Info("resumed background delegations the daemon died during", zap.Int("count", n))
+	}
+}
+
+// delegationToTask gives a finished delegation's result to the task that
+// owns the request it was started for, instead of a turn that no longer
+// knows who asked — and wakes that task. False when no live task owns it.
+func (rt *KarmaxRuntime) delegationToTask(evt bus.Event) bool {
+	if evt.Kind != bus.EventDelegationDone || rt.store == nil {
+		return false
+	}
+	reqID, _ := evt.Payload["origin_request"].(string)
+	task, found, err := rt.store.GetTaskForRequest(reqID)
+	if err != nil || !found {
+		return false
+	}
+	switch task.Status {
+	case store.TaskOpen, store.TaskWorking, store.TaskBlocked:
+	default:
+		return false
+	}
+	status, _ := evt.Payload["status"].(string)
+	out, _ := evt.Payload["output"].(string)
+	if status == "failed" {
+		out, _ = evt.Payload["error"].(string)
+	}
+	job, _ := evt.Payload["job_id"].(string)
+	note := fmt.Sprintf("\n\n## A delegation started for this request has %s (job %s)\n\n%s\n\n"+
+		"Use what it produced rather than redoing it.", orDefault(status, "finished"), job, clip(strings.TrimSpace(out), 4000))
+	if err := rt.appendTaskProgress(task.ID, note); err != nil {
+		rt.log.Warn("could not give a task its delegation's result", zap.String("task", task.ID), zap.Error(err))
+		return false
+	}
+	if task.Status != store.TaskBlocked {
+		now := time.Now()
+		_ = rt.store.UpdateTask(task.ID, store.TaskUpdate{NextActionAt: &now, KeepLastError: true})
+	}
+	rt.log.Info("a delegation's result went to the task that owns its request",
+		zap.String("task", task.ID), zap.String("job", job), zap.String("status", status))
+	rt.kickTasks()
+	return true
+}
+
+// delegationsFor describes the delegations still running for a request, so
+// the task that takes it over waits for them instead of doing the work twice.
+func (rt *KarmaxRuntime) delegationsFor(requestID string) []string {
+	rows, err := rt.store.ListTasks(store.TaskDelegated, 50)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, r := range rows {
+		if r.RequestID == requestID {
+			out = append(out, fmt.Sprintf("job %s (Claude Code session %s): %s", strings.TrimPrefix(r.ID, "delegation-"),
+				r.SessionKey, clip(firstLineOf(r.Goal), 200)))
+		}
+	}
+	return out
 }
 
 // chatRequest is the request a message in the app's chat makes, journalled

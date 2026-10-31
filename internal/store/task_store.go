@@ -36,6 +36,13 @@ const (
 	TaskCancelled = "cancelled"
 )
 
+// TaskDelegated is a background Claude Code delegation in flight. Its process
+// dies with the daemon, so the row is what a restart resumes it from: the
+// session id (SessionKey) it runs under, its input (Progress, as JSON), and
+// whose request it serves (RequestID, ChannelID, Target). Owned by the
+// delegation, never by the due-tasks poller.
+const TaskDelegated = "delegated"
+
 // Task is one piece of work owned until it is finished.
 type Task struct {
 	ID, AgentID, Title, Goal, Status string

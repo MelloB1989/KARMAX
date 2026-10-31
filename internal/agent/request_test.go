@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/MelloB1989/karmax/internal/bus"
 )
 
 // fakeOwner is the task machinery: it records what it was handed.
@@ -137,6 +139,22 @@ func TestTheTurnIsToldHowToHandALongRequestOver(t *testing.T) {
 	a.SetTaskOwner(nil)
 	if got := a.requestContext(req); got != "" {
 		t.Errorf("with nothing to take a request over, the turn was told to hand it over:\n%s", got)
+	}
+}
+
+// A delegation's result names who was waiting for it, so the turn that
+// reads it — long after the one that started it — knows where it goes.
+func TestADelegationsResultSaysWhoIsWaiting(t *testing.T) {
+	evt := bus.NewEvent(bus.EventDelegationDone, "nexus", map[string]any{
+		"status": "completed", "task": "Build the Northwind deck", "output": "Wrote /tmp/deck.pdf",
+		"origin_where": "the operator, in the chat \"Lakeside team\"", "origin_channel_id": "whatsapp-main",
+		"origin_target": "120363000000000001@g.us",
+	})
+	p := buildPromptFromEvent(evt, nil)
+	for _, want := range []string{"Lakeside team", "120363000000000001@g.us", "who is waiting", "Wrote /tmp/deck.pdf"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt omits %q:\n%s", want, p)
+		}
 	}
 }
 

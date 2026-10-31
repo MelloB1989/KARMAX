@@ -70,6 +70,19 @@ UPDATE agent_turns SET status = 'handed_off', finished_at = ?, error = ? WHERE e
 	return task, created, nil
 }
 
+// EventLogged reports whether an event with this id is already on the bus —
+// how work that announces its end under a derived id knows, after a crash,
+// that it already did.
+func (s *Store) EventLogged(eventID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	if err := s.queryRow(`SELECT COUNT(*) FROM event_log WHERE event_id = ?`, eventID).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
 // GetTaskForRequest is the task that took the request over, if one has.
 func (s *Store) GetTaskForRequest(requestID string) (Task, bool, error) {
 	if strings.TrimSpace(requestID) == "" {

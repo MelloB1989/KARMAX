@@ -359,6 +359,39 @@ func TestALaterPassIsToldWhatIsAlreadyOwned(t *testing.T) {
 	}
 }
 
+// A delegation the turn started finishes after the request became a task:
+// its result goes to that task — waking it — not to a turn that no longer
+// knows who asked. With no task owning the request, it goes to the agent.
+func TestADelegationsResultGoesToTheTaskThatOwnsItsRequest(t *testing.T) {
+	f := newLongWorkFlow(t, "")
+	task, _, err := f.db.TakeOverRequest(store.Task{RequestID: "ev-9", Goal: "make the deck",
+		ChannelID: waID, Target: opChat, Status: store.TaskBlocked}, "out of time")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := bus.NewEvent(bus.EventDelegationDone, "nexus", map[string]any{
+		"job_id": "job-1", "status": "completed", "output": "Wrote /srv/out/northwind.pdf",
+		"origin_request": "ev-9", "origin_target": opChat,
+	})
+	if err := f.rt.routeToAgent(done); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := f.db.GetTask(task.ID)
+	if !strings.Contains(got.Progress, "/srv/out/northwind.pdf") {
+		t.Errorf("the task did not get its delegation's result: %q", got.Progress)
+	}
+	if _, found, _ := f.db.AgentTurnByEvent(done.ID); found {
+		t.Error("a turn was opened for a result its task already has")
+	}
+
+	other := bus.NewEvent(bus.EventDelegationDone, "nexus", map[string]any{
+		"job_id": "job-2", "status": "completed", "output": "done", "origin_request": "ev-unowned",
+	})
+	if f.rt.delegationToTask(other) {
+		t.Error("a result no task owns was kept from the agent")
+	}
+}
+
 func turnStatusFor(t *testing.T, db *store.Store, eventID string) string {
 	t.Helper()
 	row, found, err := db.AgentTurnByEvent(eventID)

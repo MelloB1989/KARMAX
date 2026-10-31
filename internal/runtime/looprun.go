@@ -371,6 +371,10 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 	// anything still marked running when this process is only now starting was
 	// killed mid-flight.
 	rt.resumeInterruptedTurns()
+	// Background delegations died with the process that ran them; each is
+	// resumed from its journal row, and its result still reaches whoever it
+	// was started for.
+	rt.resumeDelegations()
 	// Sub-agents ran in goroutines that died with the process, so a row still
 	// marked running is a lie that would count against the concurrency cap
 	// forever.
