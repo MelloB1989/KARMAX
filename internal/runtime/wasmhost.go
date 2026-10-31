@@ -370,9 +370,24 @@ func (w *wasmKit) Tool(ctx context.Context, name string, input map[string]any) (
 		// full agent gave up on it and the operator was told), this run says
 		// nothing more in the chat it came from — no fallback answer, no
 		// "they're away" note to the person who asked.
-		if err := w.run.Load().refusal("sending into this chat"); err != nil &&
-			sendsTo(input, triggerChat(w.currentTrigger())) {
-			return "", err
+		trig := w.currentTrigger()
+		if sendsTo(input, triggerChat(trig)) {
+			if err := w.run.Load().refusal("sending into this chat"); err != nil {
+				return "", err
+			}
+			// The operator's own message is never answered as if they were
+			// someone else: a fallback built for third parties — "they're
+			// away, I've let them know" — is refused here, whichever route of
+			// whichever workflow reached it.
+			if k := (&loopKit{rt: w.rt, trigger: trig}); k.triggerFromOperator() {
+				asked, _ := trig.Payload["content"].(string)
+				if text := sendText(input); text != "" && w.rt.treatsOperatorAsOther(ctx, asked, text) {
+					w.rt.log.Warn("refused a reply that treats the operator as someone else",
+						zap.String("loop", w.loop), zap.String("chat", triggerChat(trig)))
+					return "", fmt.Errorf("refused: the operator sent the message this answers, in this chat — " +
+						"they are not away and need not be told about it; answer them, or say plainly what failed")
+				}
+			}
 		}
 		w.outbound.Add(1)
 	}

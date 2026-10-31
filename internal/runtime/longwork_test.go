@@ -407,6 +407,80 @@ func TestADelegationsResultGoesToTheTaskThatOwnsItsRequest(t *testing.T) {
 	}
 }
 
+// sendRecorder is a sending tool that records what it was asked to send.
+type sendRecorder struct {
+	mu   sync.Mutex
+	sent []string
+}
+
+func (s *sendRecorder) Manifest() tools.ToolManifest {
+	return tools.ToolManifest{Name: "whatsapp_send_message"}
+}
+func (s *sendRecorder) Execute(_ context.Context, in map[string]any) (tools.ToolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	text, _ := in["text"].(string)
+	s.sent = append(s.sent, text)
+	return tools.SuccessResult(map[string]any{"sent": true}), nil
+}
+
+// The operator's own message is never answered as if they were someone else
+// — whichever route of whichever workflow composed the reply — and a run
+// whose request a task owns says nothing more in that chat. Real answers to
+// the operator, and messages to other people, still go.
+func TestTheOperatorsOwnMessageIsNotAnsweredAsIfTheyWereAway(t *testing.T) {
+	reg := tools.NewRegistry()
+	send := &sendRecorder{}
+	reg.Register(send)
+	rt := &KarmaxRuntime{log: zap.NewNop(), tools: reg}
+	rt.taskHooks.decide = func(_ context.Context, state any, _ loopkit.Questions) (*loopkit.Decision, error) {
+		reply, _ := state.(map[string]any)["reply"].(string)
+		yes := 0.05
+		if strings.Contains(reply, "away") {
+			yes = 0.95
+		}
+		return &loopkit.Decision{Answers: map[string]loopkit.Answer{"treats_operator_as_other": {Noul: yes}}}, nil
+	}
+	w := &wasmKit{rt: rt, loop: "chat-monitor"}
+	w.run.Store(&loopRunState{})
+	w.setTrigger(loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: map[string]any{
+		"channel_id": teamChat, "content": "@karmax make the Northwind deck", "sender_is_operator": true,
+	}})
+	ctx := context.Background()
+
+	if _, err := w.Tool(ctx, "whatsapp_send_message", map[string]any{"to": teamChat,
+		"text": "Hi, this is KARMAX — he's away from his phone, I've let him know."}); err == nil {
+		t.Error("an away note went to the operator who had just asked")
+	}
+	if _, err := w.Tool(ctx, "whatsapp_send_message", map[string]any{"to": teamChat,
+		"text": "On it — the deck will be here in a few minutes."}); err != nil {
+		t.Errorf("a real answer to the operator was refused: %v", err)
+	}
+
+	w.run.Load().handedTo("req-ask-9")
+	if _, err := w.Tool(ctx, "whatsapp_send_message", map[string]any{"to": teamChat, "text": "Here's a quick version."}); err == nil {
+		t.Error("the run spoke for a request a task owns")
+	}
+	if _, err := w.Tool(ctx, "whatsapp_send_message", map[string]any{"to": opChat, "text": "FYI"}); err != nil {
+		t.Errorf("a message to another chat was refused: %v", err)
+	}
+	if len(send.sent) != 2 {
+		t.Errorf("sent %v, want only the real answer and the other chat's message", send.sent)
+	}
+
+	// A third party's message: the guard does not ask, the note is theirs.
+	asked := false
+	rt.taskHooks.decide = func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error) {
+		asked = true
+		return &loopkit.Decision{}, nil
+	}
+	w.run.Store(&loopRunState{})
+	w.setTrigger(loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: map[string]any{"channel_id": teamChat, "content": "hi"}})
+	if _, err := w.Tool(ctx, "whatsapp_send_message", map[string]any{"to": teamChat, "text": "He's away, I'll let him know."}); err != nil || asked {
+		t.Errorf("a note to a third party was checked or refused: err=%v asked=%v", err, asked)
+	}
+}
+
 func turnStatusFor(t *testing.T, db *store.Store, eventID string) string {
 	t.Helper()
 	row, found, err := db.AgentTurnByEvent(eventID)

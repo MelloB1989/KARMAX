@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -196,6 +198,38 @@ func rootCauseText(err error) string {
 		return strings.TrimSpace(s[i+2:])
 	}
 	return s
+}
+
+// sendText is the words a sending tool's input carries.
+func sendText(input map[string]any) string {
+	for _, key := range []string{"text", "message", "content", "body"} {
+		if v, ok := input[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// treatsOperatorAsOther asks Jev whether a reply to the operator's own
+// message speaks of them as someone else — away, to be told, to get back to
+// the sender. A workflow's fallback written for third parties (an "away"
+// note) sent that to the operator, who had asked for something in that very
+// chat. Unavailable Jev means no: the guard never stops a real answer.
+func (rt *KarmaxRuntime) treatsOperatorAsOther(ctx context.Context, asked, reply string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	d, err := rt.taskDecide(ctx, map[string]any{
+		"operator_message": clip(asked, 600),
+		"reply":            clip(reply, 800),
+	}, loopkit.Questions{
+		"treats_operator_as_other": loopkit.Noul("The operator — the person whose account this is — just sent the operator_message in a chat. " +
+			"The reply is about to be sent into that same chat. Does the reply speak of the operator as someone else who is absent: " +
+			"saying they are away or unavailable, that they have been notified or will be told, or that they will get back to the sender?"),
+	})
+	if err != nil {
+		return false
+	}
+	return d.Yes("treats_operator_as_other", 0.7)
 }
 
 // triggerChat is the chat a run's message came from, or "".
