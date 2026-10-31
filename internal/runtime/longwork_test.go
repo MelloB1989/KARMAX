@@ -147,7 +147,19 @@ func newLongWorkFlow(t *testing.T, dbPath string) *longWorkFlow {
 
 func newLongWorkFlowDeck(t *testing.T, dbPath, deck string) *longWorkFlow {
 	t.Helper()
+	return newLongWorkFlowWith(t, dbPath, deck, longWorkCLI)
+}
+
+// newLongWorkFlowWith is a daemon whose Claude Code is cli.
+func newLongWorkFlowWith(t *testing.T, dbPath, deck string, cli func(t *testing.T, deck string) string) *longWorkFlow {
+	t.Helper()
 	dir := t.TempDir()
+	if dbPath == "" {
+		dbPath = filepath.Join(dir, "t.db")
+	}
+	if deck == "" {
+		deck = filepath.Join(filepath.Dir(dbPath), "northwind-deck.pdf")
+	}
 	db, err := store.New(dbPath, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +180,7 @@ func newLongWorkFlowDeck(t *testing.T, dbPath, deck string) *longWorkFlow {
 	f := &longWorkFlow{a: a, db: db, deck: deck}
 
 	sup := harness.New(harness.Config{
-		Binary: longWorkCLI(t, deck), WorkdirRoot: filepath.Join(dir, "sessions"), MaxLive: 4, Env: os.Environ(),
+		Binary: cli(t, deck), WorkdirRoot: filepath.Join(dir, "sessions"), MaxLive: 4, Env: os.Environ(),
 		Policies: map[string]harness.Policy{
 			"orchestrator": {TurnTimeout: 1500 * time.Millisecond, Idle: time.Minute},
 			"task":         {TurnTimeout: 20 * time.Second, Idle: time.Minute},

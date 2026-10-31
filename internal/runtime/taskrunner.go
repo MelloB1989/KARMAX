@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -184,7 +185,7 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 			LastError: fmt.Sprintf("no progress after %d rounds", task.Attempts),
 		}
 		if task.RequestID != "" {
-			rt.completeRequestRound(task, update, store.TaskFailed, text+"\n\n"+firstLines(task.Progress, 6), nil)
+			rt.completeRequestRound(task, update, store.TaskFailed, text+"\n\n"+firstLines(task.Progress, 6), nil, nil)
 			return
 		}
 		_ = rt.store.UpdateTask(task.ID, update)
@@ -273,7 +274,7 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 	// A request's outcome is owed to whoever asked, not offered: it is
 	// recorded with the round and delivered once (completeRequestRound).
 	if task.RequestID != "" && status != store.TaskWorking {
-		rt.completeRequestRound(task, update, status, text, files)
+		rt.completeRequestRound(task, update, status, text, files, turn.ToolCalls)
 		return
 	}
 
@@ -289,14 +290,26 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 // round, so a crash anywhere after this point is finished by
 // deliverOwedResults on the next start — and the ledger keeps a result that
 // already went out from going out again.
-func (rt *KarmaxRuntime) completeRequestRound(task store.Task, update store.TaskUpdate, status, text string, files []string) {
+func (rt *KarmaxRuntime) completeRequestRound(task store.Task, update store.TaskUpdate, status, text string, files []string, calls []harness.ToolCall) {
 	round := task.Attempts + 1
 	if status == store.TaskBlocked {
 		text = "I need something from you to carry on with \"" + task.Title + "\":\n\n" + text
 	}
-	owed := []store.Delivery{{Key: fmt.Sprintf("task:%s:%d:00", task.ID, round),
-		ChannelID: task.ChannelID, Target: task.Target, Content: strings.TrimSpace(text)}}
+	// What the session already sent the requester itself — however it sent
+	// it — is not owed again.
+	selfText, selfFiles := sessionDelivered(calls, task.Target, files)
+	var owed []store.Delivery
+	if selfText {
+		rt.log.Info("a task delivered its result to its requester itself; not sending it again",
+			zap.String("task", task.ID))
+	} else {
+		owed = append(owed, store.Delivery{Key: fmt.Sprintf("task:%s:%d:00", task.ID, round),
+			ChannelID: task.ChannelID, Target: task.Target, Content: strings.TrimSpace(text)})
+	}
 	for i, path := range files {
+		if selfFiles[path] {
+			continue
+		}
 		owed = append(owed, store.Delivery{Key: fmt.Sprintf("task:%s:%d:%02d", task.ID, round, i+1),
 			ChannelID: task.ChannelID, Target: task.Target, Content: comms.FileMessage(path), FilePath: path})
 	}
@@ -409,6 +422,54 @@ func agentTurn(t harness.Turn) agent.HarnessTurn {
 		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input, Failed: tc.Failed})
 	}
 	return agent.HarnessTurn{Available: true, Text: t.Text, ToolCalls: calls}
+}
+
+// sendCommand recognises a shell command that sends a message: wacli's send,
+// or a KARMAX sending tool called through the CLI.
+var sendCommand = regexp.MustCompile(`(?i)(\bwacli\b[^|;&\n]*\bsend\b|comms[._]send|whatsapp[._]send|send[._]media)`)
+
+// sessionDelivered reads a round's own tool calls for what it sent to target
+// itself: whether a message with text went there, and which of files did.
+// The brief tells a request's task not to deliver its result itself, and a
+// raw `wacli send` goes around comms, so this is how the runner knows not to
+// deliver the same result a second time. A call that failed sent nothing.
+func sessionDelivered(calls []harness.ToolCall, target string, files []string) (text bool, sent map[string]bool) {
+	sent = map[string]bool{}
+	chat := normalizeChat(target)
+	if chat == "" {
+		return false, sent
+	}
+	for _, tc := range calls {
+		if tc.Failed {
+			continue
+		}
+		var cmd string
+		var in map[string]any
+		if json.Unmarshal(tc.Input, &in) == nil {
+			cmd, _ = in["command"].(string)
+		}
+		if cmd == "" {
+			// A sending tool called natively: its input is the command.
+			if !sendCommand.MatchString(tc.Name) {
+				continue
+			}
+			cmd = tc.Name + " " + string(tc.Input)
+		}
+		if !sendCommand.MatchString(cmd) || !strings.Contains(strings.ToLower(cmd), chat) {
+			continue
+		}
+		low := strings.ToLower(cmd)
+		if strings.Contains(low, "--text") || strings.Contains(low, "text=") || strings.Contains(low, "content=") ||
+			strings.Contains(low, `"text"`) || strings.Contains(low, `"content"`) {
+			text = true
+		}
+		for _, f := range files {
+			if strings.Contains(cmd, f) {
+				sent[f] = true
+			}
+		}
+	}
+	return text, sent
 }
 
 // fileLine is how a round names a file its requester should receive.

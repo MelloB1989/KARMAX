@@ -237,7 +237,7 @@ func (rt *KarmaxRuntime) deliverWith(d store.Delivery, send func() error) (bool,
 	case store.DeliverySent:
 		return false, nil
 	case store.DeliveryPending:
-		if rt.store.SentSince(d.Target, d.Content, since) {
+		if rt.sentAlready(d, since) {
 			_ = rt.store.FinishDelivery(d.Key)
 			return false, nil
 		}
@@ -254,6 +254,20 @@ func (rt *KarmaxRuntime) deliverWith(d store.Delivery, send func() error) (bool,
 		rt.log.Warn("could not record a delivery", zap.String("key", d.Key), zap.Error(err))
 	}
 	return true, nil
+}
+
+// sentAlready reports whether a delivery an earlier attempt began did go out:
+// in the record comms keeps (which now includes sends seen by their echo), or
+// in the channel's own history, which holds a send from the moment it
+// happened — before anything here could record it.
+func (rt *KarmaxRuntime) sentAlready(d store.Delivery, since time.Time) bool {
+	if rt.store != nil && rt.store.SentSince(d.Target, d.Content, since) {
+		return true
+	}
+	if rt.comms != nil && d.ChannelID != "" {
+		return rt.comms.SentSince(d.ChannelID, d.Target, d.Content, since)
+	}
+	return false
 }
 
 // sendFrom sends through comms, or the task runner's test seam.
