@@ -203,6 +203,7 @@ func TestAHardFloorProposalStillWaitsForTheOperator(t *testing.T) {
 	}{
 		"named":          {jevAnswers(nil, nil), "payments or spending money"},
 		"classified":     {jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0.9}}), ""},
+		"unsure":         {jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0.4}}), ""},
 		"unclassifiable": {jevDown, ""},
 	} {
 		sink := &sendSink{}

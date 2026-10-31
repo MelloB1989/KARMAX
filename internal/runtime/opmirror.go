@@ -145,6 +145,11 @@ func (m *operatorMirror) worthWhatsApp(ctx context.Context, ev builtin.MirrorEve
 	return ev.Urgent || m.urgent(ctx, ev)
 }
 
+// offFloorBelow is how sure Jev must be that a proposal is NOT on the hard
+// floor (its "on the floor" likelihood below this) for it to be carried out
+// without the operator.
+const offFloorBelow = 0.3
+
 // onFloor asks whether an approval that did not name a floor rule — a loop's
 // proposal — is on the hard floor. An approval waits on a person, so one that
 // cannot be classified is treated as on it: a missed hard-floor approval
@@ -166,7 +171,9 @@ func (m *operatorMirror) onFloor(ctx context.Context, ev builtin.MirrorEvent) bo
 	if err != nil || dec == nil {
 		return true
 	}
-	return dec.Yes("floor", 0.5)
+	// Off the floor means carried out without anyone's yes, so it takes a
+	// clear no: an unsure answer leaves the proposal with the operator.
+	return dec.Yes("floor", offFloorBelow)
 }
 
 // urgencyLevels is the length of the urgency rubric below.
