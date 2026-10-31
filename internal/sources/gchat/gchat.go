@@ -293,7 +293,12 @@ func (w *Watcher) Tick(ctx context.Context, account string, publish func(sources
 }
 
 // own reports whether the operator wrote m.
-func (w *Watcher) own(me Me, m Message) bool {
+func (w *Watcher) own(me Me, m Message) bool { return me.Wrote(m) }
+
+// Wrote reports whether the account's own Chat user wrote m: by the sender's
+// user when both sides have one, and by name only when the path gives no user
+// at all.
+func (me Me) Wrote(m Message) bool {
 	if m.Sender != "" && me.User != "" {
 		return m.Sender == me.User
 	}
