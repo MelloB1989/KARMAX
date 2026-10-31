@@ -111,7 +111,8 @@ func (a *Agent) turnReport(evt bus.Event, since time.Time, response string) stri
 		}
 	}
 	if p.ToWhatsApp(policy.Sent) {
-		sent := append(a.sentSince(since), declaredSends(response)...)
+		recorded, dests := a.sentSince(since)
+		sent := append(recorded, newDeclarations(declaredSends(response), dests)...)
 		if len(sent) > 0 {
 			if b.Len() > 0 {
 				b.WriteString("\n")
@@ -162,17 +163,18 @@ func eventHeadline(evt bus.Event) string {
 	return string(evt.Kind)
 }
 
-// sentSince lists what went to other people since the turn began, once each.
-// Loop and daemon posts are not the agent's, the slow-turn ack is not a
-// message, and the operator's own chats are not "other people".
-func (a *Agent) sentSince(since time.Time) []string {
+// sentSince lists what went to other people since the turn began, once each,
+// with where each went. Loop and daemon posts are not the agent's, the
+// slow-turn ack is not a message, and the operator's own chats are not "other
+// people".
+func (a *Agent) sentSince(since time.Time) (out, dests []string) {
 	if a.store == nil {
-		return nil
+		return nil, nil
 	}
 	rows, err := a.store.ListOutboundSince(since, 50)
 	if err != nil {
 		a.log.Warn("could not list what this turn sent", zap.Error(err))
-		return nil
+		return nil, nil
 	}
 	a.ops.mu.Lock()
 	defer a.ops.mu.Unlock()
@@ -184,7 +186,6 @@ func (a *Agent) sentSince(since time.Time) []string {
 			delete(a.ops.reported, id)
 		}
 	}
-	var out []string
 	for _, r := range rows {
 		if !comms.IsAnswerProducer(r.SenderID) || strings.TrimSpace(r.Content) == ackMessage {
 			continue
@@ -199,8 +200,31 @@ func (a *Agent) sentSince(since time.Time) []string {
 		if as := strings.TrimSpace(r.SenderName); as != "" {
 			label += " as " + as
 		}
-		out = append(out, fmt.Sprintf("%s → %s: “%s”", label, a.recipientName(r.ChannelID),
+		to := a.recipientName(r.ChannelID)
+		out = append(out, fmt.Sprintf("%s → %s: “%s”", label, to,
 			truncateStr(strings.Join(strings.Fields(r.Content), " "), 90)))
+		dests = append(dests, r.ChannelID, to)
+	}
+	return out, dests
+}
+
+// newDeclarations drops the SENT: lines that name somewhere a recorded send
+// already went: the model declaring a send KARMAX saw itself is the same send,
+// in other words.
+func newDeclarations(declared, dests []string) []string {
+	var out []string
+	for _, line := range declared {
+		lower := strings.ToLower(line)
+		seen := false
+		for _, d := range dests {
+			if d = strings.ToLower(strings.TrimSpace(d)); len(d) >= 4 && strings.Contains(lower, d) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			out = append(out, line)
+		}
 	}
 	return out
 }

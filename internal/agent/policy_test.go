@@ -110,6 +110,26 @@ func TestATurnReportsWhatWasSentAsTheOperator(t *testing.T) {
 	}
 }
 
+// A send KARMAX recorded itself is listed once, even when the model also
+// declared it in a SENT: line of its own wording. Live, every GitHub review
+// appeared twice in one report: once from the store, once from the model.
+func TestASendIsReportedOnceWhenTheModelAlsoDeclaresIt(t *testing.T) {
+	a := policyAgent(t, policy.Default())
+	since := time.Now().Add(-time.Minute)
+	if err := a.store.SaveChannelMessage(store.StoredChannelMessage{ID: "g1", ChannelID: "contoso/app#12",
+		ChannelType: "github", SenderName: "octo-work", Direction: "outbound", Content: "approved: LGTM"}); err != nil {
+		t.Fatal(err)
+	}
+	report := a.turnReport(accountEvent(false), since,
+		"Approved it.\nSENT: github:octo-work → contoso/app#12: approving review\nSENT: email → dana@example.com: the release notes")
+	if n := strings.Count(report, "contoso/app#12"); n != 1 {
+		t.Errorf("the review is listed %d times, want once:\n%s", n, report)
+	}
+	if !strings.Contains(report, "dana@example.com") {
+		t.Errorf("a send only the model could see was dropped:\n%s", report)
+	}
+}
+
 // An urgent event reaches the operator with what was done about it.
 func TestAnUrgentTurnIsReported(t *testing.T) {
 	a := policyAgent(t, policy.Default())
