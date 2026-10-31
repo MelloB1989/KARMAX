@@ -45,7 +45,9 @@ func (w *Wacli) get(ctx context.Context, path string, q url.Values, out any) err
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// Chats lists every chat wacli holds.
+// Chats lists every conversation wacli holds. Channels and status updates
+// are broadcast at the operator, not said to them, and are left out; a direct
+// chat with no name is named by its number.
 func (w *Wacli) Chats(ctx context.Context) ([]Chat, error) {
 	var out struct {
 		Chats []struct {
@@ -60,8 +62,15 @@ func (w *Wacli) Chats(ctx context.Context) ([]Chat, error) {
 	}
 	chats := make([]Chat, 0, len(out.Chats))
 	for _, c := range out.Chats {
+		if strings.HasSuffix(c.ID, "@newsletter") || strings.HasSuffix(c.ID, "@broadcast") {
+			continue
+		}
 		at, _ := time.Parse(time.RFC3339, c.LastMessageAt)
-		chats = append(chats, Chat{ID: c.ID, Name: c.Name, IsGroup: c.IsGroup, LastMessageAt: at})
+		name := c.Name
+		if name == "" && !c.IsGroup {
+			name = shownID(bare(c.ID))
+		}
+		chats = append(chats, Chat{ID: c.ID, Name: name, IsGroup: c.IsGroup, LastMessageAt: at})
 	}
 	return chats, nil
 }
@@ -76,7 +85,8 @@ const firstWindow = 7 * 24 * time.Hour
 // messages and skip everything between. Reading forward instead takes a window
 // ahead of the cursor, narrows it while it comes back full, and slides past
 // windows with nothing in them.
-func (w *Wacli) Messages(ctx context.Context, chat string, after time.Time, limit int) ([]Message, error) {
+func (w *Wacli) Messages(ctx context.Context, c Chat, after time.Time, limit int) ([]Message, error) {
+	chat := c.ID
 	if limit <= 0 {
 		limit = 100
 	}

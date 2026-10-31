@@ -29,7 +29,7 @@ func TestLiveWacliReadsForwardFromTheCursor(t *testing.T) {
 		}
 	}
 	from := time.Now().AddDate(0, -1, 0)
-	got, err := src.Messages(ctx, busiest.ID, from, 50)
+	got, err := src.Messages(ctx, busiest, from, 50)
 	if err != nil || len(got) == 0 {
 		t.Fatalf("messages: %d, %v", len(got), err)
 	}

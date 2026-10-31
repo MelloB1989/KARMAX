@@ -29,7 +29,7 @@ func (s *Syncer) apply(ctx context.Context, ops []op, shown []memory.SearchResul
 				continue
 			}
 			if err := s.mem.Write(e); err != nil {
-				s.log.Warn("wa-memory: could not add a fact", zap.String("fact", oneLine(e.Content, 120)), zapErr(err))
+				s.log.Warn(s.cfg.Name+": could not add a fact", zap.String("fact", oneLine(e.Content, 120)), zapErr(err))
 				res.Refused++
 				continue
 			}
@@ -45,14 +45,14 @@ func (s *Syncer) apply(ctx context.Context, ops []op, shown []memory.SearchResul
 			// The correction first: a fact retired before its replacement is
 			// stored is a fact lost when the write fails.
 			if err := s.mem.Write(e); err != nil {
-				s.log.Warn("wa-memory: could not write a correction", zap.String("memory", h), zapErr(err))
+				s.log.Warn(s.cfg.Name+": could not write a correction", zap.String("memory", h), zapErr(err))
 				res.Refused++
 				continue
 			}
 			res.Updated++
 			if removed, err := s.mem.ForgetFact(ctx, h); err != nil || !removed {
 				// Kept beside its correction, which is newer and so wins.
-				s.log.Info("wa-memory: corrected fact kept beside its correction", zap.String("memory", h), zapErr(err))
+				s.log.Info(s.cfg.Name+": corrected fact kept beside its correction", zap.String("memory", h), zapErr(err))
 			}
 
 		case "forget":
@@ -63,7 +63,7 @@ func (s *Syncer) apply(ctx context.Context, ops []op, shown []memory.SearchResul
 			}
 			removed, err := s.mem.ForgetFact(ctx, h)
 			if err != nil || !removed {
-				s.log.Info("wa-memory: forget refused", zap.String("memory", h), zapErr(err))
+				s.log.Info(s.cfg.Name+": forget refused", zap.String("memory", h), zapErr(err))
 				res.Refused++
 				continue
 			}
@@ -88,10 +88,10 @@ func (s *Syncer) entry(o op, at time.Time) (memory.MemoryEntry, bool) {
 		when = d
 	}
 	return memory.MemoryEntry{
-		Role:    "whatsapp",
+		Role:    s.cfg.Tag,
 		Content: fact,
 		// The subject first: memory files a fact under its first tag.
-		Tags:       []string{subject, "whatsapp"},
+		Tags:       []string{subject, s.cfg.Tag},
 		Category:   category(o.Category),
 		Importance: importance(o.Importance),
 		OccurredAt: when,
@@ -152,7 +152,7 @@ func looksSecret(text string) bool {
 	return false
 }
 
-func zapChat(c Chat) zap.Field { return zap.String("chat", c.ID) }
+func zapChat(c Chat) zap.Field { return zap.String("chat", key(c)) }
 
 func zapErr(err error) zap.Field {
 	if err == nil {

@@ -823,7 +823,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			// The directory's answer, which includes the LIDs it has learned.
 			waCfg.IsOperator = who.IsOperator
 			syncer := chatmemory.New(waCfg, waNames, memFactory.For(a0.ID, ns),
-				kvCursors{s: s}, s.SentWhatsApp,
+				kvCursors{s: s}, func(c chatmemory.Chat, text string, at time.Time) bool { return s.SentWhatsApp(c.ID, text, at) },
 				func(ctx context.Context, prompt string) (string, error) {
 					return harnessRT.get().harnessExtract(ctx, "wa-memory", prompt)
 				}, log)

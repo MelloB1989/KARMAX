@@ -25,7 +25,8 @@ func waMemoryConfig(getenv func(string) string, karmaxHome string, now time.Time
 	if strings.EqualFold(strings.TrimSpace(getenv("KARMAX_WA_MEMORY")), "off") {
 		return chatmemory.Config{}, false
 	}
-	cfg := chatmemory.Config{Since: now.AddDate(0, 0, -7), OperatorIDs: operatorJIDs, Location: memory.OperatorLocation()}
+	cfg := chatmemory.Config{Name: "wa-memory", Service: "WhatsApp", Tag: "whatsapp",
+		Since: now.AddDate(0, 0, -7), OperatorIDs: operatorJIDs, Location: memory.OperatorLocation()}
 	if d, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(getenv("KARMAX_WA_MEMORY_SINCE")), cfg.Location); err == nil {
 		cfg.Since = d
 	}

@@ -1,4 +1,5 @@
-// Package wamemory keeps long-term memory in step with WhatsApp.
+// Package chatmemory keeps long-term memory in step with the operator's chats:
+// WhatsApp, Google Chat, any service a Source can read.
 //
 // Memory used to learn from WhatsApp only by accident. The agent saw the
 // operator's own chats and remembered what it happened to think worth
@@ -9,11 +10,14 @@
 // asked about it at the time, and nothing that memory already held was ever
 // corrected by what was said afterwards.
 //
-// The syncer reads every chat's new messages from wacli, sets them beside what
-// memory already holds about them, and asks a model what in them is a durable
-// fact, and what it adds to, corrects or retires. Each chat keeps a cursor, so
-// a message is read once; a chat with no cursor starts at Config.Since, which
-// is how the same loop backfills history.
+// A Syncer reads every chat's new messages from one service — everyone's,
+// the operator's own included — sets them beside what memory already holds
+// about them, and asks a model what in them is a durable fact, and what it
+// adds to, corrects or retires. Each chat keeps a cursor, so a message is read
+// once; a chat with no cursor starts at Config.Since (or a lookback before
+// KARMAX first looked at its account), which is how the same loop backfills
+// history. One Syncer runs per service, each with its own cursors and
+// settings, over the same code.
 package chatmemory
 
 import (
@@ -27,33 +31,48 @@ import (
 	"go.uber.org/zap"
 )
 
-// Chat is one WhatsApp conversation as wacli lists it.
+// Chat is one conversation as its service lists it.
 type Chat struct {
-	ID            string
-	Name          string
-	IsGroup       bool
+	// ID is the service's own id for the conversation: a WhatsApp JID, a
+	// Google Chat space.
+	ID   string
+	Name string
+	// IsGroup is a conversation of more than the operator and one other.
+	IsGroup bool
+	// Kind is what the service calls this conversation — "group", "space",
+	// "direct message" — for the prompt. Empty is "group" or "direct chat".
+	Kind string
+	// Account is the operator's login the chat is read through, for a service
+	// with several; "" for a service with one. The same ID on two accounts is
+	// two conversations.
+	Account       string
 	LastMessageAt time.Time
 }
 
-// Message is one WhatsApp message as wacli stores it.
+// Message is one message.
 type Message struct {
-	ID      string
-	Chat    string
-	Sender  string
-	Content string
-	At      time.Time
-	// FromMe is a message sent from the linked account: typed by the operator
-	// on that phone, or sent by KARMAX, which speaks through the same account.
+	ID     string
+	Chat   string
+	Sender string
+	// SenderName is the name the message itself carries for its sender; ""
+	// leaves the name to Source.Name.
+	SenderName string
+	Content    string
+	At         time.Time
+	// FromMe is a message sent from the operator's own account: typed by the
+	// operator, or sent by KARMAX, which speaks through the same account.
 	FromMe bool
 }
 
-// Source reads WhatsApp history.
+// Source reads one chat service's history.
 type Source interface {
+	// Chats lists the conversations the operator is in. Channels broadcast at
+	// the operator are not conversations and are not listed.
 	Chats(ctx context.Context) ([]Chat, error)
 	// Messages returns a chat's messages after a time, oldest first.
-	Messages(ctx context.Context, chatJID string, after time.Time, limit int) ([]Message, error)
-	// Name is a sender's display name, or "" when wacli knows none.
-	Name(ctx context.Context, jid string) string
+	Messages(ctx context.Context, chat Chat, after time.Time, limit int) ([]Message, error)
+	// Name is a sender's display name, or "" when the service knows none.
+	Name(ctx context.Context, sender string) string
 }
 
 // Memory is the part of the memory manager the syncer uses.
@@ -79,6 +98,14 @@ type Cursors interface {
 
 // Config tunes a Syncer. The zero value of each field has a working default.
 type Config struct {
+	// Name is the syncer's own name, for logs and errors: "wa-memory".
+	Name string
+	// Service is the chat service as a person names it — "WhatsApp", "Google
+	// Chat" — which the prompt says where it matters.
+	Service string
+	// Tag files every fact under its service as well as its subject:
+	// "whatsapp", "gchat".
+	Tag string
 	// Operator is the name the operator's own messages are attributed to.
 	Operator string
 	// OperatorIDs are the operator's other accounts; their messages are his.
@@ -86,9 +113,15 @@ type Config struct {
 	// IsOperator, when set, is the identity directory's answer to "is this
 	// account the operator's" — which also knows the LIDs it has learned since
 	// the configuration was written. OperatorIDs still count either way.
-	IsOperator func(jid string) bool
-	// Since is where a chat with no cursor starts reading.
+	IsOperator func(id string) bool
+	// Since, when set, is where a chat with no cursor starts reading.
 	Since time.Time
+	// Lookback is, when Since is not set, how long before KARMAX first looked
+	// at a chat's account the chat starts reading (a week).
+	Lookback time.Duration
+	// FirstLook is when KARMAX first looked at an account, recorded on the
+	// first ask so a restart does not move it. Nil is when the Syncer was made.
+	FirstLook func(account string) (time.Time, error)
 	// Deny names chats never read, by ID or by name.
 	Deny []string
 	// BatchesPerTick bounds the model calls one tick may make.
@@ -108,15 +141,16 @@ type Result struct {
 	More bool
 }
 
-// Syncer turns new WhatsApp messages into memory.
+// Syncer turns one service's new messages into memory.
 type Syncer struct {
 	cfg  Config
 	src  Source
 	mem  Memory
 	cur  Cursors
-	sent func(chat, text string, at time.Time) bool
+	sent func(c Chat, text string, at time.Time) bool
 	ask  func(ctx context.Context, prompt string) (string, error)
 	log  *zap.Logger
+	made time.Time
 
 	operators map[string]bool
 	deny      map[string]bool
@@ -124,10 +158,19 @@ type Syncer struct {
 
 // New builds a Syncer. sent reports whether KARMAX itself sent a message, which
 // is the only way to tell its words from the operator's on the same account.
-func New(cfg Config, src Source, mem Memory, cur Cursors, sent func(chat, text string, at time.Time) bool,
+func New(cfg Config, src Source, mem Memory, cur Cursors, sent func(c Chat, text string, at time.Time) bool,
 	ask func(ctx context.Context, prompt string) (string, error), log *zap.Logger) *Syncer {
+	if cfg.Name == "" {
+		cfg.Name = "chat-memory"
+	}
+	if cfg.Tag == "" {
+		cfg.Tag = "chat"
+	}
 	if cfg.Operator == "" {
 		cfg.Operator = "the operator"
+	}
+	if cfg.Lookback <= 0 {
+		cfg.Lookback = 7 * 24 * time.Hour
 	}
 	if cfg.BatchesPerTick <= 0 {
 		cfg.BatchesPerTick = 12
@@ -142,9 +185,12 @@ func New(cfg Config, src Source, mem Memory, cur Cursors, sent func(chat, text s
 		cfg.Location = time.Local
 	}
 	if sent == nil {
-		sent = func(string, string, time.Time) bool { return false }
+		sent = func(Chat, string, time.Time) bool { return false }
 	}
-	s := &Syncer{cfg: cfg, src: src, mem: mem, cur: cur, sent: sent, ask: ask, log: log,
+	if log == nil {
+		log = zap.NewNop()
+	}
+	s := &Syncer{cfg: cfg, src: src, mem: mem, cur: cur, sent: sent, ask: ask, log: log, made: time.Now(),
 		operators: map[string]bool{}, deny: map[string]bool{}}
 	for _, j := range cfg.OperatorIDs {
 		s.operators[bare(j)] = true
@@ -157,19 +203,61 @@ func New(cfg Config, src Source, mem Memory, cur Cursors, sent func(chat, text s
 	return s
 }
 
-// bare is a ID's account, without its device or server: "91999:12@s.whatsapp.net"
-// and "91999@s.whatsapp.net" are one person.
-func bare(jid string) string {
-	user, _, _ := strings.Cut(jid, "@")
+// bare is an id without its device or server: WhatsApp's
+// "91999:12@s.whatsapp.net" and "91999@s.whatsapp.net" are one person. An id
+// with neither ("users/123") is itself.
+func bare(id string) string {
+	user, _, _ := strings.Cut(id, "@")
 	user, _, _ = strings.Cut(user, ":")
 	return user
 }
 
-func (s *Syncer) skip(c Chat) bool {
-	if strings.HasSuffix(c.ID, "@newsletter") || strings.HasSuffix(c.ID, "@broadcast") {
-		return true // channels and status updates: broadcast at the operator, not said to him
+// shownID is how a sender nobody can name is written: a phone number as one,
+// any other id as itself.
+func shownID(key string) string {
+	if key == "" {
+		return "someone"
 	}
+	for _, r := range key {
+		if r < '0' || r > '9' {
+			return key
+		}
+	}
+	return "+" + key
+}
+
+// key is a chat's cursor key: its ID, qualified by its account when the
+// service has several. A chat on a single-account service keeps the bare ID,
+// which is how its cursors were always kept.
+func key(c Chat) string {
+	if c.Account == "" {
+		return c.ID
+	}
+	return c.Account + "|" + c.ID
+}
+
+func (s *Syncer) skip(c Chat) bool {
 	return s.deny[strings.ToLower(c.ID)] || (c.Name != "" && s.deny[strings.ToLower(c.Name)])
+}
+
+// start is where a chat with no cursor begins: Since when it is set, else a
+// lookback before KARMAX first looked at the chat's account.
+func (s *Syncer) start(c Chat, looked map[string]time.Time) (time.Time, error) {
+	if !s.cfg.Since.IsZero() {
+		return s.cfg.Since, nil
+	}
+	at, ok := looked[c.Account]
+	if !ok {
+		at = s.made
+		if s.cfg.FirstLook != nil {
+			var err error
+			if at, err = s.cfg.FirstLook(c.Account); err != nil {
+				return time.Time{}, err
+			}
+		}
+		looked[c.Account] = at
+	}
+	return at.Add(-s.cfg.Lookback), nil
 }
 
 type pending struct {
@@ -185,19 +273,24 @@ func (s *Syncer) Tick(ctx context.Context) (Result, error) {
 	var res Result
 	chats, err := s.src.Chats(ctx)
 	if err != nil {
-		return res, fmt.Errorf("wa-memory: list chats: %w", err)
+		return res, fmt.Errorf("%s: list chats: %w", s.cfg.Name, err)
 	}
+	looked := map[string]time.Time{}
 	var queue []pending
 	for _, c := range chats {
 		if s.skip(c) {
 			continue
 		}
-		cur, ok, err := s.cur.Get(c.ID)
+		cur, ok, err := s.cur.Get(key(c))
 		if err != nil {
-			return res, fmt.Errorf("wa-memory: cursor for %s: %w", c.ID, err)
+			return res, fmt.Errorf("%s: cursor for %s: %w", s.cfg.Name, key(c), err)
 		}
 		if !ok {
-			cur = Cursor{At: s.cfg.Since}
+			at, err := s.start(c, looked)
+			if err != nil {
+				return res, fmt.Errorf("%s: first look at %s: %w", s.cfg.Name, c.Account, err)
+			}
+			cur = Cursor{At: at}
 		}
 		if c.LastMessageAt.After(cur.At) {
 			queue = append(queue, pending{chat: c, cur: cur})
@@ -233,9 +326,9 @@ func (s *Syncer) Tick(ctx context.Context) (Result, error) {
 func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, res *Result) (Cursor, bool, error) {
 	// From a second early, because a store's "after" may or may not include
 	// its bound; the cursor's own message is dropped below.
-	raw, err := s.src.Messages(ctx, p.chat.ID, p.cur.At.Add(-time.Second), s.cfg.BatchMessages+1)
+	raw, err := s.src.Messages(ctx, p.chat, p.cur.At.Add(-time.Second), s.cfg.BatchMessages+1)
 	if err != nil {
-		return p.cur, false, fmt.Errorf("wa-memory: messages of %s: %w", p.chat.ID, err)
+		return p.cur, false, fmt.Errorf("%s: messages of %s: %w", s.cfg.Name, key(p.chat), err)
 	}
 	var fresh []Message
 	for _, m := range raw {
@@ -246,6 +339,17 @@ func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, 
 	}
 	sort.SliceStable(fresh, func(i, j int) bool { return fresh[i].At.Before(fresh[j].At) })
 	if len(fresh) == 0 {
+		// The chat's last activity was not a message — a reaction, someone
+		// joining — or nothing was said since the cursor. Nothing is there to
+		// read up to that activity, so the cursor moves to it: otherwise the
+		// chat looks active, and is read again, every tick.
+		if p.chat.LastMessageAt.After(p.cur.At) {
+			cur := Cursor{At: p.chat.LastMessageAt}
+			if err := s.cur.Set(key(p.chat), cur); err != nil {
+				return p.cur, false, fmt.Errorf("%s: save cursor for %s: %w", s.cfg.Name, key(p.chat), err)
+			}
+			return cur, true, nil
+		}
 		return p.cur, true, nil
 	}
 
@@ -253,9 +357,10 @@ func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, 
 		take  []Message
 		lines []string
 		size  int
+		peer  string // the other person in a direct chat, for a chat with no name
 	)
 	for _, m := range fresh {
-		line := s.line(ctx, p.chat, m, names)
+		line, who, operator := s.line(ctx, p.chat, m, names)
 		if len(take) > 0 && size+len(line) > s.cfg.BatchChars {
 			break
 		}
@@ -263,6 +368,9 @@ func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, 
 		if line != "" {
 			lines = append(lines, line)
 			size += len(line)
+			if peer == "" && !operator {
+				peer = who
+			}
 		}
 	}
 	last := take[len(take)-1]
@@ -271,49 +379,61 @@ func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, 
 
 	if len(lines) > 0 {
 		res.Batches++
-		if err := s.extract(ctx, p.chat, lines, last.At, res); err != nil {
+		chat := p.chat
+		if chat.Name == "" && !chat.IsGroup {
+			chat.Name = peer
+		}
+		if err := s.extract(ctx, chat, lines, last.At, res); err != nil {
 			return p.cur, false, err
 		}
 	}
-	if err := s.cur.Set(p.chat.ID, cur); err != nil {
-		return p.cur, false, fmt.Errorf("wa-memory: save cursor for %s: %w", p.chat.ID, err)
+	if err := s.cur.Set(key(p.chat), cur); err != nil {
+		return p.cur, false, fmt.Errorf("%s: save cursor for %s: %w", s.cfg.Name, key(p.chat), err)
 	}
 	return cur, done, nil
 }
 
-// line renders one message for the model, naming who said it; "" for a
-// message with nothing to read (a sticker, a photo without a caption).
-func (s *Syncer) line(ctx context.Context, chat Chat, m Message, names map[string]string) string {
+// line renders one message for the model, naming who said it and whether that
+// was the operator (or KARMAX on their account); "" for a message with
+// nothing to read (a sticker, a photo without a caption).
+func (s *Syncer) line(ctx context.Context, chat Chat, m Message, names map[string]string) (line, who string, operator bool) {
 	text := strings.Join(strings.Fields(m.Content), " ")
 	if text == "" {
-		return ""
+		return "", "", false
 	}
 	if len(text) > s.cfg.BatchChars {
 		text = text[:s.cfg.BatchChars] + "…"
 	}
-	return m.At.In(s.cfg.Location).Format("2006-01-02 15:04") + " " + s.speaker(ctx, chat, m, names) + ": " + text
+	who, operator = s.speaker(ctx, chat, m, names)
+	return m.At.In(s.cfg.Location).Format("2006-01-02 15:04") + " " + who + ": " + text, who, operator
 }
 
-func (s *Syncer) speaker(ctx context.Context, chat Chat, m Message, names map[string]string) string {
+// speaker names who wrote m, decided by the account it came from and never
+// by a label: the operator's own account is the operator, whatever it is
+// called.
+func (s *Syncer) speaker(ctx context.Context, chat Chat, m Message, names map[string]string) (string, bool) {
 	switch {
-	case m.FromMe && s.sent(chat.ID, m.Content, m.At):
-		return "KARMAX (on " + s.cfg.Operator + "'s account)"
+	case m.FromMe && s.sent(chat, m.Content, m.At):
+		return "KARMAX (on " + s.cfg.Operator + "'s account)", true
 	case m.FromMe, s.operators[bare(m.Sender)]:
-		return s.cfg.Operator
+		return s.cfg.Operator, true
 	case s.cfg.IsOperator != nil && s.cfg.IsOperator(m.Sender):
-		return s.cfg.Operator
+		return s.cfg.Operator, true
 	}
-	key := bare(m.Sender)
-	if n, ok := names[key]; ok {
-		return n
+	if n := strings.TrimSpace(m.SenderName); n != "" {
+		return n, false
+	}
+	k := bare(m.Sender)
+	if n, ok := names[k]; ok {
+		return n, false
 	}
 	n := strings.TrimSpace(s.src.Name(ctx, m.Sender))
 	if n == "" && !chat.IsGroup {
 		n = chat.Name
 	}
 	if n == "" {
-		n = "+" + key
+		n = shownID(k)
 	}
-	names[key] = n
-	return n
+	names[k] = n
+	return n, false
 }
