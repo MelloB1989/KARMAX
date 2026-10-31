@@ -53,6 +53,14 @@ type Session struct {
 	// InheritMCP comes from the kind's policy: false spawns with
 	// --strict-mcp-config, so only MCPConfig's servers start.
 	InheritMCP bool
+	// InheritUserConfig comes from the kind's policy: false spawns with
+	// --setting-sources project,local, so nothing of the operator's own
+	// Claude Code config loads. Settings, PluginDirs and SkillsDir are what
+	// the session gets instead (customise), all fixed at spawn.
+	InheritUserConfig bool
+	Settings          string // --settings JSON, "" for none
+	PluginDirs        []string
+	SkillsDir         string // --add-dir holding .claude/skills
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
@@ -169,6 +177,21 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	// KARMAX to observe and react to in time.
 	if fallbackModel != "" && fallbackModel != s.Model {
 		args = append(args, "--fallback-model", fallbackModel)
+	}
+	// None of the operator's own Claude Code config (~/.claude: plugins,
+	// skills, hooks, settings), only the workdir's project config and what
+	// KARMAX allowlisted. Before the MCP flags: --add-dir is variadic too.
+	if !s.InheritUserConfig {
+		args = append(args, "--setting-sources", ownSettingSources)
+	}
+	if s.Settings != "" {
+		args = append(args, "--settings", s.Settings)
+	}
+	for _, d := range s.PluginDirs {
+		args = append(args, "--plugin-dir", d)
+	}
+	if s.SkillsDir != "" {
+		args = append(args, "--add-dir", s.SkillsDir)
 	}
 	// Only the servers KARMAX hands over (MCPConfig), plus any the operator
 	// allowlisted (harness.mcp_servers → OnlyMCPConfig), not the operator's

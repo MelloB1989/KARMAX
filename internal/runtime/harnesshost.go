@@ -116,6 +116,9 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		CheapModel:    cheap,
 		FallbackModel: strings.TrimSpace(hc.FallbackModel),
 		OnlyMCPConfig: rt.harnessMCPConfig(),
+		Plugins:       harnessPluginRefs(hc.Plugins),
+		Skills:        harnessSkillDirs(hc.Skills),
+		Settings:      hc.Settings,
 		OnBackgroundTurn: func(key, kind string, t harness.Turn) {
 			_ = rt.bus.Publish(backgroundTurnEvent(key, kind, t))
 		},
@@ -182,6 +185,10 @@ func harnessPolicies(hc config.HarnessConfig) map[string]harness.Policy {
 			Name:        k.Name,
 			Resident:    k.Resident,
 			InheritMCP:  k.InheritMCP,
+			Plugins:     harnessPluginRefs(k.Plugins),
+			Skills:      harnessSkillDirs(k.Skills),
+
+			InheritUserConfig: k.InheritUserConfig,
 		}
 	}
 	return policies

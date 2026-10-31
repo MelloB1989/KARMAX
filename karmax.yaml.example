@@ -224,6 +224,17 @@ loops:
 #   # session also starts the servers in your own Claude config and plugins.
 #   mcp_servers:
 #     fleet: { type: stdio, command: fleetctl, args: [mcp] }
+#   # Sessions load none of your own Claude Code plugins, skills, hooks or
+#   # settings (~/.claude); only these. A plugin is its installed id
+#   # (name@marketplace) or a directory; a skill is one of your skills by name
+#   # (~/.claude/skills/<name>) or a directory.
+#   plugins: []
+#   skills: []
+#   settings: {}                  # Claude Code settings, e.g. { effortLevel: high }
+#   kinds:
+#     orchestrator:
+#       skills: [fleet]           # a kind's own list replaces the default; [] for none
+#     # inherit_user_config: true # a kind that needs your whole Claude Code config
 
 # System One. Every event is screened by a cheap, fast probability model before
 # the expensive brain looks at it: one call answers what to do with it, how
