@@ -414,6 +414,11 @@ func (g *gitloomBackend) append(ctx context.Context, path, content string) error
 	}
 	now := time.Now()
 	merged := AppendSection(existing.Content, gitloom.NewMemory{Path: path, Content: content}, now, g.loc)
+	if sameText(merged.Content, existing.Content) {
+		// It already says so; rewriting it would only redate it.
+		g.skipped(path)
+		return nil
+	}
 	merged.Tags = unionTags(userTags(existing), nil)
 	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
 	merged.Related = unionStrings(existing.Related, merged.Related, 32)
@@ -434,6 +439,11 @@ func (g *gitloomBackend) update(ctx context.Context, path, content string) error
 	if err != nil {
 		g.setHealth(false, err)
 		return err
+	}
+	if existing != nil && sameText(existing.Content, content) {
+		// The metadata is carried over unchanged, so the same text is no change.
+		g.skipped(path)
+		return nil
 	}
 	m := gitloom.NewMemory{Path: path, Content: content}
 	if existing != nil {

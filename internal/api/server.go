@@ -856,7 +856,8 @@ func (s *Server) handleAnswerReview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "review not found"})
 		return
 	}
-	if rv.Status != "open" {
+	if !rv.Answerable() {
+		// Answered already. One that expired unanswered still takes an answer.
 		writeJSON(w, http.StatusOK, map[string]any{"status": "already_resolved"})
 		return
 	}

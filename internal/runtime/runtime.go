@@ -874,6 +874,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		reviewer := review.New(review.Config{
 			Namespace: ns, AgentID: waAgentID, Provider: provider, Model: model, Fallbacks: fbs,
 			WAChannelID: waChannelID, WATarget: waTarget, SendFunc: func(c, t, m string) error { return commsMgr.SendFrom(comms.ProducerLoop, c, t, m) },
+			// Unanswered questions expire (default a week), so they cannot
+			// hold the open-question cap and stop the loop asking.
+			ExpireAfter: reviewExpireAfter(os.Getenv),
 			// Answered by a warm session when one is available; the metered
 			// path stays as the fallback and is used whenever it is not.
 			Ask: func(ctx context.Context, key, prompt string) (string, bool) {

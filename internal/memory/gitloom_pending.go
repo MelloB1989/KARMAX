@@ -49,15 +49,38 @@ func (g *gitloomBackend) remember(m gitloom.NewMemory, occurred, sentAt time.Tim
 		}
 	}
 	// A section forgotten a moment ago is still cut from older copies after
-	// the document is written again.
+	// the document is written again — unless this write says it again. A fact
+	// said again after it was forgotten is filed under the same header, and
+	// cutting it from later reads lost it at the next change to the document.
 	var cut []string
 	if prev, ok := g.pending[m.Path]; ok {
-		cut = prev.cut
+		written := map[string]bool{}
+		for _, h := range sectionHeaders(m.Content) {
+			written[h] = true
+		}
+		for _, h := range prev.cut {
+			if !written[strings.TrimSpace(h)] {
+				cut = append(cut, h)
+			}
+		}
 	}
 	g.pending[m.Path] = pendingWrite{at: sentAt, cut: cut, stored: gitloom.StoredMemory{
 		Path: m.Path, Content: m.Content, UserTags: m.Tags, Cues: m.Cues, Related: m.Related,
 		Confidence: m.Confidence, OccurredAt: occurred, UpdatedAt: sentAt,
+		// The expiry it was written with, so a fold onto this copy keeps it.
+		ExpiresAt: ttlExpiry(m.TTL, sentAt),
 	}}
+}
+
+// sectionHeaders are a document's "## " headers, trimmed.
+func sectionHeaders(doc string) []string {
+	var out []string
+	for _, l := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(l, "## ") {
+			out = append(out, strings.TrimSpace(strings.TrimPrefix(l, "## ")))
+		}
+	}
+	return out
 }
 
 // forgotten records a forget, so the reads that follow agree with it.

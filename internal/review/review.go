@@ -10,6 +10,9 @@
 //     resolved or dismissed item is never re-surfaced.
 //   - CAPPED: no more than maxOpenReviews are open at a time, so "aggressive"
 //     detection never becomes a flood.
+//   - EXPIRING: a question unanswered for Config.ExpireAfter closes as
+//     "expired", so unanswered questions cannot hold the cap forever. A late
+//     answer to it is still taken.
 //   - ONE PER TICK: each pass raises at most one new question.
 package review
 
@@ -56,6 +59,43 @@ type Config struct {
 	WAChannelID string
 	WATarget    string
 	SendFunc    func(channelID, target, content string) error
+	// ExpireAfter is how long a question waits for an answer before it
+	// expires (see store.ResolutionExpired). Zero is DefaultExpireAfter; a
+	// negative value never expires one.
+	ExpireAfter time.Duration
+}
+
+// DefaultExpireAfter is how long a check-in waits for an answer by default.
+//
+// Without an expiry, questions the operator never answered held every slot
+// under maxOpenReviews: eight sat open from late August, and the reviewer
+// asked nothing new for seven weeks. A question a week old is one the operator
+// has moved past; it is better to free its slot than to keep waiting on it.
+const DefaultExpireAfter = 7 * 24 * time.Hour
+
+func (r *Reviewer) expireAfter() time.Duration {
+	if r.cfg.ExpireAfter == 0 {
+		return DefaultExpireAfter
+	}
+	return r.cfg.ExpireAfter
+}
+
+// expire closes the questions that have waited past expireAfter. Nothing is
+// done to the memory they asked about, and nothing is recorded as an answer:
+// the operator gave none, and one that arrives later is still taken.
+func (r *Reviewer) expire() {
+	after := r.expireAfter()
+	if after < 0 || r.store == nil {
+		return
+	}
+	n, err := r.store.ExpireReviews(r.cfg.Namespace, time.Now().Add(-after))
+	if err != nil {
+		r.log.Warn("review: could not expire unanswered questions", zap.Error(err))
+		return
+	}
+	if n > 0 {
+		r.log.Info("review: unanswered questions expired", zap.Int64("count", n), zap.Duration("after", after))
+	}
 }
 
 type Reviewer struct {
@@ -94,6 +134,8 @@ Respond with ONLY JSON, no prose:
 func (r *Reviewer) Tick(ctx context.Context) error {
 	ns := r.cfg.Namespace
 
+	// First, so questions nobody will answer do not hold the cap forever.
+	r.expire()
 	open, err := r.store.CountOpenReviews(ns)
 	if err != nil {
 		return fmt.Errorf("count open reviews: %w", err)
@@ -265,6 +307,11 @@ func (r *Reviewer) staleMemories(ctx context.Context, cutoff time.Time) []candid
 	var out []candidate
 	for _, e := range old {
 		if e.Pinned || e.CreatedAt.IsZero() || e.CreatedAt.After(cutoff) || !looksTimeSensitive(e.Content) {
+			continue
+		}
+		// A loop's log stops changing when its month ends; that is a record
+		// complete, not a fact gone stale.
+		if memory.IsLoopLogPath(e.ID) {
 			continue
 		}
 		out = append(out, candidate{kind: "memory", id: e.ID, text: oneLine(e.Content, 400), at: e.CreatedAt})
