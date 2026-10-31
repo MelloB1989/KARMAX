@@ -377,6 +377,8 @@ func (a *Agent) requestContext(req *Request) string {
 		for _, l := range inflight {
 			b.WriteString("- " + l + "\n")
 		}
+		b.WriteString("A question about one of them is answered from this list. If this message gives a blocked one " +
+			"what it was waiting for, pass it on: `karmax tool call task.update task_id=<id> status=working note=\"<what they said>\"`.\n")
 	}
 	return b.String()
 }
