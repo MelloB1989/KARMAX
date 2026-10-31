@@ -289,7 +289,6 @@ func TestAToolIsClassedByItsEntryElseByItsName(t *testing.T) {
 		"task.list":             "deny",
 		"scheduler.add":         "deny",
 		"proposal.decide":       "deny",
-		"orgops.list":           "deny",
 		"memory.ingest":         "deny",
 		"memory.forget":         "deny",
 		"vault.get_secret":      "deny",
@@ -320,36 +319,35 @@ func TestNoToolsEntryOpensAnAlwaysDeniedTool(t *testing.T) {
 }
 
 func TestToolsThatRunCodeOrStartAgentsAreAlwaysDenied(t *testing.T) {
-	k := Karmax{Tools: map[string]string{"sandbox.*": "read", "saw.*": "write"}}
-	for _, name := range []string{"claude_code.call", "codex.call", "subagent.spawn", "sandbox.start", "orchestrator.send",
+	k := Karmax{Tools: map[string]string{"build.*": "read", "saw.*": "write"}}
+	for _, name := range []string{"claude_code.call", "subagent.spawn", "orchestrator.send",
 		"saw.run", "job.run", "docker.exec", "worker.spawn"} {
 		if got := k.ToolClass(name); got != ToolDeny {
 			t.Errorf("%s = %s, want deny", name, got)
 		}
 	}
 	// What only looks like them is not.
-	for name, want := range map[string]string{"sandbox.status": "read", "google.calendar.list": "read", "instagram.call": "read",
+	for name, want := range map[string]string{"build.status": "read", "google.calendar.list": "read", "build.call": "read",
 		"run.report": "write", "spawn_report.send": "write"} {
 		if got := k.ToolClass(name); got != want {
 			t.Errorf("%s = %s, want %s", name, got, want)
 		}
 	}
-	if _, err := Parse([]byte(example + "karmax:\n  tools: {codex.call: write}\n")); err == nil {
-		t.Error("an entry opened codex.call")
+	if _, err := Parse([]byte(example + "karmax:\n  tools: {claude_code.call: write}\n")); err == nil {
+		t.Error("an entry opened claude_code.call")
 	}
 }
 
 func TestKnownReadsWithoutAReadVerbAreFree(t *testing.T) {
 	var k Karmax
-	for _, name := range []string{"slack.channels", "slack.user", "instagram.inbox", "instagram.reads", "instagram.commenters",
-		"google.chat.spaces", "keka.departments", "keka.employees", "keka.leave", "activity.recent", "cost.report",
+	for _, name := range []string{"slack.channels", "slack.user", "google.chat.spaces", "activity.recent", "cost.report",
 		"karmax.capabilities", "tools.load"} {
 		if got := k.ToolClass(name); got != ToolRead {
 			t.Errorf("%s = %s, want read", name, got)
 		}
 	}
 	// Their writes stay writes, and an entry still outranks the list.
-	for _, name := range []string{"slack.post", "instagram.send_dm", "instagram.reply_comment", "google.chat.post", "keka.update"} {
+	for _, name := range []string{"slack.post", "google.chat.post"} {
 		if got := k.ToolClass(name); got != ToolWrite {
 			t.Errorf("%s = %s, want write", name, got)
 		}

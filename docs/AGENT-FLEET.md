@@ -563,11 +563,10 @@ the tools for them, under the operator's rules:
   `update`, `sync`, …): `google.mail.search`, `notion.query_database`, `whatsapp.monitored`,
   `whatsapp_list_chats`, but not `whatsapp_set_chat_locked`. Every read is free, so KARMAX's read-only
   tools whose names do not say so are reads too (checked against their descriptions): `slack.channels`,
-  `slack.user`, `google.chat.spaces`, `instagram.inbox`, `instagram.reads`, `instagram.commenters`,
-  `instagram.call` (Instagram reads only), `keka.departments`, `keka.employees`, `keka.leave`,
-  `activity.recent`, `cost.report`, `karmax.capabilities`, `tools.load`, and wacli's `whatsapp_status`,
-  `whatsapp_logs`, `whatsapp_message_receipts`, `whatsapp_webhook_deliveries`, `whatsapp_group_info`,
-  `whatsapp_call_status`, `whatsapp_check_numbers`, `whatsapp_resolve`, `whatsapp_download_media`.
+  `slack.user`, `google.chat.spaces`, `activity.recent`, `cost.report`, `karmax.capabilities`,
+  `tools.load`, and wacli's `whatsapp_status`, `whatsapp_logs`, `whatsapp_message_receipts`,
+  `whatsapp_webhook_deliveries`, `whatsapp_group_info`, `whatsapp_call_status`,
+  `whatsapp_check_numbers`, `whatsapp_resolve`, `whatsapp_download_media`.
   `whatsapp_group_participants` (it adds and removes people), `whatsapp_group_invite_link` (it can
   reset the link) and `whatsapp_sync` stay writes.
 - **A write waits for the orchestrator.** Everything else is a write. fleetd files it on the ledger
@@ -580,11 +579,11 @@ the tools for them, under the operator's rules:
   nobody decides expires), runs the tool once, and prints the result — or exits 1 with the refusal.
   Nobody decides on their own request, and an agent cannot decide at all (the routes are full scope).
 - **Some tools are always denied**, whatever `karmax.tools` says: `shell.exec`, `file.*`,
-  `http.request`, `harness.*`, `task.*`, `scheduler.*`, `proposal.*`, `orgops*`, `memory.ingest` and
+  `http.request`, `harness.*`, `task.*`, `scheduler.*`, `proposal.*`, `memory.ingest` and
   `memory.forget` (the orchestrator alone writes memory), anything named for credentials or secrets,
   anything fleet-related, and anything that runs code or starts an agent: `claude_code.call`,
-  `codex.call`, `subagent.spawn`, `sandbox.start`, `orchestrator.send`, and every `*.exec`, `*.run` and
-  `*.spawn`. They are left out of `karmax tools` and refused with nothing filed.
+  `subagent.spawn`, `orchestrator.send`, and every `*.exec`, `*.run` and `*.spawn`. They are left out
+  of `karmax tools` and refused with nothing filed.
 - **From an MCP client.** `fleetctl mcp` serves the same two calls as tools, `karmax_tools` and
   `karmax_call` (`tool`, `args`, `reason`, `timeout`); a write's call waits for its approval like the
   CLI's, while the session's other calls go on.
