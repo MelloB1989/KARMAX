@@ -119,9 +119,10 @@ func (h *harnessBrain) ProcessMessageWithheld(ctx context.Context, userMessage s
 		// The harness took the turn and acted before it failed — commands
 		// ran, messages may have gone. The fallback has none of that
 		// conversation, so handing it the same message is how one "go ahead"
-		// gets done twice.
+		// gets done twice. What it did goes back with the failure, so the
+		// operator can be told it rather than asked to send it again.
 		if n := len(turn.ToolCalls); n > 0 {
-			return "", nil, fmt.Errorf("harness turn failed after %d tool call(s), so it is not run again on the fallback: %w", n, err)
+			return "", harnessRecords(turn.ToolCalls), fmt.Errorf("harness turn failed after %d tool call(s), so it is not run again on the fallback: %w", n, err)
 		}
 		// Nothing left to answer with: the fallback would only start a
 		// process to fail in the same instant, and its "deadline exceeded"
@@ -138,8 +139,14 @@ func (h *harnessBrain) ProcessMessageWithheld(ctx context.Context, userMessage s
 	// act-evidence guard, the recent-actions context, and the duplicate-send
 	// counters all decide from this list. A brain that returned none would look
 	// like an agent that promised things and did nothing.
-	records := make([]karmahelper.ToolCallRecord, 0, len(turn.ToolCalls))
-	for _, tc := range turn.ToolCalls {
+	return turn.Text, harnessRecords(turn.ToolCalls), nil
+}
+
+// harnessRecords maps a harness turn's tool calls to the records the rest of
+// the agent reads.
+func harnessRecords(calls []HarnessToolCall) []karmahelper.ToolCallRecord {
+	records := make([]karmahelper.ToolCallRecord, 0, len(calls))
+	for _, tc := range calls {
 		var input map[string]any
 		if len(tc.Input) > 0 {
 			_ = json.Unmarshal(tc.Input, &input)
@@ -154,7 +161,7 @@ func (h *harnessBrain) ProcessMessageWithheld(ctx context.Context, userMessage s
 		}
 		records = append(records, rec)
 	}
-	return turn.Text, records, nil
+	return records
 }
 
 // composeHarnessPrompt assembles one turn's text.

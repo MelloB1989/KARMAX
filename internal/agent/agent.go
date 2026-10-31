@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/MelloB1989/karmax/internal/comms"
-	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"strings"
 	"sync"
 	"time"
@@ -1031,7 +1030,7 @@ func (a *Agent) handleOne(evt bus.Event) {
 		a.finishTurn(evt, store.TurnFailed, err.Error())
 		streak := a.recordEventError(err)
 		a.log.Error("event handling failed", zap.Error(err))
-		a.tellOperatorTurnFailed(evt, started, err)
+		a.afterFailedTurn(evt, started, err)
 		_ = a.bus.Publish(bus.NewEvent(bus.EventAgentFailed, a.def.ID, map[string]any{
 			"error":              err.Error(),
 			"consecutive_errors": streak,
@@ -1049,58 +1048,6 @@ func (a *Agent) handleOne(evt bus.Event) {
 	}
 	a.finishTurn(evt, store.TurnOK, "")
 	a.resetEventErrors()
-}
-
-// turnFailedNotice is what the operator gets instead of silence.
-const turnFailedNotice = "I couldn't handle that message — something failed on my side. Please send it again."
-
-// tellOperatorTurnFailed answers an operator message whose turn failed. A
-// failed turn used to end in a log line and nothing else, so from the chat it
-// looked exactly like being ignored. Monitored chats get nothing: a stranger
-// should never see KARMAX's internals, and their loops decide replies anyway.
-func (a *Agent) tellOperatorTurnFailed(evt bus.Event, started time.Time, cause error) {
-	if evt.Kind != bus.EventCommsMessage || a.commsSend == nil {
-		return
-	}
-	if a.ctx != nil && a.ctx.Err() != nil {
-		return // shutting down; the journal replays the turn on restart
-	}
-	channelID, _ := evt.Payload["karmax_channel_id"].(string)
-	target, _ := evt.Payload["channel_id"].(string)
-	if channelID == "" || !a.isFromOperator(target) {
-		return
-	}
-	if a.repliedDuringTurn(target, started) {
-		return
-	}
-	if !a.shouldTellOperatorTurnFailed(evt, cause) {
-		return
-	}
-	if err := a.sendStatus(channelID, target, turnFailedNotice); err != nil {
-		a.log.Warn("could not tell the operator a turn failed", zap.Error(err))
-	}
-}
-
-// shouldTellOperatorTurnFailed asks Jev; with no answer the operator is told.
-func (a *Agent) shouldTellOperatorTurnFailed(evt bus.Event, cause error) bool {
-	a.mu.RLock()
-	d := a.decider
-	a.mu.RUnlock()
-	if d == nil {
-		return true
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	msg, _ := evt.Payload["content"].(string)
-	state := map[string]any{"operator_message": msg, "failure": cause.Error()}
-	res, err := d(ctx, state, loopkit.Questions{
-		"tell": loopkit.Noul("The operator sent this message and the turn handling it failed before any reply. Should the operator be told it failed so they can resend it?").
-			When("the message expected a reply or an action", "the message needed no response, such as an acknowledgement or a reaction"),
-	})
-	if err != nil || res == nil {
-		return true
-	}
-	return res.Yes("tell", 0.5)
 }
 
 // finishTurn closes this event's journal row. Best-effort: a turn that ran but
@@ -1239,7 +1186,9 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		turnCancel()
 		ackCancel()
 		if err != nil {
-			return fmt.Errorf("main model: %w", err)
+			// With what it had already done, so the operator is told that
+			// rather than asked to send it again (turnfailed.go).
+			return &turnFailure{calls: toolCalls, err: fmt.Errorf("main model: %w", err)}
 		}
 		response = cleanOutboundResponse(response)
 
