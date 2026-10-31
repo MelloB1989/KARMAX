@@ -46,9 +46,13 @@ type Login struct {
 	// ServiceAccount is a gog login through a service account with
 	// domain-wide delegation.
 	ServiceAccount bool
-	// Services are what the login was granted ("calendar", "chat"), when the
+	// Services are what the login was granted ("calendar", "chat", and the
+	// Gmail powers GmailRead, GmailBody, GmailModify and GmailSend), when the
 	// path says; empty means unknown and is not held against it.
 	Services []string
+	// Scopes are the OAuth scopes Google granted the login, when the path
+	// lists them: what a fix must ask for again so it costs nothing.
+	Scopes []string
 	// Problem says why the login exists but cannot be used.
 	Problem string
 
@@ -71,7 +75,14 @@ func (l Login) Can(service string) bool {
 
 // Fix is the command the operator runs on this host to sign the login in
 // again.
-func (l Login) Fix() string {
+func (l Login) Fix() string { return l.FixFor("") }
+
+// FixFor is the command that signs the login in again with service granted
+// as well as everything it already has — so adding Gmail's send scope does
+// not cost it the calendar. An empty service, or one the login already
+// holds, is a plain sign-in again.
+func (l Login) FixFor(service string) string {
+	adding := service != "" && !l.Can(service)
 	switch l.Path {
 	case Gws:
 		var env []string
@@ -83,12 +94,37 @@ func (l Login) Fix() string {
 		if !l.defaultDir && l.Dir != "" {
 			env = append(env, "GOOGLE_WORKSPACE_CLI_CONFIG_DIR="+l.Dir)
 		}
-		return strings.TrimSpace(strings.Join(env, " ") + " gws auth login")
+		cmd := "gws auth login"
+		if adding && len(l.Scopes) > 0 {
+			// gws signs in with exactly the scopes it is given (adding the
+			// identity ones itself), so the fix lists what the login has as
+			// well as what it lacks.
+			cmd += " --scopes " + strings.Join(scopesWith(l.Scopes, service), ",")
+		}
+		return strings.TrimSpace(strings.Join(env, " ") + " " + cmd)
 	default:
 		if l.ServiceAccount {
 			return fmt.Sprintf("gog auth service-account set %s --key <service-account.json>", l.Email)
 		}
-		return fmt.Sprintf("gog auth add %s --services calendar,chat --force-consent", l.Email)
+		var services []string
+		for _, s := range l.Services {
+			// Every service gog granted is kept (drive, docs, …); the Gmail
+			// powers are KARMAX's reading of its "gmail".
+			if s != "none" && !strings.HasPrefix(s, "gmail.") {
+				services = appendOnce(services, s)
+			}
+		}
+		if len(services) == 0 {
+			services = []string{"calendar", "chat", "gmail"}
+		}
+		if gs := gogService(service); gs != "" {
+			services = appendOnce(services, gs)
+		}
+		cmd := fmt.Sprintf("gog auth add %s --services %s", l.Email, strings.Join(services, ","))
+		if adding && (service == GmailModify || service == GmailSend) {
+			cmd += " --gmail-scope full" // gog grants gmail.modify, not read-only
+		}
+		return cmd + " --force-consent"
 	}
 }
 
@@ -119,6 +155,29 @@ func (l Login) String() string {
 type Account struct {
 	Email  string
 	Logins []Login
+}
+
+// Lacks reports whether no working login of the account was granted service.
+func (a Account) Lacks(service string) bool {
+	for _, l := range a.Logins {
+		if l.Problem == "" && l.Can(service) {
+			return false
+		}
+	}
+	return true
+}
+
+// FixFor is the command that grants service to the account's best login.
+func (a Account) FixFor(service string) string {
+	for _, l := range a.Logins {
+		if l.Problem == "" {
+			return l.FixFor(service)
+		}
+	}
+	if len(a.Logins) > 0 {
+		return a.Logins[0].FixFor(service)
+	}
+	return (Login{Email: a.Email, Path: Gog}).FixFor(service)
 }
 
 // Discovery is what one look at the host found.
@@ -388,6 +447,7 @@ func (h *Host) gogLogins(ctx context.Context) ([]Login, error) {
 		Accounts []struct {
 			Email    string   `json:"email"`
 			Services []string `json:"services"`
+			Scopes   []string `json:"scopes"`
 			Auth     string   `json:"auth"`
 			Error    string   `json:"error"`
 		} `json:"accounts"`
@@ -397,10 +457,21 @@ func (h *Host) gogLogins(ctx context.Context) ([]Login, error) {
 	}
 	var out []Login
 	for _, a := range listed.Accounts {
-		l := Login{Email: a.Email, Path: Gog, ServiceAccount: strings.Contains(a.Auth, "service_account")}
+		l := Login{Email: a.Email, Path: Gog, ServiceAccount: strings.Contains(a.Auth, "service_account"), Scopes: a.Scopes}
 		for _, s := range a.Services {
 			if s != "service-account" {
 				l.Services = append(l.Services, s)
+			}
+		}
+		if contains(l.Services, "gmail") {
+			// gog grants Gmail as gmail.modify unless it was signed in
+			// read-only, which its scopes then say.
+			powers := []string{GmailRead, GmailBody, GmailModify, GmailSend}
+			if len(a.Scopes) > 0 {
+				powers = gmailPowers(a.Scopes)
+			}
+			for _, p := range powers {
+				l.Services = appendOnce(l.Services, p)
 			}
 		}
 		if a.Error != "" {
@@ -429,7 +500,7 @@ func (h *Host) gwsLogin(ctx context.Context, dir string) (Login, error) {
 		return Login{}, fmt.Errorf("gws in %s holds credentials but names no account; sign it in again with `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=%s gws auth login`", dir, dir)
 	}
 	l := Login{Email: st.User, Path: Gws, Dir: dir, defaultDir: filepath.Clean(dir) == filepath.Clean(h.DefaultGwsDir),
-		keyring: h.envValue("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND")}
+		keyring: h.envValue("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"), Scopes: st.Scopes}
 	for _, s := range st.Scopes {
 		switch {
 		case strings.Contains(s, "/auth/calendar"):
@@ -438,13 +509,23 @@ func (h *Host) gwsLogin(ctx context.Context, dir string) (Login, error) {
 			l.Services = appendOnce(l.Services, "chat")
 		}
 	}
+	l.Services = append(l.Services, gmailPowers(st.Scopes)...)
 	if len(l.Services) == 0 {
-		l.Services = []string{"none"} // known, and neither calendar nor chat
+		l.Services = []string{"none"} // known, and none of calendar, chat or Gmail
 	}
 	if !st.HasRefreshToken {
 		l.Problem = "gws has no refresh token for it, so it is signed out once the current token expires"
 	}
 	return l, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func appendOnce(list []string, s string) []string {
