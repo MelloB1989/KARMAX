@@ -109,6 +109,11 @@ func StateOf(evt bus.Event, hint Hint) map[string]any {
 			state["summary"] = clip(src.Summary)
 		}
 		state["urgent"] = src.Urgent
+		if src.Backlog {
+			// Found on the source's first look at the account: it happened
+			// before anyone was watching, which bears on how urgent it is now.
+			state["backlog"] = "happened before the assistant was watching this account"
+		}
 		if details := summarisePayload(src.Data); len(details) > 0 {
 			state["details"] = details
 		}

@@ -9,6 +9,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/sources"
+	sourcegh "github.com/MelloB1989/karmax/internal/sources/github"
 	"github.com/MelloB1989/karmax/internal/store"
 	"go.uber.org/zap"
 )
@@ -34,6 +35,43 @@ func TestASourceEventIsRenderedWithItsAccount(t *testing.T) {
 	}
 	if strings.Contains(p, "```json") || strings.Contains(p, "raw system state") {
 		t.Errorf("a source event was rendered as raw machine state:\n%s", p)
+	}
+}
+
+// What the GitHub source actually publishes reaches the turn as a GitHub event
+// on that login — it used to arrive as raw JSON under "probably nothing to do".
+func TestARealGitHubEventIsRenderedForTheAccount(t *testing.T) {
+	var n sourcegh.Notification
+	n.ID, n.Unread, n.Reason, n.UpdatedAt = "77", true, "review_requested", time.Now().Add(-5*time.Minute)
+	n.Subject.Title, n.Subject.Type = "Fix the login redirect", "PullRequest"
+	n.Subject.URL = "https://api.example.test/repos/contoso/app/pulls/12"
+	n.Repository.FullName = "contoso/app"
+	n.Repository.Owner.Login = "contoso"
+	evt := sourcegh.Event("octo-work", n, sourcegh.Detail{Author: "dana", State: "open", Number: 12}).BusEvent("nexus")
+
+	p := buildPromptFromEvent(evt, nil)
+	for _, want := range []string{"**github**, account **octo-work**", "Fix the login redirect", "contoso/app",
+		"URGENT", "goes through THAT account"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the turn omits %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "```json") || strings.Contains(p, "raw system state") {
+		t.Errorf("a GitHub event was rendered as raw machine state:\n%s", p)
+	}
+}
+
+// Backlog is told as what it is: from before KARMAX was watching, to be checked
+// before anything is done about it.
+func TestABacklogItemIsRenderedAsContext(t *testing.T) {
+	evt := sources.Event{Source: "github", Account: "octo-work", Title: "Old mention", Urgent: true,
+		Backlog: true, At: time.Now().Add(-10 * time.Hour)}.BusEvent("nexus")
+	p := buildPromptFromEvent(evt, nil)
+	if !strings.Contains(p, "before KARMAX was watching") {
+		t.Errorf("a backlog item was not marked as such:\n%s", p)
+	}
+	if strings.Contains(p, "URGENT —") {
+		t.Errorf("a backlog item was presented as urgent news:\n%s", p)
 	}
 }
 

@@ -24,7 +24,15 @@ import (
 func renderSourceEvent(e sources.Event) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Something happened on one of the operator's accounts: **%s**, account **%s**.\n\n", e.Source, e.Account)
-	if e.Urgent {
+	switch {
+	case e.Backlog:
+		// The first look at an account brings what already happened. Acting on
+		// it as news is how a day-old mention gets a reply the operator already
+		// sent.
+		b.WriteString("BACKLOG — this happened before KARMAX was watching this account (its first look at it). " +
+			"The operator may already have seen or handled it: check its current state before doing anything, " +
+			"and treat it as context, not news.\n\n")
+	case e.Urgent:
 		b.WriteString("URGENT — the source marked this as something the operator must hear about now.\n\n")
 	}
 	if e.Type != "" {

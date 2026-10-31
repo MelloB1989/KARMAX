@@ -97,9 +97,13 @@ func (rt *KarmaxRuntime) hintFor(evt bus.Event) reflex.Hint {
 		// An account's event carries its source's own urgency, which the
 		// screener may not overrule: it is a fact about the event, like who
 		// sent a message.
+		//
+		// Only for news, though: a source's backlog (its first look at an
+		// account) and an item that happened hours before it arrived are
+		// screened on their merits instead of floored to escalate.
 		if src, ok := sources.FromBusEvent(evt); ok {
 			h.Channel = src.Ref()
-			h.Urgent = src.Urgent
+			h.Urgent = src.Urgent && !src.Backlog && rt.policy.Fresh(src.At, time.Now())
 		}
 	}
 	return h

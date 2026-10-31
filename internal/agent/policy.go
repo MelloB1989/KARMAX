@@ -126,10 +126,16 @@ func (a *Agent) turnReport(evt bus.Event, since time.Time, response string) stri
 }
 
 // turnIsUrgent: the source flagged it, or the screener scored it at the
-// policy's threshold.
+// policy's threshold — and it is news. A source's backlog (what its first look
+// at an account found) and anything that happened hours before it arrived are
+// context, however urgent they were then: a source's first poll at deploy
+// used to page the operator once per urgent item in the last day.
 func turnIsUrgent(evt bus.Event, p policy.Policy) bool {
 	flagged := false
 	if src, ok := sources.FromBusEvent(evt); ok {
+		if src.Backlog || !p.Fresh(src.At, time.Now()) {
+			return false
+		}
 		flagged = src.Urgent
 	}
 	s := screeningOf(evt)

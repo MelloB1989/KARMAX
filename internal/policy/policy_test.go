@@ -3,6 +3,7 @@ package policy
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -76,6 +77,27 @@ func TestUrgentIsTheFlagOrTheThreshold(t *testing.T) {
 	}
 	if !p.IsUrgent(false, 0.9) || p.IsUrgent(false, 0.89) {
 		t.Error("the default threshold is 0.9")
+	}
+}
+
+// Something that happened hours before it reached KARMAX is not "now", however
+// urgent it was then: a source's catch-up after a restart or at first sight
+// must not page the operator.
+func TestOnlyFreshItemsCanPage(t *testing.T) {
+	now := time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)
+	p := New(Config{})
+	if !p.Fresh(now.Add(-90*time.Minute), now) || p.Fresh(now.Add(-3*time.Hour), now) {
+		t.Error("the default freshness window is two hours")
+	}
+	if !p.Fresh(time.Time{}, now) || !p.Fresh(now.Add(time.Hour), now) {
+		t.Error("an undated or future item (a meeting starting) is fresh")
+	}
+	var cfg Config
+	if err := yaml.Unmarshal([]byte("urgent_max_age: 30m"), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if New(cfg).Fresh(now.Add(-45*time.Minute), now) {
+		t.Error("urgent_max_age not honoured")
 	}
 }
 

@@ -297,6 +297,44 @@ func TestAnUrgentSourceEventIsEscalatedToTheTurn(t *testing.T) {
 	}
 }
 
+// A source's first look at an account publishes its backlog — a day of
+// GitHub notifications, several marked urgent. At deploy that paged the
+// operator once per urgent item. Backlog is handled as context: screened on
+// its merits rather than floored to escalate, and never a page.
+func TestAFirstSightBacklogDoesNotPageTheOperator(t *testing.T) {
+	f := newSourceFlow(t, "handle", 0)
+	f.brain.reply = "Already reviewed by Dana; nothing to do."
+	var ids []string
+	for i, title := range []string{"Review requested on acme/api#12", "Mentioned on acme/web#3", "CI failed on acme/api main"} {
+		e := reviewRequest()
+		e.Key, e.Title, e.Urgent, e.Backlog = "n-b"+string(rune('0'+i)), title, true, true
+		e.At = time.Now().Add(-time.Duration(i+1) * time.Hour)
+		ids = append(ids, f.route(t, e).ID)
+	}
+	for range ids {
+		select {
+		case <-f.brain.done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("a backlog item never reached the agent")
+		}
+	}
+	for _, id := range ids {
+		f.turnStatus(t, id)
+	}
+	if got := f.toOperator(); len(got) != 0 {
+		t.Errorf("the backlog paged the operator %d times: %q", len(got), got)
+	}
+	prompts, ctxs := f.brain.turns()
+	for i := range prompts {
+		if !strings.Contains(prompts[i], "BACKLOG") {
+			t.Errorf("turn %d was not told it is backlog:\n%s", i, prompts[i])
+		}
+		if strings.Contains(ctxs[i], "time-critical") {
+			t.Errorf("turn %d was escalated as time-critical:\n%s", i, ctxs[i])
+		}
+	}
+}
+
 // A routine event reaches no one: it is handled, and that is the end of it.
 func TestARoutineSourceEventDoesNotReachTheOperator(t *testing.T) {
 	f := newSourceFlow(t, "handle", 0)

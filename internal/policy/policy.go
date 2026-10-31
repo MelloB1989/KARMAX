@@ -16,6 +16,7 @@ package policy
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Class is a kind of thing that might reach the operator.
@@ -47,6 +48,10 @@ type Config struct {
 	// UrgencyThreshold is the screener's urgency (0..1) at or above which an
 	// item counts as urgent. Default 0.9.
 	UrgencyThreshold float64 `yaml:"urgency_threshold"`
+	// UrgentMaxAge is how old an item may be and still page the operator. An
+	// item that happened hours before it reached KARMAX — a source catching up
+	// after a restart or on first sight — is context, not news. Default 2h.
+	UrgentMaxAge time.Duration `yaml:"urgent_max_age"`
 }
 
 // DefaultHardFloor is what KARMAX never does without asking, whatever the
@@ -63,12 +68,16 @@ var DefaultWhatsApp = []Class{Approval, Urgent, Sent}
 // DefaultUrgencyThreshold matches reflex's escalation threshold.
 const DefaultUrgencyThreshold = 0.9
 
+// DefaultUrgentMaxAge is how old an item may be and still page the operator.
+const DefaultUrgentMaxAge = 2 * time.Hour
+
 // Policy is a resolved Config. The zero value is not useful; use New.
 type Policy struct {
 	actFirst  bool
 	floor     []string
 	whatsapp  map[Class]bool
 	threshold float64
+	maxAge    time.Duration
 }
 
 // New resolves a config against the defaults.
@@ -80,6 +89,10 @@ func New(cfg Config) Policy {
 	}
 	if p.threshold <= 0 || p.threshold > 1 {
 		p.threshold = DefaultUrgencyThreshold
+	}
+	p.maxAge = cfg.UrgentMaxAge
+	if p.maxAge <= 0 {
+		p.maxAge = DefaultUrgentMaxAge
 	}
 	for _, f := range cfg.HardFloor {
 		if f = strings.TrimSpace(f); f != "" {
@@ -121,6 +134,17 @@ func (p Policy) IsUrgent(flagged bool, urgency float64) bool {
 
 // Threshold is the urgency at or above which an item is urgent.
 func (p Policy) Threshold() float64 { return p.threshold }
+
+// Fresh reports whether something that happened at `at` is still news at
+// `now`, and so may page the operator. Undated and future items (a meeting
+// about to start) are fresh.
+func (p Policy) Fresh(at, now time.Time) bool {
+	maxAge := p.maxAge
+	if maxAge <= 0 {
+		maxAge = DefaultUrgentMaxAge
+	}
+	return at.IsZero() || now.Sub(at) <= maxAge
+}
 
 // Brief is the policy as the model reads it on every turn. Generated from the
 // config, so the model is never told something the code does not enforce.

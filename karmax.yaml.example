@@ -324,3 +324,8 @@ policy:
   # else — off by default). [] sends nothing.
   whatsapp: [approvals, urgent, sent]
   urgency_threshold: 0.90
+  # An item older than this when it reaches KARMAX never pages you, however
+  # urgent it was: a source catching up after a restart is context, not news.
+  # (A source's first look at an account is never a page either: it is marked
+  # backlog.)
+  urgent_max_age: 2h

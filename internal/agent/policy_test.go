@@ -122,6 +122,25 @@ func TestAnUrgentTurnIsReported(t *testing.T) {
 	}
 }
 
+// A source's first look at an account brings a day of backlog, urgent items
+// included; at deploy that paged the operator once per item. Backlog, and
+// anything that happened hours before it arrived, is never a page — even when
+// the screener scored it at the threshold.
+func TestBacklogAndStaleItemsNeverPage(t *testing.T) {
+	a := policyAgent(t, policy.Default())
+	backlog := sources.Event{Source: "github", Account: "octo-work", Title: "Review requested on acme/api#12",
+		At: time.Now().Add(-20 * time.Minute), Urgent: true, Backlog: true}.BusEvent("nexus")
+	backlog.Meta[bus.MetaReflexUrgency] = "0.95"
+	if got := a.turnReport(backlog, time.Now(), "Checked it; already reviewed."); got != "" {
+		t.Errorf("a backlog item paged the operator:\n%s", got)
+	}
+	stale := sources.Event{Source: "aws", Account: "prod", Title: "api-5xx in ALARM",
+		At: time.Now().Add(-5 * time.Hour), Urgent: true}.BusEvent("nexus")
+	if got := a.turnReport(stale, time.Now(), "It recovered an hour later."); got != "" {
+		t.Errorf("a five-hour-old item paged the operator:\n%s", got)
+	}
+}
+
 // Routine work is not reported; the operator's own conversation needs no
 // report (they are in it); and a policy that keeps WhatsApp quiet is obeyed.
 func TestRoutineAndConversationalTurnsAreNotReported(t *testing.T) {
