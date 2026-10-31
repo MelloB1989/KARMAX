@@ -64,6 +64,8 @@ var agentScopedTools = map[string]bool{
 	"memory.retrieve": true,
 	"memory.ingest":   true,
 	"memory.forget":   true,
+	"memory.correct":  true,
+	"review.resolve":  true,
 	"comms.escalate":  true,
 	"profile.update":  true,
 }

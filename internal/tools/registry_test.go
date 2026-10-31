@@ -96,7 +96,7 @@ func TestResolveForAgentExpandsPrefixGlobs(t *testing.T) {
 }
 
 func TestIsAgentScoped(t *testing.T) {
-	scoped := []string{"memory.ingest", "memory.retrieve", "comms.escalate", "profile.update", "memory_ingest"}
+	scoped := []string{"memory.ingest", "memory.retrieve", "memory.forget", "memory.correct", "review.resolve", "comms.escalate", "profile.update", "memory_ingest"}
 	for _, name := range scoped {
 		if !IsAgentScoped(name) {
 			t.Errorf("expected %q to be agent-scoped", name)
