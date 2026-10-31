@@ -186,6 +186,28 @@ func TestGChatNamesASenderOnceThroughAnAccountThatSawThem(t *testing.T) {
 	}
 }
 
+// A name a message carries is the sender's name from then on, without a
+// lookup: Chat gives display names on messages, and the People API often
+// cannot say more.
+func TestGChatRemembersTheNameAMessageCarries(t *testing.T) {
+	api := newChatAPI()
+	api.msgs[work+"|spaces/AAAA"] = []gchat.Message{
+		{Name: "m1", Sender: "users/7", SenderName: "Dana Reyes", Text: "hi", Created: t0},
+		{Name: "m2", Sender: "users/8", SenderName: "Build bot", SenderType: "BOT", Text: "done", Created: t0},
+	}
+	src := NewGChat(api, accounts(work), zap.NewNop())
+	ctx := context.Background()
+	if _, err := src.Messages(ctx, Chat{ID: "spaces/AAAA", Account: work}, t0.Add(-time.Hour), 50); err != nil {
+		t.Fatal(err)
+	}
+	if n := src.Name(ctx, "users/7"); n != "Dana Reyes" || api.lookups != 0 {
+		t.Errorf("name = %q after %d lookups; want the message's own, unlooked-up", n, api.lookups)
+	}
+	if n := src.Name(ctx, "users/8"); n != "Build bot (an app)" {
+		t.Errorf("an app = %q", n)
+	}
+}
+
 // An account whose own Chat user cannot be told is not read: its operator's
 // messages would be taken for someone else's. The other accounts still are.
 func TestGChatSkipsAnAccountThatCannotSayWhoTheOperatorIs(t *testing.T) {

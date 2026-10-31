@@ -153,6 +153,11 @@ func (g *GChat) Messages(ctx context.Context, c Chat, after time.Time, limit int
 			if _, ok := g.via[m.Sender]; !ok {
 				g.via[m.Sender] = c.Account
 			}
+			// The name a message carries is the best there is: the People
+			// API often knows less about a colleague than Chat shows.
+			if name != "" {
+				g.names[m.Sender] = name
+			}
 		}
 		out = append(out, Message{ID: m.Name, Chat: c.ID, Sender: m.Sender, SenderName: name,
 			Content: m.Text, At: m.Created, FromMe: me.Wrote(m)})
