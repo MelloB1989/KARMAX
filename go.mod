@@ -11,9 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.1
 	github.com/aws/aws-sdk-go-v2/service/budgets v1.53.5
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.75.3
-	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.84.1
 	github.com/aws/aws-sdk-go-v2/service/costexplorer v1.74.5
-	github.com/aws/aws-sdk-go-v2/service/ecs v1.93.0
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.6
 	github.com/aws/smithy-go v1.28.7
 	github.com/charmbracelet/bubbles v1.0.0

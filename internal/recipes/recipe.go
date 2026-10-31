@@ -44,14 +44,13 @@ const (
 	VerbCaseSay     = "case.say"     // speak in the case's own thread
 	VerbAwait       = "await"        // park until a matching event arrives
 	VerbForeach     = "foreach"      // run steps once per item
-	VerbSandbox     = "sandbox"      // hand a coding task to a container
 )
 
 var verbs = []string{
 	VerbAsk, VerbObserve, VerbHarness, VerbHarnessForget, VerbGateway, VerbHTTP, VerbTool, VerbRecall, VerbRemember,
 	VerbNotify, VerbPropose, VerbRemind, VerbSend, VerbSleep, VerbLog,
 	VerbCaseOpen, VerbCaseGet, VerbCaseState, VerbCaseLog, VerbCaseHistory, VerbCaseSay,
-	VerbAwait, VerbForeach, VerbSandbox,
+	VerbAwait, VerbForeach,
 }
 
 // Recipe is one YAML file.
@@ -352,7 +351,6 @@ var required = map[string][]string{
 	VerbCaseHistory: {"case"},
 	VerbCaseSay:     {"case", "text"},
 	VerbAwait:       {"event"},
-	VerbSandbox:     {"repo", "branch", "task"},
 
 	VerbHarnessForget: {"session_id"},
 }
@@ -404,7 +402,7 @@ func (s Step) validate(path string) error {
 func storesResult(verb string) bool {
 	switch verb {
 	case VerbAsk, VerbObserve, VerbHarness, VerbGateway, VerbHTTP, VerbTool, VerbRecall,
-		VerbCaseOpen, VerbCaseGet, VerbCaseHistory, VerbAwait, VerbSandbox:
+		VerbCaseOpen, VerbCaseGet, VerbCaseHistory, VerbAwait:
 		return true
 	}
 	return false

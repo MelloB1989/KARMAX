@@ -250,14 +250,6 @@ func (d *DryRun) ProposeTo(role, title, summary, action string) (string, error) 
 	return "[a proposal id would appear here]", nil
 }
 
-func (d *DryRun) Sandbox(_ context.Context, id string, spec loopkit.SandboxSpec) (loopkit.SandboxResult, error) {
-	d.record("RUN CODE in a container against %s@%s: %s", spec.Repo, spec.Branch, oneLine(spec.Task))
-	return loopkit.SandboxResult{
-		RunID: "[a run id would appear here]", Status: "exited", ExitCode: 0,
-		LogTail: "[container output would appear here]",
-	}, nil
-}
-
 func (d *DryRun) Audit(verb, target, decision, detail string) error { return nil }
 
 func timeoutSuffix(d time.Duration) string {

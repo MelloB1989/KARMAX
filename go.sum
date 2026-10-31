@@ -42,12 +42,8 @@ github.com/aws/aws-sdk-go-v2/service/budgets v1.53.5 h1:j33B9QB+LqZR/+MNbylo+iHu
 github.com/aws/aws-sdk-go-v2/service/budgets v1.53.5/go.mod h1:C1vqkZ3cCdAm6xth1OUigpc6ojV/6IgHjlr8C7GVvNw=
 github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.75.3 h1:FMopEEJsMFEIMALg3+H4+ezFj13KjWWW63e+eCujr5U=
 github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.75.3/go.mod h1:BkbYwGU2P08ZLNtMLdj0H7XNTsrRAxLkwoZ33WY/w+0=
-github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.84.1 h1:GTN8kHGLbUlnaXPyTuZAhsXMbj77Pnj52P7SOX919Jo=
-github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.84.1/go.mod h1:hp3qwCtX+QPXVJMyKsFO/sLXkirzH0R3UHRVM4QBGV4=
 github.com/aws/aws-sdk-go-v2/service/costexplorer v1.74.5 h1:yoMP1GeXqKuEcbe2V/hrLYFANnx8Ypx83NSR6e2u0BA=
 github.com/aws/aws-sdk-go-v2/service/costexplorer v1.74.5/go.mod h1:aYP4DYWZpu+W9v0Izt9D/nLllZ95eeG5b5FEQmVIpMU=
-github.com/aws/aws-sdk-go-v2/service/ecs v1.93.0 h1:vGID9MLvMp5goA8erHQceyoQ+bXx2Bbm1cuqQu1uZjM=
-github.com/aws/aws-sdk-go-v2/service/ecs v1.93.0/go.mod h1:SWnb6UqGrRl+8szKjonPFm9cO31HpS9NdqdOLXS9vbA=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.23 h1:MCIR6iZaCKO4UE0hUvoWWLI6JVjppopV64JfAJaMjng=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.23/go.mod h1:pphWFS+z0MmIPivj8c/6bATd1Z+Av7Ust75DPdEFsPA=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.7.0 h1:lguz0bmOoGzozP9XfRJR1QIayEYo+2vP/No3OfLF0pU=

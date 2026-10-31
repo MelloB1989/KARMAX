@@ -72,27 +72,6 @@ type HarnessResult struct {
 	SessionID string
 }
 
-// SandboxSpec is a piece of work handed to a container.
-type SandboxSpec struct {
-	CaseID  string
-	Repo    string
-	Branch  string
-	Task    string
-	Image   string
-	Env     map[string]string
-	Timeout time.Duration
-}
-
-// SandboxResult is what the container did. Status is the sandbox package's
-// state vocabulary; a non-zero ExitCode with status "exited" is a failed run
-// that ran, as distinct from one that never started.
-type SandboxResult struct {
-	RunID    string
-	Status   string
-	ExitCode int
-	LogTail  string
-}
-
 // Case is the thread of work a run belongs to.
 type Case struct {
 	ID        string
@@ -382,13 +361,6 @@ type Kit interface {
 	// Everyone holding the role is asked; the first decision wins. Use it where
 	// a company, rather than an individual, has to agree.
 	ProposeTo(role, title, summary, action string) (string, error)
-
-	// --- Sandboxed work ------------------------------------------------------
-	//
-	// Sandbox runs a coding task in a container and returns when it finishes or
-	// the spec's timeout elapses. Checkpointed like Step: a retry after a crash
-	// returns the recorded result rather than building twice.
-	Sandbox(ctx context.Context, id string, spec SandboxSpec) (SandboxResult, error)
 
 	// --- Answerability -------------------------------------------------------
 	//

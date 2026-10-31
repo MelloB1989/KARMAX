@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
-	"github.com/MelloB1989/karmax/internal/sandbox"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
@@ -21,11 +20,7 @@ import (
 // waiter and re-runs the loop on the SAME execution — so the steps it already
 // finished return their recorded results and it carries on from the wait.
 
-const (
-	waiterSweepEvery      = time.Minute
-	sandboxPollEvery      = 5 * time.Second
-	defaultSandboxTimeout = 45 * time.Minute
-)
+const waiterSweepEvery = time.Minute
 
 // startWaiters wires the two ways a parked run comes back: a matching event,
 // and a deadline passing.
@@ -133,44 +128,3 @@ func waiterMatches(matchJSON string, payload map[string]any) bool {
 	return true
 }
 
-// reconcileSandboxes is startup recovery for containers.
-//
-// A sandbox outlives the process that launched it. Without this the daemon
-// restarts, forgets the container, and leaves it running against a repo with a
-// live token — so every run recorded as in-flight is asked about once, and
-// closed out if it has finished or vanished.
-func (rt *KarmaxRuntime) reconcileSandboxes(ctx context.Context) {
-	live, err := rt.store.LiveSandboxRuns()
-	if err != nil {
-		rt.log.Warn("could not list live sandbox runs", zap.Error(err))
-		return
-	}
-	if len(live) == 0 {
-		return
-	}
-	drv, err := rt.sandboxDriver()
-	if err != nil {
-		rt.log.Warn("sandbox runs are in flight but no driver is available",
-			zap.Int("runs", len(live)), zap.Error(err))
-		return
-	}
-	for _, r := range live {
-		if r.ContainerID == "" {
-			_ = rt.store.UpdateSandboxRun(r.ID, sandbox.StateGone, 0, "never recorded a container", "")
-			continue
-		}
-		st, err := drv.Poll(ctx, r.ContainerID)
-		if err != nil || st.State == sandbox.StateGone {
-			_ = rt.store.UpdateSandboxRun(r.ID, sandbox.StateGone, 0, "lost across a restart", "")
-			continue
-		}
-		if st.State == sandbox.StateExited || st.State == sandbox.StateFailed {
-			logs, _ := drv.Logs(ctx, r.ContainerID, 200)
-			_ = rt.store.UpdateSandboxRun(r.ID, st.State, st.ExitCode, "", logs)
-			_ = drv.Kill(ctx, r.ContainerID)
-			continue
-		}
-		rt.log.Info("a sandbox survived the restart and is still running",
-			zap.String("run", r.ID), zap.String("container", r.ContainerID))
-	}
-}

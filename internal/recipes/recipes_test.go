@@ -590,13 +590,6 @@ steps:
       match: { key: "{{ .ticket }}", status: Prioritized }
       timeout: 168h
     as: moved
-  - sandbox:
-      case: "{{ .c.id }}"
-      repo: acme/api
-      branch: main
-      task: "Implement {{ .ticket }}"
-      timeout: 45m
-    as: build
   - send: { to: "#eng", thread: "{{ .c.thread_ts }}", text: "PR is up" }
   - propose: { to_role: senior-dev, title: "Merge?", summary: "s", action: "a" }
 `)
@@ -610,14 +603,14 @@ steps:
 	for _, want := range []string{
 		"open the case", "for ops-pack", "move case", "log to case",
 		"say in #eng", "read the last", "history",
-		"WAIT for", "RUN CODE in a container", "SEND to #eng", "ASK APPROVAL",
+		"WAIT for", "SEND to #eng", "ASK APPROVAL",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report missing %q:\n%s", want, report)
 		}
 	}
-	if len(d.Actions) != 9 {
-		t.Errorf("recorded %d actions, want 9:\n%s", len(d.Actions), report)
+	if len(d.Actions) != 8 {
+		t.Errorf("recorded %d actions, want 8:\n%s", len(d.Actions), report)
 	}
 }
 
@@ -653,14 +646,6 @@ steps:
       steps:
         - ask: "summarise {{ .t }}"
           as: out
-  - sandbox:
-      case: "{{ .c.id }}"
-      repo: acme/api
-      branch: main
-      task: "Implement {{ .ticket }}"
-      timeout: 45m
-      env.TOKEN: "sekrit"
-    as: build
   - send: { to: "#eng", thread: "{{ .c.thread_ts }}", text: "PR is up" }
   - propose: { to_role: senior-dev, title: "Merge?", summary: "s", action: "a" }
 `)
@@ -670,15 +655,14 @@ steps:
 	}
 }
 
-// Describe surfaces the new verbs' reach honestly — sandbox runs code, await
-// can park for a long time, foreach multiplies whatever it wraps.
+// Describe surfaces the new verbs' reach honestly — await can park for a
+// long time, foreach multiplies whatever it wraps.
 func TestDescribeCoversTheOrgVerbs(t *testing.T) {
 	r := mustParse(t, `
 name: x
 on:
   manual: true
 steps:
-  - sandbox: { repo: o/r, branch: main, task: t }
   - await: { event: e }
   - foreach:
       in: '["a"]'
@@ -687,7 +671,7 @@ steps:
         - remember: { fact: "{{ .x }}" }
 `)
 	out := strings.Join(Describe(r), " | ")
-	for _, want := range []string{"RUN CODE", "PARK", "repeat its steps", "WRITE to your long-term memory"} {
+	for _, want := range []string{"PARK", "repeat its steps", "WRITE to your long-term memory"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Describe missing %q: %s", want, out)
 		}

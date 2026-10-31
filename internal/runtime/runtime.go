@@ -139,11 +139,6 @@ type KarmaxRuntime struct {
 	// voice holds the voice integrations this instance can place calls through.
 	voice *voice.Registry
 
-	// repoTokenMinter narrows a sandbox's git credential to the one repository
-	// its ticket names. Installed by the GitHub connector when an App is
-	// configured; nil means the broader fallback.
-	repoTokenMinter RepoTokenMinter
-
 	// pending holds event triggers that arrived while a loop was running, so a
 	// busy loop delays a message instead of destroying it.
 	pending *pendingTriggers
@@ -504,11 +499,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// not exist yet here. See the assignment further down.
 	recipeTool := &builtin.RecipeTool{}
 	toolReg.Register(recipeTool)
-	// Wired below, for the same reason as the recipe runner: the sandbox
-	// driver belongs to the runtime, which does not exist yet.
-	sandboxTool := &builtin.SandboxTool{Store: s}
-	toolReg.Register(sandboxTool)
-	toolReg.Register(&builtin.SandboxStatusTool{Store: s})
 	// Registered through the Google Workspace connector rather than here — see
 	// the registration above. GogTool remains as the thing that actually runs
 	// gog, because it owns the flag defaults and the exit-code reasons, and
@@ -1067,15 +1057,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		apiBrowserToken: apiBrowserToken,
 		apiBaseURL:      apiBaseURL,
 	}
-	// The agent can now run what it writes, not just validate it — and it is
-	// told what the run did, since "started something" is not verification.
-	// Without this the minter stays nil, and a host with a fully configured
-	// GitHub App still fails every sandbox with "no GitHub credential" and
-	// falls back to a broad GITHUB_TOKEN nobody set.
-	rt.SetRepoTokenMinter(githubconn.NewRepoTokenMinter(func(ctx context.Context) (connectorkit.Credentials, error) {
-		return connHost.CredentialsFor(ctx, "github")
-	}))
-	sandboxTool.Launch = rt.runSandbox
 	recipeTool.Run = func(ctx context.Context, name string) (bool, error) {
 		rt.recipeMu.RLock()
 		_, known := rt.recipeLoops[name]
@@ -1157,11 +1138,9 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.startCriticalAlertLoop(ctx)
 	rt.startDeadLetterAlerts()
 
-	// Runs parked on an event, and containers that outlived the last process.
-	// Both are things this daemon is answerable for and would otherwise silently
-	// drop on restart.
+	// Runs parked on an event: this daemon is answerable for them and would
+	// otherwise silently drop them on restart.
 	rt.startWaiters(ctx)
-	go rt.reconcileSandboxes(ctx)
 
 	if err := rt.mcpBridge.StartAll(ctx); err != nil {
 		rt.log.Error("MCP bridge start error", zap.Error(err))

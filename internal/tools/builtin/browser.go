@@ -268,3 +268,9 @@ func asStrList(v any) []string {
 	}
 	return out
 }
+
+// str reads an optional string argument; anything else reads as empty.
+func str(v any) string {
+	s, _ := v.(string)
+	return s
+}
