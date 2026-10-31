@@ -121,6 +121,10 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 				wk.run.Store(&loopRunState{})
 				wk.setTrigger(loopkit.Trigger{Kind: kind, Payload: t.Payload})
 				err := runner.RunTriggered(c, loopRunTimeout, kind, t.Payload)
+				// What this run settled about its request ends with it: a host
+				// call outside a run (a provided tool the agent invokes) is not
+				// bound by it.
+				wk.run.Store(nil)
 				// A failure after the run has already messaged somebody is not
 				// retryable: the retry re-composes and re-sends. Observed as
 				// "call Quinn until he responds" being carried out three

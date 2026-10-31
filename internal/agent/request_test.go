@@ -158,6 +158,30 @@ func TestADelegationsResultSaysWhoIsWaiting(t *testing.T) {
 	}
 }
 
+// With two requests in flight — the second waiting for the session behind
+// the first — what a turn's tools are working for is the one the session
+// took first; when it ends, the other.
+func TestTheCurrentRequestIsTheOldestInFlight(t *testing.T) {
+	a := replyTestAgent(t)
+	first, second := NewRequest("ev-a", RequestMessage), NewRequest("ask-b", RequestAsk)
+	endFirst := a.working(first)
+	endSecond := a.working(second)
+	if got := a.CurrentRequest(); got != first {
+		t.Fatalf("current = %v, want the first", got)
+	}
+	if o := a.delegationOrigin(); o.RequestID != "ev-a" {
+		t.Errorf("a delegation started now serves %q, want ev-a", o.RequestID)
+	}
+	endFirst()
+	if got := a.CurrentRequest(); got != second {
+		t.Fatalf("after the first ended, current = %v, want the second", got)
+	}
+	endSecond()
+	if a.CurrentRequest() != nil {
+		t.Error("a request is current after every turn ended")
+	}
+}
+
 // A request survives the journal: what it was, where it came from.
 func TestARequestRoundTripsThroughTheJournal(t *testing.T) {
 	req := NewRequest("ask-1", RequestAsk)

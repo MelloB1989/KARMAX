@@ -224,11 +224,16 @@ func (a *Agent) owner() TaskOwner {
 
 // CurrentRequest is the request this agent's thinking is working on right
 // now, if any. Its session runs one turn at a time, so a tool the turn calls
-// through the shell (task.create, claude_code.call) belongs to it.
+// through the shell (task.create, claude_code.call) belongs to it. With more
+// than one in flight — a second waiting for the session behind the first —
+// it is the oldest: the one the session took first.
 func (a *Agent) CurrentRequest() *Request {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.current
+	if len(a.current) == 0 {
+		return nil
+	}
+	return a.current[0]
 }
 
 // delegationOrigin is the request a delegation started now serves: the one
@@ -247,15 +252,17 @@ func (a *Agent) working(req *Request) func() {
 		return func() {}
 	}
 	a.mu.Lock()
-	prev := a.current
-	a.current = req
+	a.current = append(a.current, req)
 	a.mu.Unlock()
 	return func() {
 		a.mu.Lock()
-		if a.current == req {
-			a.current = prev
+		defer a.mu.Unlock()
+		for i, r := range a.current {
+			if r == req {
+				a.current = append(a.current[:i:i], a.current[i+1:]...)
+				return
+			}
 		}
-		a.mu.Unlock()
 	}
 }
 

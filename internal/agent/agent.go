@@ -108,10 +108,10 @@ type Agent struct {
 	// policy.go.
 	ops policyState
 
-	// taskOwner takes over requests a turn cannot finish; current is the
-	// request the agent's thinking is on right now. See request.go.
+	// taskOwner takes over requests a turn cannot finish; current are the
+	// requests the agent's thinking is on, oldest first. See request.go.
 	taskOwner TaskOwner
-	current   *Request
+	current   []*Request
 }
 
 // CommsChannelInfo describes a communication channel available to the agent.

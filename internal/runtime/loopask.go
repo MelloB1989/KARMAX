@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
@@ -175,7 +176,7 @@ func (rt *KarmaxRuntime) tellRequestFailed(req *agent.Request, cause error) {
 		requestTitle(req), clip(rootCauseText(cause), 300))
 	key := "failed:" + req.ID
 	if req.ChannelID != "" && req.Target != "" {
-		if _, err := rt.deliverOnce(store.Delivery{Key: key, ChannelID: req.ChannelID, Target: req.Target, Content: text}, "status"); err == nil {
+		if _, err := rt.deliverOnce(store.Delivery{Key: key, ChannelID: req.ChannelID, Target: req.Target, Content: text}, comms.ProducerStatus); err == nil {
 			return
 		}
 	}
