@@ -103,3 +103,20 @@ func TestChannelRoutedAgentIsStartedAndUnknownRouteRejected(t *testing.T) {
 		t.Fatal("a channel routed to an unknown agent was accepted")
 	}
 }
+
+func TestHarnessMCPServersBecomeOneMCPConfig(t *testing.T) {
+	var h HarnessConfig
+	if got, err := h.MCPConfigJSON(); got != "" || err != nil {
+		t.Fatalf("unset: got %q, %v; want the CLI's own servers", got, err)
+	}
+	h.MCPServers = map[string]map[string]any{
+		"fleet": {"command": "fleetctl", "args": []any{"mcp"}},
+	}
+	got, err := h.MCPConfigJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"mcpServers":{"fleet":{"args":["mcp"],"command":"fleetctl"}}}`; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}

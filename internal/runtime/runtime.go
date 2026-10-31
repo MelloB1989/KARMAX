@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MelloB1989/karma/ai"
 	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/broker"
@@ -21,9 +19,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/clock"
 	"github.com/MelloB1989/karmax/internal/comms"
-	"github.com/MelloB1989/karmax/internal/comms/discord"
 	"github.com/MelloB1989/karmax/internal/comms/slack"
-	"github.com/MelloB1989/karmax/internal/comms/telegram"
 	"github.com/MelloB1989/karmax/internal/comms/webhookchat"
 	"github.com/MelloB1989/karmax/internal/comms/whatsapp"
 	"github.com/MelloB1989/karmax/internal/config"
@@ -31,15 +27,10 @@ import (
 	githubconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	googleconn "github.com/MelloB1989/karmax/internal/connectors/google"
 	googleworkspaceconn "github.com/MelloB1989/karmax/internal/connectors/googleworkspace"
-	instagramconn "github.com/MelloB1989/karmax/internal/connectors/instagram"
-	jiraconn "github.com/MelloB1989/karmax/internal/connectors/jira"
-	kekaconn "github.com/MelloB1989/karmax/internal/connectors/keka"
 	linkedinconn "github.com/MelloB1989/karmax/internal/connectors/linkedin"
 	lyznconn "github.com/MelloB1989/karmax/internal/connectors/lyzn"
-	notionconn "github.com/MelloB1989/karmax/internal/connectors/notion"
 	slackconn "github.com/MelloB1989/karmax/internal/connectors/slack"
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
-	youtrackconn "github.com/MelloB1989/karmax/internal/connectors/youtrack"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/identity"
@@ -47,12 +38,9 @@ import (
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memmerge"
 	"github.com/MelloB1989/karmax/internal/memory"
-	"github.com/MelloB1989/karmax/internal/mesh"
-	"github.com/MelloB1989/karmax/internal/orgops"
 	"github.com/MelloB1989/karmax/internal/recipes"
 	"github.com/MelloB1989/karmax/internal/reflex"
 	"github.com/MelloB1989/karmax/internal/review"
-	"github.com/MelloB1989/karmax/internal/safety"
 	"github.com/MelloB1989/karmax/internal/scheduler"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -83,7 +71,6 @@ type KarmaxRuntime struct {
 	webhooks  *webhook.WebhookServer
 	comms     *comms.Manager
 	api       *api.Server
-	console   *api.ConsoleServer
 	// google is the Google Calendar and Chat sources (googlesource.go).
 	google *googleSources
 
@@ -123,9 +110,6 @@ type KarmaxRuntime struct {
 	// routedKinds are the event kinds that reach agent inboxes, computed at
 	// construction and consumed once the runtime starts.
 	routedKinds []bus.EventKind
-	// officeClaims reports whether the org office handles a chat message itself.
-	// Nil when org_ops is off.
-	officeClaims func(eventID string, payload map[string]any) bool
 
 	// recipeLoops are the YAML recipes currently loaded from disk.
 	recipeMu sync.RWMutex
@@ -151,10 +135,6 @@ type KarmaxRuntime struct {
 	loopWebhooks     map[string]string // webhook route -> loop name
 	loopDefaultAgent string
 
-	// mesh is this instance's presence among other KARMAX instances. Nil when
-	// no endpoint is configured, which is the single-instance default.
-	mesh *mesh.Node
-
 	// waChannel is kept so voice can teach it to answer incoming calls once the
 	// brain is up — the channel is built long before the brain is.
 	waChannel *whatsapp.WhatsAppChannel
@@ -167,11 +147,6 @@ type KarmaxRuntime struct {
 
 	// voice holds the voice integrations this instance can place calls through.
 	voice *voice.Registry
-
-	// repoTokenMinter narrows a sandbox's git credential to the one repository
-	// its ticket names. Installed by the GitHub connector when an App is
-	// configured; nil means the broader fallback.
-	repoTokenMinter RepoTokenMinter
 
 	// pending holds event triggers that arrived while a loop was running, so a
 	// busy loop delays a message instead of destroying it.
@@ -224,7 +199,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	for _, account := range splitCSV(os.Getenv("KARMAX_GITHUB_ACCOUNTS")) {
 		connHost.Register(githubconn.New(account))
 	}
-	connHost.Register(notionconn.New())
 	// LYZN hears a promise and this machine keeps it. Paired with a
 	// six-character code rather than a key, because the product it talks to
 	// has no login for a laptop to hold — the code is redeemed once, for a
@@ -238,8 +212,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// that catches a missing app-level token, and adds the few tools that are
 	// about the workspace rather than about a conversation.
 	connHost.Register(slackconn.New())
-	// HR: the org chart, leave and attendance, read-only.
-	connHost.Register(kekaconn.New())
 	// Google is PER EMPLOYEE: the org registers one OAuth app and each person
 	// authorises their own account against it. The host resolves whose token to
 	// use from who is being acted for.
@@ -271,67 +243,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 		return uc, nil
 	})
-	// The tracker this operator actually uses. Registered alongside Jira rather
-	// than instead of it: an org can run both, and which one a team files into
-	// is not KARMAX's call to make.
-	connHost.Register(youtrackconn.New(""))
-	for _, account := range splitCSV(os.Getenv("KARMAX_YOUTRACK_ACCOUNTS")) {
-		connHost.Register(youtrackconn.New(account))
-	}
-	// The tracker the developer agent lives in. Same multi-account shape as
-	// GitHub, because an org with two Jira sites has two of everything.
-	connHost.Register(jiraconn.New(""))
-	for _, account := range splitCSV(os.Getenv("KARMAX_JIRA_ACCOUNTS")) {
-		connHost.Register(jiraconn.New(account))
-	}
-	// Registered so it can be seen and connected, but it stays off until
-	// KARMAX_ENABLE_INSTAGRAM=true: it drives an unofficial API that can get the
-	// operator's personal account restricted, and that is not a default.
-	igConn := instagramconn.New()
-	// The ledger is what makes the send tools available at all: without
-	// somewhere durable to record who has been contacted, they refuse rather
-	// than risk contacting somebody twice.
-	igConn.SetLedger(s)
-	// Signing into Instagram in the shared browser is the whole of connecting
-	// it: the sessionid is read from the browser's jar when it is needed, and
-	// never stored, logged or shown to a model.
-	igConn.SetBrowserSession(func(ctx context.Context) (string, error) {
-		cookies, err := browser.Shared(dataDir).Cookies(ctx, "www.instagram.com")
-		if errors.Is(err, browser.ErrNotRunning) {
-			return "", nil
-		}
-		if err != nil {
-			return "", err
-		}
-		for _, c := range cookies {
-			if c.Name == "sessionid" {
-				return c.Value, nil
-			}
-		}
-		return "", nil
-	})
-	// The Apps page and the loop gate read the recorded verdict, which would
-	// otherwise say "not connected" for up to a probe interval after it works.
-	igConn.OnSignIn(func() { connHost.Probe(context.Background(), "instagram") })
-	if instagramconn.Enabled() {
-		// Turned on, it needs no stored credential — the browser is one — so
-		// its tools exist from the start rather than after a login that the
-		// desktop app never asks anybody to do.
-		connHost.RegisterUnconditional(igConn)
-		go func() {
-			// The first use downloads Python and instagrapi. Paid now, in the
-			// background, not by whichever call happens to be first.
-			if err := igConn.Prepare(context.Background()); err != nil {
-				log.Warn("instagram: could not set up the helper", zap.Error(err))
-				return
-			}
-			if h, err := s.ConnectorHealthFor("instagram"); err == nil && h != nil && h.Status == "failed" {
-				connHost.Probe(context.Background(), "instagram")
-			}
-		}()
-	} else {
-		connHost.Register(igConn)
-	}
 	// The public accounts. These are the only integrations that can make
 	// something visible to strangers with nobody having read it, so both are
 	// handed the list of names a post may not contain — built from this
@@ -395,33 +306,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 	}
 
-	// Azure OpenAI, for any agent configured with provider "azure-openai" —
-	// registered once here so resolveProvider's case (pkg/karmahelper) has
-	// something to dispatch to. Azure speaks the OpenAI wire format but wants
-	// the DEPLOYMENT name where OpenAI wants the model name.
-	//
-	// Whoever created the resource chose those deployment names, so they cannot
-	// be known at compile time. Default each model to a deployment of the same
-	// name — the usual convention, and what the portal suggests — and let
-	// ai.providers.azure_openai.deployments override the ones that differ.
-	//
-	// This used to be a hardcoded map, which meant a name from ONE resource was
-	// compiled in for everybody: gpt-5-mini was pinned to "karmax-gpt-5-mini"
-	// and 404'd with DeploymentNotFound on every other resource. The main model
-	// happened to match, so the agent answered normally while memory retrieval
-	// and summarisation failed underneath — the worst shape of wrong, because
-	// nothing looked broken.
-	if p, ok := cfg.AI.Providers["azure_openai"]; ok && p.BaseURL != "" && p.APIKey != "" {
-		models := azureDeployments(p, log)
-		ai.RegisterCustomProvider(ai.CustomProvider{
-			Provider:       ai.Provider("azure-openai"),
-			DefaultBaseURL: p.BaseURL,
-			APIKey:         p.APIKey,
-			Models:         models,
-			SupportsMCP:    true,
-		})
-	}
-
 	mcpBridge := mcp.NewBridge(log)
 	for _, mcpCfg := range cfg.MCPs {
 		if err := mcpBridge.AddServer(mcpCfg); err != nil {
@@ -470,36 +354,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	var webhookChannels []*webhookchat.Channel
 	for _, chCfg := range cfg.Comms.Channels {
 		switch chCfg.Type {
-		case "discord":
-			token := credential(chCfg.ID, "token", chCfg.Token)
-			if unconfiguredChannel(log, chCfg.ID, "discord", token) {
-				continue
-			}
-			ch := discord.New(chCfg.ID, token, log)
-			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
-				DND: dndEnabled(chCfg.Settings),
-			}); err != nil {
-				log.Error("failed to register comms channel",
-					zap.String("id", chCfg.ID),
-					zap.Error(err),
-				)
-			}
-		case "telegram":
-			// Long-polling: no public URL or tunnel needed, so it works on the
-			// same self-hosted boxes as the rest of KARMAX.
-			token := credential(chCfg.ID, "token", chCfg.Token)
-			if unconfiguredChannel(log, chCfg.ID, "telegram", token) {
-				continue
-			}
-			ch := telegram.New(chCfg.ID, token, log)
-			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
-				DND: dndEnabled(chCfg.Settings),
-			}); err != nil {
-				log.Error("failed to register comms channel",
-					zap.String("id", chCfg.ID),
-					zap.Error(err),
-				)
-			}
 		case "slack":
 			// Socket Mode: Slack dials out from us, so like Telegram this needs no
 			// public URL. Two tokens — xapp- opens the socket, xoxb- posts messages.
@@ -650,8 +504,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&taskListTool{ref: harnessRT})
 	toolReg.Register(&taskUpdateTool{ref: harnessRT})
 
-	orgOffice := setupOrgOps(cfg, b, s, toolReg, log)
-
 	// apiBrowserToken/apiBaseURL are minted here — before either
 	// ClaudeCodeTool registration in this function needs them — and threaded
 	// through to the API server itself further down, when cfg.API.Enabled.
@@ -677,12 +529,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// not exist yet here. See the assignment further down.
 	recipeTool := &builtin.RecipeTool{}
 	toolReg.Register(recipeTool)
-	// Wired below, for the same reason as the recipe runner: the sandbox
-	// driver belongs to the runtime, which does not exist yet.
-	sandboxTool := &builtin.SandboxTool{Store: s}
-	toolReg.Register(sandboxTool)
-	toolReg.Register(&builtin.SandboxStatusTool{Store: s})
-	toolReg.Register(&builtin.DashboardTool{AgentID: ""})
 	// Registered through the Google Workspace connector rather than here — see
 	// the registration above. GogTool remains as the thing that actually runs
 	// gog, because it owns the flag defaults and the exit-code reasons, and
@@ -693,7 +539,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	toolReg.Register(&builtin.ToolSearchTool{Registry: toolReg})
 	toolReg.Register(&builtin.VoiceCallTool{Voice: voiceReg})
 	toolReg.Register(&builtin.CostTool{Store: s, BudgetUSDPerMonth: cfg.Karmax.BudgetUSDPerMonth})
-	toolReg.Register(&builtin.CodexTool{Store: s, AgentID: ""})
 	toolReg.Register(&builtin.CommsSendTool{
 		SendFunc:         commsMgr.Send,
 		DefaultChannelID: commsMgr.DefaultChannelID,
@@ -1145,10 +990,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	for _, ch := range webhookChannels {
 		wh.AddHandler(ch.InboundPath(), ch.HandleInbound)
 	}
-	if orgOffice != nil {
-		wh.AddHandler(orgOffice.Config().AlertPath, orgOffice.AlertHandler())
-		wh.AddHandler(orgops.WebhookPath, orgOffice.GitHubWebhookHandler())
-	}
 
 	// Issue trackers and code hosts are event sources, not conversations: each
 	// delivery becomes one normalised tracker.event on the bus for loops to judge.
@@ -1176,42 +1017,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 			zap.String("source", string(t.src)), zap.String("path", t.path))
 	}
 
-	// The mesh: other KARMAX instances, one per person plus one for the org.
-	//
-	// Only started when an endpoint is configured. Without one this instance
-	// has no address to advertise, and standing up an inbound trust surface
-	// that nobody can reach is all risk and no function.
-	var meshNode *mesh.Node
-	if ep := strings.TrimSpace(os.Getenv("KARMAX_MESH_ENDPOINT")); ep != "" {
-		meshID, err := mesh.LoadOrCreateIdentity(filepath.Join(dataDir, "mesh"), meshInstanceName(cfg))
-		if err != nil {
-			log.Error("mesh: could not load this instance's identity", zap.Error(err))
-		} else {
-			meshNode = mesh.New(meshID, mesh.Config{
-				Endpoint:   ep,
-				TrustedOrg: strings.TrimSpace(os.Getenv("KARMAX_MESH_ORG_KEY")),
-				IsOrg:      strings.EqualFold(os.Getenv("KARMAX_MESH_IS_ORG"), "true"),
-				OrgName:    strings.TrimSpace(os.Getenv("KARMAX_MESH_ORG_NAME")),
-			}, s, log)
-			wh.AddHandler("/mesh", meshNode.Handler().ServeHTTP)
-			wh.AddHandler("/mesh/hello", meshNode.Handler().ServeHTTP)
-			// The mesh is served BY the webhook server, so it is only actually
-			// reachable when that server runs. Saying "reachable" regardless
-			// would be a lie the operator only discovers when a peer cannot
-			// connect and nothing in the log admits why.
-			if cfg.Webhooks.Enabled {
-				log.Info("mesh: this instance is reachable",
-					zap.String("endpoint", ep),
-					zap.String("fingerprint", meshID.Fingerprint()))
-			} else {
-				log.Warn("mesh: configured but NOT reachable — webhooks are disabled, "+
-					"and the mesh is served on the webhook port",
-					zap.String("endpoint", ep),
-					zap.String("fingerprint", meshID.Fingerprint()))
-			}
-		}
-	}
-
 	connHost.MountWebhooks(wh.AddHandler)
 
 	// Operator-defined webhooks, dispatched from a lookup rather than the mux.
@@ -1236,19 +1041,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	if cfg.API.Enabled {
 		apiAddr := fmt.Sprintf("%s:%d", cfg.API.Host, cfg.API.Port)
 		apiSrv = api.New(apiAddr, cfg.API.Port, os.Getenv("KARMAX_API_TOKEN"), apiBrowserToken, agentReg, s, sched, memFactory, cfg, log)
-	}
-
-	// The console is a SEPARATE listener from the API above, and deliberately
-	// so: the API exposes POST /api/tools/{name}, which can invoke shell.exec.
-	// The console is meant to be published; a shell is not. Two ports is what
-	// lets one be exposed without exposing the other.
-	var consoleSrv *api.ConsoleServer
-	if cfg.Console.Enabled {
-		consoleAddr := fmt.Sprintf("%s:%d", cfg.Console.Host, cfg.Console.Port)
-		consoleSrv = api.NewConsole(consoleAddr, consoleDistDir(), api.ConsoleDeps{
-			Store: s, Agents: agentReg, Scheduler: sched, Broker: brk,
-			Conns: connHost, Config: cfg, Log: log,
-		})
 	}
 
 	// Wire bus events to agent inboxes (webhooks, scheduled jobs, user-defined,
@@ -1300,8 +1092,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}(),
 		voice:        voiceReg,
 		routedKinds:  routedKinds,
-		officeClaims: officeClaimFn(orgOffice),
-		mesh:         meshNode,
 		pending:      newPendingTriggers(),
 		startedAt:    startedAt,
 		wasmByName:   map[string]*wasmloop.Runner{},
@@ -1314,21 +1104,11 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		webhooks:     wh,
 		comms:        commsMgr,
 		api:          apiSrv,
-		console:      consoleSrv,
 
 		google:          googleSrc,
 		apiBrowserToken: apiBrowserToken,
 		apiBaseURL:      apiBaseURL,
 	}
-	// The agent can now run what it writes, not just validate it — and it is
-	// told what the run did, since "started something" is not verification.
-	// Without this the minter stays nil, and a host with a fully configured
-	// GitHub App still fails every sandbox with "no GitHub credential" and
-	// falls back to a broad GITHUB_TOKEN nobody set.
-	rt.SetRepoTokenMinter(githubconn.NewRepoTokenMinter(func(ctx context.Context) (connectorkit.Credentials, error) {
-		return connHost.CredentialsFor(ctx, "github")
-	}))
-	sandboxTool.Launch = rt.runSandbox
 	recipeTool.Run = func(ctx context.Context, name string) (bool, error) {
 		rt.recipeMu.RLock()
 		_, known := rt.recipeLoops[name]
@@ -1417,15 +1197,12 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	rt.connectors.StartProbing(ctx)
 	rt.startRecipes(ctx)
 	rt.startAgentRouter(ctx)
-	rt.wireMesh()
 	rt.startCriticalAlertLoop(ctx)
 	rt.startDeadLetterAlerts()
 
-	// Runs parked on an event, and containers that outlived the last process.
-	// Both are things this daemon is answerable for and would otherwise silently
-	// drop on restart.
+	// Runs parked on an event: this daemon is answerable for them and would
+	// otherwise silently drop them on restart.
 	rt.startWaiters(ctx)
-	go rt.reconcileSandboxes(ctx)
 
 	if err := rt.mcpBridge.StartAll(ctx); err != nil {
 		rt.log.Error("MCP bridge start error", zap.Error(err))
@@ -1592,16 +1369,6 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 		}()
 	}
 
-	if rt.console != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := rt.console.Start(ctx); err != nil {
-				errCh <- fmt.Errorf("console server: %w", err)
-			}
-		}()
-	}
-
 	go func() {
 		for {
 			select {
@@ -1629,113 +1396,11 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	if rt.api != nil {
 		rt.api.Stop()
 	}
-	if rt.console != nil {
-		rt.console.Stop()
-	}
 	rt.closeWasmLoops(context.Background())
 	rt.store.Close()
 
 	wg.Wait()
 	return nil
-}
-
-// wireMesh connects peer instances to this one's agent.
-//
-// Until now the mesh recorded traffic and nothing acted on it. An ask from a
-// peer reaches the agent with the delegation provenance attached, so if the
-// agent needs another instance's help it can pass that on with SendOnBehalf
-// rather than presenting the work as its own.
-func (rt *KarmaxRuntime) wireMesh() {
-	if rt.mesh == nil {
-		return
-	}
-	rt.mesh.OnCertificate(rt.applyOrgCertificate)
-
-	rt.mesh.OnAsk(func(ctx context.Context, peer store.MeshPeer, question string, prov mesh.Provenance) (string, error) {
-		ag, ok := rt.agents.Get(rt.loopDefaultAgent)
-		if !ok || ag == nil {
-			return "", fmt.Errorf("this instance has no agent to answer with")
-		}
-		// A peer is not the operator, and neither is whoever asked the peer.
-		origin := prov.Origin()
-		source := fmt.Sprintf("the KARMAX instance %q", peer.Name)
-		if prov.Delegated() {
-			source += fmt.Sprintf(", asking on behalf of %s", short(origin))
-		}
-		prompt := fmt.Sprintf(
-			"Another KARMAX instance has asked you a question. Answer it as this operator's colleague would: "+
-				"helpfully, but disclosing only what is appropriate to share outside.\n\n%s",
-			safety.Fence(source, question))
-
-		rt.log.Info("mesh: answering a question from a peer",
-			zap.String("peer", peer.Name), zap.Int("delegation_depth", prov.Depth()))
-		return ag.Chat(ctx, prompt)
-	})
-
-	rt.mesh.OnMessage(func(peer store.MeshPeer, kind mesh.Kind, body mesh.MessageBody, prov mesh.Provenance) {
-		evt := bus.NewEvent(bus.EventUserDefined, rt.loopDefaultAgent, map[string]any{
-			"source":   "mesh",
-			"peer":     peer.Name,
-			"peer_id":  peer.ID,
-			"kind":     string(kind),
-			"subject":  body.Subject,
-			"prompt":   safety.Fence("a message from the KARMAX instance "+peer.Name, body.Text),
-			"origin":   prov.Origin(),
-			"depth":    prov.Depth(),
-			"reply_to": body.ReplyTo,
-		})
-		if err := rt.bus.Publish(evt); err != nil {
-			rt.log.Error("mesh: could not record an inbound message",
-				zap.String("peer", peer.Name), zap.Error(err))
-		}
-	})
-
-	rt.mesh.OnPeerRequest(func(peer store.MeshPeer) {
-		builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "alert",
-			fmt.Sprintf("%s wants to connect", peer.Name),
-			"Fingerprint "+peer.Fingerprint+" — verify it out of band, then `karmax mesh accept`.")
-	})
-}
-
-// applyOrgCertificate turns the capability scopes on a verified org certificate
-// into Broker grants for that org.
-//
-// The certificate is the org saying what it may do here; the Broker is this
-// instance deciding whether that is honoured, and metering it either way.
-// Keeping them separate is what lets an operator revoke a capability without
-// leaving the org, and what stops a transport verb from silently becoming
-// permission to read memory.
-//
-// Grants expire with the certificate, so an org that stops re-issuing loses
-// access without anybody having to remember to withdraw it.
-func (rt *KarmaxRuntime) applyOrgCertificate(cert *mesh.Certificate) {
-	caps := cert.Capabilities()
-	if len(caps) == 0 {
-		return
-	}
-	subject := broker.PeerSubject(cert.Org)
-	expires := time.Unix(cert.Expires, 0)
-
-	for _, c := range caps {
-		if err := rt.broker.Grant(store.Grant{
-			Subject: subject, Capability: c.Class, Value: c.Value,
-			GrantedBy: "org-certificate:" + cert.OrgName, ExpiresAt: &expires,
-		}); err != nil {
-			rt.log.Warn("could not record an org capability",
-				zap.String("org", cert.OrgName), zap.String("capability", c.Class), zap.Error(err))
-		}
-	}
-	rt.broker.SetTrust(subject, broker.Registry)
-	rt.log.Info("org certificate granted capabilities",
-		zap.String("org", cert.OrgName), zap.Int("capabilities", len(caps)),
-		zap.Time("until", expires))
-}
-
-func short(id string) string {
-	if len(id) > 12 {
-		return id[:12] + "…"
-	}
-	return id
 }
 
 // startAgentRouter delivers routed events to agent inboxes. No agent means
@@ -1765,12 +1430,6 @@ func (rt *KarmaxRuntime) routeToAgent(evt bus.Event) error {
 		rt.log.Warn("skipped an event too old to act on",
 			zap.String("kind", string(evt.Kind)), zap.String("event", evt.ID),
 			zap.Duration("age", age.Round(time.Minute)))
-		return nil
-	}
-	// A chat message the org office will act on is the office's alone.
-	// Decided here, before the agent sees it, so the two never race to
-	// answer the same "approve".
-	if evt.Kind == bus.EventCommsMessage && rt.officeClaims != nil && rt.officeClaims(evt.ID, evt.Payload) {
 		return nil
 	}
 	a, ok := rt.agents.Get(evt.AgentID)
@@ -2119,21 +1778,6 @@ func defaultNamespace(cfg *config.KarmaxConfig) string {
 	return cfg.Agents[0].ID
 }
 
-// meshInstanceName labels this instance for other nodes. A display label only —
-// every trust decision is made on the key, never on this.
-func meshInstanceName(cfg *config.KarmaxConfig) string {
-	if n := strings.TrimSpace(os.Getenv("KARMAX_MESH_NAME")); n != "" {
-		return n
-	}
-	if len(cfg.Agents) > 0 && cfg.Agents[0].ID != "" {
-		return cfg.Agents[0].ID
-	}
-	return "karmax"
-}
-
-// Mesh exposes the mesh node, nil when this instance is not on a mesh.
-func (rt *KarmaxRuntime) Mesh() *mesh.Node { return rt.mesh }
-
 // unconfiguredChannel reports a channel that is declared but has no credentials
 // yet, so it can be skipped rather than started and failed.
 //
@@ -2189,43 +1833,6 @@ func (rt *KarmaxRuntime) turnAlreadySpoke(t store.AgentTurn) bool {
 		}
 	}
 	return false
-}
-
-// azureDeployments resolves the model→deployment map for Azure OpenAI.
-//
-// Each model defaults to a deployment of the same name, which is the usual
-// convention; ai.providers.azure_openai.deployments overrides the ones whose
-// resource owner named them otherwise.
-func azureDeployments(p config.ProviderConfig, log *zap.Logger) map[ai.BaseModel]string {
-	models := map[ai.BaseModel]string{
-		ai.GPT5:     "gpt-5",
-		ai.GPT5Mini: "gpt-5-mini",
-	}
-	for model, deployment := range p.Deployments {
-		if model == "" || deployment == "" {
-			log.Warn("ignoring empty azure deployment mapping",
-				zap.String("model", model), zap.String("deployment", deployment))
-			continue
-		}
-		models[karmahelper.ResolveModel(model)] = deployment
-	}
-	return models
-}
-
-// consoleDistDir is where the built console lives.
-//
-// Read from disk rather than embedded so the UI can be redeployed without
-// rebuilding the binary, and so a server built without the frontend still
-// starts — it serves the API and says the UI is missing, which beats refusing
-// to boot over a static asset.
-func consoleDistDir() string {
-	if d := strings.TrimSpace(os.Getenv("KARMAX_CONSOLE_DIST")); d != "" {
-		return d
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".karmax", "console")
-	}
-	return "console"
 }
 
 // voiceFallbackDefs converts the configured call fallbacks.

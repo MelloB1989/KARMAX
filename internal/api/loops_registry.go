@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/loopinstall"
@@ -23,12 +24,11 @@ import (
 // CLI now calls, so "installed from the app" and "installed from the
 // terminal" verify the identical thing (digest, then signature/trust for a
 // workflow) and can never quietly drift apart.
-//
-// loopNamePattern reuses console_recipes.go's recipeNamePattern rather than
-// declaring a second identical regex: a loop name is a recipe name, a
-// workflow name, or a compiled loop's name, and all three share the same
-// filesystem-safe shape (it ends up in a file path either way).
-var loopNamePattern = recipeNamePattern
+
+// loopNamePattern is what may become a filename: a loop name is a recipe
+// name, a workflow name, or a compiled loop's name, and all three end up in a
+// file path.
+var loopNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // registryEntryView is one registry.json entry as the app sees it: what it
 // is, and — cross-referenced against this machine — whether it is already

@@ -40,3 +40,6 @@ __pycache__/
 # Core dumps from crashing tools under test.
 core
 core.[0-9]*
+
+# Page snapshots a Playwright MCP session leaves in its working directory.
+.playwright-mcp/

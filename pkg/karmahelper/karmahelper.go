@@ -1057,13 +1057,6 @@ func resolveProvider(name string) ai.Provider {
 	switch name {
 	case "openai":
 		return ai.OpenAI
-	case "azure-openai":
-		// Registered at startup (internal/runtime/runtime.go) as a
-		// CustomProvider when ai.providers.azure_openai is configured — this
-		// name has to match ai.RegisterCustomProvider's Provider field
-		// exactly, or it silently falls through to the default case below
-		// and hits real OpenAI instead of the Azure deployment.
-		return ai.Provider("azure-openai")
 	case "anthropic":
 		return ai.Anthropic
 	case "codex":

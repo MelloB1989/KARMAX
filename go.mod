@@ -6,18 +6,14 @@ require (
 	github.com/GitLoomHQ/gitloom-go v0.6.1
 	github.com/MelloB1989/karma v1.27.0
 	github.com/MelloB1989/wacli v0.3.0
-	github.com/PaulSonOfLars/gotgbot/v2 v2.0.0-rc.36
 	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/config v1.33.6
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.1
 	github.com/aws/aws-sdk-go-v2/service/budgets v1.53.5
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.75.3
-	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.84.1
 	github.com/aws/aws-sdk-go-v2/service/costexplorer v1.74.5
-	github.com/aws/aws-sdk-go-v2/service/ecs v1.93.0
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.6
 	github.com/aws/smithy-go v1.28.7
-	github.com/bwmarrin/discordgo v0.29.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -28,7 +24,6 @@ require (
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
-	github.com/jomei/notionapi v1.13.3
 	github.com/mattn/go-sqlite3 v1.14.48
 	github.com/michimani/gotwi v0.18.4
 	github.com/robfig/cron/v3 v3.0.1
@@ -36,7 +31,6 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/tetratelabs/wazero v1.12.0
 	go.uber.org/zap v1.27.0
-	golang.org/x/crypto v0.54.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -120,6 +114,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.36.0 // indirect
 	go.opentelemetry.io/otel/trace v1.36.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

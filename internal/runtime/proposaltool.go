@@ -72,8 +72,8 @@ func isOperatorTurn(evt bus.Event, isOperatorChat func(agentID, chatID string) b
 
 // operatorTurnTools are the tools only the operator's own turns may hold.
 func (rt *KarmaxRuntime) operatorTurnTools(evt bus.Event) []tools.Tool {
-	if rt.console == nil || rt.store == nil || !isOperatorTurn(evt, rt.isOperatorChat) {
+	if rt.api == nil || rt.store == nil || !isOperatorTurn(evt, rt.isOperatorChat) {
 		return nil
 	}
-	return []tools.Tool{&proposalDecideTool{store: rt.store, decide: rt.console.DecideProposal}}
+	return []tools.Tool{&proposalDecideTool{store: rt.store, decide: rt.api.DecideProposal}}
 }

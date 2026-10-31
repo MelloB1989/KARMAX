@@ -10,7 +10,7 @@ A personal AI "Jarvis" — an always-on **orchestration daemon** you can delegat
 
 ## What it is
 
-KARMAX is **orchestration-only**: a Go daemon that coordinates, remembers, and communicates, delegating the actual heavy work (coding, web research, building) to coding harnesses (**Claude Code** / **Codex**). It runs autonomous loops, maintains long-term memory, and talks to you over WhatsApp, Discord, and a companion app.
+KARMAX is **orchestration-only**: a Go daemon that coordinates, remembers, and communicates, delegating the actual heavy work (coding, web research, building) to coding harnesses (**Claude Code** / **Codex**). It runs autonomous loops, maintains long-term memory, and talks to you over WhatsApp, Slack, and a companion app.
 
 The core loop: **Sense → Propose → Approve → Act → Remember.**
 
@@ -31,7 +31,7 @@ handler is written to tolerate seeing an event twice.
 flowchart LR
     subgraph Senses
         WA[WhatsApp · wacli]
-        CH[Discord · Slack · Telegram]
+        CH[Slack · Google Chat]
         TR[Issue trackers · code hosts]
         CL[Clock · scheduler]
         API[Phone app · CLI]
@@ -160,7 +160,7 @@ flowchart LR
     S{{"Manager.send<br/><i>internal/comms</i>"}}
     S --> DUP{"Said this<br/>already?"}
     DUP -->|"identical &lt; 6h<br/>reworded &lt; 10m"| REF["Refused<br/>ErrDuplicateSend"]
-    DUP -->|no| CHAN["WhatsApp · Discord<br/>Slack · Telegram"]
+    DUP -->|no| CHAN["WhatsApp · Slack<br/>Google Chat"]
     CHAN --> REC["Recorded + operator notified"]
 ```
 
@@ -172,16 +172,8 @@ flowchart LR
   itself, including a privacy guard every social post must pass.
 - **Connectors** (`internal/connectors`, `pkg/connectorkit`) — integrations that mount their
   own tools, auth and event sources: GitHub, LinkedIn, X.
-- **Mesh** (`internal/mesh`) — lets KARMAX instances find each other, agree to talk, and
-  exchange work, with a hop limit so a chain cannot run away.
 - **Voice** (`internal/voice`) — the interface a voice integration plugs into; WhatsApp calls
   are answered and spoken through it.
-- **Org office** (`internal/orgops`) — an engineering agent for a whole GitHub org: PR review
-  against the org's written rules, security scan, merge on green CI, repo factory, knowledge
-  store and an incident autopilot that alerts, fixes and ships. Autonomy is per action and per
-  repo; any chat works. See [docs/ORG-OFFICE.md](docs/ORG-OFFICE.md).
-- **vorg** (`internal/vorg`) — instantiates a virtual organisation of agents from a
-  declarative spec.
 - **API** (`internal/api`) — bearer-auth HTTP API plus mDNS discovery for the app.
 
 ## Install (prebuilt)
@@ -280,7 +272,7 @@ karmax tool call <name> [k=v ...]       # invoke ANY tool (or --json '{...}')
 karmax memory search "<query>"          # recall long-term memory
 karmax memory add "<fact>"              # save a durable fact
 karmax notify "<title>" "<body>"        # push to the phone app (feed + push)
-karmax send "<target>" "<message>"      # WhatsApp/Discord via the default channel
+karmax send "<target>" "<message>"      # WhatsApp/Slack via the default channel
 karmax ask "<prompt>"                   # ask the orchestrator agent itself
 karmax loops list|run <name>            # inspect / trigger loops
 karmax wloop sign|install|list          # package, verify and install signed WASM loops

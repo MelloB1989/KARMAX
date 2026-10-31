@@ -244,8 +244,6 @@ func New(addr string, port int, token string, browserToken string, agents *agent
 	mux.HandleFunc("GET /api/device/actions", srv.auth(srv.handleDeviceActions))
 	mux.HandleFunc("POST /api/device/actions/{id}/complete", srv.auth(srv.handleCompleteDeviceAction))
 	mux.HandleFunc("GET /api/integrations", srv.auth(srv.handleIntegrations))
-	mux.HandleFunc("GET /api/connect", srv.auth(srv.handleConnectList))
-	mux.HandleFunc("POST /api/connect/{id}", srv.auth(srv.handleConnect))
 	mux.HandleFunc("GET /api/access", srv.auth(srv.handleGetAccess))
 	mux.HandleFunc("PUT /api/access", srv.auth(srv.handlePutAccess))
 	mux.HandleFunc("GET /api/browser", srv.auth(srv.handleBrowserStatus))
@@ -254,12 +252,6 @@ func New(addr string, port int, token string, browserToken string, agents *agent
 	mux.HandleFunc("POST /api/browser/stop", srv.auth(srv.handleBrowserStop))
 	mux.HandleFunc("GET /api/tools", srv.auth(srv.handleListTools))
 	mux.HandleFunc("POST /api/tools/{name}", srv.auth(srv.handleCallTool))
-	mux.HandleFunc("GET /api/dashboards", srv.auth(srv.handleListDashboards))
-	mux.HandleFunc("GET /api/dashboards/{id}", srv.auth(srv.handleGetDashboard))
-	mux.HandleFunc("GET /api/dashboards/{id}/data/{name}", srv.auth(srv.handleGetDashboardData))
-	mux.HandleFunc("PATCH /api/dashboards/{id}", srv.auth(srv.handlePatchDashboard))
-	mux.HandleFunc("DELETE /api/dashboards/{id}", srv.auth(srv.handleDeleteDashboard))
-	mux.HandleFunc("PUT /api/dashboards/_kit/reference", srv.auth(srv.handlePutDashboardReference))
 	mux.HandleFunc("GET /api/tasks/{taskId}/transcript", srv.auth(srv.handleTaskTranscript))
 
 	srv.httpSrv = &http.Server{
@@ -310,26 +302,11 @@ const (
 )
 
 // browserScopedTools is the entire grant a browser-scoped token carries.
-// "dashboard" joined "browser" here because it is the same shape of safe: it
-// writes only under <DataDir>/dashboards/ and its own dashboard-<id>.yaml
-// recipe, reaches no connector, and cannot name an arbitrary path or command
-// the way shell.exec or a harness.* control tool would. Connectors (WhatsApp,
-// email, ...), shell.exec, and every harness.* control tool must stay out of
-// it — widening this list beyond a tool that has been checked this way is
-// exactly the mistake a second token exists to prevent.
-//
-// Instagram's tools are the one connector checked this way. The browser this
-// token already drives is signed into the same account, so they add no reach —
-// what they add is the rules: every send paced, capped per campaign, ledgered
-// so nobody is messaged twice, and stopped for good the first time Instagram
-// objects. A harness without them does the same work through the page or its
-// own client with none of that, which is how an account was restricted before.
-// They exist only where the operator turned Instagram on, and the send tools
-// only where they also turned sending on.
+// Connectors (WhatsApp, email, ...), shell.exec, and every harness.* control
+// tool must stay out of it — widening this list beyond a tool that has been
+// checked this way is exactly the mistake a second token exists to prevent.
 var browserScopedTools = map[string]bool{
-	"browser": true, "dashboard": true,
-	"instagram_reads": true, "instagram_call": true, "instagram_inbox": true,
-	"instagram_commenters": true, "instagram_send_dm": true, "instagram_reply_comment": true,
+	"browser": true,
 }
 
 // scopeAllowsTool reports whether a caller granted scope may invoke the
@@ -587,16 +564,62 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if req.Decision == "reject" {
-		_ = s.store.DecideProposal(id, "rejected", req.Note)
+	if req.Decision != "approve" && req.Decision != "reject" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be 'approve' or 'reject'"})
+		return
+	}
+	_ = s.store.DecideProposal(id, decidedStatus(req.Decision), req.Note)
+	if err := s.actOnDecision(*p, req.Decision, req.Edit, req.Note); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	updated, _ := s.store.GetProposal(id)
+	writeJSON(w, http.StatusOK, map[string]any{"proposal": proposalJSON(*updated)})
+}
+
+// DecideProposal is the app's decision for a caller that is not the app —
+// the operator answering on WhatsApp — with who decided recorded.
+func (s *Server) DecideProposal(id, decision, note, by string) error {
+	p, err := s.store.GetProposal(id)
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		return errors.New("proposal not found")
+	}
+	if p.Status != "pending" {
+		return fmt.Errorf("proposal is already %s", p.Status)
+	}
+	if decision != "approve" && decision != "reject" {
+		return errors.New("decision must be 'approve' or 'reject'")
+	}
+	if err := s.store.DecideProposalBy(id, decidedStatus(decision), note, by); err != nil {
+		return err
+	}
+	return s.actOnDecision(*p, decision, "", note)
+}
+
+func decidedStatus(decision string) string {
+	if decision == "approve" {
+		return "approved"
+	}
+	return "rejected"
+}
+
+// actOnDecision carries out a decision already recorded: an approval runs the
+// action (edit, when set, in place of the proposed one), a reject with a note
+// is fed back so the agent can rework it, and a bare reject just drops it.
+func (s *Server) actOnDecision(p store.StoredProposal, decision, edit, note string) error {
+	id := p.ID
+	if decision == "reject" {
 		// Reject WITH feedback = revise, not drop: feed the feedback back to the
 		// agent so it reworks its approach and (if still sensible) submits a NEW
 		// proposal via the propose tool. Plain reject (no note) just drops it.
-		if strings.TrimSpace(req.Note) != "" {
+		if strings.TrimSpace(note) != "" {
 			if ag := s.resolveAgent(""); ag != nil {
 				prompt := fmt.Sprintf(
 					"The operator REJECTED your proposed action and left feedback. Rework your approach using that feedback. If a revised action still makes sense, call the `propose` tool to submit a NEW proposal that incorporates the feedback (do not repeat the rejected version). If the feedback means they don't want this at all, just acknowledge and do not re-propose.\n\nRejected title: %s\nRejected action: %s\nOperator feedback: %s",
-					p.Title, p.ProposedAction, req.Note,
+					p.Title, p.ProposedAction, note,
 				)
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -607,33 +630,24 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 				}()
 			}
 		}
-		updated, _ := s.store.GetProposal(id)
-		writeJSON(w, http.StatusOK, map[string]any{"proposal": proposalJSON(*updated)})
-		return
-	}
-	if req.Decision != "approve" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be 'approve' or 'reject'"})
-		return
+		return nil
 	}
 
 	action := p.ProposedAction
-	if strings.TrimSpace(req.Edit) != "" {
-		action = req.Edit
+	if strings.TrimSpace(edit) != "" {
+		action = edit
 	}
-	_ = s.store.DecideProposal(id, "approved", req.Note)
-
 	ag := s.resolveAgent("")
 	if ag == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "no agent available"})
-		return
+		return errors.New("no agent available")
 	}
 
 	prompt := fmt.Sprintf(
 		"The operator APPROVED this proposed action. Execute it now using your tools, then confirm exactly what you did.\n\nTitle: %s\nAction: %s",
 		p.Title, action,
 	)
-	if strings.TrimSpace(req.Note) != "" {
-		prompt += "\nNote from the operator: " + req.Note
+	if strings.TrimSpace(note) != "" {
+		prompt += "\nNote from the operator: " + note
 	}
 
 	// Execute in the background so the decision request returns immediately;
@@ -648,9 +662,7 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 		}
 		_ = s.store.SetProposalResult(id, "executed", reply)
 	}()
-
-	updated, _ := s.store.GetProposal(id)
-	writeJSON(w, http.StatusOK, map[string]any{"proposal": proposalJSON(*updated)})
+	return nil
 }
 
 func proposalJSON(p store.StoredProposal) map[string]any {
@@ -1098,21 +1110,6 @@ func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		add("whatsapp", "WhatsApp", status, detail)
 	} else {
 		add("whatsapp", "WhatsApp", "off", "not configured")
-	}
-
-	// Discord
-	discord := false
-	if s.cfg != nil {
-		for _, ch := range s.cfg.Comms.Channels {
-			if ch.Type == "discord" && strings.TrimSpace(ch.Token) != "" {
-				discord = true
-			}
-		}
-	}
-	if discord {
-		add("discord", "Discord", "configured", "bot token set")
-	} else {
-		add("discord", "Discord", "off", "not configured")
 	}
 
 	// Google, through gogcli.

@@ -57,10 +57,6 @@ mcps: []
 # Communication channels — how the agent talks to you
 comms:
   channels:
-    - id: "discord-main"
-      type: "discord"
-      agent_id: "karmax-agent"
-      token: "YOUR_DISCORD_BOT_TOKEN"
     - id: "whatsapp-main"
       type: "whatsapp"
       agent_id: "karmax-agent"
@@ -68,71 +64,6 @@ comms:
       settings:
         wacli_path: "/path/to/wacli"          # Path to wacli binary
         target_chat: "YOUR_PHONE_NUMBER"       # Target WhatsApp number (e.g., "9198XXXXXXXX")
-
-# Org office — KARMAX as an engineering agent for a GitHub organisation:
-# PR review against your rules, security scan, merge on green CI, repo factory,
-# knowledge store and incident autopilot. See docs/ORG-OFFICE.md.
-# org_ops:
-#   enabled: true
-#   org: "acme"
-#   github:
-#     api_url: "https://api.github.com"   # GHE, or http://127.0.0.1:8787 for cmd/fakegithub
-#     token_env: "GITHUB_TOKEN"           # repo + admin:org scope for repo creation/protection
-#     webhook_secret_env: "ORGOPS_WEBHOOK_SECRET"   # org webhook -> <public>/orgops/github
-#     bot_login: "acme-karmax"
-#   rules_files: ["~/.karmax/ORG.md"]     # org-wide rules, Markdown
-#   channels:                             # "<comms channel id>:<target>"
-#     default: "gchat:spaces/AAAA"
-#     incidents: "slack:#incidents"
-#     security: "slack:#security"
-#   policy:                               # off | notify | approve | auto, per action
-#     review: auto
-#     approve_pr: notify
-#     merge: approve
-#     repo_create: approve
-#     incident_fix: auto
-#     incident_merge: approve
-#     max_auto_risk: 0.5
-#   repos:
-#     - match: "payments-api"
-#       service: "payments"               # alerts naming this service map here
-#       owners: ["maya", "raj"]
-#       channel: "slack:#payments"
-#       policy: { merge: approve }
-#     - match: "acme/internal-*"
-#       policy: { merge: auto, incident_merge: auto }
-#   standards:
-#     title_pattern: '^(feat|fix|chore|docs|refactor|test|perf)(\(.+\))?: '
-#     max_changed_lines: 800
-#     require_description: true
-#     require_tests: true
-#     required_files: ["README.md", "CODEOWNERS"]
-#     protected_paths: [".github/workflows/**", "infra/**", "*.tf"]
-#   threats:
-#     allow: ["_test\\.go$", "fixtures/"]
-#   probes:
-#     - name: "payments"
-#       url: "https://payments.acme.dev/health"
-#       repo: "payments-api"
-#       window: 10
-#       max_error_rate: 0.3
-#       max_latency: "800ms"
-#   probe_every: "30s"
-#   alert_token_env: "ORGOPS_ALERT_TOKEN" # monitoring tools -> <public>/orgops/alert
-#   factory:
-#     templates: { go: "template-go-service", node: "template-node-service" }
-#     default_template: "go"
-#     protect_default_branch: true
-#     required_checks: ["ci"]
-#     bootstrap:
-#       ".github/pull_request_template.md": "## What\n\n## Why\n\n## How it was tested\n"
-#   knowledge:
-#     every: "24h"
-#   fixer:
-#     dispatcher: "harness"               # harness | fleet | sandbox
-#     timeout: "45m"
-#   merge_without_ci: false
-#   listen_channels: []                   # empty = every channel except WhatsApp
 
 # Agent definitions
 agents:
@@ -148,8 +79,8 @@ agents:
       - HTTP/API call capability
       - Memory retrieval from your knowledge base (use memory.retrieve tool)
       - Memory ingestion to save important information (use memory.ingest tool)
-      - Ability to delegate coding tasks to Claude Code or Codex (use claude_code.call or codex.call tools)
-      - Communication via Discord (use comms.send tool)
+      - Ability to delegate coding tasks to Claude Code (use the claude_code.call tool)
+      - Communication via WhatsApp or Slack (use comms.send tool)
       - Permission escalation via alternate channels (use comms.escalate tool)
 
       ## Decision-Making Rules
@@ -160,13 +91,12 @@ agents:
 
       ## Communication
       When you need to communicate, use the comms.send tool with the appropriate channel_id.
-      When messaged via Discord or WhatsApp, respond to the original channel and target captured in the incoming event.
+      When messaged via WhatsApp or Slack, respond to the original channel and target captured in the incoming event.
       Respect channels marked DND. For dangerous actions, use comms.escalate before acting.
 
       ## Coding Tasks
       When delegating coding work:
-      - Use claude_code.call for complex, multi-file tasks
-      - Use codex.call for simpler, focused coding tasks
+      - Use claude_code.call for coding tasks
       - Always provide clear, detailed prompts
       - Track session IDs to continue related work
 
@@ -182,7 +112,7 @@ agents:
 
       ## WhatsApp Communication
       You can also communicate via WhatsApp using channel_id "whatsapp-main".
-      Use this for urgent messages or when Discord is not suitable.
+      Use this for urgent messages or when a chat message is not suitable.
 
     model: "claude-opus-4.6"            # Primary model
     provider: "anthropic"               # Primary provider
@@ -221,7 +151,6 @@ agents:
       - notify.send
       - memory.ingest
       - claude_code.call
-      - codex.call
       - comms.send
       - google_workspace
       - google_workspace.schema
@@ -280,13 +209,21 @@ loops:
 
   # A normal loop fires the prompt to the agent, which uses its tools. Deliver
   # proactive updates to the phone app with app.push (lands in the app's
-  # notification feed AND sends a push); use comms.send for WhatsApp/Discord.
+  # notification feed AND sends a push); use comms.send for WhatsApp/Slack.
   - name: "daily-briefing"
     cron: "0 30 8 * * *"          # 08:30 daily
     prompt: >-
       Compile a short morning briefing (top tech news from memory, today's calendar/reminders,
       open coding sessions, anything pending from WhatsApp). You MUST deliver it by calling the
       app.push tool (title "Morning briefing") — that is the required final step.
+
+# The coding harness (Claude Code) every model session runs on.
+# harness:
+#   enabled: true
+#   # The only MCP servers a session starts (--strict-mcp-config). Unset, every
+#   # session also starts the servers in your own Claude config and plugins.
+#   mcp_servers:
+#     fleet: { type: stdio, command: fleetctl, args: [mcp] }
 
 # System One. Every event is screened by a cheap, fast probability model before
 # the expensive brain looks at it: one call answers what to do with it, how

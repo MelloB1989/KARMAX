@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/MelloB1989/karmax/internal/mcp"
-	"github.com/MelloB1989/karmax/internal/orgops"
 	"github.com/MelloB1989/karmax/internal/reflex"
 )
 
@@ -11,7 +13,6 @@ type KarmaxConfig struct {
 	Database DatabaseConfig        `yaml:"database"`
 	Webhooks WebhooksConfig        `yaml:"webhooks"`
 	API      APIConfig             `yaml:"api"`
-	Console  ConsoleConfig         `yaml:"console"`
 	AI       AIConfig              `yaml:"ai"`
 	MCPs     []mcp.MCPServerConfig `yaml:"mcps"`
 	Comms    CommsConfig           `yaml:"comms"`
@@ -20,9 +21,6 @@ type KarmaxConfig struct {
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 	Harness  HarnessConfig         `yaml:"harness"`
 	Reflex   reflex.Config         `yaml:"reflex"`
-	// OrgOps is the org engineering office: PR review, standards, repo
-	// factory, knowledge store and incident autopilot for a GitHub org.
-	OrgOps orgops.Config `yaml:"org_ops"`
 	// Which services this install manages. Omitted means every one compiled
 	// in, so an upgrade never switches somebody's integrations off.
 	Connectors   RegistryConfig `yaml:"connectors"`
@@ -65,6 +63,23 @@ type HarnessConfig struct {
 	WorkdirRoot string `yaml:"workdir_root"`
 	// Kinds are the per-use-case policies, keyed by kind name.
 	Kinds map[string]HarnessKindConfig `yaml:"kinds"`
+	// MCPServers, when set, are the only MCP servers a session runs, each in
+	// Claude Code's own shape (type, command, args, env). Unset, a session
+	// also starts every server in the operator's own Claude config and its
+	// plugins, which is a set of processes per session that KARMAX never calls.
+	MCPServers map[string]map[string]any `yaml:"mcp_servers"`
+}
+
+// MCPConfigJSON is MCPServers as a --mcp-config value, "" when none are set.
+func (h HarnessConfig) MCPConfigJSON() (string, error) {
+	if len(h.MCPServers) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(map[string]any{"mcpServers": h.MCPServers})
+	if err != nil {
+		return "", fmt.Errorf("harness.mcp_servers: %w", err)
+	}
+	return string(b), nil
 }
 
 // HarnessKindConfig is one session policy.
@@ -191,28 +206,6 @@ type APIConfig struct {
 	Host    string `yaml:"host"`
 }
 
-// ConsoleConfig is the web console's own listener.
-//
-// Deliberately a SEPARATE server from APIConfig rather than more routes on the
-// same mux. The API port carries POST /api/tools/{name}, which can invoke
-// shell.exec — that is remote code execution, and it must stay reachable only
-// from an operator's network no matter how the console is exposed. Splitting
-// the listener is what lets the console be published without publishing that.
-type ConsoleConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Port    int    `yaml:"port"`
-	Host    string `yaml:"host"`
-
-	// PublicURL is the address operators actually reach the console at, used
-	// to render connector callback URLs. A setup wizard that prints a callback
-	// URL nobody can reach is worse than no wizard, and the server cannot infer
-	// its own public name from behind a CDN.
-	PublicURL string `yaml:"public_url"`
-
-	// SessionHours is how long a login lasts. 0 means the default (12h).
-	SessionHours int `yaml:"session_hours"`
-}
-
 type WebhookRouteConfig struct {
 	Path            string         `yaml:"path"`
 	Method          string         `yaml:"method"`
@@ -233,18 +226,6 @@ type ProviderConfig struct {
 	APIKey    string `yaml:"api_key"`
 	BaseURL   string `yaml:"base_url"`
 	AuthToken string `yaml:"auth_token"`
-
-	// Deployments maps a model name to the name it is deployed under, for
-	// providers that address a DEPLOYMENT where OpenAI addresses a model —
-	// Azure OpenAI being the one that matters here. Whoever created the
-	// resource chose those names, so they cannot be known at compile time.
-	//
-	//	deployments:
-	//	  gpt-5-mini: my-gpt-5-mini
-	//
-	// Omit it when the deployment is named after the model, which is the
-	// common case and the default.
-	Deployments map[string]string `yaml:"deployments"`
 }
 
 type AgentModelConfig struct {

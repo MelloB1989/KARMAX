@@ -323,7 +323,6 @@ func TestEveryVerbParsesInItsDocumentedForm(t *testing.T) {
 		VerbCaseState:     "case: c\n      state: s",
 		VerbCaseLog:       "case: c\n      kind: note\n      payload: p",
 		VerbAwait:         "event: e",
-		VerbSandbox:       "repo: o/r\n      branch: main\n      task: t",
 		VerbHarnessForget: "session_id: \"s1\"\n      working_dir: \"w1\"",
 	}
 	for verb, fields := range mapForms {

@@ -438,19 +438,6 @@ func runStep(ctx context.Context, r *Recipe, k loopkit.Kit, b Bindings, s Step, 
 
 	case VerbForeach:
 		return nil, runForeach(ctx, r, k, b, s, id)
-
-	case VerbSandbox:
-		spec, err := sandboxSpec(s, b)
-		if err != nil {
-			return nil, err
-		}
-		// k.Sandbox is Step-checkpointed internally under id, so it is called
-		// directly rather than wrapped in another k.Step here.
-		res, err := k.Sandbox(ctx, id, spec)
-		if err != nil {
-			return nil, err
-		}
-		return sandboxBinding(res), nil
 	}
 	return nil, fmt.Errorf("unknown verb %q", s.Verb)
 }
@@ -547,52 +534,8 @@ func awaitSpec(s Step, b Bindings) (loopkit.AwaitSpec, error) {
 	return loopkit.AwaitSpec{Event: event, Match: match, CaseID: caseID, Timeout: timeout}, nil
 }
 
-// sandboxSpec builds a SandboxSpec from a step's fields. env.KEY fields are
-// the container's environment, the same flattening http uses for header.NAME.
-func sandboxSpec(s Step, b Bindings) (loopkit.SandboxSpec, error) {
-	field := func(key string) (string, error) { return render(s.Args[key], b) }
-	repo, err := field("repo")
-	if err != nil {
-		return loopkit.SandboxSpec{}, err
-	}
-	branch, err := field("branch")
-	if err != nil {
-		return loopkit.SandboxSpec{}, err
-	}
-	task, err := field("task")
-	if err != nil {
-		return loopkit.SandboxSpec{}, err
-	}
-	image, err := field("image")
-	if err != nil {
-		return loopkit.SandboxSpec{}, err
-	}
-	caseID, err := field("case")
-	if err != nil {
-		return loopkit.SandboxSpec{}, err
-	}
-	env := map[string]string{}
-	for key, v := range s.Args {
-		name, ok := strings.CutPrefix(key, "env.")
-		if !ok {
-			continue
-		}
-		rendered, err := render(v, b)
-		if err != nil {
-			return loopkit.SandboxSpec{}, err
-		}
-		env[name] = rendered
-	}
-	timeout, err := renderDuration("timeout", s.Args["timeout"], b)
-	if err != nil {
-		return loopkit.SandboxSpec{}, err
-	}
-	return loopkit.SandboxSpec{CaseID: caseID, Repo: repo, Branch: branch, Task: task,
-		Image: image, Env: env, Timeout: timeout}, nil
-}
-
 // renderDuration parses an optional duration field; empty renders as zero,
-// which both AwaitSpec and SandboxSpec document as "no timeout" — a real
+// which AwaitSpec documents as "no timeout" — a real
 // choice, not a missing one.
 func renderDuration(field, raw string, b Bindings) (time.Duration, error) {
 	rendered, err := render(raw, b)
@@ -618,13 +561,6 @@ func caseBinding(c loopkit.Case) map[string]any {
 		"id": c.ID, "key": c.Key, "agent": c.Agent, "title": c.Title,
 		"state": c.State, "namespace": c.Namespace,
 		"thread_channel": c.ThreadChannel, "thread_ts": c.ThreadTS,
-	}
-}
-
-func sandboxBinding(res loopkit.SandboxResult) map[string]any {
-	return map[string]any{
-		"run_id": res.RunID, "status": res.Status,
-		"exit_code": res.ExitCode, "log_tail": res.LogTail,
 	}
 }
 

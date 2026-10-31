@@ -40,6 +40,9 @@ type Session struct {
 	// MCPConfig is threaded from Options the same way Model and Thinking are,
 	// taking effect on the next spawn.
 	MCPConfig string
+	// OnlyMCPConfig is Config.OnlyMCPConfig, fixed at spawn: when set, the
+	// session runs these MCP servers (plus MCPConfig's) and no others.
+	OnlyMCPConfig string
 	// SystemPrompt is passed as --append-system-prompt, fixed at spawn like
 	// the rest. It is part of the process, so a changed value needs a respawn
 	// (needsRespawn); --resume keeps the transcript, not the old prompt.
@@ -167,11 +170,17 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	if fallbackModel != "" && fallbackModel != s.Model {
 		args = append(args, "--fallback-model", fallbackModel)
 	}
-	// Only the servers KARMAX hands over (MCPConfig), not the operator's own:
-	// without this every session started a process tree for each server in
-	// their Claude Code config. Before --mcp-config, which is variadic.
+	// Only the servers KARMAX hands over (MCPConfig), plus any the operator
+	// allowlisted (harness.mcp_servers → OnlyMCPConfig), not the operator's
+	// whole Claude Code config: without this every session started a process
+	// tree for each of their servers. Before --mcp-config, which is variadic.
 	if !s.InheritMCP {
 		args = append(args, "--strict-mcp-config")
+		if s.OnlyMCPConfig != "" {
+			// A repeated --mcp-config adds to this one, so a per-session server
+			// (extraArgs) still joins the allowed set.
+			args = append(args, "--mcp-config", s.OnlyMCPConfig)
+		}
 	}
 	// No positional prompt here to collide with; still appended last, and tested.
 	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig, SystemPrompt: s.SystemPrompt})...)

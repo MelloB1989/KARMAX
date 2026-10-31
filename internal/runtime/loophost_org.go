@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MelloB1989/karmax/internal/sandbox"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"github.com/google/uuid"
@@ -210,27 +209,6 @@ func (k *loopKit) ProposeTo(role, title, summary, action string) (string, error)
 	return id, k.Audit("propose", "role:"+role, "pending", title)
 }
 
-// --- Sandboxed work ---------------------------------------------------------
-
-func (k *loopKit) Sandbox(ctx context.Context, id string, spec loopkit.SandboxSpec) (loopkit.SandboxResult, error) {
-	raw, err := k.Step(id, func() (string, error) {
-		res, err := k.rt.runSandbox(ctx, k.loopName, spec)
-		if err != nil {
-			return "", err
-		}
-		b, err := json.Marshal(res)
-		return string(b), err
-	})
-	if err != nil {
-		return loopkit.SandboxResult{}, err
-	}
-	var out loopkit.SandboxResult
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return loopkit.SandboxResult{}, err
-	}
-	return out, nil
-}
-
 // --- Answerability ----------------------------------------------------------
 
 func (k *loopKit) Audit(verb, target, decision, detail string) error {
@@ -246,78 +224,4 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
-}
-
-// runSandbox launches a container, waits for it, and keeps sandbox_runs honest
-// throughout — the row is what lets a restart find a container it started.
-func (rt *KarmaxRuntime) runSandbox(ctx context.Context, agent string, spec loopkit.SandboxSpec) (loopkit.SandboxResult, error) {
-	drv, err := rt.sandboxDriver()
-	if err != nil {
-		return loopkit.SandboxResult{}, err
-	}
-
-	runID := uuid.New().String()
-	image := spec.Image
-	if image == "" {
-		image = rt.sandboxImage()
-	}
-
-	env, err := rt.sandboxCredentials(ctx, spec.Repo, spec.Env)
-	if err != nil {
-		return loopkit.SandboxResult{}, err
-	}
-
-	if err := rt.store.StartSandboxRun(store.SandboxRun{
-		ID: runID, CaseID: spec.CaseID, Driver: drv.Name(), Image: image,
-		Status: sandbox.StateStarting, Repo: spec.Repo, Branch: spec.Branch,
-		Task: spec.Task, StartedAt: time.Now(),
-	}); err != nil {
-		return loopkit.SandboxResult{}, err
-	}
-
-	cid, err := drv.Launch(ctx, sandbox.Spec{
-		Image: image, Repo: spec.Repo, Branch: spec.Branch,
-		Task: spec.Task, Env: env, Timeout: spec.Timeout,
-	})
-	if err != nil {
-		_ = rt.store.UpdateSandboxRun(runID, sandbox.StateFailed, 0, err.Error(), "")
-		return loopkit.SandboxResult{}, err
-	}
-	if err := rt.store.RecordSandboxContainer(runID, cid); err != nil {
-		// Not fatal to this run — it has its own poll loop. Fatal to the NEXT
-		// restart, which now cannot find this container to clean up.
-		rt.log.Warn("could not record the sandbox container id; a restart will not find it",
-			zap.String("run", runID), zap.String("container", cid), zap.Error(err))
-	}
-	rt.log.Info("sandbox launched", zap.String("run", runID), zap.String("container", cid),
-		zap.String("repo", spec.Repo))
-
-	deadline := time.Now().Add(spec.Timeout)
-	if spec.Timeout <= 0 {
-		deadline = time.Now().Add(defaultSandboxTimeout)
-	}
-	for {
-		st, err := drv.Poll(ctx, cid)
-		if err != nil {
-			_ = rt.store.UpdateSandboxRun(runID, sandbox.StateFailed, 0, err.Error(), "")
-			return loopkit.SandboxResult{}, err
-		}
-		if st.State == sandbox.StateExited || st.State == sandbox.StateFailed || st.State == sandbox.StateGone {
-			logs, _ := drv.Logs(ctx, cid, 200)
-			_ = rt.store.UpdateSandboxRun(runID, st.State, st.ExitCode, "", logs)
-			_ = drv.Kill(ctx, cid)
-			return loopkit.SandboxResult{RunID: runID, Status: st.State, ExitCode: st.ExitCode, LogTail: logs}, nil
-		}
-		if time.Now().After(deadline) {
-			logs, _ := drv.Logs(ctx, cid, 200)
-			_ = drv.Kill(ctx, cid)
-			_ = rt.store.UpdateSandboxRun(runID, sandbox.StateFailed, 0, "timed out", logs)
-			return loopkit.SandboxResult{}, fmt.Errorf("sandbox timed out after %s", time.Since(deadline))
-		}
-		select {
-		case <-ctx.Done():
-			return loopkit.SandboxResult{}, ctx.Err()
-		case <-time.After(sandboxPollEvery):
-		}
-	}
 }

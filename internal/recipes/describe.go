@@ -38,7 +38,6 @@ var verbDescriptions = map[string]string{
 	VerbCaseLog:   "add a line to a case's shared history",
 	VerbAwait:     "PARK the run — for as long as it takes — until a matching event happens",
 	VerbForeach:   "repeat its steps once per item — whatever those steps do, they do it that many times",
-	VerbSandbox:   "RUN CODE against a real repository in a container, and can push a branch",
 }
 
 // Describe renders what a recipe does, for the operator to approve.

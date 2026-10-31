@@ -1,9 +1,0 @@
-@@ -102,7 +102,7 @@
- 			reply(w, 404, map[string]string{"error": "charge not found"})
- 			return
- 		}
--		if !fault.Load() && charge.Customer == nil { // the guard the bad deploy dropped
-+		if charge.Customer == nil {
- 			reply(w, 422, map[string]string{"error": "charge has no customer"})
- 			return
- 		}

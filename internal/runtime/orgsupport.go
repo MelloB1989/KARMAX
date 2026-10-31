@@ -4,18 +4,15 @@ import (
 	"context"
 	"fmt"
 	"github.com/MelloB1989/karmax/internal/comms"
-	"os"
 	"strings"
-	"sync"
 
 	"github.com/MelloB1989/karmax/internal/bus"
-	"github.com/MelloB1989/karmax/internal/sandbox"
 	"github.com/MelloB1989/karmax/internal/store"
 	"go.uber.org/zap"
 )
 
-// Runtime support for the organisational Kit: where a message goes, who holds a
-// role, and where a sandbox gets its credentials.
+// Runtime support for the organisational Kit: where a message goes and who
+// holds a role.
 
 // sendToChannel posts into a comms channel, threading when asked.
 //
@@ -107,122 +104,3 @@ func (rt *KarmaxRuntime) emitCaseState(caseID, state string) {
 
 // EventCaseStateChanged is what dev-notify style workflows listen on.
 const EventCaseStateChanged = "case.state_changed"
-
-var (
-	sandboxOnce sync.Once
-	sandboxDrv  sandbox.Driver
-	sandboxErr  error
-)
-
-// sandboxDriver resolves the configured driver once. Docker runs the container
-// on this host; ECS runs it as a Fargate task, which is what you want as soon
-// as the sandbox would be sharing a machine with the daemon supervising it.
-// Kubernetes is the same interface and is not written.
-func (rt *KarmaxRuntime) sandboxDriver() (sandbox.Driver, error) {
-	sandboxOnce.Do(func() {
-		name := strings.TrimSpace(os.Getenv("KARMAX_SANDBOX_DRIVER"))
-		if name == "" {
-			name = "docker"
-		}
-		sandboxDrv, sandboxErr = sandbox.Open(name)
-	})
-	return sandboxDrv, sandboxErr
-}
-
-func (rt *KarmaxRuntime) sandboxImage() string {
-	if v := strings.TrimSpace(os.Getenv("KARMAX_SANDBOX_IMAGE")); v != "" {
-		return v
-	}
-	return "karmax/sandbox:latest"
-}
-
-// sandboxCredentials assembles what the container needs to work and nothing
-// else.
-//
-// The coding agent's token is the org's, stored once. The git token is minted
-// per run and narrowed to the one repository this task may touch — which is the
-// whole reason the GitHub connector uses an App rather than a personal token.
-func (rt *KarmaxRuntime) sandboxCredentials(ctx context.Context, repo string, extra map[string]string) (map[string]string, error) {
-	env := map[string]string{}
-	for k, v := range extra {
-		env[k] = v
-	}
-
-	tok, err := rt.codingAgentToken()
-	if err != nil {
-		return nil, err
-	}
-	env[tok.name] = tok.value
-
-	if repo != "" {
-		gh, err := rt.repoToken(ctx, repo)
-		if err != nil {
-			return nil, fmt.Errorf("could not mint a token for %s: %w", repo, err)
-		}
-		env["GITHUB_TOKEN"] = gh
-	}
-	return env, nil
-}
-
-type namedSecret struct{ name, value string }
-
-// RepoTokenMinter mints a git credential scoped to one repository. The GitHub
-// connector installs one at startup when an App is configured.
-type RepoTokenMinter func(ctx context.Context, repo string) (string, error)
-
-// SetRepoTokenMinter is how the GitHub connector hands the runtime its
-// scoped-token path without the runtime importing it.
-func (rt *KarmaxRuntime) SetRepoTokenMinter(m RepoTokenMinter) { rt.repoTokenMinter = m }
-
-// codingAgentToken prefers the subscription token minted by `claude
-// setup-token`, and falls back to an API key for orgs billing per token.
-func (rt *KarmaxRuntime) codingAgentToken() (namedSecret, error) {
-	// "sandbox_agent_token" is the key the console's Settings page writes to.
-	// Reading a different one meant an operator could save a token, see it
-	// stored, and still have every sandbox fail for want of a credential.
-	for _, key := range []string{sandboxTokenCredential, "claude-code"} {
-		c, err := rt.store.Credential(key)
-		if err != nil || c == nil {
-			continue
-		}
-		if tok := strings.TrimSpace(c.AccessToken); tok != "" {
-			// An API key and an OAuth token go in different variables; the
-			// entrypoint accepts either, but only under the right name.
-			if strings.HasPrefix(tok, "sk-ant-api") {
-				return namedSecret{"ANTHROPIC_API_KEY", tok}, nil
-			}
-			return namedSecret{"CLAUDE_CODE_OAUTH_TOKEN", tok}, nil
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")); v != "" {
-		return namedSecret{"CLAUDE_CODE_OAUTH_TOKEN", v}, nil
-	}
-	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); v != "" && v != "12345" {
-		return namedSecret{"ANTHROPIC_API_KEY", v}, nil
-	}
-	return namedSecret{}, fmt.Errorf(
-		"no coding-agent credential: run `claude setup-token` and save the sk-ant-oat01-… value in the console under Settings, or set ANTHROPIC_API_KEY")
-}
-
-// repoToken mints a git credential scoped to one repository.
-//
-// Narrowing is the point: the container gets write access to the repo its
-// ticket names and to nothing else, and the token expires within the hour. When
-// no GitHub App is configured this falls back to a configured token, which is
-// broader than it should be and says so.
-func (rt *KarmaxRuntime) repoToken(ctx context.Context, repo string) (string, error) {
-	if mint := rt.repoTokenMinter; mint != nil {
-		return mint(ctx, repo)
-	}
-	if v := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); v != "" {
-		rt.log.Warn("sandbox is using a broad GITHUB_TOKEN; configure a GitHub App to scope it to one repo",
-			zap.String("repo", repo))
-		return v, nil
-	}
-	return "", fmt.Errorf("no GitHub credential: connect a GitHub App, or set GITHUB_TOKEN")
-}
-
-// sandboxTokenCredential is the credential key the console's Settings page
-// writes the coding-agent token to. Named here rather than repeated, because
-// the last time the two sides disagreed the token was saved and never read.
-const sandboxTokenCredential = "sandbox_agent_token"

@@ -50,11 +50,6 @@ func directoryMapCmd() *cobra.Command {
 			}
 			defer s.Close()
 
-			// Best effort: a mesh identity is not required to map somebody, and
-			// demanding one would block the common single-instance case.
-			if org == "" {
-				org, _ = orgKey()
-			}
 			if err := s.MapMember(store.Member{
 				ExternalKind: kind, ExternalID: id, Member: member, Org: org, Name: name,
 			}); err != nil {
@@ -65,7 +60,7 @@ func directoryMapCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "display name, for the audit trail")
-	cmd.Flags().StringVar(&org, "org", "", "org key (default: this instance's)")
+	cmd.Flags().StringVar(&org, "org", "", "org key, when the member belongs to one")
 	return cmd
 }
 
@@ -118,4 +113,18 @@ func directoryUnmapCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func orDash(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+func short(id string) string {
+	if len(id) > 14 {
+		return id[:14] + "…"
+	}
+	return id
 }

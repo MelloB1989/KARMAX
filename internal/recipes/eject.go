@@ -68,11 +68,11 @@ func init() {
 }
 
 // needsTime says whether the generated file uses time.ParseDuration/Duration
-// anywhere (sleep, await, sandbox) — the one optional stdlib import.
+// anywhere (sleep, await) — the one optional stdlib import.
 func needsTime(steps []Step) bool {
 	for _, s := range steps {
 		switch s.Verb {
-		case VerbSleep, VerbAwait, VerbSandbox:
+		case VerbSleep, VerbAwait:
 			return true
 		}
 		if needsTime(s.Else) || needsTime(s.Steps) {
@@ -139,7 +139,7 @@ func idLiteral(id, loopVar string) string {
 func isStepFamily(verb string) bool {
 	switch verb {
 	case VerbAsk, VerbObserve, VerbHarness, VerbGateway, VerbRecall, VerbHTTP,
-		VerbCaseOpen, VerbCaseGet, VerbCaseHistory, VerbAwait, VerbSandbox:
+		VerbCaseOpen, VerbCaseGet, VerbCaseHistory, VerbAwait:
 		return true
 	}
 	return false
@@ -286,17 +286,6 @@ func emitBoundStep(b *strings.Builder, s Step, idExpr, outerInd string) {
 		fmt.Fprintf(b, "%s\tTimeout: %s,\n", ind, durationExpr(s.Args["timeout"]))
 		fmt.Fprintf(b, "%s})\n", ind)
 		errCheck(b, ind)
-	case VerbSandbox:
-		fmt.Fprintf(b, "%s%s, err := k.Sandbox(ctx, %s, loopkit.SandboxSpec{\n", ind, bind, idExpr)
-		fmt.Fprintf(b, "%s\tCaseID: %s,\n", ind, arg("case"))
-		fmt.Fprintf(b, "%s\tRepo: %s,\n", ind, arg("repo"))
-		fmt.Fprintf(b, "%s\tBranch: %s,\n", ind, arg("branch"))
-		fmt.Fprintf(b, "%s\tTask: %s,\n", ind, arg("task"))
-		fmt.Fprintf(b, "%s\tImage: %s,\n", ind, arg("image"))
-		fmt.Fprintf(b, "%s\tEnv: %s,\n", ind, envLiteral(s.Args))
-		fmt.Fprintf(b, "%s\tTimeout: %s,\n", ind, durationExpr(s.Args["timeout"]))
-		fmt.Fprintf(b, "%s})\n", ind)
-		errCheck(b, ind)
 	}
 
 	if s.As != "" {
@@ -360,18 +349,6 @@ func mapLiteral(m map[string]string) string {
 		parts[i] = fmt.Sprintf("%s: %s", strconv.Quote(k), strconv.Quote(m[k]))
 	}
 	return "map[string]string{" + strings.Join(parts, ", ") + "}"
-}
-
-// envLiteral pulls sandbox's env.KEY fields (the same flattening http uses
-// for header.NAME) back out into a map literal.
-func envLiteral(args map[string]string) string {
-	m := map[string]string{}
-	for k, v := range args {
-		if name, ok := strings.CutPrefix(k, "env."); ok {
-			m[name] = v
-		}
-	}
-	return mapLiteral(m)
 }
 
 func durationExpr(raw string) string {

@@ -115,6 +115,7 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		Env:           harnessEnviron(),
 		CheapModel:    cheap,
 		FallbackModel: strings.TrimSpace(hc.FallbackModel),
+		OnlyMCPConfig: rt.harnessMCPConfig(),
 		OnBackgroundTurn: func(key, kind string, t harness.Turn) {
 			_ = rt.bus.Publish(backgroundTurnEvent(key, kind, t))
 		},
