@@ -232,6 +232,38 @@ func TestASourceEventScreenedAsRememberIsFiledUnderItsSubject(t *testing.T) {
 	}
 }
 
+// An email is filed under the person who wrote it, with the people — beside
+// everything else known about them — not under the source or the subject
+// line. The data is what the Gmail source sets (internal/sources/gmail).
+func TestAnEmailScreenedAsRememberIsFiledUnderItsSender(t *testing.T) {
+	f := newSourceFlow(t, "remember", 0)
+	evt := f.route(t, sources.Event{
+		Source: "gmail", Account: "priya@example.com", Type: "message", Key: "18c0a1",
+		Title: "Email from Dana Reyes: Lease renewal", Summary: "The renewal starts 1 December; please sign by Friday.",
+		URL: "https://mail.google.com/mail/?authuser=priya%40example.com#all/18c0a1", At: time.Now(),
+		Data: map[string]any{"person": "Dana Reyes", "category": "people", "from": "Dana Reyes <dana@example.org>",
+			"email_subject": "Lease renewal", "thread": "18c0a1"},
+	})
+	if got := f.turnStatus(t, evt.ID); got != store.TurnOK {
+		t.Fatalf("turn status %q, want ok", got)
+	}
+	entries, err := f.mem.Recent(10)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("memory holds %d entries (%v), want the one fact", len(entries), err)
+	}
+	e := entries[0]
+	if !strings.Contains(e.Content, "Dana Reyes") || !strings.Contains(e.Content, "sign by Friday") || !strings.Contains(e.Content, "priya@example.com") {
+		t.Errorf("the fact %q", e.Content)
+	}
+	stored, _ := f.db.SearchMemoryEntries("nexus", "Dana Reyes", 5)
+	if len(stored) != 1 || stored[0].Category != "people" {
+		t.Fatalf("filed as %+v, want category people", stored)
+	}
+	if path := memory.PathFor(memory.MemoryEntry{Content: e.Content, Tags: e.Tags, Category: stored[0].Category}, nil); path != "facts/people/dana-reyes.md" {
+		t.Errorf("filed at %q, want the sender's own file", path)
+	}
+}
+
 // A handled event reaches the brain as what happened and on WHICH account, so
 // the agent acts with that account's tools — not as a raw JSON dump.
 func TestASourceEventScreenedAsHandleReachesTheTurnWithItsAccount(t *testing.T) {
