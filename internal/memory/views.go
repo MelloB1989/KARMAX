@@ -362,6 +362,9 @@ func (g *gitloomBackend) survey(ctx context.Context, limit int) ([]MemoryEntry, 
 		if content == "" {
 			content = graphTitleFor(l.Title, l.Path)
 		}
+		if _, ok := g.asKnown(l.Path, content, time.Time{}); !ok {
+			continue // forgotten, though this reader may not have caught up
+		}
 		out = append(out, MemoryEntry{
 			ID: l.Path, Namespace: g.cfg.Namespace, Role: RoleGitLoom,
 			Content: content, Category: firstNonEmpty(l.Tier, "facts"),
@@ -387,10 +390,15 @@ func (g *gitloomBackend) load(ctx context.Context, path string) (*MemoryEntry, e
 		return nil, nil
 	}
 	g.setHealth(true, nil)
+	// A section KARMAX has forgotten is not there, whatever the store says yet.
+	content, ok := g.asKnown(path, m.Content, updatedAt(m))
+	if !ok {
+		return nil, nil
+	}
 
 	return &MemoryEntry{
 		ID: m.Path, Namespace: g.cfg.Namespace, Role: RoleGitLoom,
-		Content: strings.TrimSpace(m.Content), Tags: userTags(m),
+		Content: strings.TrimSpace(content), Tags: userTags(m),
 		Category: firstNonEmpty(m.Tier, "facts"),
 		// Updated over Created: staleness is about when a fact was last
 		// confirmed, not when it was first written down.
