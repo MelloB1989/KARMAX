@@ -76,10 +76,19 @@ type longWorkFlow struct {
 	fallback int
 }
 
+// record notes what went out and, as comms does after every send, stores it
+// among the chat's messages — which is what a delivery cut off between
+// sending and recording is found by.
 func (f *longWorkFlow) record(s sent) {
 	f.mu.Lock()
 	f.out = append(f.out, s)
 	f.mu.Unlock()
+	content := s.text
+	if s.file != "" {
+		content = "[file] " + filepath.Base(s.file)
+	}
+	_ = f.db.SaveChannelMessage(store.StoredChannelMessage{ID: "out-" + time.Now().Format(time.RFC3339Nano) + content,
+		ChannelID: s.target, ChannelType: "whatsapp", Direction: "outbound", Content: content})
 }
 
 func (f *longWorkFlow) sentTo(target string) []sent {
@@ -126,18 +135,24 @@ func (fallbackBrain) GetTotalTokens() int64             { return 0 }
 func (fallbackBrain) GetKeepRecent() int                { return 10 }
 func (fallbackBrain) ResetTokenCount()                  {}
 
+// newLongWorkFlow is a daemon on the database at dbPath ("" for a new one),
+// whose work produces a deck beside it.
 func newLongWorkFlow(t *testing.T, dbPath string) *longWorkFlow {
 	t.Helper()
-	dir := t.TempDir()
 	if dbPath == "" {
-		dbPath = filepath.Join(dir, "t.db")
+		dbPath = filepath.Join(t.TempDir(), "t.db")
 	}
+	return newLongWorkFlowDeck(t, dbPath, filepath.Join(filepath.Dir(dbPath), "northwind-deck.pdf"))
+}
+
+func newLongWorkFlowDeck(t *testing.T, dbPath, deck string) *longWorkFlow {
+	t.Helper()
+	dir := t.TempDir()
 	db, err := store.New(dbPath, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	deck := filepath.Join(dir, "northwind-deck.pdf")
 	if err := os.WriteFile(deck, []byte("%PDF-1.7 fake"), 0o644); err != nil {
 		t.Fatal(err)
 	}
