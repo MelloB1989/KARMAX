@@ -229,6 +229,13 @@ agents:
       # logins the work belongs to (github.accounts, .read, .reply, .review,
       # .merge). Nothing in it deletes.
       - github.*
+      # Answer, move and create calendar events and write in Google Chat as
+      # whichever signed-in Google account the event came from (gcal.respond,
+      # .reschedule, .create, gchat.send). They are also lent to the turn of
+      # every Calendar or Chat event; this grants them on every turn.
+      - gcal.*
+      - gchat.*
+      - google.accounts
 
     # Memory configuration
     memory:
