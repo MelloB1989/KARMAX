@@ -688,6 +688,99 @@ func TestAChatWhoseCursorCannotMoveIsReportedAsStalled(t *testing.T) {
 	}
 }
 
+// history adds a chat of n messages, a minute apart from at, each long enough
+// to fill a 60-character batch on its own.
+func (h *harness) history(jid string, n int, at time.Time) {
+	var ms []Message
+	for j := 0; j < n; j++ {
+		ms = append(ms, msg(fmt.Sprintf("%s-%d", jid, j), jid, jid,
+			fmt.Sprintf("%s message %d with some words", jid, j), at.Add(time.Duration(j)*time.Minute), false))
+	}
+	h.chat(jid, jid, false, ms...)
+}
+
+// Chats with history to read take turns across ticks: a chat that has had a
+// batch waits behind those that have not, so a few recently active chats
+// with long histories do not hold up the rest of the backfill.
+func TestChatsWithHistoryToReadTakeTurnsAcrossTicks(t *testing.T) {
+	h := newHarness(t, Config{BatchChars: 60, BatchesPerTick: 2})
+	h.history("0@s.whatsapp.net", 1, t0)
+	h.history("1@s.whatsapp.net", 1, t0.Add(time.Hour))
+	h.history("2@s.whatsapp.net", 6, t0.Add(2*time.Hour))
+	h.history("3@s.whatsapp.net", 6, t0.Add(3*time.Hour))
+
+	for i := 0; i < 2; i++ {
+		if _, err := h.s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		if timesRead(h.ask.prompts, fmt.Sprintf("%d@s.whatsapp.net message 0 ", i)) != 1 {
+			t.Errorf("chat %d had no turn in two ticks of two batches", i)
+		}
+	}
+}
+
+// What was said since a chat was last read to its end goes before history,
+// however recently the chats still catching up were served.
+func TestNewMessagesInACaughtUpChatGoBeforeHistory(t *testing.T) {
+	h := newHarness(t, Config{BatchChars: 60, BatchesPerTick: 2})
+	for i := 0; i < 3; i++ {
+		h.history(fmt.Sprintf("%d@s.whatsapp.net", i), 6, t0.Add(time.Duration(i)*time.Hour))
+	}
+	dm := "9@s.whatsapp.net"
+	h.chat(dm, "Dana", false, msg("d0", dm, dm, "see you at the gate", t0.Add(5*time.Hour), false))
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if timesRead(h.ask.prompts, "see you at the gate") != 1 {
+		t.Fatal("the most recently active chat was not read first")
+	}
+
+	h.src.msgs["|"+dm] = append(h.src.msgs["|"+dm], msg("d1", dm, dm, "running ten minutes late", t0.Add(6*time.Hour), false))
+	h.src.chats[3].LastMessageAt = t0.Add(6 * time.Hour)
+	n := len(h.ask.prompts)
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.ask.prompts) <= n || !strings.Contains(h.ask.prompts[n], "running ten minutes late") {
+		t.Error("a new message in a chat already read to its end waited behind history")
+	}
+}
+
+// History keeps a share of every tick: chats with new messages cannot take
+// the whole budget while other chats wait to be read.
+func TestHistoryKeepsAShareOfATickBusyWithNewMessages(t *testing.T) {
+	h := newHarness(t, Config{BatchesPerTick: 100})
+	for i := 0; i < 5; i++ {
+		jid := fmt.Sprintf("%d@s.whatsapp.net", i)
+		h.chat(jid, jid, false, msg(jid+"-a", jid, jid, "first from "+jid, t0.Add(time.Duration(i)*time.Minute), false))
+	}
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 5; i++ {
+		jid := fmt.Sprintf("%d@s.whatsapp.net", i)
+		at := t0.Add(time.Hour + time.Duration(i)*time.Minute)
+		h.src.msgs["|"+jid] = append(h.src.msgs["|"+jid], msg(jid+"-b", jid, jid, "second from "+jid, at, false))
+		h.src.chats[i].LastMessageAt = at
+	}
+	h.chat("7@g.us", "Archive", true, msg("o", "7@g.us", "8@lid", "from the archive", t0.Add(-30*time.Minute), false))
+	h.s.cfg.BatchesPerTick = 4
+
+	res, err := h.s.Tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timesRead(h.ask.prompts, "from the archive") != 1 {
+		t.Error("chats with new messages took the whole tick while history waited")
+	}
+	if res.Batches != 4 || !res.More {
+		t.Errorf("batches = %d, more = %v; want the whole budget spent and the rest left for the next tick", res.Batches, res.More)
+	}
+}
+
 // timesRead is how many times text was shown to the model.
 func timesRead(prompts []string, text string) int {
 	return strings.Count(strings.Join(prompts, "\n"), text)

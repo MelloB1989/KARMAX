@@ -285,6 +285,34 @@ func TestAQuietStretchAfterTheCursorSkipsNothing(t *testing.T) {
 	cursorsOnlyMovedForward(t, r.saves)
 }
 
+// A tick spends its budget: a chat whose history spans many of wacli's
+// windows is read window after window while budget remains, not one window a
+// tick with the rest of the budget left unused.
+func TestATickReadsOnPastOneWindowWhileBudgetRemains(t *testing.T) {
+	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	var msgs []wacliMsg
+	for i := 0; i < 5; i++ {
+		msgs = append(msgs, wacliMsg{id: fmt.Sprintf("3EB0%02d", i), text: fmt.Sprintf("week %d note", i),
+			at: start.Add(time.Duration(i) * 8 * 24 * time.Hour)})
+	}
+	last := msgs[len(msgs)-1].at
+	chat := Chat{ID: "1@g.us", Name: "Team", IsGroup: true, LastMessageAt: last}
+	r := newWacliRun(t, chat, start.Add(-time.Hour), last.Add(time.Hour), msgs...)
+
+	res, err := r.s.Tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if n := timesRead(r.ask.prompts, fmt.Sprintf("week %d note", i)); n != 1 {
+			t.Errorf("week %d was read %d times in the tick, want once", i, n)
+		}
+	}
+	if res.More {
+		t.Error("the tick read everything and still reported more")
+	}
+}
+
 func first(ms []Message) any {
 	if len(ms) == 0 {
 		return nil
