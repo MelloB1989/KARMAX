@@ -100,9 +100,10 @@ type KV interface {
 }
 
 const (
-	cursorGroup = "slack-source-cursor"
-	seenGroup   = "slack-source-seen"
-	seenTTL     = 3 * 24 * time.Hour // cursors keep reads from overlapping; this covers search and restarts
+	cursorGroup    = "slack-source-cursor"
+	seenGroup      = "slack-source-seen"
+	firstLookGroup = "slack-source-first-look"
+	seenTTL        = 3 * 24 * time.Hour // cursors keep reads from overlapping; this covers search and restarts
 )
 
 // Source polls Slack workspaces for what concerns the operator.
@@ -111,10 +112,11 @@ type Source struct {
 	HTTP *http.Client
 	Now  func() time.Time
 
-	cfg     Config
-	kv      KV
-	seen    sources.Seen
-	publish func(sources.Event) error
+	cfg       Config
+	kv        KV
+	seen      sources.Seen
+	firstLook sources.FirstLook
+	publish   func(sources.Event) error
 
 	tickMu sync.Mutex // one tick at a time
 	mu     sync.Mutex // guards teams and what Status and Send read
@@ -124,14 +126,15 @@ type Source struct {
 // New builds the source. publish delivers each new event once.
 func New(cfg Config, kv KV, publish func(sources.Event) error) *Source {
 	return &Source{
-		API:     "https://slack.com/api",
-		HTTP:    &http.Client{Timeout: 40 * time.Second},
-		Now:     time.Now,
-		cfg:     cfg.withDefaults(),
-		kv:      kv,
-		seen:    sources.Seen{Group: seenGroup, TTL: seenTTL, Get: kv.KVGet, Set: kv.KVSet},
-		publish: publish,
-		teams:   map[string]*team{},
+		API:       "https://slack.com/api",
+		HTTP:      &http.Client{Timeout: 40 * time.Second},
+		Now:       time.Now,
+		cfg:       cfg.withDefaults(),
+		kv:        kv,
+		seen:      sources.Seen{Group: seenGroup, TTL: seenTTL, Get: kv.KVGet, Set: kv.KVSet},
+		firstLook: sources.FirstLook{Group: firstLookGroup, Get: kv.KVGet, Set: kv.KVSet},
+		publish:   publish,
+		teams:     map[string]*team{},
 	}
 }
 
@@ -147,6 +150,10 @@ type team struct {
 	convs    map[string]*conv
 	listedAt time.Time
 	names    map[string]string
+
+	// watchedSince is KARMAX's first look at this workspace: what a
+	// conversation's first read finds from before it is backlog.
+	watchedSince time.Time
 
 	pausedUntil time.Time
 	searchOff   string
@@ -356,6 +363,13 @@ func (s *Source) readTeam(ctx context.Context, t *team, done map[string]bool, re
 	done[t.id] = true
 	res.Workspaces++
 	now := s.Now()
+	if t.watchedSince.IsZero() {
+		since, _, err := s.firstLook.Since(t.id, now)
+		if err != nil {
+			return err
+		}
+		t.watchedSince = since
+	}
 	if t.listedAt.IsZero() || now.Sub(t.listedAt) >= s.cfg.RefreshEvery {
 		if err := s.list(ctx, t); err != nil {
 			return err
@@ -487,7 +501,11 @@ func (s *Source) readConv(ctx context.Context, t *team, c *conv, res *Result) er
 	}
 	now := s.Now()
 	oldest := cursor
-	if !have || cursor == "" {
+	// Never read before, so read back as far as the lookback: what is found
+	// there from before KARMAX first looked at the workspace is backlog. A
+	// conversation resumed from its cursor is being watched, and all news.
+	fresh := !have || cursor == ""
+	if fresh {
 		oldest = timeTS(now.Add(-s.cfg.Lookback))
 	} else {
 		c.lastActive = tsTime(cursor)
@@ -532,6 +550,9 @@ func (s *Source) readConv(ctx context.Context, t *team, c *conv, res *Result) er
 		e, ok := s.event(ctx, t, c, m)
 		if !ok {
 			continue
+		}
+		if fresh {
+			e = e.WatchedSince(t.watchedSince)
 		}
 		if first, err := s.seen.First(e.Key); err != nil {
 			return err
@@ -599,11 +620,16 @@ func batch(c *conv, evs []sources.Event) sources.Event {
 	return e
 }
 
-// offer publishes a message if it is an event and new.
-func (s *Source) offer(ctx context.Context, t *team, c *conv, m message, res *Result) error {
+// offer publishes a message if it is an event and new. fresh is a read with
+// no cursor to resume from, whose finds from before the first look are
+// backlog.
+func (s *Source) offer(ctx context.Context, t *team, c *conv, m message, fresh bool, res *Result) error {
 	e, ok := s.event(ctx, t, c, m)
 	if !ok {
 		return nil
+	}
+	if fresh {
+		e = e.WatchedSince(t.watchedSince)
 	}
 	first, err := s.seen.First(e.Key)
 	if err != nil || !first {
@@ -742,7 +768,8 @@ func (s *Source) searchMentions(ctx context.Context, t *team, res *Result) error
 	if err != nil {
 		return err
 	}
-	if !have || cursor == "" {
+	fresh := !have || cursor == ""
+	if fresh {
 		cursor = timeTS(s.Now().Add(-s.cfg.Lookback))
 	}
 	matches := out.Messages.Matches
@@ -770,7 +797,7 @@ func (s *Source) searchMentions(ctx context.Context, t *team, res *Result) error
 				msg.ThreadTS = u.Query().Get("thread_ts")
 			}
 		}
-		if err := s.offer(ctx, t, c, msg, res); err != nil {
+		if err := s.offer(ctx, t, c, msg, fresh, res); err != nil {
 			return err
 		}
 	}

@@ -59,6 +59,44 @@ func (e Event) BusEvent(agentID string) bus.Event {
 	return ev
 }
 
+// WatchedSince is the event as seen by KARMAX watching its account since
+// firstLook: marked backlog when it happened at or before then. An undated
+// event cannot be placed and stays news; a zero firstLook marks nothing; and
+// an event its source already marked backlog keeps the mark.
+func (e Event) WatchedSince(firstLook time.Time) Event {
+	if !firstLook.IsZero() && !e.At.IsZero() && !e.At.After(firstLook) {
+		e.Backlog = true
+	}
+	return e
+}
+
+// FirstLook remembers when KARMAX first looked at each account of a source,
+// so a polling source can tell what its first read found — which happened
+// before KARMAX was watching, and is backlog — from what happened since. The
+// time is recorded on the first ask and kept, so a restart does not move it.
+type FirstLook struct {
+	Group string
+	Get   func(group, key string) (string, bool, error)
+	Set   func(group, key, value string, ttl time.Duration) error
+}
+
+// Since returns when KARMAX first looked at account, recording now (and
+// reporting first) when it never has. A record that cannot be read counts as
+// none: a first look again marks a lookback's worth as backlog, which is
+// better than an account whose events can never be placed.
+func (f FirstLook) Since(account string, now time.Time) (since time.Time, first bool, err error) {
+	v, ok, err := f.Get(f.Group, account)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if ok {
+		if t, perr := time.Parse(time.RFC3339Nano, v); perr == nil {
+			return t, false, nil
+		}
+	}
+	return now, true, f.Set(f.Group, account, now.UTC().Format(time.RFC3339Nano), 0)
+}
+
 // Seen remembers which items a polling source has already published.
 type Seen struct {
 	Group string

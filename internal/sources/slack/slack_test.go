@@ -636,3 +636,92 @@ func TestABotInADirectMessageIsNotAPersonAsking(t *testing.T) {
 		t.Errorf("with a refused bot token: %d events, note %q", len(got2), s2.Status()[0].Note)
 	}
 }
+
+// The first look at a workspace reads back as far as the lookback, so a DM or
+// a mention from before KARMAX was watching would page the operator once at
+// connect. What it finds is backlog: context for the agent, never a page.
+func TestTheFirstLookAtAWorkspaceIsBacklog(t *testing.T) {
+	f := newFakeSlack(t)
+	w := northwind(f)
+	w.searchOK = true
+	w.search = []map[string]any{{"type": "message", "user": "U0BOB", "text": "<@U0OPER> thoughts on this thread?", "ts": ts(5, 1),
+		"channel": map[string]any{"id": "C0ENG", "name": "eng"}}}
+	var got []sources.Event
+	s := newTestSource(f, newKV(), &got)
+	ws := []Workspace{{Integration: "slack-main", UserToken: "xoxp-northwind", BotToken: "xoxb-northwind"}}
+
+	if _, err := s.Tick(context.Background(), ws); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("published %d events on the first look, want 4: %+v", len(got), got)
+	}
+	for _, e := range got {
+		if !e.Backlog {
+			t.Errorf("%s %q from before the first look is not backlog", e.Type, e.Title)
+		}
+	}
+}
+
+// After the first look, what is said is news: in a conversation already read,
+// in one that appears later (a new DM), and in a thread search finds.
+func TestWhatIsSaidAfterTheFirstLookIsNews(t *testing.T) {
+	f := newFakeSlack(t)
+	w := northwind(f)
+	w.searchOK = true
+	kv := newKV()
+	var got []sources.Event
+	s := newTestSource(f, kv, &got)
+	ws := []Workspace{{Integration: "slack-main", UserToken: "xoxp-northwind", BotToken: "xoxb-northwind"}}
+	if _, err := s.Tick(context.Background(), ws); err != nil {
+		t.Fatal(err)
+	}
+
+	later := clock.Add(5 * time.Minute)
+	tsLater := func(seq int) string { return fmt.Sprintf("%d.%06d", later.Unix(), seq) }
+	w.history["D0ALICE"] = append(w.history["D0ALICE"],
+		map[string]any{"type": "message", "user": "U0ALICE", "text": "are you around?", "ts": tsLater(1)})
+	w.convs = append(w.convs, map[string]any{"id": "D0DANA", "is_im": true, "user": "U0DANA"})
+	w.history["D0DANA"] = []map[string]any{{"type": "message", "user": "U0DANA", "text": "hello, first time writing", "ts": tsLater(2)}}
+	w.search = []map[string]any{{"type": "message", "user": "U0BOB", "text": "<@U0OPER> in the thread?", "ts": tsLater(3),
+		"channel": map[string]any{"id": "C0ENG", "name": "eng"}}}
+	w.users["U0DANA"] = "Dana Placeholder"
+
+	got = got[:0]
+	restarted := newTestSource(f, kv, &got) // a restart keeps the first look
+	restarted.Now = func() time.Time { return later.Add(time.Minute) }
+	if _, err := restarted.Tick(context.Background(), ws); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("published %d events after the first look, want 3: %+v", len(got), got)
+	}
+	for _, e := range got {
+		if e.Backlog {
+			t.Errorf("%q, said after the first look, is marked backlog", e.Title)
+		}
+	}
+}
+
+// A workspace read before first looks were recorded (a deploy over a running
+// source) resumes from its cursors: what it reads there arrived while KARMAX
+// was watching, so it is news even though no first look is on record.
+func TestResumingFromACursorIsNeverBacklog(t *testing.T) {
+	f := newFakeSlack(t)
+	w := northwind(f)
+	kv := newKV()
+	// The cursors an earlier version left: everything up to 9 minutes ago read.
+	_ = kv.KVSet(cursorGroup, "T0NW:D0ALICE", ts(9, 1), 0)
+	_ = kv.KVSet(cursorGroup, "T0NW:C0ENG", ts(9, 1), 0)
+	w.history["D0ALICE"] = append(w.history["D0ALICE"],
+		map[string]any{"type": "message", "user": "U0ALICE", "text": "sent while KARMAX restarted", "ts": ts(1, 1)})
+	var got []sources.Event
+	s := newTestSource(f, kv, &got)
+
+	if _, err := s.Tick(context.Background(), []Workspace{{UserToken: "xoxp-northwind", BotToken: "xoxb-northwind"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Backlog {
+		t.Fatalf("resumed read published %+v; want the one new DM, as news", got)
+	}
+}
