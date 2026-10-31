@@ -113,8 +113,61 @@ const (
 
 // Delivery is one message owed to one place, under a key the caller derives
 // from what it is (the result of a task, the acknowledgement of a request).
+// An empty ChannelID and Target is the operator, in the app. FilePath, when
+// set, is a file to send; Content is then how the chat records it.
 type Delivery struct {
-	Key, ChannelID, Target, Content string
+	Key, ChannelID, Target, Content, FilePath string
+	CreatedAt                                 time.Time
+}
+
+// CompleteTaskRound records a round's outcome and what it owes its requester
+// in one transaction: the deliveries are written as claimed-but-not-sent, so
+// a crash after the round was recorded still finds them (OwedDeliveries).
+func (s *Store) CompleteTaskRound(id string, u TaskUpdate, owed []Delivery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.begin()
+	if err != nil {
+		return err
+	}
+	q, args := updateTaskSQL(id, u)
+	if _, err := tx.Exec(q, args...); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	now := time.Now()
+	for _, d := range owed {
+		if _, err := tx.Exec(`
+INSERT OR IGNORE INTO deliveries (delivery_key, channel_id, target, content, file_path, status, created_at)
+VALUES (?, ?, ?, ?, ?, 'sending', ?)`, d.Key, d.ChannelID, d.Target, d.Content, d.FilePath, now); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// OwedDeliveries are deliveries claimed and never recorded as sent, under a
+// key prefix, oldest first: what a restart still owes.
+func (s *Store) OwedDeliveries(prefix string) ([]Delivery, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.query(`
+SELECT delivery_key, channel_id, target, content, file_path, created_at FROM deliveries
+WHERE status = 'sending' AND delivery_key LIKE ? ORDER BY created_at ASC, delivery_key ASC`, prefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Delivery
+	for rows.Next() {
+		var d Delivery
+		if err := rows.Scan(&d.Key, &d.ChannelID, &d.Target, &d.Content, &d.FilePath, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // BeginDelivery claims a delivery before it is sent. It reports what an
@@ -136,8 +189,8 @@ func (s *Store) BeginDelivery(d Delivery) (state string, since time.Time, err er
 	}
 	now := time.Now()
 	if _, err := s.exec(`
-INSERT OR IGNORE INTO deliveries (delivery_key, channel_id, target, content, status, created_at)
-VALUES (?, ?, ?, ?, 'sending', ?)`, d.Key, d.ChannelID, d.Target, d.Content, now); err != nil {
+INSERT OR IGNORE INTO deliveries (delivery_key, channel_id, target, content, file_path, status, created_at)
+VALUES (?, ?, ?, ?, ?, 'sending', ?)`, d.Key, d.ChannelID, d.Target, d.Content, d.FilePath, now); err != nil {
 		return "", time.Time{}, err
 	}
 	return DeliveryNew, now, nil

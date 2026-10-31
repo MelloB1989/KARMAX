@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -410,6 +412,36 @@ func (m *Manager) SendFrom(producer, channelID, target, content string) error {
 	}
 	return nil
 }
+
+// SendFile sends a file through a channel and records it as an outbound
+// message ("[file] name"), so a delivery that was cut off can tell whether it
+// went out.
+func (m *Manager) SendFile(producer, channelID, target, path string) error {
+	entry, ok := m.getEntry(channelID)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelID)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	name := filepath.Base(path)
+	if err := entry.channel.SendFile(context.Background(), target, name, data); err != nil {
+		return err
+	}
+	metaJSON, _ := json.Marshal(map[string]any{"karmax_channel_id": channelID, "file": path})
+	if err := m.store.SaveChannelMessage(store.StoredChannelMessage{
+		ID: uuid.New().String(), ChannelID: target, ChannelType: entry.channel.Type(),
+		SenderID: producer, Direction: string(Outbound), Content: FileMessage(path),
+		Metadata: string(metaJSON),
+	}); err != nil {
+		m.log.Error("failed to persist an outbound file", zap.String("channel_id", channelID), zap.Error(err))
+	}
+	return nil
+}
+
+// FileMessage is how a sent file is recorded among a chat's messages.
+func FileMessage(path string) string { return "[file] " + filepath.Base(path) }
 
 // Threader is a channel that understands threads. Slack does; WhatsApp does
 // not, and a channel that cannot thread simply posts.

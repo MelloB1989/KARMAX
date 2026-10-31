@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -32,11 +34,14 @@ func (t *taskCreateTool) Manifest() tools.ToolManifest {
 			"or when something happens they need to know. " +
 			"Use this INSTEAD of promising to do something later: a promise ends with the turn, " +
 			"a task does not. Anything multi-step, anything that has to wait on something, " +
-			"anything you cannot finish right now.",
+			"anything you cannot finish right now. " +
+			"To hand over the request you are answering, pass its id as request: the task then owns it — " +
+			"it carries the conversation's context and delivers the result to whoever asked, exactly once.",
 		Parameters: json.RawMessage(`{
 			"type":"object",
 			"properties":{
 				"goal":{"type":"string","description":"What must be true for this to be finished, in full. Include everything the work needs — repo, names, constraints, acceptance criteria — because the session working on it starts from this and not from the current conversation."},
+				"request":{"type":"string","description":"The id of the request this task takes over (your turn's context names it). The task then answers that request where it came from, and nothing else answers it again."},
 				"title":{"type":"string","description":"Short label for status lists. Defaults to the first line of the goal."},
 				"workdir":{"type":"string","description":"Directory the work happens in, e.g. a repo checkout. Optional."},
 				"channel_id":{"type":"string","description":"KARMAX channel to report back on. Defaults to the one this conversation is on."},
@@ -72,7 +77,41 @@ func (t *taskCreateTool) Execute(_ context.Context, in map[string]any) (tools.To
 		task.NextActionAt = &at
 	}
 
-	created, err := rt.store.CreateTask(task)
+	// The request this turn is answering: the one named, or the one the
+	// agent is on. Its origin is where the task reports, unless told
+	// otherwise — which is what "defaults to this conversation" means.
+	requestID, _ := in["request"].(string)
+	req := rt.requestNamed(t.agentID, strings.TrimSpace(requestID))
+	if req != nil {
+		if task.ChannelID == "" && task.Target == "" {
+			task.ChannelID, task.Target = req.ChannelID, req.Target
+		}
+	}
+
+	var created store.Task
+	var err error
+	if req != nil && strings.TrimSpace(requestID) != "" {
+		// Taking the request over: the task owns it from now on, atomically
+		// with its turn's journal row, so a restart resumes the task rather
+		// than the turn.
+		task.RequestID = req.ID
+		task.Context = clip(strings.TrimSpace(req.TurnContext()), maxTaskContext)
+		if !strings.Contains(goal, strings.TrimSpace(req.Asked)) {
+			task.Goal = goal + "\n\n" + requestGoal(req)
+		} else {
+			task.Goal = goal + "\n\n## Who is waiting\n\nIt came from " + orDefault(req.Where, "the operator") + "."
+		}
+		if task.Title == "" {
+			task.Title = requestTitle(req)
+		}
+		created, _, err = rt.store.TakeOverRequest(task, "the turn handed it over with task.create")
+		if err == nil {
+			req.TakenBy(created.ID)
+			rt.kickTasks()
+		}
+	} else {
+		created, err = rt.store.CreateTask(task)
+	}
 	if err != nil {
 		return tools.ErrorResult(err), nil
 	}
@@ -84,13 +123,66 @@ func (t *taskCreateTool) Execute(_ context.Context, in map[string]any) (tools.To
 			"warning": "the harness is disabled, so nothing will work this task until it is enabled",
 		}), nil
 	}
-	return tools.SuccessResult(map[string]any{
+	out := map[string]any{
 		"task_id": created.ID,
 		"title":   created.Title,
 		"status":  created.Status,
 		"note": "Owned. KARMAX will work it in its own session until it is done and report back. " +
 			"Tell the operator it is underway — do NOT claim any part of it is finished yet.",
-	}), nil
+	}
+	if created.RequestID != "" {
+		out["request"] = created.RequestID
+		out["note"] = "Owned: the task now answers this request, and delivers its result to whoever asked. " +
+			"Reply with one short line saying you are on it, and stop — do NOT do the work in this turn too, " +
+			"and do not claim any part of it is finished."
+	} else if strings.TrimSpace(requestID) != "" {
+		out["warning"] = "no request with that id is known, so this is a task of its own rather than the request's owner"
+	}
+	return tools.SuccessResult(out), nil
+}
+
+// requestNamed is the request id names — read from the turn journal — or,
+// with no id, the request the agent is working on right now.
+func (rt *KarmaxRuntime) requestNamed(agentID, id string) *agent.Request {
+	var current *agent.Request
+	if rt.agents != nil {
+		if a, ok := rt.agents.Get(agentID); ok && a != nil {
+			current = a.CurrentRequest()
+		} else if agentID == "" {
+			for _, a := range rt.agents.List() {
+				if c := a.CurrentRequest(); c != nil {
+					current = c
+					break
+				}
+			}
+		}
+	}
+	if id == "" || (current != nil && current.ID == id) {
+		return current
+	}
+	row, found, err := rt.store.AgentTurnByEvent(id)
+	if err != nil || !found {
+		return nil
+	}
+	if row.EventKind == agent.RequestAsk || row.EventKind == agent.RequestChat {
+		req, err := agent.RequestFromJSON(row.EventJSON)
+		if err != nil {
+			return nil
+		}
+		return req
+	}
+	var evt bus.Event
+	if json.Unmarshal([]byte(row.EventJSON), &evt) != nil || evt.Kind != bus.EventCommsMessage {
+		return nil
+	}
+	req := agent.NewRequest(evt.ID, agent.RequestMessage)
+	req.AgentID = evt.AgentID
+	req.ChannelID, _ = evt.Payload["karmax_channel_id"].(string)
+	req.Target, _ = evt.Payload["channel_id"].(string)
+	req.Asked, _ = evt.Payload["content"].(string)
+	req.Text = req.Asked
+	req.Where = "the operator's own chat"
+	return req
 }
 
 type taskListTool struct{ ref *harnessRef }

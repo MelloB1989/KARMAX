@@ -95,6 +95,37 @@ func TestADeliveryIsClaimedOnceAndRememberedAsSent(t *testing.T) {
 	}
 }
 
+// A finished round and the result it owes are recorded together, so a crash
+// after the round was recorded still finds the result owed.
+func TestARoundsResultIsOwedFromTheMomentTheRoundIsRecorded(t *testing.T) {
+	s := newTestStore(t)
+	task, _ := s.CreateTask(Task{Goal: "make the deck", RequestID: "ev-5"})
+	err := s.CompleteTaskRound(task.ID, TaskUpdate{Status: TaskDone, Progress: "made it"}, []Delivery{
+		{Key: "task:" + task.ID + ":1:00", ChannelID: "whatsapp-main", Target: "chat-7", Content: "Here is the deck."},
+		{Key: "task:" + task.ID + ":1:01", ChannelID: "whatsapp-main", Target: "chat-7", Content: "[file] deck.pdf", FilePath: "/tmp/deck.pdf"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.GetTask(task.ID)
+	if got.Status != TaskDone || got.Progress != "made it" {
+		t.Errorf("the round was not recorded: %+v", got)
+	}
+	owed, err := s.OwedDeliveries("task:")
+	if err != nil || len(owed) != 2 {
+		t.Fatalf("owed = %+v, %v; want the text and the file", owed, err)
+	}
+	if owed[1].FilePath != "/tmp/deck.pdf" || owed[0].Content != "Here is the deck." {
+		t.Errorf("owed = %+v", owed)
+	}
+	if err := s.FinishDelivery(owed[0].Key); err != nil {
+		t.Fatal(err)
+	}
+	if owed, _ := s.OwedDeliveries("task:"); len(owed) != 1 {
+		t.Errorf("a delivered result is still owed: %+v", owed)
+	}
+}
+
 // An earlier attempt that did send is found by what reached the chat.
 func TestSentSinceFindsWhatReachedTheChat(t *testing.T) {
 	s := newTestStore(t)

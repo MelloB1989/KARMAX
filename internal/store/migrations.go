@@ -1020,12 +1020,14 @@ var migrations = []string{
 	// What was delivered to whom, so an answer reaches its requester once:
 	// a row is claimed ('sending') before the send and marked 'sent' after.
 	// A restart that finds one still sending looks at the chat before it
-	// sends again.
+	// sends again. A task's result is written here in the same transaction
+	// that records the round, so a result owed is never forgotten.
 	`CREATE TABLE IF NOT EXISTS deliveries (
 		delivery_key TEXT PRIMARY KEY,
 		channel_id   TEXT NOT NULL DEFAULT '',
 		target       TEXT NOT NULL DEFAULT '',
 		content      TEXT NOT NULL DEFAULT '',
+		file_path    TEXT NOT NULL DEFAULT '',
 		status       TEXT NOT NULL DEFAULT 'sending',
 		created_at   DATETIME NOT NULL,
 		sent_at      DATETIME

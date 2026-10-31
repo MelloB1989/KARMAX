@@ -48,6 +48,9 @@ type Request struct {
 	// Text is what was asked, in full — the prompt the turn was given, so
 	// the work can continue from it without the turn.
 	Text string `json:"text"`
+	// Asked is the requester's own words, when they are known apart from
+	// the prompt: the message itself. It names the request in lists.
+	Asked string `json:"asked,omitempty"`
 	// ChannelID and Target are where the answer goes. Both empty means the
 	// operator, in the app.
 	ChannelID string `json:"channel_id,omitempty"`
@@ -64,6 +67,7 @@ type Request struct {
 	// when the turn's outcome — finished, failed or handed over — is known.
 	mu      sync.Mutex
 	taskID  string
+	turnCtx string
 	settled chan struct{}
 	once    sync.Once
 }
@@ -85,6 +89,28 @@ func (r *Request) setTaskID(id string) {
 	r.taskID = id
 	r.mu.Unlock()
 }
+
+// TakenBy records that a task took the request over while its turn was
+// still running — the model handed it over itself with task.create.
+func (r *Request) TakenBy(taskID string) { r.setTaskID(taskID) }
+
+// TurnContext is the context block the turn serving the request was given:
+// what a task continuing it needs to know.
+func (r *Request) TurnContext() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.turnCtx
+}
+
+func (r *Request) setTurnContext(s string) {
+	r.mu.Lock()
+	r.turnCtx = s
+	r.mu.Unlock()
+}
+
+// Settle records that the turn's outcome — finished, failed or handed over —
+// is known, for a caller that runs a request's turn itself.
+func (r *Request) Settle() { r.settle() }
 
 // settle records that the turn's outcome is known.
 func (r *Request) settle() {
@@ -292,10 +318,17 @@ func (a *Agent) handOff(ctx context.Context, req *Request, turnCtx string, calls
 // turn a task took over belongs to that task; otherwise it goes where the
 // answer would have (fallback).
 func (a *Agent) requestLate(req *Request, fallback func(HarnessTurn)) func(HarnessTurn) {
+	return LateForRequest(req, a.owner, fallback)
+}
+
+// LateForRequest is the late-reply handler for any caller running a
+// request's turn: it waits for the turn's outcome, then gives the rest of the
+// turn to the task that took the request over, or to fallback.
+func LateForRequest(req *Request, owner func() TaskOwner, fallback func(HarnessTurn)) func(HarnessTurn) {
 	return func(t HarnessTurn) {
 		req.waitSettled(time.Minute)
 		if id := req.TaskID(); id != "" {
-			if o := a.owner(); o != nil {
+			if o := owner(); o != nil {
 				o.LateResult(id, t)
 				return
 			}

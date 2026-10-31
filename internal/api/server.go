@@ -439,6 +439,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if member := strings.TrimSpace(req.As); member != "" {
 		ctx = connectorkit.WithActor(ctx, member)
 	}
+	// The operator asking in the app is a request: journalled before the turn
+	// starts, and continued as a task (the reply then says so) when the turn
+	// cannot finish it; the result reaches them in the app.
+	request := agent.NewRequest("chat-"+uuid.New().String(), agent.RequestChat)
+	request.Asked, request.Where = req.Message, "the operator, in the KARMAX app"
+	ctx = agent.WithRequest(ctx, request)
 
 	reply, err := ag.Chat(ctx, req.Message)
 	if err != nil {

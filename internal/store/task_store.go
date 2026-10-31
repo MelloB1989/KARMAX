@@ -229,7 +229,13 @@ type TaskUpdate struct {
 func (s *Store) UpdateTask(id string, u TaskUpdate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	q, args := updateTaskSQL(id, u)
+	_, err := s.exec(q, args...)
+	return err
+}
 
+// updateTaskSQL is UpdateTask's statement.
+func updateTaskSQL(id string, u TaskUpdate) (string, []any) {
 	sets := []string{"updated_at = ?"}
 	args := []any{time.Now()}
 	if u.Status != "" {
@@ -262,9 +268,7 @@ func (s *Store) UpdateTask(id string, u TaskUpdate) error {
 		sets = append(sets, "attempts = attempts + 1")
 	}
 	args = append(args, id)
-
-	_, err := s.exec(`UPDATE tasks SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
-	return err
+	return `UPDATE tasks SET ` + strings.Join(sets, ", ") + ` WHERE id = ?`, args
 }
 
 // TaskProgress is a long run's ledger, JSON-encoded into the progress column.

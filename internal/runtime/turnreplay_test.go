@@ -111,3 +111,20 @@ func TestNonChatTurnsStayResumable(t *testing.T) {
 		t.Error("a scheduled job must remain resumable")
 	}
 }
+
+// The slow-turn "on it" goes out six seconds into every long turn. It is not
+// an answer: a turn that had only acknowledged when the daemon died is
+// resumed, not left unanswered for good.
+func TestATurnThatOnlyAcknowledgedIsStillResumed(t *testing.T) {
+	rt := runtimeWithStore(t)
+	turn := turnFor(t, "919999999999@s.whatsapp.net", time.Now().Add(-2*time.Minute))
+	if err := rt.store.SaveChannelMessage(store.StoredChannelMessage{
+		ID: "ack", ChannelID: "919999999999@s.whatsapp.net", ChannelType: "whatsapp",
+		SenderID: comms.ProducerStatus, Direction: string(comms.Outbound), Content: "👀 on it…",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rt.turnAlreadySpoke(turn) {
+		t.Error("an acknowledgement was taken for the answer, and the request was dropped")
+	}
+}

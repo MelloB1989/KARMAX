@@ -1180,6 +1180,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		if req != nil {
 			req.Text, req.Started = userPrompt, turnStart
 			defer a.working(req)()
+			req.setTurnContext(dynamicCtx)
 			dynamicCtx += a.requestContext(req)
 			// Screened as heavy work: it goes to a task now rather than
 			// spending a turn's whole budget finding out it does not fit.
@@ -1384,6 +1385,7 @@ func (a *Agent) messageRequest(evt bus.Event) *Request {
 	req.AgentID = a.def.ID
 	req.ChannelID, _ = evt.Payload["karmax_channel_id"].(string)
 	req.Target, _ = evt.Payload["channel_id"].(string)
+	req.Asked, _ = evt.Payload["content"].(string)
 	req.Where = "the operator's own chat"
 	if name, _ := evt.Payload["chat_name"].(string); strings.TrimSpace(name) != "" {
 		req.Where = fmt.Sprintf("the operator, in the chat %q", name)
@@ -1584,6 +1586,7 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 		}
 		a.journalRequest(req)
 		defer a.working(req)()
+		req.setTurnContext(dynamicCtx)
 		dynamicCtx += a.requestContext(req)
 		ctx = WithLateReply(ctx, a.requestLate(req, func(t HarnessTurn) {
 			// The call gave up and no task took the request: what the session

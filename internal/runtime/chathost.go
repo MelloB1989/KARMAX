@@ -6,9 +6,11 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/MelloB1989/karmax/internal/agent"
 	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"go.uber.org/zap"
 )
 
 // errChatHarnessUnavailable mirrors the message the API layer used to return
@@ -27,10 +29,15 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, opts 
 	if rt.harness == nil {
 		return "", errChatHarnessUnavailable
 	}
+	// The operator asking in the app is a request: journalled before the turn
+	// starts, and continued as a task when the turn cannot finish it.
+	req := rt.chatRequest(id, message)
+	defer req.Settle()
 	// One dedupe set per turn, closed over by OnEvent below: a tool_update
 	// can repeat for the same call, and a ticket must not.
 	seenTickets := map[string]bool{}
 	turn, err := rt.harness.SendWith(ctx, "chat:"+id, "chat", message, harness.Options{
+		OnLate: rt.requestLateHandler(req),
 		// Where chatlog reads. Left to the supervisor's default this lands in
 		// a per-conversation directory nothing ever lists.
 		Workdir:   hostpaths.WorkDir(),
@@ -73,8 +80,22 @@ func (rt *KarmaxRuntime) chatTurn(ctx context.Context, id, message string, opts 
 		},
 	})
 	if err != nil {
+		// Out of time, or failed after it began acting: the request goes on
+		// as a task, and the conversation is told so instead of an error.
+		if req != nil && (turnRanOutOfTime(err) || len(turn.ToolCalls) > 0) {
+			res, herr := rt.handOff(agent.Handoff{Request: req, Done: toolNames(turn.ToolCalls),
+				Why: "out of time: " + err.Error()})
+			if herr == nil {
+				req.TakenBy(res.TaskID)
+				onEvent(api.ChatEvent{Kind: "message", Text: res.Ack})
+				return res.Ack, nil
+			}
+			rt.log.Error("could not hand a chat request over to a task", zap.String("request", req.ID), zap.Error(herr))
+		}
+		rt.finishRequestRow(req, err)
 		return "", err
 	}
+	rt.finishRequestRow(req, nil)
 	// The footer's facts, announced before `done`: they only exist once the
 	// turn has finished.
 	onEvent(api.ChatEvent{

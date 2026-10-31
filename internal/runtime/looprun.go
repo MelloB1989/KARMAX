@@ -306,6 +306,7 @@ func (rt *KarmaxRuntime) executeLoop(parent context.Context, l loopkit.Loop, tri
 		wacliPath:   hostWacli(),
 		trigger:     trigger,
 		executionID: executionID,
+		run:         &loopRunState{},
 	}
 	rt.log.Info("running loopkit loop",
 		zap.String("loop", l.Name), zap.String("trigger", trigger.Kind))

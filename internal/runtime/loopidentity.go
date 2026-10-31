@@ -16,9 +16,17 @@ import (
 // passes through here, so the account's answer goes first — ahead of anything
 // the loop says — with the instruction that whatever disagrees with it is wrong.
 
-// withIdentity puts the authoritative who-is-who ahead of a loop's prompt.
+// withIdentity puts the authoritative who-is-who ahead of a loop's prompt —
+// and, after it, what tasks already own in the run's chat (loopask.go), which
+// is as much a fact the loop's prompt can be wrong about.
 func (k *loopKit) withIdentity(prompt string) string {
-	if k == nil || k.rt == nil || k.rt.who == nil {
+	if k == nil || k.rt == nil {
+		return prompt
+	}
+	if note := k.inFlightNote(); note != "" {
+		prompt = note + "\n" + prompt
+	}
+	if k.rt.who == nil {
 		return prompt
 	}
 	sender, label := triggerSender(k.trigger)

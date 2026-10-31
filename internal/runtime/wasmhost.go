@@ -118,6 +118,7 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 					kind = loopkit.TriggerManual
 				}
 				wk.outbound.Store(0)
+				wk.run.Store(&loopRunState{})
 				wk.setTrigger(loopkit.Trigger{Kind: kind, Payload: t.Payload})
 				err := runner.RunTriggered(c, loopRunTimeout, kind, t.Payload)
 				// A failure after the run has already messaged somebody is not
@@ -238,6 +239,10 @@ type wasmKit struct {
 	// it — see loopidentity.go.
 	trigMu  sync.Mutex
 	trigger loopkit.Trigger
+
+	// run is what the current run has settled about the request behind it
+	// (loopask.go). Replaced at run start.
+	run atomic.Pointer[loopRunState]
 }
 
 func (w *wasmKit) setTrigger(t loopkit.Trigger) {
@@ -258,6 +263,7 @@ func (w *wasmKit) base() *loopKit {
 		loopName: w.loop, agentID: w.rt.loopDefaultAgent,
 		namespace: w.rt.loopNamespace(), rt: w.rt,
 		trigger: w.currentTrigger(),
+		run:     w.run.Load(),
 	}
 }
 
@@ -360,6 +366,14 @@ func (w *wasmKit) Tool(ctx context.Context, name string, input map[string]any) (
 		return "", fmt.Errorf("no tool named %q", name)
 	}
 	if outboundTools[tools.CanonicalName(name)] {
+		// One owner per request: once a task owns the run's request (or the
+		// full agent gave up on it and the operator was told), this run says
+		// nothing more in the chat it came from — no fallback answer, no
+		// "they're away" note to the person who asked.
+		if err := w.run.Load().refusal("sending into this chat"); err != nil &&
+			sendsTo(input, triggerChat(w.currentTrigger())) {
+			return "", err
+		}
 		w.outbound.Add(1)
 	}
 	if input == nil {
