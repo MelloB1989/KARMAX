@@ -110,6 +110,35 @@ func TestATurnReportsWhatWasSentAsTheOperator(t *testing.T) {
 	}
 }
 
+// Every acting tool records its sends the same way, so the report lists a
+// Slack message, a Google Chat message and an answer to an invitation as it
+// lists a GitHub comment — by the service's name, as the login it was done as —
+// without the model writing a SENT: line for any of them.
+func TestSendsFromEveryActingToolAreReported(t *testing.T) {
+	a := policyAgent(t, policy.Default())
+	since := time.Now().Add(-time.Minute)
+	for i, r := range []store.StoredChannelMessage{
+		{ChannelID: "Alice Example", ChannelType: "slack", SenderName: "northwind-labs", Content: "Reviewed, looks good."},
+		{ChannelID: "spaces/AAAA", ChannelType: "gchat", SenderName: "me@example.org", Content: "On it."},
+		{ChannelID: "“Weekly sync” (lead@example.org)", ChannelType: "gcal", SenderName: "me@example.org", Content: "accepted"},
+	} {
+		r.ID, r.Direction = "s"+string(rune('1'+i)), "outbound"
+		if err := a.store.SaveChannelMessage(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := a.turnReport(accountEvent(false), since, "Answered Alice, the chat, and the invitation.")
+	for _, want := range []string{
+		"Slack as northwind-labs → Alice Example: “Reviewed, looks good.”",
+		"Google Chat as me@example.org → spaces/AAAA: “On it.”",
+		"Google Calendar as me@example.org → “Weekly sync” (lead@example.org): “accepted”",
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report omits %q:\n%s", want, report)
+		}
+	}
+}
+
 // A send KARMAX recorded itself is listed once, even when the model also
 // declared it in a SENT: line of its own wording. Live, every GitHub review
 // appeared twice in one report: once from the store, once from the model.

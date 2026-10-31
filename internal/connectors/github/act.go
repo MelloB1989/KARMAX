@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/safety"
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
 
@@ -27,21 +28,12 @@ import (
 // Nothing here deletes. A repository or branch is removed only when the
 // operator says so, and a merge never takes the head branch with it.
 
-// Act is one thing done as the operator, for telling them afterwards.
-type Act struct {
-	Account string // the login it was done as
-	Action  string // "commented on", "approved", "merged", …
-	Repo    string
-	Number  int
-	URL     string
-	Body    string // what was said, when something was
-}
-
 // Actor holds the operator's gh logins and acts as the right one.
 type Actor struct {
 	Logins Logins
-	// OnAct is told after every write. Nil is fine.
-	OnAct func(Act)
+	// Sent is told after every write, as every acting tool tells it: what
+	// was done as the operator, as which login, where. Nil is fine.
+	Sent tools.SentRecorder
 
 	mu     sync.Mutex
 	listed time.Time
@@ -345,10 +337,9 @@ func names(accts []Account) string {
 	return strings.Join(out, ", ")
 }
 
-func (a *Actor) told(act Act) {
-	if a.OnAct != nil {
-		a.OnAct(act)
-	}
+// told records a write as done as the operator: action on tg, as acc.
+func (a *Actor) told(acc Account, action string, tg target, url, body string) {
+	a.Sent.Record(tools.SentAs{Service: "github", Account: acc.Name(), To: tg.ref(), Action: action, Text: body, URL: url})
 }
 
 // str reads a text argument. The CLI types every key=value as JSON, so a
@@ -434,7 +425,7 @@ func (a *Actor) reply(ctx context.Context, _ connectorkit.Credentials, in map[st
 	if _, err := callAt(ctx, acc.APIBase(), tok, "POST", path, "", payload, &out); err != nil {
 		return nil, err
 	}
-	a.told(Act{Account: acc.Name(), Action: action, Repo: tg.repo(), Number: tg.number, URL: out.HTMLURL, Body: body})
+	a.told(acc, action, tg, out.HTMLURL, body)
 	return map[string]any{"as": acc.Name(), "posted": true, "url": out.HTMLURL}, nil
 }
 
@@ -472,7 +463,7 @@ func (a *Actor) review(ctx context.Context, _ connectorkit.Credentials, in map[s
 		"", payload, &out); err != nil {
 		return nil, err
 	}
-	a.told(Act{Account: acc.Name(), Action: action, Repo: tg.repo(), Number: tg.number, URL: out.HTMLURL, Body: body})
+	a.told(acc, action, tg, out.HTMLURL, body)
 	return map[string]any{"as": acc.Name(), "state": out.State, "url": out.HTMLURL}, nil
 }
 
@@ -511,7 +502,7 @@ func (a *Actor) merge(ctx context.Context, _ connectorkit.Credentials, in map[st
 		return nil, err
 	}
 	link := fmt.Sprintf("https://%s/%s/pull/%d", tg.host, tg.repo(), tg.number)
-	a.told(Act{Account: acc.Name(), Action: "merged", Repo: tg.repo(), Number: tg.number, URL: link})
+	a.told(acc, "merged", tg, link, "")
 	return map[string]any{"as": acc.Name(), "merged": out.Merged, "sha": out.SHA, "method": method,
 		"message": out.Message, "url": link}, nil
 }

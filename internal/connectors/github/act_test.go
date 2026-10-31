@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 )
 
@@ -147,13 +148,13 @@ func (l actLogins) Token(_ context.Context, a Account) (string, error) {
 	return "tok-" + a.Login, nil
 }
 
-func newActor(h *actHub, logins ...string) (*Actor, *[]Act) {
+func newActor(h *actHub, logins ...string) (*Actor, *[]tools.SentAs) {
 	var accts []Account
 	for _, l := range logins {
 		accts = append(accts, Account{Host: "github.com", Login: l, State: "success", API: h.srv.URL + "/" + l})
 	}
-	var acts []Act
-	return &Actor{Logins: actLogins{accounts: accts}, OnAct: func(a Act) { acts = append(acts, a) }}, &acts
+	var acts []tools.SentAs
+	return &Actor{Logins: actLogins{accounts: accts}, Sent: func(s tools.SentAs) { acts = append(acts, s) }}, &acts
 }
 
 func actTool(t *testing.T, a *Actor, name string) connectorkit.Tool {
@@ -196,7 +197,8 @@ func TestTheNamedAccountActs(t *testing.T) {
 	if out["as"] != "octo-work" || !strings.Contains(fmt.Sprint(out["url"]), "issuecomment") {
 		t.Errorf("result = %v", out)
 	}
-	if len(*acts) != 1 || (*acts)[0].Account != "octo-work" || (*acts)[0].Repo != "contoso/app" || (*acts)[0].Number != 12 {
+	if len(*acts) != 1 || (*acts)[0].Service != "github" || (*acts)[0].Account != "octo-work" || (*acts)[0].To != "contoso/app#12" ||
+		(*acts)[0].Text != "On it." || (*acts)[0].Action != "commented on" {
 		t.Errorf("told after = %+v, want the comment reported once", *acts)
 	}
 

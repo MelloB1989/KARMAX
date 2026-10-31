@@ -11,8 +11,12 @@ import (
 type Sent struct {
 	Workspace string
 	Channel   string
-	TS        string
-	URL       string
+	// Where is the conversation as the operator would name it: "#eng" for a
+	// channel, the person for a DM; the channel id when the source has not
+	// listed it.
+	Where string
+	TS    string
+	URL   string
 }
 
 // Send posts text as the operator — their own account, not a bot — to a
@@ -39,10 +43,32 @@ func (s *Source) Send(ctx context.Context, wss []Workspace, workspace, channel, 
 	if err := s.call(ctx, t.token, "chat.postMessage", form, &out); err != nil {
 		return Sent{}, err
 	}
+	ch := firstNonEmpty(out.Channel, channel)
+	where := s.where(ctx, t, ch)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ch := firstNonEmpty(out.Channel, channel)
-	return Sent{Workspace: t.account, Channel: ch, TS: out.TS, URL: permalink(t.base, ch, out.TS, threadTS)}, nil
+	return Sent{Workspace: t.account, Channel: ch, Where: where, TS: out.TS, URL: permalink(t.base, ch, out.TS, threadTS)}, nil
+}
+
+// where names a conversation as the operator would: its channel name, the
+// other person in a DM, or its id when the source has not listed it.
+func (s *Source) where(ctx context.Context, t *team, channel string) string {
+	s.mu.Lock()
+	c := t.convs[channel]
+	var name, kind, other string
+	if c != nil {
+		name, kind, other = c.name, c.kind, c.other
+	}
+	s.mu.Unlock()
+	switch {
+	case c == nil:
+		return channel
+	case kind == "dm" && other != "":
+		return s.userName(ctx, t, other)
+	case name != "":
+		return "#" + name
+	}
+	return channel
 }
 
 // teamFor finds the workspace a send goes through.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/MelloB1989/karmax/internal/bus"
@@ -17,10 +16,8 @@ import (
 	sourcegh "github.com/MelloB1989/karmax/internal/sources/github"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
-	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -30,36 +27,6 @@ import (
 // belongs to. See internal/sources/github and internal/connectors/github/act.go.
 //
 //	KARMAX_SOURCE_GITHUB=off  stops the polling; the acting tools stay
-
-// githubActRecorder is told every write the acting tools make. "Act freely,
-// tell after": what was said on GitHub as the operator goes into the outbound
-// ledger — where every send as the operator is recorded, and which the
-// agent's per-turn "Sent as you" report to WhatsApp reads — and into the app.
-// The app notice is quiet: the turn's one report is what reaches WhatsApp,
-// rather than a second, separate message per act.
-func githubActRecorder(s *store.Store, agentID string) func(ghconn.Act) {
-	return func(act ghconn.Act) {
-		title, body := githubActNotice(act)
-		builtin.PushAppNotificationQuiet(s, agentID, "info", title, body)
-		if s == nil {
-			return
-		}
-		ref := act.Repo
-		if act.Number > 0 {
-			ref += "#" + strconv.Itoa(act.Number)
-		}
-		content := act.Action
-		if said := strings.Join(strings.Fields(act.Body), " "); said != "" {
-			content += ": " + said
-		}
-		// Untagged producer: this is the agent's own send, like comms.send.
-		_ = s.SaveChannelMessage(store.StoredChannelMessage{
-			ID: uuid.New().String(), ChannelID: ref, ChannelType: "github",
-			SenderName: act.Account, Direction: "outbound", Content: content,
-			Metadata: act.URL,
-		})
-	}
-}
 
 // githubSourceOn reports whether the GitHub source polls.
 func githubSourceOn(getenv func(string) string) bool {
@@ -71,7 +38,7 @@ func githubSourceOn(getenv func(string) string) bool {
 func registerGitHubSource(getenv func(string) string, s *store.Store, b *bus.Log, toolReg *tools.Registry,
 	integrationReg *integration.Registry, agentID string, log *zap.Logger) {
 	logins := integrations.GhLogins()
-	registerGitHubTools(toolReg, &ghconn.Actor{Logins: logins, OnAct: githubActRecorder(s, agentID)})
+	registerGitHubTools(toolReg, gitHubActor(logins, recordSentAs(s, agentID)))
 
 	if !githubSourceOn(getenv) {
 		log.Info("github source is off (KARMAX_SOURCE_GITHUB=off)")
@@ -137,21 +104,9 @@ var ghInstalled = func() bool {
 	return err == nil
 }
 
-// githubActNotice is what the operator is told after KARMAX acted as them.
-func githubActNotice(a ghconn.Act) (title, body string) {
-	ref := a.Repo
-	if a.Number > 0 {
-		ref += "#" + strconv.Itoa(a.Number)
-	}
-	title = fmt.Sprintf("On GitHub as %s: %s %s", a.Account, a.Action, ref)
-	body = a.URL
-	if said := strings.Join(strings.Fields(a.Body), " "); said != "" {
-		if r := []rune(said); len(r) > 280 {
-			said = string(r[:280]) + "…"
-		}
-		body = "“" + said + "”\n" + a.URL
-	}
-	return title, body
+// gitHubActor acts as the operator's gh logins, telling sent what it did.
+func gitHubActor(logins ghconn.Logins, sent tools.SentRecorder) *ghconn.Actor {
+	return &ghconn.Actor{Logins: logins, Sent: sent}
 }
 
 // registerGitHubTools adds the acting tools to the registry; an agent is

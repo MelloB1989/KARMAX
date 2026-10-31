@@ -10,6 +10,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/sources"
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"go.uber.org/zap"
 )
@@ -68,7 +69,9 @@ func (a *Agent) operatingPolicy() policy.Policy {
 func (a *Agent) buildPolicyContext() string { return a.operatingPolicy().Brief() }
 
 // sentLinePrefix marks a send the model declares in its final reply, for what
-// KARMAX cannot see itself: a GitHub comment, an email, a post.
+// KARMAX cannot see itself: an email or a post made through a shell command or
+// a service KARMAX has no tool for. What its own acting tools send is recorded
+// by them (tools.SentAs) and needs no declaration.
 const sentLinePrefix = "SENT:"
 
 // deliverTurnReport sends the turn's report, if the policy calls for one, and
@@ -195,8 +198,9 @@ func (a *Agent) sentSince(since time.Time) (out, dests []string) {
 		}
 		a.ops.reported[r.ID] = time.Now()
 		label := channelLabel(r.ChannelType)
-		// A send recorded with the login it was made as (the GitHub acting
-		// tools record theirs) says which of the operator's accounts spoke.
+		// A send recorded with the login it was made as (every acting tool
+		// records theirs, tools.SentAs) says which of the operator's accounts
+		// spoke.
 		if as := strings.TrimSpace(r.SenderName); as != "" {
 			label += " as " + as
 		}
@@ -255,16 +259,10 @@ func (a *Agent) recipientName(chatID string) string {
 }
 
 func channelLabel(t string) string {
-	switch strings.ToLower(t) {
-	case "whatsapp":
-		return "WhatsApp"
-	case "github":
-		return "GitHub"
-	case "":
+	if strings.TrimSpace(t) == "" {
 		return "message"
-	default:
-		return strings.ToUpper(t[:1]) + t[1:]
 	}
+	return tools.ServiceName(t)
 }
 
 // declaredSends are the SENT: lines the model wrote for sends KARMAX cannot

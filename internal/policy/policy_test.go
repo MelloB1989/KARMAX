@@ -118,4 +118,11 @@ func TestTheBriefSaysWhatTheCodeEnforces(t *testing.T) {
 	if strings.Contains(none, "SENT:") {
 		t.Errorf("with no sent reports the model was still asked to declare sends:\n%s", none)
 	}
+	// Every KARMAX tool that acts as the operator records its sends, so the
+	// model declares only what went out some other way — not a GitHub comment
+	// or a Slack message it sent with KARMAX's own tools, which would then be
+	// listed twice.
+	if !strings.Contains(brief, "KARMAX's own tools") || strings.Contains(brief, "a GitHub comment, an email") {
+		t.Errorf("the brief asks the model to declare sends KARMAX records itself:\n%s", brief)
+	}
 }

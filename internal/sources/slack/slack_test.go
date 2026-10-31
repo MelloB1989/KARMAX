@@ -523,10 +523,21 @@ func TestKarmaxRepliesAsTheOperatorInAThread(t *testing.T) {
 	if sent.Workspace != "northwind-labs" || sent.TS == "" || !strings.Contains(sent.URL, "/archives/C0ENG/p") {
 		t.Errorf("sent %+v", sent)
 	}
+	// Where it went, as the operator would say it, for telling them after.
+	if sent.Where != "#eng" {
+		t.Errorf("sent.Where = %q, want #eng", sent.Where)
+	}
 
 	// With one workspace the name may be left out; an unknown one is refused.
-	if _, err := s.Send(context.Background(), ws, "", "D0ALICE", "", "done"); err != nil {
+	dm, err := s.Send(context.Background(), ws, "", "D0ALICE", "", "done")
+	if err != nil {
 		t.Errorf("the only workspace was not assumed: %v", err)
+	}
+	if dm.Where != "Alice Example" {
+		t.Errorf("a DM went to %q, want the person's name", dm.Where)
+	}
+	if other, _ := s.Send(context.Background(), ws, "", "C0UNKNOWN", "", "x"); other.Where != "C0UNKNOWN" {
+		t.Errorf("a conversation the source has not listed is %q, want its id", other.Where)
 	}
 	if _, err := s.Send(context.Background(), ws, "elsewhere", "D0ALICE", "", "x"); err == nil {
 		t.Error("a workspace nobody configured was accepted")

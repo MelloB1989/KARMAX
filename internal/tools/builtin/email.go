@@ -11,7 +11,16 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools"
 )
 
-type EmailTool struct{}
+// EmailTool sends mail from the operator's configured SMTP account, and
+// records each sent message as sent as the operator.
+type EmailTool struct {
+	sent tools.SentRecorder
+	// send delivers a message; smtp.SendMail when nil.
+	send func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
+}
+
+// RecordSentWith gives the tool the recorder every acting tool shares.
+func (t *EmailTool) RecordSentWith(r tools.SentRecorder) { t.sent = r }
 
 func (t *EmailTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
@@ -69,10 +78,14 @@ func (t *EmailTool) Execute(ctx context.Context, input map[string]any) (tools.To
 		recipients[i] = strings.TrimSpace(r)
 	}
 
-	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, fromAddr, recipients, []byte(msg))
-	if err != nil {
+	send := t.send
+	if send == nil {
+		send = smtp.SendMail
+	}
+	if err := send(smtpHost+":"+smtpPort, auth, fromAddr, recipients, []byte(msg)); err != nil {
 		return tools.ErrorResult(err), nil
 	}
+	t.sent.Record(tools.SentAs{Service: "email", Account: fromAddr, To: to, Action: "emailed", Text: subject})
 
 	return tools.SuccessResult(map[string]any{
 		"sent_to": to,

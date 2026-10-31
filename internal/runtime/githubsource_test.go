@@ -32,12 +32,12 @@ func TestTheGitHubSourceHasAnOffSwitch(t *testing.T) {
 	}
 }
 
-// Something said on GitHub as the operator is told to them afterwards: who
-// it was said as, what was done, where.
-func TestAGitHubActIsToldAfter(t *testing.T) {
-	title, body := githubActNotice(ghconn.Act{Account: "octo-work", Action: "requested changes on", Repo: "contoso/app",
-		Number: 12, URL: "https://github.com/contoso/app/pull/12#pullrequestreview-1", Body: strings.Repeat("Needs a test. ", 80)})
-	for _, want := range []string{"octo-work", "requested changes on", "contoso/app#12"} {
+// Something done as the operator is told to them afterwards: who it was done
+// as, what was done, where — whichever service it was on.
+func TestASendAsTheOperatorIsToldAfter(t *testing.T) {
+	title, body := sentAsNotice(tools.SentAs{Service: "github", Account: "octo-work", Action: "requested changes on",
+		To: "contoso/app#12", URL: "https://github.com/contoso/app/pull/12#pullrequestreview-1", Text: strings.Repeat("Needs a test. ", 80)})
+	for _, want := range []string{"GitHub", "octo-work", "requested changes on", "contoso/app#12"} {
 		if !strings.Contains(title, want) {
 			t.Errorf("title %q lacks %q", title, want)
 		}
@@ -48,37 +48,62 @@ func TestAGitHubActIsToldAfter(t *testing.T) {
 	if len(body) > 400 {
 		t.Errorf("body is %d bytes, want an excerpt", len(body))
 	}
+	title, _ = sentAsNotice(tools.SentAs{Service: "slack", Account: "northwind-labs", To: "#eng", Text: "Shipped."})
+	if !strings.Contains(title, "Slack") || !strings.Contains(title, "northwind-labs") || !strings.Contains(title, "#eng") {
+		t.Errorf("a message's title %q should say where and as whom", title)
+	}
 }
 
-// An act on GitHub is something sent as the operator, so it goes where every
-// such send is recorded — the outbound ledger the agent's per-turn "Sent as
-// you" report reads — and is kept in the app. It no longer asks the WhatsApp
-// mirror on its own: the turn's one report carries it there.
-func TestAGitHubActIsRecordedAsSentAsTheOperator(t *testing.T) {
+// Everything an acting tool does as the operator — a GitHub review, a Slack
+// or Google Chat message, an answer to an invitation — goes where every such
+// send is recorded, through one recorder: the outbound ledger the agent's
+// per-turn "Sent as you" report reads, with the login it was done as, and
+// the app. It does not ask the WhatsApp mirror on its own: the turn's one
+// report carries it there.
+func TestEverySendAsTheOperatorIsRecordedInOnePlace(t *testing.T) {
 	rt := runtimeWithStore(t)
 	var mirrored []string
 	builtin.SetMirrorHook(func(ev builtin.MirrorEvent) { mirrored = append(mirrored, ev.Title) })
 	t.Cleanup(func() { builtin.SetMirrorHook(nil) })
 	since := time.Now().Add(-time.Minute)
 
-	githubActRecorder(rt.store, "nexus")(ghconn.Act{Account: "octo-work", Action: "commented on", Repo: "contoso/app",
-		Number: 12, URL: "https://github.com/contoso/app/pull/12#issuecomment-1", Body: "Looks good once CI passes."})
+	rec := recordSentAs(rt.store, "nexus")
+	rec.Record(tools.SentAs{Service: "github", Account: "octo-work", Action: "commented on", To: "contoso/app#12",
+		URL: "https://github.com/contoso/app/pull/12#issuecomment-1", Text: "Looks good once CI passes."})
+	rec.Record(tools.SentAs{Service: "slack", Account: "northwind-labs", To: "Alice Example", Text: "Reviewed, looks good."})
+	rec.Record(tools.SentAs{Service: "gcal", Account: "me@example.org", To: "“Weekly sync” (lead@example.org)", Action: "accepted"})
 
 	rows, err := rt.store.ListOutboundSince(since, 10)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("ledger = %+v (%v), want the act", rows, err)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("ledger = %+v (%v), want the three sends", rows, err)
 	}
 	r := rows[0]
 	if r.ChannelType != "github" || r.ChannelID != "contoso/app#12" || r.SenderName != "octo-work" ||
-		!comms.IsAnswerProducer(r.SenderID) || !strings.Contains(r.Content, "commented on") ||
-		!strings.Contains(r.Content, "Looks good once CI passes.") {
+		!comms.IsAnswerProducer(r.SenderID) || r.Content != "commented on: Looks good once CI passes." ||
+		r.Metadata != "https://github.com/contoso/app/pull/12#issuecomment-1" {
 		t.Errorf("recorded %+v", r)
 	}
-	if notes, _ := rt.store.ListNotifications(5); len(notes) != 1 {
-		t.Errorf("the act is not in the app: %+v", notes)
+	if s := rows[1]; s.ChannelType != "slack" || s.ChannelID != "Alice Example" || s.SenderName != "northwind-labs" || s.Content != "Reviewed, looks good." {
+		t.Errorf("slack send recorded as %+v", s)
+	}
+	if g := rows[2]; g.ChannelType != "gcal" || g.Content != "accepted" || g.SenderName != "me@example.org" {
+		t.Errorf("calendar answer recorded as %+v", g)
+	}
+	if notes, _ := rt.store.ListNotifications(5); len(notes) != 3 {
+		t.Errorf("the sends are not in the app: %+v", notes)
 	}
 	if len(mirrored) != 0 {
-		t.Errorf("the act asked the WhatsApp mirror on its own: %v", mirrored)
+		t.Errorf("a send asked the WhatsApp mirror on its own: %v", mirrored)
+	}
+}
+
+// The GitHub acting tools record through the same recorder as every other.
+func TestTheGitHubToolsRecordThroughTheSharedRecorder(t *testing.T) {
+	var got []tools.SentAs
+	actor := gitHubActor(nil, func(s tools.SentAs) { got = append(got, s) })
+	actor.Sent.Record(tools.SentAs{Service: "github", Text: "x"})
+	if len(got) != 1 {
+		t.Fatalf("the actor's sends do not reach the recorder: %+v", got)
 	}
 }
 
