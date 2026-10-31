@@ -68,8 +68,11 @@ type gitloomBackend struct {
 	pmu       sync.Mutex
 	pathLocks map[string]*sync.Mutex
 	pending   map[string]pendingWrite
+	pseq      uint64
 	// logFull is, per loop-log month, the last part known to be full.
 	logFull map[string]int
+	// now is the pending cache's clock; a test moves it.
+	now func() time.Time
 }
 
 // GitLoomConfigFromEnv reads the remote memory settings. Returns ok=false when
@@ -116,6 +119,7 @@ func newGitLoomBackend(cfg GitLoomConfig, log *zap.Logger) *gitloomBackend {
 		pathLocks: map[string]*sync.Mutex{},
 		pending:   map[string]pendingWrite{},
 		logFull:   map[string]int{},
+		now:       time.Now,
 	}
 }
 
@@ -143,7 +147,7 @@ func (g *gitloomBackend) put(ctx context.Context, m gitloom.NewMemory, occurred 
 		g.setHealth(false, err)
 		return err
 	}
-	sentAt := time.Now()
+	sentAt := g.now()
 	err := g.client.Write(ctx, []gitloom.NewMemory{m}, &gitloom.WriteOptions{Namespace: g.cfg.Namespace, Timezone: g.cfg.Timezone})
 	if err != nil {
 		if isNamespaceMissing(err) {
