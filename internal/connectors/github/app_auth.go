@@ -292,18 +292,3 @@ func MintScopedToken(ctx context.Context, cr connectorkit.Credentials, repos []s
 	}
 	return installationToken(ctx, cr, repos, permissions)
 }
-
-// NewRepoTokenMinter adapts MintScopedToken to runtime.RepoTokenMinter's
-// shape (func(ctx, repo) (string, error)) without this package importing the
-// runtime — creds is resolved on every call, not captured once, so a rotated
-// private key takes effect without a restart.
-func NewRepoTokenMinter(creds func(ctx context.Context) (connectorkit.Credentials, error)) func(ctx context.Context, repo string) (string, error) {
-	return func(ctx context.Context, repo string) (string, error) {
-		cr, err := creds(ctx)
-		if err != nil {
-			return "", err
-		}
-		token, _, err := MintScopedToken(ctx, cr, []string{repo}, nil)
-		return token, err
-	}
-}
