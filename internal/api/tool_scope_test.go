@@ -15,7 +15,7 @@ import (
 )
 
 // This file is the security surface for the browser-scoped token: a caller
-// authenticated with it may run the browser and dashboard tools and nothing
+// authenticated with it may run the browser tool and nothing
 // else. The
 // agent these tests build never has Start() called on it, so it holds no
 // real tools (agent.Agent.ToolManifests/ExecuteTool need initModels, which
@@ -81,7 +81,7 @@ func listTools(srv *Server, token string) *httptest.ResponseRecorder {
 	return w
 }
 
-// The scoped token's job: the browser and dashboard tools go through.
+// The scoped token's job: the browser tool goes through.
 func TestScopedTokenMayCallTheBrowserTool(t *testing.T) {
 	srv := newScopeTestServer(t, "full-tok", "browser-tok")
 	calls := withExecuteAgentToolSpy(t)
@@ -90,22 +90,6 @@ func TestScopedTokenMayCallTheBrowserTool(t *testing.T) {
 
 	if w.Code == http.StatusForbidden {
 		t.Fatalf("browser tool with the scoped token was forbidden: %d %s", w.Code, w.Body.String())
-	}
-	if *calls != 1 {
-		t.Fatalf("ExecuteTool calls = %d, want 1 — a permitted tool must reach execution", *calls)
-	}
-}
-
-// A harness session's other job with this token: writing to its own
-// dashboards without holding anything wider.
-func TestScopedTokenMayCallTheDashboardTool(t *testing.T) {
-	srv := newScopeTestServer(t, "full-tok", "browser-tok")
-	calls := withExecuteAgentToolSpy(t)
-
-	w := callTool(srv, "browser-tok", "dashboard")
-
-	if w.Code == http.StatusForbidden {
-		t.Fatalf("dashboard tool with the scoped token was forbidden: %d %s", w.Code, w.Body.String())
 	}
 	if *calls != 1 {
 		t.Fatalf("ExecuteTool calls = %d, want 1 — a permitted tool must reach execution", *calls)
@@ -206,8 +190,8 @@ func TestFilterManifestsForScopeKeepsOnlyBrowserForScopedCallers(t *testing.T) {
 	manifests := []tools.ToolManifest{{Name: "browser"}, {Name: "dashboard"}, {Name: "shell.exec"}, {Name: "email.send"}}
 
 	got := filterManifestsForScope(scopeBrowserOnly, manifests)
-	if len(got) != 2 || got[0].Name != "browser" || got[1].Name != "dashboard" {
-		t.Fatalf("scoped filter = %+v, want only browser and dashboard", got)
+	if len(got) != 1 || got[0].Name != "browser" {
+		t.Fatalf("scoped filter = %+v, want only browser", got)
 	}
 
 	got = filterManifestsForScope(scopeFull, manifests)
@@ -223,7 +207,7 @@ func TestScopeAllowsToolMatchesTheAllowlistExactly(t *testing.T) {
 		want  bool
 	}{
 		{scopeBrowserOnly, "browser", true},
-		{scopeBrowserOnly, "dashboard", true},
+		{scopeBrowserOnly, "dashboard", false},
 		{scopeBrowserOnly, "shell.exec", false},
 		{scopeBrowserOnly, "email.send", false},
 		{scopeBrowserOnly, "whatsapp.send_message", false},

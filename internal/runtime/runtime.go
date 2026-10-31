@@ -509,7 +509,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	sandboxTool := &builtin.SandboxTool{Store: s}
 	toolReg.Register(sandboxTool)
 	toolReg.Register(&builtin.SandboxStatusTool{Store: s})
-	toolReg.Register(&builtin.DashboardTool{AgentID: ""})
 	// Registered through the Google Workspace connector rather than here — see
 	// the registration above. GogTool remains as the thing that actually runs
 	// gog, because it owns the flag defaults and the exit-code reasons, and
