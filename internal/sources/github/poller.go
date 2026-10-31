@@ -217,9 +217,14 @@ func (p *Poller) account(ctx context.Context, a ghconn.Account) AccountResult {
 		if i < maxDetails {
 			d = p.detail(ctx, c, n)
 		}
+		// The first look at an account publishes the last day so the agent has
+		// it as context; none of it is news, so none of it may page the
+		// operator, however many of those threads are marked urgent.
+		e := Event(a.Name(), n, d)
+		e.Backlog = first
 		// Published, then marked: a crash between the two repeats an event
 		// rather than losing one.
-		if err := p.Publish(Event(a.Name(), n, d)); err != nil {
+		if err := p.Publish(e); err != nil {
 			r.Err = fmt.Errorf("publishing %s: %w", n.Key(), err)
 			return r
 		}

@@ -261,7 +261,11 @@ func (w *Watcher) Tick(ctx context.Context, account string, publish func(sources
 				m.Space = sp.Name
 			}
 			p := w.sender(ctx, account, &st, m, &lookups)
-			out = append(out, w.event(account, st.Me, sp, m, p))
+			e := w.event(account, st.Me, sp, m, p)
+			// Said before KARMAX started watching this account: context for
+			// the agent, never a page to the operator, however direct.
+			e.Backlog = !m.Created.After(st.FirstSeen)
+			out = append(out, e)
 		}
 		if !has && newest.Before(st.FirstSeen) && len(msgs) == 0 {
 			newest = st.FirstSeen

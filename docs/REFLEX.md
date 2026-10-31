@@ -93,6 +93,32 @@ These are the reasons this is safe to put on the hot path at all.
    unrecognised id is never silently screened away.
 6. **A breaker.** Three consecutive failures pause screening for 30s, so a
    TypeSafe outage costs one timeout per cooldown rather than one per event.
+7. **The urgent floor.** An event from one of the operator's accounts
+   (`sources.Event`) that its source marked urgent is never dropped or merely
+   filed, and is escalated — like the operator floor, it comes from the
+   event's origin, never from the model. It does not apply to a source's
+   backlog (what its first look at an account found) or to an item older than
+   `policy.urgent_max_age` when it arrives: those are screened on their merits.
+
+## Account events
+
+A source event is screened on `source`, `account`, `type`, `title`,
+`summary`, `urgent` (and `backlog`) plus the source's `details` — not on the
+router's plumbing. A `remember` verdict files it to long-term memory under
+its subject (`Data["subject"]`, else the repo, person, project…, else
+"source account"), categorised by source (`Data["category"]` overrides), with
+the source and account as cues. A handled event reaches the turn rendered as
+what happened on which account, with what memory already holds about its
+subject.
+
+## Who is told what
+
+Escalation no longer means "ask the operator". What reaches them is the
+operating policy's call (`policy:` in `karmax.yaml`, `internal/policy`): by
+default the agent acts and reports, and after a turn the operator gets at
+most one WhatsApp — the event and what was done when it was urgent and fresh,
+and "Sent as you" listing what went to other people as them. Approvals reach
+WhatsApp only for the hard floor.
 
 ## Calibration
 

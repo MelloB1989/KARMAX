@@ -152,6 +152,12 @@ func TestFirstSightPublishesOnlyRecentUnread(t *testing.T) {
 	if !got[0].Urgent || got[1].Urgent {
 		t.Errorf("urgency: dm %v, space message %v", got[0].Urgent, got[1].Urgent)
 	}
+	// Said before KARMAX started watching: context for the agent, never a page.
+	for _, e := range got {
+		if !e.Backlog {
+			t.Errorf("a first-sight message was published as news: %q", e.Title)
+		}
+	}
 	if !strings.Contains(got[0].Title, "Rahul Verma") || got[0].Data["sender_email"] != "rahul@example.com" {
 		t.Errorf("the DM should name its sender: %q %v", got[0].Title, got[0].Data)
 	}
@@ -199,6 +205,9 @@ func TestNewMessagesMentionsAndDMs(t *testing.T) {
 	}
 	urgent := []bool{false, true, true, false}
 	for i, e := range got {
+		if e.Backlog {
+			t.Errorf("%q was said after KARMAX started watching, yet published as backlog", e.Title)
+		}
 		if e.Urgent != urgent[i] {
 			t.Errorf("%s %q urgent = %v, want %v (a bot is never urgent; a person writing directly is)", e.Type, e.Title, e.Urgent, urgent[i])
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/MelloB1989/karmax/internal/mcp"
+	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/reflex"
 )
 
@@ -21,6 +22,9 @@ type KarmaxConfig struct {
 	ColdScan ColdScanConfig        `yaml:"cold_scan"`
 	Harness  HarnessConfig         `yaml:"harness"`
 	Reflex   reflex.Config         `yaml:"reflex"`
+	// Policy is how KARMAX acts for the operator and when it reaches them:
+	// act then report, the hard floor, and what reaches their WhatsApp.
+	Policy policy.Config `yaml:"policy"`
 	// Which services this install manages. Omitted means every one compiled
 	// in, so an upgrade never switches somebody's integrations off.
 	Connectors   RegistryConfig `yaml:"connectors"`

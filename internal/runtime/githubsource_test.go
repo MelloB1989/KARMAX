@@ -10,11 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/comms"
 	ghconn "github.com/MelloB1989/karmax/internal/connectors/github"
 	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/sources"
 	sourcegh "github.com/MelloB1989/karmax/internal/sources/github"
 	"github.com/MelloB1989/karmax/internal/tools"
+	"github.com/MelloB1989/karmax/internal/tools/builtin"
 )
 
 func TestTheGitHubSourceHasAnOffSwitch(t *testing.T) {
@@ -45,6 +47,38 @@ func TestAGitHubActIsToldAfter(t *testing.T) {
 	}
 	if len(body) > 400 {
 		t.Errorf("body is %d bytes, want an excerpt", len(body))
+	}
+}
+
+// An act on GitHub is something sent as the operator, so it goes where every
+// such send is recorded — the outbound ledger the agent's per-turn "Sent as
+// you" report reads — and is kept in the app. It no longer asks the WhatsApp
+// mirror on its own: the turn's one report carries it there.
+func TestAGitHubActIsRecordedAsSentAsTheOperator(t *testing.T) {
+	rt := runtimeWithStore(t)
+	var mirrored []string
+	builtin.SetMirrorHook(func(ev builtin.MirrorEvent) { mirrored = append(mirrored, ev.Title) })
+	t.Cleanup(func() { builtin.SetMirrorHook(nil) })
+	since := time.Now().Add(-time.Minute)
+
+	githubActRecorder(rt.store, "nexus")(ghconn.Act{Account: "octo-work", Action: "commented on", Repo: "contoso/app",
+		Number: 12, URL: "https://github.com/contoso/app/pull/12#issuecomment-1", Body: "Looks good once CI passes."})
+
+	rows, err := rt.store.ListOutboundSince(since, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ledger = %+v (%v), want the act", rows, err)
+	}
+	r := rows[0]
+	if r.ChannelType != "github" || r.ChannelID != "contoso/app#12" || r.SenderName != "octo-work" ||
+		!comms.IsAnswerProducer(r.SenderID) || !strings.Contains(r.Content, "commented on") ||
+		!strings.Contains(r.Content, "Looks good once CI passes.") {
+		t.Errorf("recorded %+v", r)
+	}
+	if notes, _ := rt.store.ListNotifications(5); len(notes) != 1 {
+		t.Errorf("the act is not in the app: %+v", notes)
+	}
+	if len(mirrored) != 0 {
+		t.Errorf("the act asked the WhatsApp mirror on its own: %v", mirrored)
 	}
 }
 

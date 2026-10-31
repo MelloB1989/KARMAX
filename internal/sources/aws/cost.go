@@ -116,6 +116,9 @@ func (s *Source) costOf(ctx context.Context, r reader, now time.Time) (costResul
 	if err != nil {
 		return res, err
 	}
+	// Never read in full before: what this read finds — a budget crossed last
+	// week, anomalies from the lookback — predates KARMAX watching.
+	firstRead := st.Full == ""
 	utc := now.UTC()
 	today := utc.Format(dateLayout)
 	day := func(offset int) string { return utc.AddDate(0, 0, offset).Format(dateLayout) }
@@ -211,7 +214,7 @@ func (s *Source) costOf(ctx context.Context, r reader, now time.Time) (costResul
 		}
 	}
 	for _, e := range evs {
-		ok, err := s.emit(e)
+		ok, err := s.emit(asBacklog(e, firstRead))
 		if err != nil {
 			return res, err
 		}

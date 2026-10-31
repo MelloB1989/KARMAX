@@ -13,6 +13,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/identity"
 	"github.com/MelloB1989/karmax/internal/memory"
+	"github.com/MelloB1989/karmax/internal/sources"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
@@ -102,6 +103,10 @@ type Agent struct {
 	// the operator talks to; a child that could itself spawn would carry one
 	// more, which is what bounds a fan-out from recursing.
 	depth int
+
+	// ops is the operating policy and what has been reported under it. See
+	// policy.go.
+	ops policyState
 }
 
 // CommsChannelInfo describes a communication channel available to the agent.
@@ -547,13 +552,14 @@ type commsEscalateTool struct {
 func (t *commsEscalateTool) Manifest() tools.ToolManifest {
 	return tools.ToolManifest{
 		Name:        "comms.escalate",
-		Description: "Ask the operator for permission before dangerous actions such as deleting files, force pushing, modifying production, or spending money. Uses an alternative communication channel if the primary is unavailable or in DND.",
+		Description: "Ask the operator for an immediate yes/no before an action on the hard floor of their operating policy (deleting repositories, data or cloud resources; payments; sharing secrets — the policy in your context is authoritative). Set floor to the rule. Under act-then-report anything else is declined: do it and it is reported. Prefer propose, which also files the approval in their app. Uses an alternative channel if the primary is unavailable or in DND.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"primary_channel_id": {"type": "string", "description": "The original KARMAX channel ID, if known"},
 				"action": {"type": "string", "description": "The action requiring approval"},
-				"risk": {"type": "string", "description": "Why the action is dangerous or irreversible"}
+				"risk": {"type": "string", "description": "Why the action is dangerous or irreversible"},
+				"floor": {"type": "string", "description": "The hard-floor rule this falls under, in the policy's words"}
 			},
 			"required": ["action", "risk"]
 		}`),
@@ -573,6 +579,15 @@ func (t *commsEscalateTool) Execute(ctx context.Context, input map[string]any) (
 	}
 	if strings.TrimSpace(risk) == "" {
 		return tools.ErrorResult(fmt.Errorf("risk is required")), nil
+	}
+	floor, _ := input["floor"].(string)
+	if pol := t.agent.operatingPolicy(); pol.ActFirst() && strings.TrimSpace(floor) == "" {
+		return tools.SuccessResult(map[string]any{
+			"status": "not_needed",
+			"message": "Not sent: under the operator's policy (act, then report) this needs no permission. Do it; " +
+				"what you send as them and anything urgent is reported to them. Only the hard floor is asked about: " +
+				strings.Join(pol.HardFloor(), "; ") + ". If it is one of those, call again with floor set to the rule.",
+		}), nil
 	}
 
 	message := fmt.Sprintf("Permission required before action:\n\nAction: %s\nRisk: %s\n\nReply with approval before KARMAX proceeds.", action, risk)
@@ -847,7 +862,7 @@ func (a *Agent) buildCommsContext() string {
 
 	var sb strings.Builder
 	sb.WriteString("## Available Communication Channels\n\n")
-	sb.WriteString("Use the `comms.send` tool to send messages through these channels. For dangerous actions that require permission, use `comms.escalate` first.\n\n")
+	sb.WriteString("Use the `comms.send` tool to send messages through these channels. When to ask the operator first is the operating policy's call (see above), not the channel's.\n\n")
 
 	for _, ch := range a.commsChannels {
 		dnd := ""
@@ -1165,7 +1180,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// hardcoded routing: the intelligence is the model's, not a keyword list.
 	}
 
-	recentMem, _ := a.memory.Recent(20)
+	recentMem, _ := a.memory.Recent(recentMemoryInPrompt)
 
 	// Build user prompt from event and context
 	userPrompt := buildPromptFromEvent(evt, recentMem)
@@ -1177,11 +1192,16 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	commsCtx := a.buildCommsContext()
 
 	// Retrieve relevant long-term context before complex requests.
+	// The model-driven retrieval runs for requests that look like they need it;
+	// every other turn with a subject gets a direct search, which costs no model.
 	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
+	if retrievedCtx == "" {
+		retrievedCtx = a.buildRelatedMemoryContext(evt)
+	}
 
 	// Combine dynamic context and inject into the main session
 	// Identity first: it is what everything after it must not contradict.
-	dynamicCtx := a.buildIdentityContext() + a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).context()
+	dynamicCtx := a.buildIdentityContext() + a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.operatingContextFor(evt) + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).contextFor(a.operatingPolicy())
 	if dynamicCtx != "" && a.mainSession == nil {
 		userPrompt = dynamicCtx + userPrompt
 	}
@@ -1234,7 +1254,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// sent/removed/scheduled something while calling zero tools. If the reply
 		// asserts a completed action but nothing actually ran this turn, re-prompt
 		// ONCE to force a real tool call (or an honest "here's what's blocking").
-		if len(toolCalls) == 0 && (claimsCompletedAction(response) || looksPassiveStall(response)) {
+		if demandsAction(evt) && len(toolCalls) == 0 && (claimsCompletedAction(response) || looksPassiveStall(response)) {
 			a.log.Warn("act-evidence: reply asserts/defers action with no tool call; re-prompting",
 				zap.String("agent", a.def.ID), zap.String("reply", truncateStr(response, 80)))
 			nudge := "SYSTEM: Your last reply either claimed to do something or promised to (\"on it\", \"standing by\", \"I'll send it\", etc.) but you called NO tool — so NOTHING actually happened. This is unacceptable: the operator gave you an instruction and you did nothing. Right now, do ONE of exactly these:\n" +
@@ -1308,6 +1328,10 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 				}
 			}
 		}
+
+		// Tell the operator what the policy says they hear about: an urgent
+		// event and what was done, and what was sent as them — one message.
+		a.deliverTurnReport(evt, turnStart, response)
 
 		// Check if compaction is needed
 		if a.mainSession.NeedsCompaction() && a.summaryModel != nil {
@@ -1509,12 +1533,13 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 	ac, sc, cc := a.buildRecentActionsContext(), a.buildSessionContext(), a.buildCommsContext()
 	mc := a.buildProactiveMemoryContext(ctx, evt, text)
 	ic := a.buildIdentityContext()
-	dynamicCtx := ic + oc + tc + pc + rc + ac + sc + cc + mc
+	opc := a.buildOperatingContext()
+	dynamicCtx := ic + oc + tc + pc + opc + rc + ac + sc + cc + mc
 	// What the turn actually pays for, block by block. A total cannot say which
 	// block grew, and a block repeating what another already said is invisible
 	// in a single number.
 	a.log.Info("turn context assembled",
-		zap.Int("identity", len(ic)), zap.Int("org", len(oc)), zap.Int("time", len(tc)), zap.Int("profile", len(pc)),
+		zap.Int("identity", len(ic)), zap.Int("org", len(oc)), zap.Int("time", len(tc)), zap.Int("profile", len(pc)), zap.Int("operating", len(opc)),
 		zap.Int("review", len(rc)), zap.Int("recent_actions", len(ac)),
 		zap.Int("sessions", len(sc)), zap.Int("comms", len(cc)), zap.Int("memory", len(mc)),
 		zap.Int("total", len(dynamicCtx)), zap.Int("system", len(a.def.SystemPrompt)))
@@ -1656,6 +1681,11 @@ func (a *Agent) buildProactiveMemoryContext(ctx context.Context, evt bus.Event, 
 
 func shouldRetrieveMemory(evt bus.Event, userPrompt string) bool {
 	if evt.Kind != bus.EventCommsMessage && evt.Kind != bus.EventUserDefined && evt.Kind != bus.EventWebhookFired {
+		return false
+	}
+	// An account's event brings its related memory by direct search instead
+	// (buildRelatedMemoryContext); a model per notification is the wrong price.
+	if _, ok := sources.FromBusEvent(evt); ok {
 		return false
 	}
 
@@ -1845,18 +1875,33 @@ func (a *Agent) handleEventLegacy(evt bus.Event, userPrompt string) error {
 	return nil
 }
 
+// recentMemoryInPrompt and recentMemoryRunes bound the recent-memory block.
+// It is what was filed last, not what a turn is about — twenty documents of
+// five hundred characters each were most of a turn's text and nearly none of
+// its relevance. What is related comes by search (buildRelatedMemoryContext).
+const (
+	recentMemoryInPrompt = 8
+	recentMemoryRunes    = 300
+)
+
 func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string {
 	var prompt string
 
 	if len(recentMem) > 0 {
-		prompt += "## Recent Context\n\n"
+		prompt += "## Recent Context\n\n_What was filed in memory most recently — not necessarily related to this task._\n\n"
 		for _, m := range recentMem {
-			prompt += fmt.Sprintf("[%s] %s: %s\n\n", m.CreatedAt.Format("15:04"), m.Role, truncateStr(m.Content, 500))
+			prompt += fmt.Sprintf("[%s] %s: %s\n\n", m.CreatedAt.Format("15:04"), m.Role, truncateStr(m.Content, recentMemoryRunes))
 		}
 		prompt += "---\n\n"
 	}
 
 	prompt += "## Current Task\n\n"
+
+	// An event from one of the operator's accounts: what happened, and on
+	// which account — the account is what the agent acts through.
+	if src, ok := sources.FromBusEvent(evt); ok {
+		return prompt + renderSourceEvent(src)
+	}
 
 	// Loops and other prompt-carrying events surface their instruction directly
 	// so the agent acts on the prompt rather than parsing raw event JSON.
@@ -1970,7 +2015,7 @@ func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string 
 	// so it is raw machine state — say so, and say that silence is a valid
 	// outcome, rather than leaving the agent to improvise a message about it.
 	if evt.Payload != nil {
-		payloadJSON, _ := json.MarshalIndent(evt.Payload, "", "  ")
+		payloadJSON, _ := json.MarshalIndent(withoutRequestHeaders(evt.Payload), "", "  ")
 		prompt += fmt.Sprintf("Event: %s\nAgent: %s\n\n```json\n%s\n```\n", evt.Kind, evt.AgentID, string(payloadJSON))
 	} else {
 		prompt += fmt.Sprintf("Event: %s\n", evt.Kind)

@@ -33,6 +33,8 @@ type Config struct {
 	APIKey string `yaml:"api_key"`
 	// Model is a jev alias or a pinned version. Empty uses jev-latest.
 	Model string `yaml:"model"`
+	// BaseURL points at another TypeSafe endpoint. Empty uses the SDK's.
+	BaseURL string `yaml:"base_url"`
 	// Timeout bounds one screening. Short on purpose: reflex sits in front of
 	// every event, so a slow answer is worse than no answer.
 	Timeout time.Duration `yaml:"timeout"`
@@ -90,6 +92,9 @@ func New(cfg Config, log *zap.Logger) (*Evaluator, error) {
 	}
 	if cfg.Model != "" {
 		opts = append(opts, jev.WithModel(cfg.Model))
+	}
+	if cfg.BaseURL != "" {
+		opts = append(opts, jev.WithBaseURL(cfg.BaseURL))
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {

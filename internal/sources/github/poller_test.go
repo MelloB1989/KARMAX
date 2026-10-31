@@ -254,6 +254,13 @@ func TestFirstSightPublishesTheLastDayOldestFirstAndNothingOlderEver(t *testing.
 	if e.Account != "octo-user" || e.Type != "review_requested.PullRequest" || !e.Urgent {
 		t.Errorf("event = %+v", e)
 	}
+	// The first look at an account is its backlog: context for the agent,
+	// never a page to the operator at deploy, however urgent each item is.
+	for _, b := range got {
+		if !b.Backlog {
+			t.Errorf("a first-sight item was published as news: %+v", b)
+		}
+	}
 	if e.Data["state"] != "open" || e.Data["author"] != "alice" || !strings.Contains(e.Summary, "comment on 2") {
 		t.Errorf("the event was not filled in from the subject and its latest comment: %v\n%s", e.Data, e.Summary)
 	}
@@ -327,6 +334,10 @@ func TestAThreadWithNewActivityIsPublishedAgain(t *testing.T) {
 	again := r.take()
 	if len(first) != 1 || len(again) != 1 || first[0].Key == again[0].Key {
 		t.Fatalf("first %v then %v, want the thread twice under two keys", first, again)
+	}
+	// Activity after the first look is news.
+	if again[0].Backlog {
+		t.Errorf("new activity was published as backlog: %+v", again[0])
 	}
 }
 
