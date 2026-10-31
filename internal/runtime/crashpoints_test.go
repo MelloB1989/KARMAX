@@ -232,6 +232,25 @@ func TestCrashBetweenDeliveryAndItsRecord(t *testing.T) {
 	}
 }
 
+// A request task whose rounds keep failing tells its requester once — what
+// failed and that it is still being retried — not every round, and not
+// never.
+func TestAStalledRequestTaskSaysSoOnce(t *testing.T) {
+	f := newLongWorkFlow(t, "")
+	task := store.Task{ID: "req-ask-s", RequestID: "ask-s", Title: "Northwind onboarding deck", ChannelID: waID, Target: teamChat}
+	cause := errFor("harness unavailable: the account refused: rejected")
+	f.rt.tellStalled(task, cause)
+	f.rt.tellStalled(task, cause)
+	got := f.sentTo(teamChat)
+	if len(got) != 1 || !strings.Contains(got[0].text, "retrying") || !strings.Contains(got[0].text, "rejected") {
+		t.Errorf("the requester got %+v, want one honest notice", got)
+	}
+}
+
+type errFor string
+
+func (e errFor) Error() string { return string(e) }
+
 // Killed after the request had been handed over and acknowledged, but before
 // that acknowledgement was recorded: the next start sees the chat has it and
 // does not acknowledge twice.

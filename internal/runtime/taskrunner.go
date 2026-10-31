@@ -224,6 +224,12 @@ func (rt *KarmaxRuntime) runTaskRound(ctx context.Context, task store.Task) {
 		_ = rt.store.UpdateTask(task.ID, store.TaskUpdate{
 			Status: store.TaskWorking, LastError: err.Error(), NextActionAt: &retryAt,
 		})
+		// Someone is waiting on a request task. When rounds keep failing,
+		// they hear it once — what failed and what happens next — rather
+		// than silence until it succeeds or is given up on hours later.
+		if task.RequestID != "" && task.LastError != "" {
+			rt.tellStalled(task, err)
+		}
 		return
 	}
 
@@ -306,6 +312,21 @@ func (rt *KarmaxRuntime) completeRequestRound(task store.Task, update store.Task
 		zap.Int("files", len(files)))
 	rt.taskHooks.markReported(task.ID)
 	rt.deliverOwedResults()
+}
+
+// tellStalled tells a request task's requester, once, that its rounds are
+// failing and it is still being retried.
+func (rt *KarmaxRuntime) tellStalled(task store.Task, cause error) {
+	text := fmt.Sprintf("Still on \"%s\", but the last attempts failed (%s). I'm retrying and will send the result "+
+		"when it's done, or tell you if I have to stop.", clip(task.Title, 120), clip(rootCauseText(cause), 200))
+	d := store.Delivery{Key: "task:" + task.ID + ":stalled", ChannelID: task.ChannelID, Target: task.Target, Content: text}
+	if task.ChannelID == "" || task.Target == "" {
+		rt.notifyOnce(d.Key, task.AgentID, "alert", task.Title, text)
+		return
+	}
+	if _, err := rt.deliverOnce(d, comms.ProducerStatus); err != nil {
+		rt.log.Warn("could not tell a requester their task is stalled", zap.String("task", task.ID), zap.Error(err))
+	}
 }
 
 // deliverOwedResults sends every task result recorded as owed and not yet
