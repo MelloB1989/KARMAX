@@ -156,6 +156,10 @@ agents:
       - comms.send
       - google_workspace
       - google_workspace.schema
+      # Read, comment, review and merge on GitHub as whichever of your `gh`
+      # logins the work belongs to (github.accounts, .read, .reply, .review,
+      # .merge). Nothing in it deletes.
+      - github.*
 
     # Memory configuration
     memory:
