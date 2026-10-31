@@ -124,9 +124,7 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	// sessions directory. CLAUDE.md merges upward from the working directory,
 	// so putting it here reaches every session wherever a workflow chooses to
 	// run one — including wa-sessions/, which is not under the default root.
-	if err := writeRootBrief(hostDataDir()); err != nil {
-		rt.log.Warn("harness: could not write the shared session brief", zap.Error(err))
-	}
+	rt.refreshRootBrief()
 
 	// browserMCPCache wraps the same shared session browserMCPConfig used to
 	// probe directly, so chatTurn and harnessSenderFor.Send get it cached.
@@ -269,16 +267,37 @@ func (rt *KarmaxRuntime) startHarnessReaper(ctx context.Context) {
 // one, and a workflow's own file adds to it rather than replacing it.
 //
 // It says nothing about any particular integration. Whose assistant a session
-// is, and what it may do on someone's behalf, is the workflow's to state.
-func writeRootBrief(root string) error { //nolint:revive // root is the data dir
+// is, and what it may do on someone's behalf, is the workflow's to state — with
+// one exception: who the operator is. who is the configured who-is-who
+// (identity.Directory.Brief), placed right after the opening so it reaches
+// every session ahead of anything a workflow, a thread or memory says. Empty
+// leaves the brief as it was.
+func writeRootBrief(root, who string) error { //nolint:revive // root is the data dir
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
+	content := rootBrief
+	if who = strings.TrimSpace(who); who != "" {
+		const after = "## Reaching KARMAX"
+		if i := strings.Index(content, after); i >= 0 {
+			content = content[:i] + who + "\n\n" + content[i:]
+		} else {
+			content += "\n" + who + "\n"
+		}
+	}
 	path := filepath.Join(root, "CLAUDE.md")
-	if old, err := os.ReadFile(path); err == nil && string(old) == rootBrief {
+	if old, err := os.ReadFile(path); err == nil && string(old) == content {
 		return nil
 	}
-	return os.WriteFile(path, []byte(rootBrief), 0o644)
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// refreshRootBrief rewrites the shared brief with the current who-is-who —
+// at start, and again when the linked account becomes known.
+func (rt *KarmaxRuntime) refreshRootBrief() {
+	if err := writeRootBrief(hostDataDir(), rt.who.Brief()); err != nil {
+		rt.log.Warn("harness: could not write the shared session brief", zap.Error(err))
+	}
 }
 
 const rootBrief = `# You are running inside KARMAX

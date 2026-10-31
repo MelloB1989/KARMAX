@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/identity"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/wamemory"
@@ -31,12 +32,7 @@ func waMemoryConfig(getenv func(string) string, karmaxHome string, now time.Time
 	if n, err := strconv.Atoi(strings.TrimSpace(getenv("KARMAX_WA_MEMORY_BATCHES"))); err == nil && n > 0 {
 		cfg.BatchesPerTick = n
 	}
-	for _, k := range []string{"KARMAX_OPERATOR_NAME", "KARMAX_LOOP_WA_MONITOR_OPERATOR_NAME"} {
-		if n := strings.TrimSpace(getenv(k)); n != "" {
-			cfg.Operator = n
-			break
-		}
-	}
+	cfg.Operator = identity.NameFromEnv(getenv)
 	deny := strings.TrimSpace(getenv("KARMAX_WA_MEMORY_DENY_FILE"))
 	if deny == "" {
 		deny = filepath.Join(karmaxHome, "wa-memory-deny.txt")

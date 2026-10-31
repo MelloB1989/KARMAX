@@ -18,6 +18,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/identity"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -68,6 +69,32 @@ type wacliWebhookPayload struct {
 	// ("whatsapp_event") from messages KARMAX itself sent through the wacli API
 	// ("wacli_api"). This is how we avoid answering our own replies.
 	Source string `json:"source"`
+	// SenderContact is wacli's contact record for the message's sender. It
+	// names the person; Chat.Name names the chat, and in a group that is the
+	// group, not anybody in it.
+	SenderContact *wacliContact `json:"sender_contact"`
+}
+
+// wacliContact mirrors the parts of wacli's ContactRecord that name someone.
+type wacliContact struct {
+	FullName     string `json:"full_name"`
+	PushName     string `json:"push_name"`
+	BusinessName string `json:"business_name"`
+	FirstName    string `json:"first_name"`
+}
+
+// label is the name a contact goes by: the one saved for them first, then the
+// one they gave themselves. Only a label — it never decides who they are.
+func (c *wacliContact) label() string {
+	if c == nil {
+		return ""
+	}
+	for _, n := range []string{c.FullName, c.PushName, c.BusinessName, c.FirstName} {
+		if n = strings.TrimSpace(n); n != "" {
+			return n
+		}
+	}
+	return ""
 }
 
 type wacliChat struct {
@@ -116,9 +143,13 @@ type WhatsAppChannel struct {
 	log          *zap.Logger
 	// cursors, when set, makes restarts non-lossy: see replay.go.
 	cursors CursorStore
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.RWMutex
+	// who decides whose account a message came from; names looks up a
+	// sender's label when the event carries none. Both guarded by mu.
+	who    *identity.Directory
+	names  func(jid string) string
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.RWMutex
 }
 
 // New creates a WhatsAppChannel. targetChat is only the default send target.
@@ -145,6 +176,68 @@ func (w *WhatsAppChannel) SetAnswerStream(fn func(callID string) error) {
 	w.mu.Lock()
 	w.answerStream = fn
 	w.mu.Unlock()
+}
+
+// SetIdentity installs the directory that decides who a sender is. Without it
+// senders are named by their labels and nobody is marked as the operator.
+func (w *WhatsAppChannel) SetIdentity(d *identity.Directory) {
+	w.mu.Lock()
+	w.who = d
+	w.mu.Unlock()
+}
+
+// SetNames installs the lookup that names a sender the event does not name —
+// a replayed message carries no contact record.
+func (w *WhatsAppChannel) SetNames(fn func(jid string) string) {
+	w.mu.Lock()
+	w.names = fn
+	w.mu.Unlock()
+}
+
+// speaker is who sent a message, decided from their account.
+type speaker struct {
+	jid   string
+	role  identity.Role
+	name  string // what to call them: the operator's configured name, or a label
+	label string // the label their account carries, whatever it says
+}
+
+// speakerOf works out who sent a message in chatJID from senderJID.
+//
+// The sender used to be named after the CHAT. In a direct chat that is the
+// other person, and nothing was noticed; in a group it is the group, so every
+// member — the operator included — reached the monitor as "<group name>", and
+// the model guessed who that was from the thread and from memory. It guessed a
+// co-founder, twice, for messages the operator wrote.
+func (w *WhatsAppChannel) speakerOf(chatJID string, isGroup bool, senderJID string, contact *wacliContact, chatName string) speaker {
+	senderJID = strings.TrimSpace(senderJID)
+	if senderJID == "" && !isGroup {
+		senderJID = chatJID // a direct chat's only other party
+	}
+	w.mu.RLock()
+	dir, names := w.who, w.names
+	w.mu.RUnlock()
+	if !isGroup {
+		// Learns only when chatJID is one of the operator's own accounts.
+		dir.LearnAlias(chatJID, senderJID)
+	}
+	role := dir.RoleOf(senderJID)
+	label := contact.label()
+	if label == "" && names != nil && senderJID != "" && role != identity.RoleOperator {
+		label = strings.TrimSpace(names(senderJID))
+	}
+	if label == "" && !isGroup {
+		label = strings.TrimSpace(chatName) // a direct chat is named after the person in it
+	}
+	return speaker{jid: senderJID, role: role, name: dir.NameOf(senderJID, label), label: label}
+}
+
+// metadata is how a speaker travels with a message.
+func (s speaker) metadata(m map[string]any) {
+	m["sender_jid"] = s.jid
+	m["sender_role"] = string(s.role)
+	m["sender_is_operator"] = s.role == identity.RoleOperator
+	m["sender_label"] = s.label
 }
 
 func (w *WhatsAppChannel) ID() string   { return w.id }
@@ -296,12 +389,14 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 		ts = time.Now()
 	}
 
+	who := w.speakerOf(chatJID, env.Payload.Chat.IsGroup, msg.SenderJID, env.Payload.SenderContact, env.Payload.Chat.Name)
+
 	cm := comms.Message{
 		ID:          uuid.New().String(),
 		ChannelID:   chatJID, // reply goes back to the originating chat
 		ChannelType: "whatsapp",
-		SenderID:    normalizeJID(msg.SenderJID),
-		SenderName:  env.Payload.Chat.Name,
+		SenderID:    normalizeJID(who.jid),
+		SenderName:  who.name,
 		Content:     body,
 		Direction:   comms.Inbound,
 		Metadata: map[string]any{
@@ -317,6 +412,7 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 		},
 		Timestamp: ts,
 	}
+	who.metadata(cm.Metadata)
 
 	select {
 	case w.inbox <- cm:
@@ -559,10 +655,8 @@ func (w *WhatsAppChannel) routeIncomingCall(env wacliWebhookEnvelope) {
 			zap.String("payload", string(env.Raw)))
 		return
 	}
-	who := strings.TrimSpace(call.PeerName)
-	if who == "" {
-		who = peer
-	}
+	caller := w.speakerOf(peer, false, peer, &wacliContact{PushName: call.PeerName}, "")
+	who := caller.name
 
 	// Answer it ourselves when the relay is up. This is the whole point of the
 	// voice stack: the operator rings their assistant and it picks up. Only on
@@ -607,6 +701,7 @@ func (w *WhatsAppChannel) routeIncomingCall(env wacliWebhookEnvelope) {
 			"chat_name": who,
 		},
 	}
+	caller.metadata(cm.Metadata)
 	select {
 	case w.inbox <- cm:
 		w.log.Info("routed an incoming call to the agent",

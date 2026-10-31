@@ -297,6 +297,36 @@ func TestSpeakersAreNamedForWhoTheyAre(t *testing.T) {
 	}
 }
 
+// The operator's account is theirs however it is labelled, and memory is never
+// told the operator has another name.
+//
+// About twenty "alternate name" facts had to be cleaned out of memory: lines
+// from the operator's own accounts reached the extractor under whatever label
+// the account carried — a legacy name, a business name — and the extractor
+// dutifully recorded that the operator was also called that. The operator's
+// accounts are now decided by the identity directory (which also knows the LIDs
+// it has learned), and the instructions forbid the fact outright.
+func TestTheOperatorKeepsOneNameWhateverTheirAccountIsCalled(t *testing.T) {
+	h := newHarness(t, Config{
+		OperatorJIDs: []string{"555@lid"},
+		IsOperator:   func(jid string) bool { return strings.HasPrefix(jid, "444") },
+	})
+	h.src.names["444@lid"] = "Omar" // a label on one of the operator's accounts
+	h.chat("1@g.us", "Contoso core", true,
+		msg("a", "1@g.us", "444:2@lid", "the call is at 2pm", t0, false))
+
+	if _, err := h.s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := h.ask.prompts[0]
+	if !strings.Contains(p, "Quinn: the call is at 2pm") || strings.Contains(p, "Omar:") {
+		t.Errorf("the operator's account was named by its label:\n%s", p)
+	}
+	if !strings.Contains(p, "Quinn has no other name") {
+		t.Errorf("the instructions do not forbid alternate names for the operator:\n%s", p)
+	}
+}
+
 func TestDeniedChatsAndChannelsAreSkipped(t *testing.T) {
 	h := newHarness(t, Config{Deny: []string{"Memes", "222@g.us"}})
 	h.chat("1@g.us", "Memes", true, msg("a", "1@g.us", "9@lid", "lol", t0, false))

@@ -291,23 +291,35 @@ func (m *Manager) readLoop(ctx context.Context, entry *channelEntry) {
 			mentionCount, _ := msg.Metadata["mention_count"].(int)
 			wacliMessageID, _ := msg.Metadata["wacli_message_id"].(string)
 
+			// Who sent it, as the channel established it from the sender's
+			// account. Absent from a channel that does not know; a reader then
+			// has nothing to go on but the name, and must not treat it as more.
+			senderJID, _ := msg.Metadata["sender_jid"].(string)
+			senderRole, _ := msg.Metadata["sender_role"].(string)
+			senderIsOperator, _ := msg.Metadata["sender_is_operator"].(bool)
+			senderLabel, _ := msg.Metadata["sender_label"].(string)
+
 			// Publish to event bus.
 			m.bus.Publish(bus.NewEvent(EventCommsMessage, agentID, map[string]any{
-				"message_id":        msg.ID,
-				"channel_id":        msg.ChannelID,
-				"karmax_channel_id": ch.ID(),
-				"channel_type":      msg.ChannelType,
-				"sender_id":         msg.SenderID,
-				"sender_name":       msg.SenderName,
-				"content":           msg.Content,
-				"direction":         string(msg.Direction),
-				"reply_to_id":       msg.ReplyToID,
-				"timestamp":         msg.Timestamp,
-				"is_group":          isGroup,
-				"chat_name":         chatName,
-				"mentions_me":       mentionsMe,
-				"quoted_is_from_me": quotedIsFromMe,
-				"mention_count":     mentionCount,
+				"sender_jid":         senderJID,
+				"sender_role":        senderRole,
+				"sender_is_operator": senderIsOperator,
+				"sender_label":       senderLabel,
+				"message_id":         msg.ID,
+				"channel_id":         msg.ChannelID,
+				"karmax_channel_id":  ch.ID(),
+				"channel_type":       msg.ChannelType,
+				"sender_id":          msg.SenderID,
+				"sender_name":        msg.SenderName,
+				"content":            msg.Content,
+				"direction":          string(msg.Direction),
+				"reply_to_id":        msg.ReplyToID,
+				"timestamp":          msg.Timestamp,
+				"is_group":           isGroup,
+				"chat_name":          chatName,
+				"mentions_me":        mentionsMe,
+				"quoted_is_from_me":  quotedIsFromMe,
+				"mention_count":      mentionCount,
 				// The originating WhatsApp message id, so a loop can reply
 				// quoting the exact message that triggered it.
 				"wacli_message_id": wacliMessageID,

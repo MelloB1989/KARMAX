@@ -42,6 +42,7 @@ import (
 	youtrackconn "github.com/MelloB1989/karmax/internal/connectors/youtrack"
 	"github.com/MelloB1989/karmax/internal/harness"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
+	"github.com/MelloB1989/karmax/internal/identity"
 	"github.com/MelloB1989/karmax/internal/integrations"
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/memmerge"
@@ -85,6 +86,12 @@ type KarmaxRuntime struct {
 	console   *api.ConsoleServer
 	// google is the Google Calendar and Chat sources (googlesource.go).
 	google *googleSources
+
+	// who is the one answer to "who is speaking": the operator's name and
+	// accounts and the linked account KARMAX sends from. See internal/identity.
+	who *identity.Directory
+	// labelSpeaker says who wrote each message of a WhatsApp thread.
+	labelSpeaker builtin.SpeakerLabeller
 
 	// apiBrowserToken and apiBaseURL let a harness this instance spawns (for a
 	// loop or a LYZN task — see loophost.go's HarnessWith) call back into this
@@ -580,9 +587,25 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// in play the two disagree: the agent hands the message to the loop, and
 	// the loop, seeing an empty set, hands it back. Nobody answers, nothing is
 	// logged.
+	// Who is who, decided once from the same configuration: the operator's
+	// name, their accounts (plus the LIDs their own chat has taught before),
+	// and — once the bridge says — the linked account KARMAX sends from.
+	// Everything that has to know who is speaking asks this.
+	who := newIdentity(os.Getenv, operatorChats, s)
+	waNames := wamemory.NewWacli(hostpaths.WacliAPIURL())
+	labelSpeaker := speakerLabeller(who, s.SentWhatsApp, waNames.Name)
+	if waChannel != nil {
+		waChannel.SetIdentity(who)
+		waChannel.SetNames(func(jid string) string {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			return waNames.Name(ctx, jid)
+		})
+	}
 	log.Info("operator identity resolved",
 		zap.Int("operator_chats", len(operatorChats)),
-		zap.Bool("from_whatsapp_target_fallback", operatorFromFallback))
+		zap.Bool("from_whatsapp_target_fallback", operatorFromFallback),
+		zap.Bool("operator_named", who.Name() != ""))
 
 	// Act-and-inform: messages KARMAX sends to people OTHER than the operator
 	// don't need approval, but the operator is shown every one via an app push.
@@ -689,9 +712,14 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// them, a WASM workflow reaches them through the generic `tool` host
 	// function, and the Broker gates them by name — none of which needed
 	// changing, because tools were already the currency.
-	waTools := builtin.GuardUntrusted(
+	//
+	// Every message they return says who wrote it — the operator, KARMAX, or
+	// someone else — from the account, so no reader of a thread has to work
+	// that out from bare ids. Labelled after the guard, which recognises the
+	// tools it wraps by type.
+	waTools := builtin.AttributeSpeakers(builtin.GuardUntrusted(
 		builtin.FromGoFunctionTools(wacli.All(wacli.New(hostpaths.WacliAPIURL()))),
-		"WhatsApp, written by whoever sent it")
+		"WhatsApp, written by whoever sent it"), labelSpeaker)
 	for _, t := range waTools {
 		toolReg.Register(t)
 	}
@@ -704,7 +732,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// the agent that actually talks to the operator was the only caller without
 	// a way to read a chat — it had forty-six wacli tools it was never given and
 	// a config asking for a name nobody had registered.
-	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, Store: s})
+	toolReg.Register(&builtin.WhatsAppReadTool{WacliPath: waCLIPath, Store: s, Label: labelSpeaker})
 	var waMonitorTool *builtin.WhatsAppMonitorTool
 	if cfg.Webhooks.Enabled {
 		waMonitorTool = &builtin.WhatsAppMonitorTool{
@@ -938,7 +966,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		// loop backfills history. See internal/wamemory.
 		home, _ := os.UserHomeDir()
 		if waCfg, on := waMemoryConfig(os.Getenv, filepath.Join(home, ".karmax"), time.Now(), operatorChats); on {
-			syncer := wamemory.New(waCfg, wamemory.NewWacli(hostpaths.WacliAPIURL()), memFactory.For(a0.ID, ns),
+			// The directory's answer, which includes the LIDs it has learned.
+			waCfg.IsOperator = who.IsOperator
+			syncer := wamemory.New(waCfg, waNames, memFactory.For(a0.ID, ns),
 				kvCursors{s: s}, s.SentWhatsApp,
 				func(ctx context.Context, prompt string) (string, error) {
 					return harnessRT.get().harnessExtract(ctx, "wa-memory", prompt)
@@ -1084,6 +1114,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		a.SetCommsEscalate(commsMgr.RequestEscalation)
 
 		a.SetOperatorChats(operatorChats)
+		a.SetIdentity(who)
 		// Nil when GitLoom is not configured, which the agent treats as "do not
 		// archive" rather than as an error.
 		a.SetConversations(conversations)
@@ -1246,15 +1277,17 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		}
 	}
 	rt := &KarmaxRuntime{
-		cfg:         cfg,
-		log:         log,
-		store:       s,
-		bus:         b,
-		clock:       clk,
-		broker:      brk,
-		connectors:  connHost,
-		recipeLoops: map[string]*recipes.Recipe{},
-		waChannel:   waChannel,
+		cfg:          cfg,
+		log:          log,
+		store:        s,
+		bus:          b,
+		clock:        clk,
+		broker:       brk,
+		connectors:   connHost,
+		recipeLoops:  map[string]*recipes.Recipe{},
+		waChannel:    waChannel,
+		who:          who,
+		labelSpeaker: labelSpeaker,
 		messageOperator: func() func(string) error {
 			chID, _ := commsMgr.FindChannelIDByType("whatsapp")
 			if chID == "" || waTarget == "" {
@@ -1359,6 +1392,10 @@ func (rt *KarmaxRuntime) Start(ctx context.Context) error {
 	// Started before anything can ask for a session, and it reaps the previous
 	// process's orphans on the way up.
 	rt.harness = rt.startHarness()
+	// Which account the bridge is linked to — KARMAX's own sends and the
+	// operator typing on it. Asked in the background; the session brief is
+	// rewritten when it answers.
+	rt.learnLinkedAccount(ctx, hostpaths.WacliAPIURL())
 	// Before anything can open a model session: every claude-code session
 	// runs on the harness, and one opened before this would find no path.
 	rt.wireClaudeCodeInference()
