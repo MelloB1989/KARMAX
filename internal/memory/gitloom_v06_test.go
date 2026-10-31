@@ -443,6 +443,28 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 			out["occurred_at"] = meta.OccurredAt
 		}
 		writeJSON(w, out)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/retrieve"):
+		// Every document holding the word asked for, and each of its sections
+		// that does, as one reader sees them. No question lists everything.
+		q := strings.ToLower(r.URL.Query().Get("q"))
+		has := func(text string) bool { return q == "" || strings.Contains(strings.ToLower(text), q) }
+		s.mu.Lock()
+		view := s.view("")
+		var hits []any
+		for p, doc := range view {
+			if !has(doc) {
+				continue
+			}
+			hits = append(hits, map[string]any{"path": p, "content": doc, "score": 0.5})
+			// A section's hit carries its header, which opens with its fact.
+			for _, h := range sectionHeaders(doc) {
+				if has(h) {
+					hits = append(hits, map[string]any{"path": p + "#" + serverSlug(h), "title": h, "content": "## " + h, "score": 0.6})
+				}
+			}
+		}
+		s.mu.Unlock()
+		writeJSON(w, map[string]any{"memories": hits, "rank": "fused"})
 	default:
 		http.NotFound(w, r)
 	}

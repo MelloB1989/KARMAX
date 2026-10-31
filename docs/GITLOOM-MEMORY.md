@@ -173,6 +173,14 @@ what is written is kept to what changes something.
   shows it (`internal/memory/gitloom_pending.go`). The store's `updated_at` is
   not the signal: it is when the store applied a write, and a queued write
   sent before KARMAX's last one can be applied after it.
+- **A forget returns once the store accepts it.** It used to wait up to 30
+  seconds for the store to apply it, which with two-minute ingest was every
+  forget's full 30 seconds. KARMAX's own record of the forget now covers that
+  time. The next write folds onto the document without the forgotten fact.
+  Recall, listings, survey and `load` leave it out even while a reader still
+  serves the copy from before. Forgetting it again is `ErrNotStored`. Only a
+  section the store names without a header still waits, because it cannot be
+  cut by header.
 - **A loop's record is a log, not a fact.** What a loop remembers about a run
   (`memory.LoopLog`, category `log`) is filed by month, at
   `facts/context/<loop>/<yyyy-mm>.md`. A month that reaches 96 KB continues in

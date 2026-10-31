@@ -261,24 +261,35 @@ func (g *gitloomBackend) skipped(path string) {
 	g.log.Debug("gitloom: write skipped; the store already holds it", zap.String("path", path))
 }
 
-// forget removes a document, or ONE dated fact in one ("file.md#slug"), and
-// returns once the store no longer holds it.
+// forget removes a document, or ONE dated fact in one ("file.md#slug"). It
+// returns once the store has accepted the forget, not once it has applied it.
 //
 // The store cuts a section itself. KARMAX used to cut it here — read the
 // document, find the header whose slug matched, write the rest back — but its
 // slugs were not the store's ("19:47" became "19-47" here and "1947" there),
 // so three in four section forgets matched nothing and reported success.
 //
-// A handle that names nothing is ErrNotStored, never a quiet success. And the
-// call waits for the forget to land: the next write to the document folds onto
-// what is stored, so a forget still in the queue — or a reader still serving
-// the document from before — would carry the fact straight back. See forgotten.
+// A handle that names nothing is ErrNotStored, never a quiet success, and so
+// is one KARMAX has already forgotten that the store has yet to apply.
+//
+// It used to wait — up to the thirty-second call timeout — for the store to
+// apply the forget, so that the next write to the document, which folds onto
+// what is stored, could not carry the fact straight back. Live ingest takes
+// about two minutes, so every forget paid the whole thirty seconds and the
+// fact could come back anyway. The forget is now recorded as KARMAX's own
+// (see forgotten) until the store shows it: the next write folds onto the
+// document without it, and recall leaves it out (see asKnown). Only a section
+// the store names without a header, which cannot be cut by header, still
+// waits.
 func (g *gitloomBackend) forget(ctx context.Context, handle string) error {
 	cctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 
 	file, _, isSection := strings.Cut(handle, "#")
 	defer g.lockPath(file)()
+	if g.alreadyForgotten(handle) {
+		return fmt.Errorf("%w: %s (already forgotten)", ErrNotStored, handle)
+	}
 	opts := &gitloom.RecallOptions{Namespace: g.cfg.Namespace}
 	// What is there now, as KARMAX knows it: a document just written may not
 	// have reached every reader yet, and one just forgotten may still be served.
@@ -307,13 +318,15 @@ func (g *gitloomBackend) forget(ctx context.Context, handle string) error {
 		g.setHealth(false, err)
 		return err
 	}
-	if isSection && header == "" {
-		g.dropPending(file) // no header to cut it by; the server's word alone
-	} else {
-		g.forgotten(file, base, header)
-	}
 	g.setHealth(true, nil)
+	if !isSection || header != "" {
+		g.forgotten(file, base, header, handle)
+		return nil
+	}
 
+	// No header to cut it by, so nothing of KARMAX's own can stand for the
+	// forget: the store's word alone, and a wait for it.
+	g.dropPending(file)
 	for {
 		if _, err := g.client.Get(cctx, handle, opts); isAbsent(err) {
 			return nil
@@ -329,7 +342,8 @@ func (g *gitloomBackend) forget(ctx context.Context, handle string) error {
 	}
 }
 
-// forgetPoll is how often a forget checks whether the store has applied it.
+// forgetPoll is how often a forget with no header to record checks whether
+// the store has applied it.
 const forgetPoll = 100 * time.Millisecond
 
 // foldOntoStored carries everything already at a path into the memory about to
@@ -559,11 +573,16 @@ func (g *gitloomBackend) list(ctx context.Context, limit int, until time.Time) (
 
 	out := make([]MemoryEntry, 0, len(res.Memories))
 	for _, m := range res.Memories {
+		updated := firstTime(stamp(m.UpdatedAt, m.Updated), stamp(m.CreatedAt, m.Created))
+		content, ok := g.asKnown(m.Path, strings.TrimSpace(firstNonEmpty(m.Content, m.Snippet)), updated)
+		if !ok {
+			continue
+		}
 		out = append(out, MemoryEntry{
 			ID: m.Path, Namespace: g.cfg.Namespace, Role: RoleGitLoom,
-			Content:   strings.TrimSpace(firstNonEmpty(m.Content, m.Snippet)),
+			Content:   content,
 			Category:  firstNonEmpty(m.Tier, "facts"),
-			CreatedAt: firstTime(stamp(m.UpdatedAt, m.Updated), stamp(m.CreatedAt, m.Created)), OccurredAt: m.OccurredAt,
+			CreatedAt: updated, OccurredAt: m.OccurredAt,
 		})
 	}
 	return out, nil
@@ -720,6 +739,15 @@ func (g *gitloomBackend) search(ctx context.Context, query string, topK int, opt
 		if body == "" {
 			body = g.body(cctx, m.Path)
 		}
+		// Not what KARMAX has forgotten, though the store may still say it.
+		known, ok := g.asKnown(m.Path, body, firstTime(stamp(m.UpdatedAt, m.Updated), stamp(m.CreatedAt, m.Created)))
+		if !ok {
+			continue
+		}
+		if known != body {
+			body = known
+			m.Snippet = "" // it may quote what was cut
+		}
 		entry := MemoryEntry{
 			// The path IS the handle: it is what Forget takes, so a hit the
 			// agent decides is wrong can be deleted without a second lookup.
@@ -740,6 +768,9 @@ func (g *gitloomBackend) search(ctx context.Context, query string, topK int, opt
 				// A relation with no text is a label pointing at nothing; in a
 				// prompt it is only noise.
 				if strings.TrimSpace(r.Snippet) == "" {
+					continue
+				}
+				if _, ok := g.asKnown(r.Path, r.Snippet, time.Time{}); !ok {
 					continue
 				}
 				b.WriteString("\n  ↳ ")
@@ -764,6 +795,9 @@ func (g *gitloomBackend) search(ctx context.Context, query string, topK int, opt
 	// about a term, so it leads rather than being dropped.
 	for _, v := range res.Defined {
 		if strings.TrimSpace(v.Definition) == "" {
+			continue
+		}
+		if _, ok := g.asKnown(v.Path, v.Definition, time.Time{}); !ok {
 			continue
 		}
 		out = append([]SearchResult{{

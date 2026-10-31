@@ -263,8 +263,7 @@ type cluster struct {
 }
 
 // defaultOpFloor is what one forget or write is assumed to take before this
-// run has timed one. A forget waits for the store to apply it, up to the
-// store's own per-call timeout, which is what this is.
+// run has timed one: the most one call to the store may take.
 const defaultOpFloor = 30 * time.Second
 
 // apply carries out a plan and returns how many entries it merged away.

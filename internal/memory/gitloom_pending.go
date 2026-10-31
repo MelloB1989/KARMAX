@@ -51,6 +51,8 @@ type pendingWrite struct {
 	// cut are the headers of sections KARMAX forgot from the document, cut
 	// again from any copy that still holds them.
 	cut []string
+	// handles are the store's handles for those sections, by header.
+	handles map[string]string
 }
 
 // expired reports a record the store's word has replaced.
@@ -96,6 +98,7 @@ func (g *gitloomBackend) remember(m gitloom.NewMemory, occurred, sentAt time.Tim
 	// said again after it was forgotten is filed under the same header, and
 	// cutting it from later reads lost it at the next change to the document.
 	var cut []string
+	handles := map[string]string{}
 	if prev, ok := g.pending[m.Path]; ok && !prev.expired(g.now()) {
 		written := map[string]bool{}
 		for _, h := range sectionHeaders(m.Content) {
@@ -104,10 +107,13 @@ func (g *gitloomBackend) remember(m gitloom.NewMemory, occurred, sentAt time.Tim
 		for _, h := range prev.cut {
 			if !written[strings.TrimSpace(h)] {
 				cut = append(cut, h)
+				if handle, ok := prev.handles[h]; ok {
+					handles[h] = handle
+				}
 			}
 		}
 	}
-	g.record(m.Path, pendingWrite{at: sentAt, cut: cut, stored: gitloom.StoredMemory{
+	g.record(m.Path, pendingWrite{at: sentAt, cut: cut, handles: handles, stored: gitloom.StoredMemory{
 		Path: m.Path, Content: m.Content, UserTags: m.Tags, Cues: m.Cues, Related: m.Related,
 		Confidence: m.Confidence, OccurredAt: occurred, UpdatedAt: sentAt,
 		// The expiry it was written with, so a fold onto this copy keeps it.
@@ -146,8 +152,9 @@ func holdsSection(doc string, headers []string) bool {
 // forgotten fact is gone while another still serves the document from before,
 // and the next write to the document folds onto whichever it reads. Without
 // this a forget was undone by the very next write. base is the document as it
-// stood (nil for a whole document); header names the section cut from it.
-func (g *gitloomBackend) forgotten(path string, base *gitloom.StoredMemory, header string) {
+// stood (nil for a whole document); header names the section cut from it, and
+// handle is the store's handle for that section.
+func (g *gitloomBackend) forgotten(path string, base *gitloom.StoredMemory, header, handle string) {
 	g.pmu.Lock()
 	defer g.pmu.Unlock()
 	now := g.now()
@@ -155,9 +162,12 @@ func (g *gitloomBackend) forgotten(path string, base *gitloom.StoredMemory, head
 		g.record(path, pendingWrite{at: now, gone: true})
 		return
 	}
-	w := pendingWrite{at: now, cut: []string{header}}
+	w := pendingWrite{at: now, cut: []string{header}, handles: map[string]string{header: handle}}
 	if prev, ok := g.pending[path]; ok && !prev.gone && !prev.expired(now) {
 		w.cut = append(append([]string(nil), prev.cut...), header)
+		for h, ph := range prev.handles {
+			w.handles[h] = ph
+		}
 	}
 	if base != nil {
 		w.stored = *base
@@ -204,6 +214,59 @@ func (g *gitloomBackend) pendingFor(path string) (pendingWrite, bool) {
 		return pendingWrite{}, false
 	}
 	return w, ok
+}
+
+// alreadyForgotten reports a document, or a section of one, that KARMAX has
+// forgotten and the store may not have caught up with.
+func (g *gitloomBackend) alreadyForgotten(handle string) bool {
+	file, _, isSection := strings.Cut(handle, "#")
+	w, ok := g.pendingFor(file)
+	if !ok {
+		return false
+	}
+	if w.gone {
+		return true
+	}
+	if isSection {
+		for _, h := range w.handles {
+			if h == handle {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// asKnown is a memory the store returned, as KARMAX knows it: false for one
+// it has forgotten, and otherwise the text with any section it forgot cut out.
+//
+// A forget returns once the store has accepted it, and the store's readers
+// take minutes to show it, so without this a search straight after "forgot
+// it" recalled it, and so did any reader still serving the copy from before.
+// updated is when the store last wrote the memory (zero when unknown): a
+// forgotten document someone has written since is no longer forgotten.
+func (g *gitloomBackend) asKnown(path, content string, updated time.Time) (string, bool) {
+	file, _, _ := strings.Cut(path, "#")
+	w, ok := g.pendingFor(file)
+	if !ok {
+		return content, true
+	}
+	if w.gone {
+		return content, !updated.IsZero() && updated.After(w.at)
+	}
+	for _, h := range w.handles {
+		if h == path {
+			return "", false
+		}
+	}
+	if len(w.cut) == 0 {
+		return content, true
+	}
+	cut := cutSections(content, w.cut)
+	if strings.TrimSpace(cut) == "" && strings.TrimSpace(content) != "" {
+		return "", false
+	}
+	return cut, true
 }
 
 // sawHeld notes that a read showed the store holding w, unless w has been
