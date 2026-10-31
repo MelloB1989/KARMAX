@@ -101,3 +101,38 @@ func TestAWebhookTurnDoesNotCarryRequestHeaders(t *testing.T) {
 		t.Errorf("the body was lost:\n%s", p)
 	}
 }
+
+// A message carries its related memory too, found by searching for what it
+// says; a bare acknowledgement searches for nothing.
+func TestRelatedMemoryComesWithAMessage(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.New(filepath.Join(dir, "t.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mem := memory.NewManager("nexus", "nexus", filepath.Join(dir, "mem"), db, zap.NewNop())
+	if err := mem.Write(memory.MemoryEntry{Content: "The Contoso pilot starts on Monday with Mateo.", Category: "project"}); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{memory: mem, log: zap.NewNop()}
+
+	msg := bus.NewEvent(bus.EventCommsMessage, "nexus", map[string]any{"content": "Contoso pilot", "channel_id": "x"})
+	if got := a.buildRelatedMemoryContext(msg); !strings.Contains(got, "starts on Monday") {
+		t.Errorf("related memory missing for a message:\n%s", got)
+	}
+	ack := bus.NewEvent(bus.EventCommsMessage, "nexus", map[string]any{"content": "ok thanks", "channel_id": "x"})
+	if got := a.buildRelatedMemoryContext(ack); got != "" {
+		t.Errorf("an acknowledgement searched memory:\n%s", got)
+	}
+}
+
+// The recent-memory block is what was filed last, not what this is about, and
+// must say so: read as context for the task, it misleads.
+func TestRecentMemoryIsLabelledForWhatItIs(t *testing.T) {
+	p := buildPromptFromEvent(bus.NewEvent(bus.EventScheduledJob, "nexus", map[string]any{"prompt": "check in"}),
+		[]memory.MemoryEntry{{Role: "system", Content: "something filed earlier", CreatedAt: time.Now()}})
+	if !strings.Contains(p, "not necessarily") {
+		t.Errorf("the recent-memory block is not labelled:\n%s", p)
+	}
+}

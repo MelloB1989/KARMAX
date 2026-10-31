@@ -1162,7 +1162,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// hardcoded routing: the intelligence is the model's, not a keyword list.
 	}
 
-	recentMem, _ := a.memory.Recent(20)
+	recentMem, _ := a.memory.Recent(recentMemoryInPrompt)
 
 	// Build user prompt from event and context
 	userPrompt := buildPromptFromEvent(evt, recentMem)
@@ -1174,7 +1174,12 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 	commsCtx := a.buildCommsContext()
 
 	// Retrieve relevant long-term context before complex requests.
-	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt) + a.buildRelatedMemoryContext(evt)
+	// The model-driven retrieval runs for requests that look like they need it;
+	// every other turn with a subject gets a direct search, which costs no model.
+	retrievedCtx := a.buildProactiveMemoryContext(a.ctx, evt, userPrompt)
+	if retrievedCtx == "" {
+		retrievedCtx = a.buildRelatedMemoryContext(evt)
+	}
 
 	// Combine dynamic context and inject into the main session
 	dynamicCtx := a.buildOrgContext() + a.buildTimeContext() + a.buildProfileContext() + a.operatingContextFor(evt) + a.buildReviewContext() + a.buildRecentActionsContext() + sessionCtx + commsCtx + retrievedCtx + screeningOf(evt).contextFor(a.operatingPolicy())
@@ -1846,13 +1851,22 @@ func (a *Agent) handleEventLegacy(evt bus.Event, userPrompt string) error {
 	return nil
 }
 
+// recentMemoryInPrompt and recentMemoryRunes bound the recent-memory block.
+// It is what was filed last, not what a turn is about — twenty documents of
+// five hundred characters each were most of a turn's text and nearly none of
+// its relevance. What is related comes by search (buildRelatedMemoryContext).
+const (
+	recentMemoryInPrompt = 8
+	recentMemoryRunes    = 300
+)
+
 func buildPromptFromEvent(evt bus.Event, recentMem []memory.MemoryEntry) string {
 	var prompt string
 
 	if len(recentMem) > 0 {
-		prompt += "## Recent Context\n\n"
+		prompt += "## Recent Context\n\n_What was filed in memory most recently — not necessarily related to this task._\n\n"
 		for _, m := range recentMem {
-			prompt += fmt.Sprintf("[%s] %s: %s\n\n", m.CreatedAt.Format("15:04"), m.Role, truncateStr(m.Content, 500))
+			prompt += fmt.Sprintf("[%s] %s: %s\n\n", m.CreatedAt.Format("15:04"), m.Role, truncateStr(m.Content, recentMemoryRunes))
 		}
 		prompt += "---\n\n"
 	}

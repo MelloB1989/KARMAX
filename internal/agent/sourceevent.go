@@ -116,21 +116,45 @@ func demandsAction(evt bus.Event) bool {
 // relatedMemoryLimit caps the facts an event brings with it.
 const relatedMemoryLimit = 6
 
-// buildRelatedMemoryContext is what long-term memory already holds about the
-// subject of an account's event.
+// minRelatedQuery is the shortest text worth searching memory for. "ok", "👍"
+// and "thanks" match everything and nothing.
+const minRelatedQuery = 12
+
+// relatedMemoryQueries is what to search memory for, for one event: an
+// account's event by its subject, then its title; a message or request by
+// what it says. Anything else carries no subject of its own.
+func relatedMemoryQueries(evt bus.Event) []string {
+	if e, ok := sources.FromBusEvent(evt); ok {
+		return []string{e.Subject(), e.Title}
+	}
+	switch evt.Kind {
+	case bus.EventCommsMessage, bus.EventUserDefined:
+		content, _ := evt.Payload["content"].(string)
+		content = strings.TrimSpace(content)
+		if len([]rune(content)) < minRelatedQuery {
+			return nil
+		}
+		return []string{truncateStr(content, 300)}
+	}
+	return nil
+}
+
+// buildRelatedMemoryContext is what long-term memory already holds about what
+// a turn is about.
 //
 // A direct search, not the memory model: an LLM retrieval on every
 // notification would spend a model turn per event before deciding whether the
-// event needs one. The subject comes first because memory files one document
-// per subject; the title catches what is filed under a different name.
+// event needs one. For an account's event the subject comes first, because
+// memory files one document per subject; the title catches what is filed under
+// a different name.
 func (a *Agent) buildRelatedMemoryContext(evt bus.Event) string {
-	e, ok := sources.FromBusEvent(evt)
-	if !ok || a.memory == nil {
+	queries := relatedMemoryQueries(evt)
+	if len(queries) == 0 || a.memory == nil {
 		return ""
 	}
 	seen := map[string]bool{}
 	var lines []string
-	for _, q := range []string{e.Subject(), e.Title} {
+	for _, q := range queries {
 		q = strings.TrimSpace(q)
 		if q == "" || seen["q:"+q] {
 			continue
@@ -166,7 +190,7 @@ func (a *Agent) buildRelatedMemoryContext(evt bus.Event) string {
 		return ""
 	}
 	return "## What memory already holds about this\n\n" +
-		"_Found by searching long-term memory for the event's subject. Old time-sensitive facts may be stale; correct one with memory.correct if this event changes it._\n\n" +
+		"_Found by searching long-term memory for what this turn is about. Old time-sensitive facts may be stale; correct one with memory.correct if this changes it._\n\n" +
 		strings.Join(lines, "\n") + "\n\n"
 }
 
