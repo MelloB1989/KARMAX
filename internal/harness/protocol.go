@@ -180,6 +180,10 @@ type Turn struct {
 	Limits   *RateLimit
 	NumTurns int
 	Err      error
+	// Late marks a background turn that is the rest of a turn whose caller
+	// stopped waiting for it (its time or its context ran out): it belongs to
+	// that caller's conversation, not to nobody.
+	Late bool
 }
 
 // userEvent is the single line written to stdin to ask a question.

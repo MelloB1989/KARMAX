@@ -77,7 +77,12 @@ const sentLinePrefix = "SENT:"
 // deliverTurnReport sends the turn's report, if the policy calls for one, and
 // keeps it on record in the app.
 func (a *Agent) deliverTurnReport(evt bus.Event, since time.Time, response string) {
-	text := a.turnReport(evt, since, response)
+	a.sendReport(a.turnReport(evt, since, response))
+}
+
+// sendReport delivers a composed report: kept in the app, and sent to the
+// operator's WhatsApp when a sender is installed. Empty sends nothing.
+func (a *Agent) sendReport(text string) {
 	if text == "" {
 		return
 	}
@@ -106,6 +111,15 @@ func (a *Agent) ReportTurn(since time.Time, response string) {
 // urgent, with what was done about it; and what was sent as them. Empty when
 // there is nothing the policy sends.
 func (a *Agent) turnReport(evt bus.Event, since time.Time, response string) string {
+	return a.reportFor(evt, since, response, urgentHeader)
+}
+
+// urgentHeader opens the report of an urgent event's turn.
+const urgentHeader = "⚠️ Urgent — "
+
+// reportFor is turnReport with the words that open an urgent event's line:
+// the page itself, or a follow-up to one already sent.
+func (a *Agent) reportFor(evt bus.Event, since time.Time, response, header string) string {
 	// The operator's own conversation reports itself: they are in it.
 	if evt.Kind == bus.EventCommsMessage {
 		if chat, _ := evt.Payload["channel_id"].(string); a.isFromOperator(chat) {
@@ -115,7 +129,7 @@ func (a *Agent) turnReport(evt bus.Event, since time.Time, response string) stri
 	p := a.operatingPolicy()
 	var b strings.Builder
 	if p.ToWhatsApp(policy.Urgent) && turnIsUrgent(evt, p) {
-		b.WriteString("⚠️ Urgent — " + eventHeadline(evt) + "\n")
+		b.WriteString(header + eventHeadline(evt) + "\n")
 		if done := strings.TrimSpace(withoutSentLines(response)); done != "" {
 			b.WriteString(truncateStr(done, 700) + "\n")
 		}

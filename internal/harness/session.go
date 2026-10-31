@@ -86,11 +86,14 @@ type Session struct {
 	// here and given to onBackground. Without this, such a turn filled the
 	// event buffer with nobody reading it, stalled the process, and its result
 	// was handed to the next caller as their reply.
-	route        sync.Mutex
-	waiting      bool       // a Send is reading events
-	bg           *bgTurn    // an unsolicited turn in progress
-	prelude      []event    // housekeeping lines seen between turns
-	onBackground func(Turn) // set before spawn; nil drops background turns
+	route   sync.Mutex
+	waiting bool    // a Send is reading events
+	bg      *bgTurn // an unsolicited (or abandoned) turn in progress
+	prelude []event // housekeeping lines seen between turns
+	// onBackground hears a finished background turn, with the OnLate of the
+	// caller that gave up on it when it is the rest of one (nil otherwise).
+	// Set before spawn; nil drops background turns.
+	onBackground func(t Turn, claim func(Turn))
 
 	// busy is true while a turn is in flight.
 	//
@@ -283,6 +286,10 @@ type bgTurn struct {
 	turn Turn
 	text strings.Builder
 	done chan struct{} // closed when the turn ends, or the process does
+	// late: the rest of a turn its caller gave up on; claim is that caller's
+	// OnLate, which hears it instead of the background handler.
+	late  bool
+	claim func(Turn)
 }
 
 // maxPrelude caps the housekeeping lines kept between turns.
@@ -349,13 +356,43 @@ func (s *Session) dispatch(ev event) bool {
 		b.turn.Text = strings.TrimSpace(b.text.String())
 	}
 	b.turn.CostUSD = s.turnCost(ev.TotalCostUSD)
+	b.turn.Late = b.late
 	close(b.done)
 	// Off the reader: a handler that sends to this same session would
 	// otherwise wait on events nobody is left to read.
-	if s.onBackground != nil {
-		go s.onBackground(b.turn)
+	switch {
+	case s.onBackground != nil:
+		go s.onBackground(b.turn, b.claim)
+	case b.claim != nil:
+		go b.claim(b.turn)
 	}
 	return true
+}
+
+// giveUp hands the turn in flight to the background path when its caller
+// stops waiting for it after it was written. The session goes on with it; what
+// it says from here — including lines already queued for the caller — is
+// assembled as a background turn marked late, and given to onLate (the
+// caller's Options.OnLate) when it ends. Without this the rest of the turn was
+// a background turn of nobody's, and its answer was lost.
+func (s *Session) giveUp(onLate func(Turn)) {
+	s.route.Lock()
+	s.waiting = false
+	if s.bg == nil {
+		s.bg = &bgTurn{done: make(chan struct{}), late: true, claim: onLate}
+	}
+	s.route.Unlock()
+	for {
+		select {
+		case ev, ok := <-s.events:
+			if !ok {
+				return
+			}
+			s.dispatch(ev)
+		default:
+			return
+		}
+	}
 }
 
 // endBackground releases anyone waiting on a background turn when the
@@ -558,6 +595,12 @@ func (t *Turn) absorb(ev event) {
 // The result event is the only reliable delimiter: text arrives in pieces, tool
 // calls interleave, and nothing else says "this exchange is over".
 func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, sink func(Event)) (Turn, error) {
+	return s.send(ctx, text, timeout, sink, nil)
+}
+
+// send is Send, with onLate to hear the rest of the turn if the caller stops
+// waiting for it once it has been written (see giveUp).
+func (s *Session) send(ctx context.Context, text string, timeout time.Duration, sink func(Event), onLate func(Turn)) (Turn, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
@@ -662,12 +705,15 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 	for {
 		select {
 		case <-ctx.Done():
+			s.giveUp(onLate)
 			return turn, ctx.Err()
 		case <-deadline.C:
 			// The session is not trustworthy after a timeout: the process may
 			// still be mid-turn and its next events would land on the wrong
 			// question. The caller resumes, which starts a clean process on the
-			// same transcript.
+			// same transcript. Whatever the process still says about this
+			// turn goes to the background path, as the rest of it (giveUp).
+			s.giveUp(onLate)
 			return turn, fmt.Errorf("harness turn timed out after %s", timeout)
 		case ev, ok := <-s.events:
 			if !ok {

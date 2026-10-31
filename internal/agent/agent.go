@@ -7,6 +7,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/comms"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
@@ -1182,7 +1183,12 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		lent := a.lentTools(evt)
 		// With the call, not parked on the brain: other conversations share it.
 		turnCtx = WithTurnContext(turnCtx, dynamicCtx)
+		// If the session finishes this turn after the call gives up on it,
+		// the rest comes back to this conversation (latereply.go).
+		var answered atomic.Bool
+		turnCtx = WithLateReply(turnCtx, a.lateReplyFor(evt, turnStart, userPrompt, answered.Load))
 		response, toolCalls, err := brain.ProcessMessageWithheld(turnCtx, userPrompt, lent, nil)
+		answered.Store(err == nil)
 		turnCancel()
 		ackCancel()
 		if err != nil {
