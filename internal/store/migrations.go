@@ -1032,6 +1032,28 @@ var migrations = []string{
 		created_at   DATETIME NOT NULL,
 		sent_at      DATETIME
 	)`,
+
+	// 036_loop_triggers — an event a loop was triggered by, owned from the
+	// moment it is delivered. The bus moves past an event as soon as the
+	// loop subscriber returns, and the run (and any queue it waits in) lived
+	// only in memory, so a crash before the run ended lost the message. The
+	// row is written before the subscriber returns and closed when the run
+	// ends; a restart replays what is still open, with its payload.
+	`CREATE TABLE IF NOT EXISTS loop_triggers (
+		trigger_key  TEXT PRIMARY KEY,
+		loop_name    TEXT NOT NULL,
+		event_id     TEXT NOT NULL,
+		conversation TEXT NOT NULL DEFAULT '',
+		kind         TEXT NOT NULL DEFAULT '',
+		payload      TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT 'pending',
+		owner        TEXT NOT NULL DEFAULT '',
+		acted        INTEGER NOT NULL DEFAULT 0,
+		attempts     INTEGER NOT NULL DEFAULT 0,
+		created_at   DATETIME NOT NULL,
+		updated_at   DATETIME NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_loop_triggers_status ON loop_triggers(status, created_at)`,
 }
 
 // schema is the translated form of `migrations` for the backend in use, built

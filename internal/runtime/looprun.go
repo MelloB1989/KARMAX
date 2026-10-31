@@ -104,6 +104,8 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 				zap.String("loop", l.Name),
 				zap.String("conversation", conversationOf(trigger)),
 				zap.Int("waiting", rt.pending.waiting(l.Name)))
+			// The queue is memory; the trigger's row is what outlives a crash.
+			rt.markTrigger(l.Name, trigger, store.LoopTriggerQueued, false)
 			return
 		}
 		rt.log.Info("loop already running; skipping this trigger",
@@ -130,6 +132,7 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 	}
 
 	started := time.Now()
+	rt.markTrigger(l.Name, trigger, store.LoopTriggerRunning, true)
 	if err := rt.store.StartLoopRun(store.LoopRun{
 		ID: runID, Loop: l.Name, Trigger: trigger.Kind,
 		Attempt: attempt, StartedAt: started,
@@ -144,6 +147,7 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 
 	if runErr == nil {
 		rt.finishExecution(l.Name, executionID)
+		rt.finishTrigger(l.Name, trigger)
 		if err := rt.store.FinishLoopRun(runID, l.Name, "ok", "", attempt, nil); err != nil {
 			rt.log.Warn("could not record loop success", zap.String("loop", l.Name), zap.Error(err))
 		}
@@ -157,6 +161,8 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 	// resumed run skip the work it already did — and no retry is scheduled,
 	// because nothing is wrong and the thing it waits for has not happened yet.
 	if loopkit.Suspended(runErr) {
+		// Its waiter, not a replay, resumes it.
+		rt.finishTrigger(l.Name, trigger)
 		if err := rt.store.FinishLoopRun(runID, l.Name, "waiting", runErr.Error(), attempt, nil); err != nil {
 			rt.log.Warn("could not record a suspended run", zap.String("loop", l.Name), zap.Error(err))
 		}
@@ -179,6 +185,7 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 		// redo what was genuinely lost, which is recoverable, where a triple
 		// send to a third party is not.
 		rt.finishExecution(l.Name, executionID)
+		rt.finishTrigger(l.Name, trigger)
 		rt.log.Error("loop failed after acting; NOT retried to avoid repeating its sends",
 			zap.String("loop", l.Name), zap.Int("sends", partial.sends), zap.Error(runErr))
 		builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "alert",
@@ -195,6 +202,8 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 		t := time.Now().Add(wait)
 		rt.log.Warn("loop deferred until the harness is available",
 			zap.String("loop", l.Name), zap.Int("attempt", attempt), zap.Time("retry_at", t), zap.Error(runErr))
+		// The message waits for the window with the loop, payload and all.
+		rt.markTrigger(l.Name, trigger, store.LoopTriggerRetry, false)
 		if err := rt.store.FinishLoopRun(runID, l.Name, "failed", msg, max(attempt-1, 1), &t); err != nil {
 			rt.log.Warn("could not record loop failure", zap.String("loop", l.Name), zap.Error(err))
 		}
@@ -211,9 +220,12 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 		builtin.PushAppNotification(rt.store, rt.loopDefaultAgent, "alert",
 			fmt.Sprintf("Loop %q failed %d times", l.Name, attempt),
 			truncErr(msg, 300))
+		rt.finishTrigger(l.Name, trigger)
 	} else {
 		t := time.Now().Add(retryDelay(attempt))
 		next = &t
+		// Retried with its message, not as a bare "retry" that has none.
+		rt.markTrigger(l.Name, trigger, store.LoopTriggerRetry, false)
 		rt.log.Warn("loop failed; retry scheduled",
 			zap.String("loop", l.Name), zap.Int("attempt", attempt),
 			zap.Time("retry_at", t), zap.Error(runErr))
@@ -340,6 +352,16 @@ func (rt *KarmaxRuntime) resumeInterruptedRuns() {
 				zap.String("loop", r.Loop))
 			continue
 		}
+		// A run about a message is resumed by replaying that message, from
+		// its trigger's row (replayLoopTriggers): a bare retry here would run
+		// the loop again with no message at all.
+		if r.Trigger == loopkit.TriggerEvent || r.Trigger == loopkit.TriggerWebhook {
+			if err := rt.store.FinishLoopRun(r.ID, r.Loop, "interrupted",
+				"the daemon stopped mid-run; its message is replayed", r.Attempt, nil); err != nil {
+				rt.log.Warn("could not close an interrupted run", zap.String("loop", r.Loop), zap.Error(err))
+			}
+			continue
+		}
 		// Soon rather than immediately: a daemon that crashed mid-run may be
 		// about to crash again, and a thundering resume makes that worse.
 		next := time.Now().Add(retryDelay(r.Attempt))
@@ -375,6 +397,10 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 	// resumed from its journal row, and its result still reaches whoever it
 	// was started for.
 	rt.resumeDelegations()
+	// Last, so a message a request already owns (recovered just above) is
+	// not answered a second time: every event a loop was triggered by and
+	// never finished with runs again, with its payload.
+	rt.replayLoopTriggers(ctx)
 	// Sub-agents ran in goroutines that died with the process, so a row still
 	// marked running is a lie that would count against the concurrency cap
 	// forever.
@@ -416,6 +442,9 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 			if _, err := rt.store.PruneLoopSteps(time.Now().AddDate(0, 0, -7)); err != nil {
 				rt.log.Warn("could not prune loop checkpoints", zap.Error(err))
 			}
+			if _, err := rt.store.PruneLoopTriggers(time.Now().AddDate(0, 0, -7)); err != nil {
+				rt.log.Warn("could not prune loop triggers", zap.Error(err))
+			}
 			// 90 days of metering: long enough to bill against, short enough
 			// not to grow forever.
 			if _, err := rt.store.PruneMeter(time.Now().AddDate(0, 0, -90)); err != nil {
@@ -442,6 +471,12 @@ func (rt *KarmaxRuntime) retryWorker(ctx context.Context) {
 				// the same retry again while this one is still running.
 				if err := rt.store.ClearLoopRetry(st.Loop); err != nil {
 					rt.log.Warn("could not clear loop retry", zap.String("loop", st.Loop), zap.Error(err))
+					continue
+				}
+				// A failed run that was about a message is retried with that
+				// message; only a run that had none is retried bare.
+				if rt.retryLoopTriggers(ctx, l) {
+					rt.log.Info("retrying a failed loop's messages", zap.String("loop", st.Loop))
 					continue
 				}
 				rt.log.Info("retrying failed loop",
