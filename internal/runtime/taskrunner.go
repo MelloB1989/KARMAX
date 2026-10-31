@@ -117,6 +117,10 @@ func (rt *KarmaxRuntime) kickTasks() {
 	}
 }
 
+// runDueTasks starts a round for each task that is due, up to tasksPerRound
+// at once. Rounds run beside each other rather than in a line: a round can
+// take a quarter of an hour, and a request that just became a task — whose
+// requester was told "on it" — must not wait for someone else's round to end.
 func (rt *KarmaxRuntime) runDueTasks(ctx context.Context) {
 	due, err := rt.store.DueTasks(time.Now(), tasksPerRound)
 	if err != nil {
@@ -129,8 +133,42 @@ func (rt *KarmaxRuntime) runDueTasks(ctx context.Context) {
 			return
 		default:
 		}
-		rt.runTaskRound(ctx, task)
+		if !rt.taskRounds.start(task.ID) {
+			continue // already in a round, or every slot is busy
+		}
+		go func(task store.Task) {
+			defer rt.taskRounds.done(task.ID)
+			rt.runTaskRound(ctx, task)
+			// A slot came free: whatever is due next need not wait a tick.
+			rt.kickTasks()
+		}(task)
 	}
+}
+
+// taskRounds are the rounds in flight, at most tasksPerRound of them, and
+// never two of one task.
+type taskRounds struct {
+	mu      sync.Mutex
+	running map[string]bool
+}
+
+func (r *taskRounds) start(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running == nil {
+		r.running = map[string]bool{}
+	}
+	if r.running[id] || len(r.running) >= tasksPerRound {
+		return false
+	}
+	r.running[id] = true
+	return true
+}
+
+func (r *taskRounds) done(id string) {
+	r.mu.Lock()
+	delete(r.running, id)
+	r.mu.Unlock()
 }
 
 // runTaskRound gives one task one turn of attention.

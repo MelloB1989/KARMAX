@@ -150,6 +150,8 @@ type KarmaxRuntime struct {
 	taskKickOnce sync.Once
 	// owedMu keeps two deliveries of owed results from racing on one row.
 	owedMu sync.Mutex
+	// taskRounds are the task rounds in flight (taskrunner.go).
+	taskRounds taskRounds
 	// messageOperator delivers text to the operator's own chat, for things
 	// that finish after whoever asked for them has gone — a call that ended
 	// before the task it handed off came back. Nil when there is no channel.
