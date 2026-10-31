@@ -43,10 +43,15 @@ type recordingBrain struct {
 
 func newRecordingBrain() *recordingBrain { return &recordingBrain{done: make(chan struct{}, 8)} }
 
-func (b *recordingBrain) ProcessMessageWithheld(_ context.Context, msg string, _ []tools.Tool, _ map[string]bool) (string, []karmahelper.ToolCallRecord, error) {
+func (b *recordingBrain) ProcessMessageWithheld(ctx context.Context, msg string, _ []tools.Tool, _ map[string]bool) (string, []karmahelper.ToolCallRecord, error) {
 	b.mu.Lock()
 	b.prompts = append(b.prompts, msg)
-	b.ctxs = append(b.ctxs, b.pending)
+	// The turn context travels with the call; a parked one is the fallback.
+	turnCtx := agent.TurnContextFrom(ctx)
+	if turnCtx == "" {
+		turnCtx = b.pending
+	}
+	b.ctxs = append(b.ctxs, turnCtx)
 	reply, calls := b.reply, b.calls
 	b.mu.Unlock()
 	b.done <- struct{}{}

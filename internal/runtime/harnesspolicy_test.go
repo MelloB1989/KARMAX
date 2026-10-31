@@ -43,6 +43,30 @@ kinds:
 	}
 }
 
+// inherit_mcp is per kind and off unless a kind says so: a session starts the
+// operator's own MCP servers only where the operator asked for them.
+func TestInheritMCPIsReadPerKind(t *testing.T) {
+	var hc config.HarnessConfig
+	src := `
+kinds:
+  task:
+    model: opus
+    inherit_mcp: true
+  extract:
+    model: sonnet
+`
+	if err := yaml.Unmarshal([]byte(src), &hc); err != nil {
+		t.Fatal(err)
+	}
+	pols := harnessPolicies(hc)
+	if !pols["task"].InheritMCP {
+		t.Error("task asked for inherit_mcp but its policy does not carry it")
+	}
+	if pols["extract"].InheritMCP {
+		t.Error("extract never asked for the operator's MCP servers but would start them")
+	}
+}
+
 // A turn the orchestrator ran by itself — an agent's report arriving while it
 // was idle — reaches the bus with what it said, what it did and what it cost.
 func TestBackgroundTurnBecomesABusEvent(t *testing.T) {

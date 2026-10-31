@@ -47,6 +47,9 @@ type Session struct {
 	// Name and Launch come from the kind's policy, fixed at spawn.
 	Name   string
 	Launch []string
+	// InheritMCP comes from the kind's policy: false spawns with
+	// --strict-mcp-config, so only MCPConfig's servers start.
+	InheritMCP bool
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
@@ -59,13 +62,15 @@ type Session struct {
 	// crashed session looked healthy and the next write hit a dead pipe.
 	exited chan struct{}
 
-	mu   sync.Mutex // one turn at a time
+	// slot holds the one turn in flight (see Send). A channel rather than a
+	// mutex so a caller waiting for it can give up when its time does.
+	slot chan struct{}
 	once sync.Once
 
-	// writeMu guards stdin specifically — separate from mu, which Send holds
+	// writeMu guards stdin specifically — separate from slot, which Send holds
 	// for an entire turn (routinely minutes). Close must be able to flush
 	// and interrupt without waiting out whatever turn is currently running,
-	// so it cannot take mu; but Close's own Flush and Send's Write+Flush
+	// so it cannot take slot; but Close's own Flush and Send's Write+Flush
 	// both call methods on the same *bufio.Writer, which is not safe for
 	// concurrent use on its own. writeMu is held only around those two brief
 	// operations — never across a whole turn — so Close stays non-blocking
@@ -92,6 +97,26 @@ type Session struct {
 	// one in the table, and both the eviction and the idle reaper would close
 	// it — which is exactly what "harness exited mid-turn" was.
 	busy atomic.Bool
+
+	// reportedCost is the process's running total_cost_usd as of its last
+	// result. The CLI reports that total, not the turn's own cost, so each
+	// turn is charged the difference (turnCost).
+	costMu       sync.Mutex
+	reportedCost float64
+}
+
+// turnCost is what a turn added, given the process's running total at its
+// end. Charging the total itself counted every earlier turn again, so a
+// session's recorded cost grew with the square of its turns.
+func (s *Session) turnCost(total float64) float64 {
+	s.costMu.Lock()
+	defer s.costMu.Unlock()
+	d := total - s.reportedCost
+	if d < 0 {
+		d = total // a total that went down started counting again
+	}
+	s.reportedCost = total
+	return d
 }
 
 // extraArgs returns the flags granting the tools in opt, for when MCPConfig
@@ -142,6 +167,12 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	if fallbackModel != "" && fallbackModel != s.Model {
 		args = append(args, "--fallback-model", fallbackModel)
 	}
+	// Only the servers KARMAX hands over (MCPConfig), not the operator's own:
+	// without this every session started a process tree for each server in
+	// their Claude Code config. Before --mcp-config, which is variadic.
+	if !s.InheritMCP {
+		args = append(args, "--strict-mcp-config")
+	}
 	// No positional prompt here to collide with; still appended last, and tested.
 	return append(args, extraArgs(Options{MCPConfig: s.MCPConfig, SystemPrompt: s.SystemPrompt})...)
 }
@@ -186,6 +217,7 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	s.pipe = stdin
 	s.stdin = bufio.NewWriter(stdin)
 	s.events = make(chan event, 64)
+	s.slot = make(chan struct{}, 1)
 	s.closed = make(chan struct{})
 	s.exited = make(chan struct{})
 
@@ -216,8 +248,26 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 }
 
 // ErrSessionBusy is a caller that gave up waiting behind a turn the session
-// started by itself. The session is healthy; it was simply busy.
+// started by itself, or one another caller is running. The session is
+// healthy; it was simply busy.
 var ErrSessionBusy = errors.New("harness: the session is busy with a turn another session asked for")
+
+// ErrTurnNotSent is a caller whose time ran out before its turn was written.
+// Nothing reached the session, which is left exactly as it was.
+var ErrTurnNotSent = errors.New("harness: the caller's time ran out before its turn was sent")
+
+// dropClaimIfIdle clears the claim open() made for a caller leaving without a
+// turn — only when no turn is running, since a running turn owns the flag and
+// clears it when it ends. Leaving it set would make an idle session look busy
+// to the reaper for good.
+func (s *Session) dropClaimIfIdle() {
+	select {
+	case s.slot <- struct{}{}:
+		s.busy.Store(false)
+		<-s.slot
+	default:
+	}
+}
 
 // bgTurn is an unsolicited turn being assembled by the reader.
 type bgTurn struct {
@@ -289,6 +339,7 @@ func (s *Session) dispatch(ev event) bool {
 	if ev.Result == "" {
 		b.turn.Text = strings.TrimSpace(b.text.String())
 	}
+	b.turn.CostUSD = s.turnCost(ev.TotalCostUSD)
 	close(b.done)
 	// Off the reader: a handler that sends to this same session would
 	// otherwise wait on events nobody is left to read.
@@ -498,18 +549,33 @@ func (t *Turn) absorb(ev event) {
 // The result event is the only reliable delimiter: text arrives in pieces, tool
 // calls interleave, and nothing else says "this exchange is over".
 func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, sink func(Event)) (Turn, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	// One turn at a time: the protocol has no request ids. A caller waits for
+	// the turn ahead of it the way it waits out one the session started by
+	// itself — no longer than its own context or the turn timeout. A plain
+	// mutex here ignored both, so a caller whose time had run out still wrote
+	// its message once the lock came free, and the error that followed killed
+	// the session in the middle of the turn it had just started.
+	select {
+	case s.slot <- struct{}{}:
+	case <-ctx.Done():
+		s.dropClaimIfIdle()
+		return Turn{}, fmt.Errorf("%w: %w", ErrSessionBusy, ctx.Err())
+	case <-deadline.C:
+		s.dropClaimIfIdle()
+		return Turn{}, fmt.Errorf("%w (another caller's turn still running after %s)", ErrSessionBusy, timeout)
+	}
+	defer func() { <-s.slot }()
 	s.busy.Store(true)
 	defer s.busy.Store(false)
 
+	// Inside the slot, so this return clears open()'s claim like every other.
 	line, err := userEvent(text)
 	if err != nil {
 		return Turn{}, err
 	}
-
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
 
 	var turn Turn
 	// A turn the session started by itself is finished before this one is
@@ -554,6 +620,12 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 		default:
 			drained = true
 		}
+	}
+	// The last moment nothing has been written. A caller whose time is gone
+	// leaves the session as it found it: a turn written now is one nobody
+	// will read, and the error after it would cost the session.
+	if err := ctx.Err(); err != nil {
+		return turn, fmt.Errorf("%w: %w", ErrTurnNotSent, err)
 	}
 	// The wait above is not this turn's own time.
 	if !deadline.Stop() {
@@ -611,6 +683,7 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 				if ev.Result == "" {
 					turn.Text = strings.TrimSpace(sb.String())
 				}
+				turn.CostUSD = s.turnCost(ev.TotalCostUSD)
 				return turn, turn.Err
 			}
 		}

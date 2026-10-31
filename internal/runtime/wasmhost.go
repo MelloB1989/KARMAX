@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -59,6 +61,13 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 		if !e.Enabled || disabled[e.Name] {
 			continue
 		}
+		// A compiled-in source now does this workflow's job; running both
+		// would act on the same message twice. See nativeReplacements.
+		if supersededByNative(e.Name, os.Getenv) {
+			rt.log.Info("installed loop stands down for the compiled-in source that replaces it",
+				zap.String("loop", e.Name), zap.String("switch", nativeReplacements[e.Name]+"=off runs it again"))
+			continue
+		}
 		// Verified again on load, against the lockfile rather than only against
 		// the file's own manifest — a wholesale replacement would otherwise be
 		// self-consistent and pass.
@@ -109,6 +118,7 @@ func (rt *KarmaxRuntime) startWasmLoops(ctx context.Context) map[bus.EventKind][
 					kind = loopkit.TriggerManual
 				}
 				wk.outbound.Store(0)
+				wk.setTrigger(loopkit.Trigger{Kind: kind, Payload: t.Payload})
 				err := runner.RunTriggered(c, loopRunTimeout, kind, t.Payload)
 				// A failure after the run has already messaged somebody is not
 				// retryable: the retry re-composes and re-sends. Observed as
@@ -221,14 +231,40 @@ type wasmKit struct {
 	// count exists because retrying is only safe for work that has not
 	// happened yet, and the host had no way to know the difference.
 	outbound atomic.Int64
+
+	// trigger is why the current run happened. Runs of one loop are
+	// single-flight (a lease), so there is one at a time. Carried into every
+	// kit built for the run, so a model call knows who sent the message behind
+	// it — see loopidentity.go.
+	trigMu  sync.Mutex
+	trigger loopkit.Trigger
 }
 
-func (w *wasmKit) mem() *loopKit {
+func (w *wasmKit) setTrigger(t loopkit.Trigger) {
+	w.trigMu.Lock()
+	w.trigger = t
+	w.trigMu.Unlock()
+}
+
+func (w *wasmKit) currentTrigger() loopkit.Trigger {
+	w.trigMu.Lock()
+	defer w.trigMu.Unlock()
+	return w.trigger
+}
+
+// base is the run's kit without memory.
+func (w *wasmKit) base() *loopKit {
 	return &loopKit{
 		loopName: w.loop, agentID: w.rt.loopDefaultAgent,
 		namespace: w.rt.loopNamespace(), rt: w.rt,
-		mem: w.rt.memory.For(w.rt.loopDefaultAgent, w.rt.loopNamespace()),
+		trigger: w.currentTrigger(),
 	}
+}
+
+func (w *wasmKit) mem() *loopKit {
+	k := w.base()
+	k.mem = w.rt.memory.For(w.rt.loopDefaultAgent, w.rt.loopNamespace())
+	return k
 }
 
 func (w *wasmKit) Recall(query string, limit int) ([]string, error) {
@@ -502,6 +538,8 @@ var outboundTools = map[string]bool{
 	"comms_send": true, "comms_escalate": true,
 	"whatsapp_place_call": true, "call_start": true,
 	"x_post": true, "linkedin_post": true, "instagram_post": true,
+	// Google Chat messages, and calendar changes Google mails to the guests.
+	"gchat_send": true, "gcal_respond": true, "gcal_reschedule": true, "gcal_create": true,
 }
 
 // Session gives a signed loop the same long-lived harness conversation the

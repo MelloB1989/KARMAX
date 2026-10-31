@@ -99,13 +99,7 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 	// pending-task/. subjectKey pulls them back together regardless of folder,
 	// which is the only grouping that puts a real duplicate cluster in one
 	// batch.
-	bySubject := map[string][]store.StoredMemoryEntry{}
-	for _, e := range entries {
-		if e.Pinned {
-			continue
-		}
-		bySubject[subjectKey(e)] = append(bySubject[subjectKey(e)], e)
-	}
+	bySubject := mergeable(entries)
 
 	mg.log.Info("memory-merge: surveyed", zap.Int("entries", len(entries)), zap.Int("subjects", len(bySubject)))
 
@@ -382,6 +376,22 @@ func subjectKey(e store.StoredMemoryEntry) string {
 		key = strings.Join(words, "-")
 	}
 	return key
+}
+
+// mergeable groups what may be merged by subject. Pinned facts are never
+// merged, and neither is a loop's log: two runs that found the same thing are
+// two runs, not a duplicate, and consolidating them rewrote the record at the
+// cost of a forget and a write per line.
+func mergeable(entries []store.StoredMemoryEntry) map[string][]store.StoredMemoryEntry {
+	out := map[string][]store.StoredMemoryEntry{}
+	for _, e := range entries {
+		if e.Pinned || memory.IsLoopLogPath(e.ID) {
+			continue
+		}
+		k := subjectKey(e)
+		out[k] = append(out[k], e)
+	}
+	return out
 }
 
 func isHex(s string) bool {

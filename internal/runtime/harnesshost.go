@@ -124,9 +124,7 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 	// sessions directory. CLAUDE.md merges upward from the working directory,
 	// so putting it here reaches every session wherever a workflow chooses to
 	// run one — including wa-sessions/, which is not under the default root.
-	if err := writeRootBrief(hostDataDir()); err != nil {
-		rt.log.Warn("harness: could not write the shared session brief", zap.Error(err))
-	}
+	rt.refreshRootBrief()
 
 	// browserMCPCache wraps the same shared session browserMCPConfig used to
 	// probe directly, so chatTurn and harnessSenderFor.Send get it cached.
@@ -182,6 +180,7 @@ func harnessPolicies(hc config.HarnessConfig) map[string]harness.Policy {
 			Launch:      k.Launch,
 			Name:        k.Name,
 			Resident:    k.Resident,
+			InheritMCP:  k.InheritMCP,
 		}
 	}
 	return policies
@@ -269,16 +268,37 @@ func (rt *KarmaxRuntime) startHarnessReaper(ctx context.Context) {
 // one, and a workflow's own file adds to it rather than replacing it.
 //
 // It says nothing about any particular integration. Whose assistant a session
-// is, and what it may do on someone's behalf, is the workflow's to state.
-func writeRootBrief(root string) error { //nolint:revive // root is the data dir
+// is, and what it may do on someone's behalf, is the workflow's to state — with
+// one exception: who the operator is. who is the configured who-is-who
+// (identity.Directory.Brief), placed right after the opening so it reaches
+// every session ahead of anything a workflow, a thread or memory says. Empty
+// leaves the brief as it was.
+func writeRootBrief(root, who string) error { //nolint:revive // root is the data dir
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
+	content := rootBrief
+	if who = strings.TrimSpace(who); who != "" {
+		const after = "## Reaching KARMAX"
+		if i := strings.Index(content, after); i >= 0 {
+			content = content[:i] + who + "\n\n" + content[i:]
+		} else {
+			content += "\n" + who + "\n"
+		}
+	}
 	path := filepath.Join(root, "CLAUDE.md")
-	if old, err := os.ReadFile(path); err == nil && string(old) == rootBrief {
+	if old, err := os.ReadFile(path); err == nil && string(old) == content {
 		return nil
 	}
-	return os.WriteFile(path, []byte(rootBrief), 0o644)
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// refreshRootBrief rewrites the shared brief with the current who-is-who —
+// at start, and again when the linked account becomes known.
+func (rt *KarmaxRuntime) refreshRootBrief() {
+	if err := writeRootBrief(hostDataDir(), rt.who.Brief()); err != nil {
+		rt.log.Warn("harness: could not write the shared session brief", zap.Error(err))
+	}
 }
 
 const rootBrief = `# You are running inside KARMAX
@@ -576,19 +596,27 @@ func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (age
 		MCPConfig:    browserMCPConfig(ctx, h.browser, kind),
 		SystemPrompt: h.prompts[key],
 	})
+	calls := make([]agent.HarnessToolCall, 0, len(turn.ToolCalls))
+	for _, tc := range turn.ToolCalls {
+		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input, Failed: tc.Failed})
+	}
 	if err != nil {
 		var open harness.ErrBreakerOpen
 		if asBreakerOpen(err, &open) {
 			// Not an error to the caller: the brain falls back on this.
 			return agent.HarnessTurn{Available: false, Reason: open.Reason}, nil
 		}
-		return agent.HarnessTurn{Available: false, Reason: err.Error()}, err
-	}
-	calls := make([]agent.HarnessToolCall, 0, len(turn.ToolCalls))
-	for _, tc := range turn.ToolCalls {
-		calls = append(calls, agent.HarnessToolCall{Name: tc.Name, Input: tc.Input, Failed: tc.Failed})
+		// What the turn did before it failed travels with the failure: the
+		// brain must not hand a turn that already acted to its fallback.
+		return agent.HarnessTurn{Available: false, Reason: err.Error(), ToolCalls: calls}, err
 	}
 	return agent.HarnessTurn{Available: true, Text: turn.Text, ToolCalls: calls}, nil
+}
+
+// TurnBudget is the longest a turn of kind can take, for the brain to bound
+// its turn by rather than by a figure of its own.
+func (h harnessSenderFor) TurnBudget(kind string) time.Duration {
+	return h.sup.TurnBudget(kind)
 }
 
 // wireHarnessBrains points each agent's thinking at a harness session.

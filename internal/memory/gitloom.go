@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,8 @@ type gitloomBackend struct {
 	pmu       sync.Mutex
 	pathLocks map[string]*sync.Mutex
 	pending   map[string]pendingWrite
+	// logFull is, per loop-log month, the last part known to be full.
+	logFull map[string]int
 }
 
 // GitLoomConfigFromEnv reads the remote memory settings. Returns ok=false when
@@ -112,6 +115,7 @@ func newGitLoomBackend(cfg GitLoomConfig, log *zap.Logger) *gitloomBackend {
 
 		pathLocks: map[string]*sync.Mutex{},
 		pending:   map[string]pendingWrite{},
+		logFull:   map[string]int{},
 	}
 }
 
@@ -148,6 +152,7 @@ func (g *gitloomBackend) put(ctx context.Context, m gitloom.NewMemory, occurred 
 		g.setHealth(false, err)
 		return err
 	}
+	g.log.Debug("gitloom: wrote", zap.String("path", m.Path), zap.Int("bytes", len(m.Content)))
 	g.remember(m, occurred, sentAt)
 	g.setHealth(true, nil)
 	return nil
@@ -182,13 +187,74 @@ func (g *gitloomBackend) write(ctx context.Context, e MemoryEntry, path string, 
 		g.setHealth(false, err)
 		return err
 	}
+	if IsLoopLog(e) {
+		return g.writeLog(cctx, e, path, related)
+	}
+	_, err := g.writeAt(cctx, e, path, related, 0)
+	return err
+}
+
+// writeAt folds one memory into the document at path and writes the result,
+// unless it would change nothing. With a limit, a document the memory would
+// take past it is left as it is and reported full; a document with nothing
+// in it yet takes the memory whatever its size.
+func (g *gitloomBackend) writeAt(ctx context.Context, e MemoryEntry, path string, related []string, limit int) (full bool, err error) {
 	defer g.lockPath(path)()
-	merged, occurred, err := g.foldOntoStored(cctx, ToGitLoom(e, path, related), EventTime(e))
+	m := ToGitLoom(e, path, related)
+	merged, occurred, changed, err := g.foldOntoStored(ctx, m, EventTime(e))
 	if err != nil {
 		g.setHealth(false, err)
-		return err
+		return false, err
 	}
-	return g.put(cctx, merged, occurred)
+	if !changed {
+		g.skipped(path)
+		return false, nil
+	}
+	// Longer than the memory alone means it was folded onto what is there.
+	if limit > 0 && len(merged.Content) > limit && !sameText(merged.Content, m.Content) {
+		return true, nil
+	}
+	return false, g.put(ctx, merged, occurred)
+}
+
+// writeLog files a loop's log entry in the first part of its month's log with
+// room for it. See CategoryLog.
+func (g *gitloomBackend) writeLog(ctx context.Context, e MemoryEntry, base string, related []string) error {
+	for part := g.openLogPart(base); part <= maxLogParts; part++ {
+		full, err := g.writeAt(ctx, e, logPart(base, part), related, logDocCap)
+		if err != nil || !full {
+			return err
+		}
+		g.logPartFull(base, part)
+	}
+	return fmt.Errorf("gitloom: %s has %d full parts; refusing to start another", base, maxLogParts)
+}
+
+// maxLogParts stops a log that cannot be read right from probing forever.
+const maxLogParts = 500
+
+// openLogPart is the first part of a log not known to be full. Remembered
+// rather than found by reading each time: reads are not monotonic, and a
+// reader still serving a part from before it filled would take it back.
+func (g *gitloomBackend) openLogPart(base string) int {
+	g.pmu.Lock()
+	defer g.pmu.Unlock()
+	return g.logFull[base] + 1
+}
+
+func (g *gitloomBackend) logPartFull(base string, part int) {
+	g.pmu.Lock()
+	defer g.pmu.Unlock()
+	if part > g.logFull[base] {
+		g.logFull[base] = part
+	}
+}
+
+// skipped records a write that would have changed nothing. Every write makes
+// the store re-upload the whole repository and its index, so one that says
+// only what is already there is not sent at all.
+func (g *gitloomBackend) skipped(path string) {
+	g.log.Debug("gitloom: write skipped; the store already holds it", zap.String("path", path))
 }
 
 // forget removes a document, or ONE dated fact in one ("file.md#slug"), and
@@ -271,39 +337,121 @@ const forgetPoll = 100 * time.Millisecond
 // as "nothing to preserve" — which is exactly what happened when an older API
 // returned only the text before the first ## header for a file written
 // entirely as sections.
-func (g *gitloomBackend) foldOntoStored(ctx context.Context, m gitloom.NewMemory, at time.Time) (gitloom.NewMemory, time.Time, error) {
+//
+// changed is false when the result would say nothing the store does not
+// already hold — the fact is there, and so is every tag, cue and link — and
+// then nothing should be sent. The comparison is with the document as KARMAX
+// knows it (see current), so a fact just written counts as held before the
+// store has caught up, and a fact just forgotten does not.
+func (g *gitloomBackend) foldOntoStored(ctx context.Context, m gitloom.NewMemory, at time.Time) (merged gitloom.NewMemory, occurred time.Time, changed bool, err error) {
 	existing, err := g.current(ctx, m.Path)
 	switch {
 	case isAbsent(err):
-		return m, at, nil // first memory about this subject
+		return m, at, true, nil // first memory about this subject
 	case err != nil:
-		return m, at, fmt.Errorf("gitloom: could not read %s to preserve it: %w", m.Path, err)
+		return m, at, false, fmt.Errorf("gitloom: could not read %s to preserve it: %w", m.Path, err)
 	case existing == nil || strings.TrimSpace(existing.Content) == "":
-		return m, at, fmt.Errorf("gitloom: %s read back empty; refusing to overwrite what is there", m.Path)
+		return m, at, false, fmt.Errorf("gitloom: %s read back empty; refusing to overwrite what is there", m.Path)
 	}
-	merged := AppendSection(existing.Content, m, at, g.loc)
+	ownTTL := m.TTL
+	merged = AppendSection(existing.Content, m, at, g.loc)
 	merged.Tags = unionTags(userTags(existing), merged.Tags)
 	merged.Cues = unionStrings(existing.Cues, merged.Cues, 5)
 	merged.Related = unionStrings(existing.Related, merged.Related, 32)
 	keepExpiry(&merged, existing)
+	if sameText(merged.Content, existing.Content) {
+		// No fact was added, so the document is no newer than it was, and no
+		// less certain: saying a fact again is not news, and dating the file by
+		// the repeat made a loop's every run look like fresh information.
+		merged.Confidence = max(merged.Confidence, existing.Confidence)
+		merged.OccurredAt = gitloom.When{}
+		if !existing.OccurredAt.IsZero() {
+			merged.OccurredAt = gitloom.At(existing.OccurredAt)
+		}
+		return merged, existing.OccurredAt, !holds(existing, merged, ownTTL), nil
+	}
 	// The file is dated by its newest fact.
 	latest := laterOf(existing.OccurredAt, at)
 	if !latest.IsZero() {
 		merged.OccurredAt = gitloom.At(latest)
 	}
-	return merged, latest, nil
+	return merged, latest, true, nil
+}
+
+// sameText reports two bodies that differ at most in surrounding whitespace.
+func sameText(a, b string) bool { return strings.TrimSpace(a) == strings.TrimSpace(b) }
+
+// holds reports whether the store already holds everything a write of m would
+// set. ownTTL is the expiry the write itself asks for, as opposed to one
+// restated from what is stored.
+func holds(existing *gitloom.StoredMemory, m gitloom.NewMemory, ownTTL string) bool {
+	return sameText(existing.Content, m.Content) &&
+		sameSet(userTags(existing), m.Tags, cleanTag) &&
+		sameSet(existing.Cues, m.Cues, foldKey) &&
+		sameSet(existing.Related, m.Related, foldKey) &&
+		(m.Confidence == 0 || m.Confidence == existing.Confidence) &&
+		(ownTTL == "" || ownTTL == ttlLeft(existing.ExpiresAt))
+}
+
+func foldKey(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+// sameSet compares two lists as sets of their keys, ignoring empty ones.
+func sameSet(a, b []string, key func(string) string) bool {
+	set := func(l []string) map[string]bool {
+		out := map[string]bool{}
+		for _, s := range l {
+			if k := key(s); k != "" {
+				out[k] = true
+			}
+		}
+		return out
+	}
+	x, y := set(a), set(b)
+	if len(x) != len(y) {
+		return false
+	}
+	for k := range x {
+		if !y[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // keepExpiry carries an incident's remaining time into a rewrite of it. The
 // write replaces the whole file, frontmatter included, so a fold that does not
 // restate the TTL makes a time-bound task permanent.
 func keepExpiry(m *gitloom.NewMemory, existing *gitloom.StoredMemory) {
-	if m.TTL != "" || existing.ExpiresAt.IsZero() || !strings.HasPrefix(m.Path, "incidents/") {
+	if m.TTL != "" || !strings.HasPrefix(m.Path, "incidents/") {
 		return
 	}
-	if left := time.Until(existing.ExpiresAt); left > 0 {
-		m.TTL = fmt.Sprintf("%dd", int(left.Hours()/24)+1)
+	m.TTL = ttlLeft(existing.ExpiresAt)
+}
+
+// ttlLeft restates an expiry as a TTL: the whole days left, rounded up. Empty
+// for none, or one already past.
+func ttlLeft(expires time.Time) string {
+	if expires.IsZero() {
+		return ""
 	}
+	left := time.Until(expires)
+	if left <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%dd", int(left.Hours()/24)+1)
+}
+
+// ttlExpiry is when a TTL written now runs out; zero for one KARMAX does not write.
+func ttlExpiry(ttl string, from time.Time) time.Time {
+	days, ok := strings.CutSuffix(strings.TrimSpace(ttl), "d")
+	if !ok {
+		return time.Time{}
+	}
+	n, err := strconv.Atoi(days)
+	if err != nil || n <= 0 {
+		return time.Time{}
+	}
+	return from.Add(time.Duration(n) * 24 * time.Hour)
 }
 
 // isNotFound reports the API's "no memory at that path", which is the normal

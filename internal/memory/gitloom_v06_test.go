@@ -294,6 +294,20 @@ type slowStore struct {
 	lag       time.Duration
 	snaps     []storeSnap
 	freshNext bool
+	// posts counts the writes that reached the store.
+	posts atomic.Int32
+	// meta is each document's frontmatter, kept as the store keeps it.
+	meta map[string]storeMeta
+}
+
+// storeMeta is the frontmatter a write sets and a read returns.
+type storeMeta struct {
+	Tags       []string `json:"tags"`
+	Cues       []string `json:"cues"`
+	Related    []string `json:"related"`
+	Confidence float64  `json:"confidence"`
+	OccurredAt int64    `json:"occurred_at"`
+	TTL        string   `json:"ttl"`
 }
 
 type storeSnap struct {
@@ -337,9 +351,13 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"status": "ok"})
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/memories":
 		var body struct {
-			Memories []struct{ Path, Content string } `json:"memories"`
+			Memories []struct {
+				Path, Content string
+				storeMeta
+			} `json:"memories"`
 		}
 		_ = decodeJSON(r, &body)
+		s.posts.Add(1)
 		s.wg.Add(1)
 		s.mu.Lock()
 		before, mine := s.prev, make(chan struct{})
@@ -355,6 +373,10 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 			s.mu.Lock()
 			for _, m := range body.Memories {
 				s.files[m.Path] = m.Content
+				if s.meta == nil {
+					s.meta = map[string]storeMeta{}
+				}
+				s.meta[m.Path] = m.storeMeta
 			}
 			s.snap()
 			s.mu.Unlock()
@@ -379,10 +401,12 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 				file, slug, isSection := strings.Cut(p, "#")
 				if !isSection {
 					delete(s.files, file)
+					delete(s.meta, file)
 					continue
 				}
 				if rest := cutSection(s.files[file], slug); strings.TrimSpace(rest) == "" {
 					delete(s.files, file)
+					delete(s.meta, file)
 				} else {
 					s.files[file] = rest
 				}
@@ -397,6 +421,7 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 		file, slug, isSection := strings.Cut(p, "#")
 		s.mu.Lock()
 		c, ok := s.view(p)[file]
+		meta := s.meta[file]
 		s.mu.Unlock()
 		title := ""
 		if ok && isSection {
@@ -412,7 +437,12 @@ func (s *slowStore) handler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"error": map[string]any{"code": "not_found", "message": "no memory"}})
 			return
 		}
-		writeJSON(w, map[string]any{"path": p, "title": title, "content": c, "updated_at": time.Now().Unix() - 3600})
+		out := map[string]any{"path": p, "title": title, "content": c, "updated_at": time.Now().Unix() - 3600,
+			"user_tags": meta.Tags, "cues": meta.Cues, "related": meta.Related, "confidence": meta.Confidence}
+		if meta.OccurredAt != 0 {
+			out["occurred_at"] = meta.OccurredAt
+		}
+		writeJSON(w, out)
 	default:
 		http.NotFound(w, r)
 	}

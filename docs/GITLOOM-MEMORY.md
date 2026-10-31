@@ -151,3 +151,22 @@ provenance.
 3. KARMAX: GitLoom backend, outbox, namespace routing, config. ✅
 4. Migration: 684 entries + links + 69 chat summaries + the profile. ✅
 5. Comparison. ✅
+
+## How KARMAX writes
+
+Every write makes the store re-upload the whole repository and its index, so
+what is written is kept to what changes something.
+
+- **A write that changes nothing is not sent.** A fact is folded into the
+  document about its subject. When the document already holds it, and every
+  tag, cue and link the write carries, nothing is sent. The comparison is
+  against the document as KARMAX knows it, which includes what it has just
+  written or forgotten and the store has not yet caught up with. A fold that
+  adds no fact never redates the document (`occurred_at` stays the date of
+  its newest fact) and never lowers its confidence.
+- **A loop's record is a log, not a fact.** What a loop remembers about a run
+  (`memory.LoopLog`, category `log`) is filed by month, at
+  `facts/context/<loop>/<yyyy-mm>.md`. A month that reaches 96 KB continues in
+  `<yyyy-mm>-part-2.md` and so on, so no document of any loop's log grows
+  towards the store's 256 KB request limit. Logs filed before this policy, at
+  `facts/context/<loop>.md`, stop growing.

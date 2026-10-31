@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -215,4 +216,11 @@ func withoutRequestHeaders(payload map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+// TurnContextFrom is the turn context a call carries (WithTurnContext), for a
+// Brain implemented outside this package.
+func TurnContextFrom(ctx context.Context) string {
+	s, _ := turnContextFrom(ctx)
+	return s
 }

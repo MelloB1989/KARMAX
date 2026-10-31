@@ -25,6 +25,10 @@ type WhatsAppReadTool struct {
 	WacliPath   string       // path to the wacli binary
 	DefaultChat string       // chat used when none is specified
 	Store       *store.Store // optional: resolves WhatsApp numbers -> saved contact names
+	// Label, when set, says who wrote each message — the operator, KARMAX, or
+	// someone else — from the account it came from. A saved contact name is
+	// only a label and can be wrong about whose account it is.
+	Label SpeakerLabeller
 }
 
 func (t *WhatsAppReadTool) Manifest() tools.ToolManifest {
@@ -131,13 +135,16 @@ func (t *WhatsAppReadTool) resolveJID(jid string) string {
 // enrichMessages adds saved contact names (sender_name / chat_name) to wacli
 // message objects so the agent sees people by name, not number.
 func (t *WhatsAppReadTool) enrichMessages(v any) any {
-	if t.Store == nil {
+	if t.Store == nil && t.Label == nil {
 		return v
 	}
 	add := func(m map[string]any) {
 		if sj, ok := m["sender_jid"].(string); ok {
 			if name := t.resolveJID(sj); name != "" {
 				m["sender_name"] = name
+			}
+			if t.Label != nil {
+				t.Label(context.Background(), m)
 			}
 		}
 		if cj, ok := m["chat_jid"].(string); ok {

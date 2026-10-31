@@ -74,14 +74,15 @@ func TestASessionWithHistoryIsResumed(t *testing.T) {
 	const live = "7d038337-e2a5-4008-a8f5-1eca783d6d5d"
 	now := time.Now()
 	_ = st.SaveHarnessSession(SessionRecord{Key: "agent:nexus", HarnessSessionID: live, Kind: "chat",
-		State: "closed", StartedAt: now, LastActivityAt: now, Turns: 503})
+		State: "closed", StartedAt: now, LastActivityAt: now, Turns: 150})
 
+	// Within the default turn limit, which the policy below leaves unset.
 	sup := supervisorWith(t, bin, st)
 	if _, err := sup.Send(context.Background(), "agent:nexus", "chat", "hello"); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if args := readArgs(t, argsFile); !strings.Contains(args, "--resume "+live) {
-		t.Fatalf("a session with 503 turns was not resumed: %s", args)
+		t.Fatalf("a session with 150 turns was not resumed: %s", args)
 	}
 }
 

@@ -100,7 +100,14 @@ harness:
 
 `max_turns` and `max_cost_usd` are per-session circuit breakers — a session that
 exceeds either is closed and its caller told, so one runaway conversation cannot
-drain a window.
+drain a window. A kind that leaves `max_turns` out (or is not listed at all)
+gets 200: without a bound, a session resumes the same transcript forever and
+every turn re-reads all of it. `max_turns: -1` asks for no limit.
+
+A session starts only the MCP servers KARMAX passes it (`--strict-mcp-config`),
+not the ones in the operator's own Claude Code config: those started as a
+process tree per session, whether or not a session ever called one. A kind
+whose work needs them says `inherit_mcp: true`.
 
 ### Concurrency
 

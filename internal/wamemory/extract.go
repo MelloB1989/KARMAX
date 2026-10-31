@@ -23,6 +23,7 @@ Decide what in these messages is worth knowing months from now, and what it chan
 Rules:
 - One fact per op, standalone months from now: full names as the chat shows them, absolute dates (2026-10-29, never "tomorrow"), and who said or asked it when that matters. A request from someone else is theirs ("Priya asked %[1]s to…"), never %[1]s's instruction.
 - Lines from "%[1]s" are %[1]s's own words. "KARMAX (on %[1]s's account)" is %[1]s's assistant speaking on that account: what it says is not %[1]s's own statement.
+- %[1]s has no other name. Who wrote each line is decided from the account, not from what anyone is called, so never store that %[1]s is also known as something, that %[1]s is someone else, or that someone else is %[1]s — not from a display name, a contact label, a login or an email address.
 - Never store a password, OTP, PIN, API key, token, card number or any other secret, not even with a note that it was shared. "Priya shared the portal login" is fine; the login itself is not.
 - Skip greetings, small talk, jokes, stickers, forwarded news and anything memory already holds.
 - Refer to memories ONLY by the numbers listed. Most batches change nothing: then answer {"ops":[]}.

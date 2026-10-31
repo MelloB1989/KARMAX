@@ -18,10 +18,27 @@ type StoredReview struct {
 	Context    string
 	Status     string // open | resolved | dismissed
 	Answer     string
-	Resolution string // kept | updated | forgotten | done | dropped
+	Resolution string // kept | updated | forgotten | done | dropped | expired
+	// CreatedAt is when the question was asked; zero means now.
 	CreatedAt  time.Time
 	ResolvedAt *time.Time
 }
+
+// ResolutionExpired closes a question that went unanswered for too long. It is
+// the reviewer's, not the operator's: no answer is recorded, nothing is done to
+// the memory, and an answer that arrives afterwards is still taken.
+const ResolutionExpired = "expired"
+
+// Answerable reports whether an answer to this review is still taken: it is
+// open, or it expired without one. A review the operator answered keeps that
+// answer.
+func (r StoredReview) Answerable() bool {
+	return r.Status == "open" || (r.Resolution == ResolutionExpired && r.Answer == "")
+}
+
+// sqliteTime is how datetime('now') writes a time, which is what the
+// review columns are compared as.
+func sqliteTime(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") }
 
 // CreateReview inserts a new open review. The unique (namespace, dedup_key)
 // index makes this a no-op-with-error for an item already asked about, so the
@@ -33,12 +50,51 @@ func (s *Store) CreateReview(r StoredReview) error {
 	if r.Status == "" {
 		r.Status = "open"
 	}
+	created := sqliteTime(time.Now())
+	if !r.CreatedAt.IsZero() {
+		created = sqliteTime(r.CreatedAt)
+	}
 	_, err := s.exec(
-		`INSERT INTO reviews (id, namespace, target_kind, target_id, dedup_key, question, options, context, status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Namespace, r.TargetKind, r.TargetID, r.DedupKey, r.Question, r.Options, r.Context, r.Status,
+		`INSERT INTO reviews (id, namespace, target_kind, target_id, dedup_key, question, options, context, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Namespace, r.TargetKind, r.TargetID, r.DedupKey, r.Question, r.Options, r.Context, r.Status, created,
 	)
 	return err
+}
+
+// ExpireReviews closes the questions in a namespace asked before cutoff and
+// still unanswered, as dismissed with resolution "expired", and reports how
+// many. An expired question frees its slot under the open-question cap, which
+// is otherwise held for as long as the operator does not answer.
+func (s *Store) ExpireReviews(namespace string, cutoff time.Time) (int64, error) {
+	res, err := s.exec(
+		`UPDATE reviews SET status = 'dismissed', resolution = ?, resolved_at = datetime('now')
+		 WHERE namespace = ? AND status = 'open' AND created_at < ?`,
+		ResolutionExpired, namespace, sqliteTime(cutoff),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ListAnswerableReviews returns the open reviews, then those that expired
+// unanswered since expiredSince, each oldest first.
+func (s *Store) ListAnswerableReviews(namespace string, expiredSince time.Time, limit int) ([]StoredReview, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.query(
+		`SELECT id, namespace, target_kind, target_id, dedup_key, question, options, context, status, answer, resolution, created_at, resolved_at
+		 FROM reviews WHERE namespace = ? AND (status = 'open' OR (resolution = ? AND answer = '' AND resolved_at >= ?))
+		 ORDER BY status = 'open' DESC, created_at ASC LIMIT ?`,
+		namespace, ResolutionExpired, sqliteTime(expiredSince), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanReviews(rows)
 }
 
 // HasReview reports whether a review with this dedup key already exists in the
@@ -91,17 +147,19 @@ func (s *Store) GetReview(id string) (*StoredReview, error) {
 }
 
 // ResolveReview closes a review with the operator's answer and what was done
-// (kept/updated/forgotten/done/dropped). Idempotent-ish: only affects an open
-// review, so answering from a second channel after the first is a harmless
-// no-op ("reply anywhere → dismiss everywhere").
+// (kept/updated/forgotten/done/dropped). Idempotent-ish: only affects a review
+// still waiting for an answer — open, or expired without one — so answering
+// from a second channel after the first is a harmless no-op ("reply anywhere →
+// dismiss everywhere"), and an answer that comes after the question expired is
+// kept rather than lost.
 func (s *Store) ResolveReview(id, status, answer, resolution string) error {
 	if status == "" {
 		status = "resolved"
 	}
 	_, err := s.exec(
 		`UPDATE reviews SET status = ?, answer = ?, resolution = ?, resolved_at = datetime('now')
-		 WHERE id = ? AND status = 'open'`,
-		status, answer, resolution, id,
+		 WHERE id = ? AND (status = 'open' OR (resolution = ? AND answer = ''))`,
+		status, answer, resolution, id, ResolutionExpired,
 	)
 	return err
 }
