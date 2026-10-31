@@ -17,15 +17,15 @@ const (
 
 // alwaysDenied are the tools no agent reaches through fleetd, whatever
 // karmax.tools says: a shell, files and raw HTTP on KARMAX's host, its
-// harness, tasks, schedules and proposals, the org's operations, writes to
-// memory (the orchestrator alone writes it), credentials and secrets, the
-// fleet itself, and anything that runs code or starts an agent (a coding
-// harness, a sandbox, a subagent, the orchestrator). A trailing * is a
-// prefix, a leading * a suffix.
+// harness, tasks, schedules and proposals, writes to memory (the
+// orchestrator alone writes it), credentials and secrets, the fleet itself,
+// and anything that runs code or starts an agent (a coding harness, a
+// subagent, the orchestrator). A trailing * is a prefix, a leading * a
+// suffix.
 var alwaysDenied = []string{
 	"shell.exec", "file.*", "http.request", "harness.*", "task.*", "scheduler.*",
-	"proposal.*", "orgops*", "memory.ingest", "memory.forget",
-	"claude_code.call", "codex.call", "subagent.spawn", "sandbox.start", "orchestrator.send",
+	"proposal.*", "memory.ingest", "memory.forget",
+	"claude_code.call", "subagent.spawn", "orchestrator.send",
 	"*.exec", "*.run", "*.spawn",
 }
 
@@ -35,8 +35,6 @@ var alwaysDenied = []string{
 var knownReads = map[string]bool{
 	"activity.recent": true, "cost.report": true, "karmax.capabilities": true, "tools.load": true,
 	"slack.channels": true, "slack.user": true, "google.chat.spaces": true,
-	"instagram.inbox": true, "instagram.reads": true, "instagram.commenters": true, "instagram.call": true,
-	"keka.departments": true, "keka.employees": true, "keka.leave": true,
 	// wacli's: status, a chat's media and the like. Not whatsapp_group_participants
 	// (it adds and removes people), whatsapp_group_invite_link (it can reset the
 	// link) or whatsapp_sync.

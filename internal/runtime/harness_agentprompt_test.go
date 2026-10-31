@@ -1,10 +1,12 @@
 package runtime
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/MelloB1989/karmax/internal/agent"
+	"github.com/MelloB1989/karmax/internal/tools"
 )
 
 func TestHarnessAgentPromptCarriesConfiguredPrompt(t *testing.T) {
@@ -23,6 +25,21 @@ func TestHarnessAgentPromptEmptyWhenUnset(t *testing.T) {
 	for _, p := range []string{"", "  \n"} {
 		if got := harnessAgentPrompt(agent.AgentDef{SystemPrompt: p}); got != "" {
 			t.Errorf("prompt %q produced %q", p, got)
+		}
+	}
+}
+
+// The preamble's example tools are ones every agent has. One used to be
+// orgops_status, which went with the org-ops tools: a name every agent
+// session was taught and none could call.
+func TestHarnessAgentPromptExamplesAreToolsEveryAgentHas(t *testing.T) {
+	m := regexp.MustCompile(`for example ([\w.]+) or ([\w.]+)`).FindStringSubmatch(agentPromptPreamble)
+	if m == nil {
+		t.Fatal("the preamble names no example tools")
+	}
+	for _, name := range m[1:] {
+		if !tools.IsAgentScoped(name) {
+			t.Errorf("the preamble's example %q is not a tool every agent has", name)
 		}
 	}
 }

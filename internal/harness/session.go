@@ -53,6 +53,14 @@ type Session struct {
 	// InheritMCP comes from the kind's policy: false spawns with
 	// --strict-mcp-config, so only MCPConfig's servers start.
 	InheritMCP bool
+	// InheritUserConfig comes from the kind's policy: false spawns with
+	// --setting-sources project,local, so nothing of the operator's own
+	// Claude Code config loads. Settings, PluginDirs and SkillsDir are what
+	// the session gets instead (customise), all fixed at spawn.
+	InheritUserConfig bool
+	Settings          string // --settings JSON, "" for none
+	PluginDirs        []string
+	SkillsDir         string // --add-dir holding .claude/skills
 
 	cmd    *exec.Cmd
 	stdin  *bufio.Writer
@@ -170,6 +178,21 @@ func spawnArgs(s *Session, resume bool, fallbackModel string) []string {
 	if fallbackModel != "" && fallbackModel != s.Model {
 		args = append(args, "--fallback-model", fallbackModel)
 	}
+	// None of the operator's own Claude Code config (~/.claude: plugins,
+	// skills, hooks, settings), only the workdir's project config and what
+	// KARMAX allowlisted. Before the MCP flags: --add-dir is variadic too.
+	if !s.InheritUserConfig {
+		args = append(args, "--setting-sources", ownSettingSources)
+	}
+	if s.Settings != "" {
+		args = append(args, "--settings", s.Settings)
+	}
+	for _, d := range s.PluginDirs {
+		args = append(args, "--plugin-dir", d)
+	}
+	if s.SkillsDir != "" {
+		args = append(args, "--add-dir", s.SkillsDir)
+	}
 	// Only the servers KARMAX hands over (MCPConfig), plus any the operator
 	// allowlisted (harness.mcp_servers → OnlyMCPConfig), not the operator's
 	// whole Claude Code config: without this every session started a process
@@ -203,6 +226,7 @@ func spawn(ctx context.Context, bin string, s *Session, workdir string, resume b
 	cmd := exec.Command(name, argv...)
 	cmd.Dir = workdir
 	cmd.Env = env
+	setProcessGroup(cmd)
 	if s.Thinking {
 		// Extended thinking is off unless the child is given a budget for it.
 		cmd.Env = append(cmd.Env, "MAX_THINKING_TOKENS=8000")
@@ -718,8 +742,19 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 // runs. So a launched session is given launchedExitGrace to exit on EOF before
 // it is signalled; a local one is signalled at once, as it always was, because
 // Close is also how a running turn is interrupted.
+//
+// The signals go to the session's process group (spawn starts it in its own),
+// and Close does not return while anything the session started is still
+// running: a `pnpm install` a session began outlived it before, most of all
+// when the session was killed. The CLI starts each shell command in a session
+// of its own, out of reach of any group signal, so the processes below it are
+// read before it is told anything (descendants) and ended after it is gone.
 func (s *Session) Close() {
 	s.once.Do(func() {
+		var tree []proc
+		if s.cmd != nil && s.cmd.Process != nil && !s.hasExited() {
+			tree = descendants(s.cmd.Process.Pid)
+		}
 		close(s.closed)
 		if s.stdin != nil {
 			s.writeMu.Lock()
@@ -732,26 +767,67 @@ func (s *Session) Close() {
 		if s.cmd == nil || s.cmd.Process == nil {
 			return
 		}
+		pid := s.cmd.Process.Pid
 		if len(s.Launch) > 0 {
 			select {
 			case <-s.exited:
-				return
 			case <-time.After(launchedExitGrace):
 			}
 		}
-		_ = s.cmd.Process.Signal(os.Interrupt)
-		// The reader goroutine owns Wait; this only waits for it to finish.
-		select {
-		case <-s.exited:
-		case <-time.After(3 * time.Second):
-			_ = s.cmd.Process.Kill()
+		if !s.hasExited() {
+			_ = signalGroup(pid, syscall.SIGINT)
+			// The reader goroutine owns Wait; this only waits for it to finish.
+			select {
+			case <-s.exited:
+			case <-time.After(killGrace):
+				// Anything started while it was being asked to stop.
+				tree = append(tree, descendants(pid)...)
+				_ = signalGroup(pid, syscall.SIGKILL)
+			}
 		}
+		endLeftovers(pid, tree)
 	})
+}
+
+func (s *Session) hasExited() bool {
+	select {
+	case <-s.exited:
+		return true
+	default:
+		return false
+	}
+}
+
+// endLeftovers ends what is still running of a closed session: its process
+// group, and tree, the processes it had started. SIGTERM first, so a command
+// can clean up after itself; SIGKILL for whatever is left after killGrace.
+func endLeftovers(leader int, tree []proc) {
+	left := leftovers(leader, tree)
+	if len(left) == 0 {
+		return
+	}
+	for _, p := range left {
+		signalProc(p, syscall.SIGTERM)
+	}
+	deadline := time.Now().Add(killGrace)
+	for len(left) > 0 {
+		if time.Now().After(deadline) {
+			for _, p := range left {
+				signalProc(p, syscall.SIGKILL)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+		left = leftovers(leader, tree)
+	}
 }
 
 // launchedExitGrace is how long Close waits for a launched session to exit on
 // EOF before signalling it.
 const launchedExitGrace = 5 * time.Second
+
+// killGrace is how long a signalled process is given to exit before SIGKILL.
+const killGrace = 3 * time.Second
 
 // Busy reports whether a turn is in flight, so nothing closes a session that is
 // still working.

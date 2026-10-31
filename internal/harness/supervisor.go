@@ -48,6 +48,15 @@ type Policy struct {
 	// tools, started as a process tree per session whether or not a session
 	// ever calls one.
 	InheritMCP bool
+	// Plugins and Skills, when not nil, replace Config.Plugins and
+	// Config.Skills for this kind's sessions; an empty list gives it none.
+	Plugins []string
+	Skills  []string
+	// InheritUserConfig lets this kind's sessions load the operator's own
+	// Claude Code user config: every plugin, skill and hook in it, and its
+	// settings. Off, a session loads its workdir's project config (CLAUDE.md
+	// among it) and only what Plugins, Skills and Config.Settings give it.
+	InheritUserConfig bool
 }
 
 // Store is what the supervisor needs to remember sessions across restarts.
@@ -109,6 +118,21 @@ type Config struct {
 	// session also starts every MCP server in the operator's own Claude
 	// config and plugins — processes per session that KARMAX never calls.
 	OnlyMCPConfig string
+	// Plugins are the Claude Code plugins a session loads, and the only ones:
+	// an installed plugin's id (name@marketplace), or a plugin's directory.
+	// Sessions do not load the operator's own plugins, skills or hooks (see
+	// Policy.InheritUserConfig): one put its start-up prompt into every
+	// session, another ran its hooks on every shell command.
+	Plugins []string
+	// Skills are skill directories a session loads, under their own names.
+	Skills []string
+	// SkillsRoot is where each set of Skills is gathered for the CLI to read.
+	// Empty is WorkdirRoot/.skills.
+	SkillsRoot string
+	// Settings are Claude Code settings every session starts with, passed as
+	// --settings — what a session would otherwise have taken from the
+	// operator's own settings, such as effortLevel.
+	Settings map[string]any
 	// OnBackgroundTurn hears every turn a session ran without being asked —
 	// a message from another session arriving while it was idle starts one.
 	// The turn is already accounted (usage, breaker, audit) before this is
@@ -415,6 +439,7 @@ func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Polic
 		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig, SystemPrompt: opt.SystemPrompt,
 		Name: pol.Name, Launch: pol.Launch, InheritMCP: pol.InheritMCP,
 		OnlyMCPConfig: s.cfg.OnlyMCPConfig}
+	s.customise(sess, pol)
 	sess.onBackground = func(t Turn) { s.background(key, kind, t) }
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup

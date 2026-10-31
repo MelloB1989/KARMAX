@@ -78,8 +78,13 @@ over `--input-format stream-json --output-format stream-json`.
 - **send(key, text) → reply** — write one stream-json user event to stdin, read
   until the matching `result`. Timeout per policy; on timeout mark `dead` and let
   the next send resume.
-- **close(key)** — SIGTERM, then SIGKILL after a grace period. Ephemeral kinds
-  delete the transcript; durable kinds keep it for `--resume`.
+- **close(key)** — EOF, then SIGINT to the session's process group (each
+  session leads its own), then SIGKILL after a grace period. Whatever the
+  session started that is still running then gets SIGTERM, and SIGKILL after
+  the same grace: the CLI runs each shell command in a session of its own, out
+  of reach of a group signal, so its process tree is read before it is told to
+  stop. Ephemeral kinds delete the transcript; durable kinds keep it for
+  `--resume`.
 - **reap** — an idle sweep closes sessions past their kind's idle window, and a
   startup sweep kills orphans whose pid is gone or unknown. Both are needed: the
   daemon restarts often.
@@ -108,6 +113,37 @@ A session starts only the MCP servers KARMAX passes it (`--strict-mcp-config`),
 not the ones in the operator's own Claude Code config: those started as a
 process tree per session, whether or not a session ever called one. A kind
 whose work needs them says `inherit_mcp: true`.
+
+Nor does a session load the operator's own Claude Code config: the plugins,
+skills, hooks and settings in `~/.claude`, built for their interactive
+sessions. It runs with `--setting-sources project,local` — its workdir's own
+config, which is also where every CLAUDE.md is read from, the data root's brief
+included — plus only what KARMAX allowlists:
+
+```yaml
+harness:
+  plugins: [name@marketplace, /path/to/a/plugin]   # installed id, or a directory
+  skills: [fleet]                # one of the operator's skills by name, or a directory
+  settings: { effortLevel: high }   # Claude Code settings, in its own shape
+  kinds:
+    orchestrator: { skills: [fleet] }   # a kind's own list replaces the default; [] for none
+    task: { inherit_user_config: true } # the operator's whole config, as before
+```
+
+An installed plugin is enabled through `--settings` (`enabledPlugins`), a
+plugin directory loaded with `--plugin-dir`. Skills are linked into one
+directory per set (`<workdir_root>/.skills/<hash>/.claude/skills/`) and given
+with `--add-dir`, so each keeps its own name rather than a plugin's namespace.
+Auth is not a setting and is unaffected. What the operator's settings gave a
+session (`effortLevel`, `modelSettings`, commit `attribution`) now comes from
+`harness.settings` or not at all.
+
+Measured on CLI 2.1.314, one haiku first turn: the operator's set put 103
+skills, 8 plugins and 4 start-up hooks (12KB of injected start-up context, one
+of them a prompt to use its skills before any reply) into every session, plus a
+hook on every tool call — 31.6k tokens of first-turn context. Without it, 18.3k
+(18.5k with the orchestrator's `fleet` skill), no hooks, and the session ready
+0.2s sooner warm, 1.5s sooner cold.
 
 ### Concurrency
 

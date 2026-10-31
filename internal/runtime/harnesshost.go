@@ -116,6 +116,9 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		CheapModel:    cheap,
 		FallbackModel: strings.TrimSpace(hc.FallbackModel),
 		OnlyMCPConfig: rt.harnessMCPConfig(),
+		Plugins:       harnessPluginRefs(hc.Plugins),
+		Skills:        harnessSkillDirs(hc.Skills),
+		Settings:      hc.Settings,
 		OnBackgroundTurn: func(key, kind string, t harness.Turn) {
 			_ = rt.bus.Publish(backgroundTurnEvent(key, kind, t))
 		},
@@ -182,6 +185,10 @@ func harnessPolicies(hc config.HarnessConfig) map[string]harness.Policy {
 			Name:        k.Name,
 			Resident:    k.Resident,
 			InheritMCP:  k.InheritMCP,
+			Plugins:     harnessPluginRefs(k.Plugins),
+			Skills:      harnessSkillDirs(k.Skills),
+
+			InheritUserConfig: k.InheritUserConfig,
 		}
 	}
 	return policies
@@ -673,7 +680,7 @@ framing you "an operator's personal assistant" — whose chat it is, who may be
 trusted, what you may do for the people writing to you — THIS section wins; the
 CLAUDE.md still applies for everything it does not contradict.
 
-KARMAX tools named below (for example memory.retrieve or orgops_status) are
+KARMAX tools named below (for example memory.retrieve or memory.correct) are
 KARMAX tools, not native ones: call them as
 ` + "`karmax tool call <name> k=v`" + ` (` + "`karmax tool list`" + ` shows what exists). Where
 the text below says "use the X tool", read it that way.

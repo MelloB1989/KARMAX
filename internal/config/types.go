@@ -72,6 +72,21 @@ type HarnessConfig struct {
 	// also starts every server in the operator's own Claude config and its
 	// plugins, which is a set of processes per session that KARMAX never calls.
 	MCPServers map[string]map[string]any `yaml:"mcp_servers"`
+	// Plugins are the Claude Code plugins a session loads, and the only ones:
+	// an installed plugin's id (name@marketplace), or a plugin's directory.
+	// A session never loads the operator's own Claude Code user config — its
+	// plugins, skills, hooks and settings — unless its kind sets
+	// inherit_user_config.
+	Plugins []string `yaml:"plugins"`
+	// Skills are the operator's skills a session loads: a skill's name in
+	// Claude Code's skills directory (~/.claude/skills, or under
+	// $CLAUDE_CONFIG_DIR), or a skill's directory.
+	Skills []string `yaml:"skills"`
+	// Settings are Claude Code settings every session starts with, in Claude
+	// Code's own shape (effortLevel, modelSettings, skillOverrides,
+	// disableAllHooks, …): what a session would otherwise have taken from the
+	// operator's own settings.
+	Settings map[string]any `yaml:"settings"`
 }
 
 // MCPConfigJSON is MCPServers as a --mcp-config value, "" when none are set.
@@ -110,6 +125,14 @@ type HarnessKindConfig struct {
 	// operator's own Claude Code config. Off (the default), a session gets
 	// only the servers KARMAX itself passes it.
 	InheritMCP bool `yaml:"inherit_mcp"`
+	// Plugins and Skills, when set, replace harness.plugins and
+	// harness.skills for this kind; an empty list gives it none.
+	Plugins []string `yaml:"plugins"`
+	Skills  []string `yaml:"skills"`
+	// InheritUserConfig lets this kind's sessions load the operator's own
+	// Claude Code user config: every plugin, skill and hook in it, and its
+	// settings, as every session once did.
+	InheritUserConfig bool `yaml:"inherit_user_config"`
 }
 
 // DatabaseConfig points the store at a backend. See store.ParseDSN for the
