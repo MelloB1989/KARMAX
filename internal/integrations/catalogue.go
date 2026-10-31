@@ -27,6 +27,7 @@ import (
 	xconn "github.com/MelloB1989/karmax/internal/connectors/x"
 	"github.com/MelloB1989/karmax/internal/hostpaths"
 	"github.com/MelloB1989/karmax/internal/integration"
+	slacksrc "github.com/MelloB1989/karmax/internal/sources/slack"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"go.uber.org/zap"
@@ -67,6 +68,11 @@ func Build(cfg *config.KarmaxConfig, db *store.Store) *integration.Registry {
 	// is supplied by the runtime, which is where posting actually happens.
 	reg.Register(integration.FromConnector(xconn.New(nil, nil), ""))
 	reg.Register(integration.FromConnector(linkedinconn.New(nil, nil), ""))
+	// PostHog is an event source rather than a set of tools: its key is
+	// stored here so `karmax login posthog` works like every other key.
+	for _, id := range postHogIDs() {
+		reg.Register(postHog(id))
+	}
 
 	// The token-based channels, one per configured channel so two Slack
 	// workspaces are two integrations rather than one that silently wins.
@@ -148,7 +154,9 @@ func discord(id string) integration.Integration {
 
 // slack needs two tokens: an app-level one to open the socket and a bot one to
 // post. Both are asked for, because being handed one and told "invalid auth" is
-// the least helpful possible outcome.
+// the least helpful possible outcome. The third is the operator's own user
+// token, which the Slack event source reads their DMs and mentions with and
+// answers as them; it is required while that source is on.
 func slack(id string) integration.Integration {
 	return integration.APIKey(integration.Manifest{
 		ID:          id,
@@ -159,8 +167,10 @@ func slack(id string) integration.Integration {
 		Config: []connectorkit.ConfigField{
 			{Key: "bot_token", Description: "xoxb-… , from OAuth & Permissions", Required: true, Secret: true},
 			{Key: "app_token", Description: "xapp-… , from Basic Information → App-Level Tokens", Required: true, Secret: true},
+			{Key: "user_token", Description: "xoxp-… , the User OAuth Token from OAuth & Permissions — lets KARMAX " +
+				"read your DMs, mentions and channels and reply as you", Required: SourceOn(slacksrc.Name), Secret: true},
 		},
-	}, "bot_token", checkSlack)
+	}, "bot_token", checkSlackFor(id))
 }
 
 // telegram is a bot token from BotFather.
@@ -204,22 +214,6 @@ func checkTelegram(ctx context.Context, c connectorkit.Credentials) error {
 	// Telegram answers 200 with {"ok":false} rather than a status code, so the
 	// body is the only thing that distinguishes a live token from a dead one.
 	return expectJSONOK(body, "Telegram")
-}
-
-func checkSlack(ctx context.Context, c connectorkit.Credentials) error {
-	token := strings.TrimSpace(c.Get("bot_token"))
-	if token == "" {
-		return fmt.Errorf("no bot token configured")
-	}
-	body, err := get(ctx, "https://slack.com/api/auth.test",
-		map[string]string{"Authorization": "Bearer " + token})
-	if err != nil {
-		return err
-	}
-	// Same shape as Telegram: a revoked Slack app returns 200 with
-	// {"ok":false,"error":"invalid_auth"}, so checking the status code alone
-	// would report it as working.
-	return expectJSONOK(body, "Slack")
 }
 
 // expectJSONOK reads the {"ok":bool,"error":string} envelope both Slack and
