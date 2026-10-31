@@ -164,9 +164,26 @@ what is written is kept to what changes something.
   written or forgotten and the store has not yet caught up with. A fold that
   adds no fact never redates the document (`occurred_at` stays the date of
   its newest fact) and never lowers its confidence.
+- **What KARMAX just wrote or forgot is trusted until the store shows it.**
+  Ingest takes about two minutes, and the store's readers serve snapshots of
+  different ages. So KARMAX folds onto its own copy of a document until a read
+  shows the store holding that copy (or no longer holding a forgotten
+  section or document). It keeps trusting its copy for five minutes after that
+  while the other readers catch up, and for an hour at most if the store never
+  shows it (`internal/memory/gitloom_pending.go`). The store's `updated_at` is
+  not the signal: it is when the store applied a write, and a queued write
+  sent before KARMAX's last one can be applied after it.
 - **A loop's record is a log, not a fact.** What a loop remembers about a run
   (`memory.LoopLog`, category `log`) is filed by month, at
   `facts/context/<loop>/<yyyy-mm>.md`. A month that reaches 96 KB continues in
   `<yyyy-mm>-part-2.md` and so on, so no document of any loop's log grows
   towards the store's 256 KB request limit. Logs filed before this policy, at
   `facts/context/<loop>.md`, stop growing.
+- **A loop's run is one write.** The runtime holds the lines a run remembers
+  and files them as one entry when the run ends, whether it succeeded or
+  failed (`internal/runtime/looplog.go`). The lines of a run the daemon died
+  in are kept in SQLite and filed by the loop's next run. A line that says
+  what the loop's previous run said is left out, comparing the text with the
+  run's own date and clock time masked (`memory.LogLineKey`). Any other date
+  or time in a line is compared as written. A run with nothing new to say
+  writes nothing.

@@ -66,6 +66,24 @@ func TestLeaseIsNotReleasedByAStaleOwner(t *testing.T) {
 	}
 }
 
+// A run still in flight extends its own lease, and only its own.
+func TestOnlyTheOwnerRenewsALease(t *testing.T) {
+	s := newTestStore(t)
+	if got, _ := s.AcquireLoopLease("l", "run-1", 50*time.Millisecond); !got {
+		t.Fatal("acquire")
+	}
+	if ok, err := s.RenewLoopLease("l", "run-1", time.Minute); err != nil || !ok {
+		t.Fatalf("the owner's renewal = %v, %v", ok, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got, _ := s.AcquireLoopLease("l", "run-2", time.Minute); got {
+		t.Error("a renewed lease was taken when its first term ran out")
+	}
+	if ok, _ := s.RenewLoopLease("l", "run-2", time.Minute); ok {
+		t.Error("a run that does not hold the lease renewed it")
+	}
+}
+
 func TestExpiredLeaseIsReclaimable(t *testing.T) {
 	s := newTestStore(t)
 	// A crashed process must not wedge a loop closed forever, which is why the
