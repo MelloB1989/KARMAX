@@ -36,6 +36,7 @@ func FromBusEvent(evt bus.Event) (Event, bool) {
 	}
 	e.Urgent, _ = evt.Payload["urgent"].(bool)
 	e.Backlog, _ = evt.Payload["backlog"].(bool)
+	e.MemorySynced, _ = evt.Payload[memorySyncedKey].(bool)
 	if d, ok := evt.Payload["data"].(map[string]any); ok {
 		e.Data = d
 	}

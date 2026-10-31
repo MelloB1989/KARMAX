@@ -14,6 +14,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/identity"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/sources"
+	"github.com/MelloB1989/karmax/internal/sources/gchat"
 	"github.com/MelloB1989/karmax/internal/sources/googleacct"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
@@ -44,7 +45,12 @@ type chatMemory struct {
 	// Service is the chat service as a person names it.
 	Service string
 	// Tag files its facts under the service as well as their subject.
-	Tag         string
+	Tag string
+	// Covers is the event source whose conversations the loop reads, if
+	// any. While the loop is on, that source's event turns leave filing what
+	// a message says to it (sources.MemorySync), so memory holds each
+	// conversation once.
+	Covers      string
 	Every       string
 	Description string
 }
@@ -52,7 +58,7 @@ type chatMemory struct {
 var (
 	waMemory = chatMemory{Loop: "wa-memory", Service: "WhatsApp", Tag: "whatsapp", Every: "20m",
 		Description: "Reads every WhatsApp chat's new messages and keeps long-term memory in step with them: durable facts added under their person or project, outdated ones corrected, finished ones retired."}
-	gchatMemory = chatMemory{Loop: "gchat-memory", Service: "Google Chat", Tag: "gchat", Every: "20m",
+	gchatMemory = chatMemory{Loop: "gchat-memory", Service: "Google Chat", Tag: "gchat", Covers: gchat.SourceName, Every: "20m",
 		Description: "Reads every Google Chat space and direct message of every Workspace account signed in on this host — the operator's own messages included — and keeps long-term memory in step with them: durable facts added, outdated ones corrected, finished ones retired."}
 )
 
@@ -122,6 +128,10 @@ type chatMemoryDeps struct {
 	// Home is KARMAX's own directory, where the deny files are.
 	Home string
 	Log  *zap.Logger
+	// Covered is told which event sources the running loops read.
+	Covered *sources.MemorySync
+	// Register registers a loop; nil is loopkit.Register.
+	Register func(loopkit.Loop)
 }
 
 // start registers the loop when it is on, reading src. tune sets what only
@@ -142,7 +152,11 @@ func (m chatMemory) start(d chatMemoryDeps, src chatmemory.Source, tune func(*ch
 	}
 	syncer := chatmemory.New(cfg, src, d.Memory, m.cursors(d.Store), sent,
 		func(ctx context.Context, prompt string) (string, error) { return d.Extract(ctx, m.Loop, prompt) }, d.Log)
-	loopkit.Register(loopkit.Loop{
+	register := d.Register
+	if register == nil {
+		register = loopkit.Register
+	}
+	register(loopkit.Loop{
 		Name:        m.Loop,
 		Description: m.Description,
 		Schedule:    loopkit.Every(m.Every),
@@ -155,7 +169,24 @@ func (m chatMemory) start(d chatMemoryDeps, src chatmemory.Source, tune func(*ch
 			return err
 		},
 	})
+	if m.Covers != "" {
+		d.Covered.Cover(m.Covers)
+	}
 	return true
+}
+
+// memorySync is the runtime's one record of which event sources the running
+// memory loops read; screenEvent marks their events by it.
+type memorySync = sources.MemorySync
+
+func newMemorySync() *memorySync { return &memorySync{} }
+
+// gchatSentAs says whether KARMAX itself sent a Chat message: it speaks
+// through the operator's own account, which the sent-as ledger tells apart.
+func gchatSentAs(s *store.Store) func(c chatmemory.Chat, text string, at time.Time) bool {
+	return func(c chatmemory.Chat, text string, at time.Time) bool {
+		return s.SentAsOperator(gchat.SourceName, c.Account, text, at)
+	}
 }
 
 // chatAccounts are the accounts whose Google Chat is read: the ones the Chat

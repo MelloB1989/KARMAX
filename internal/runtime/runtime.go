@@ -74,6 +74,9 @@ type KarmaxRuntime struct {
 	api       *api.Server
 	// google is the Google Calendar and Chat sources (googlesource.go).
 	google *googleSources
+	// memorySynced names the event sources a memory loop reads whole; their
+	// turns act without filing again (chatmemoryhost.go, reflexhost.go).
+	memorySynced *memorySync
 
 	// who is the one answer to "who is speaking": the operator's name and
 	// accounts and the linked account KARMAX sends from. See internal/identity.
@@ -740,6 +743,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// the store + the agent's model + the WhatsApp channel, so it's a runtime
 	// loop like memory-maintenance.
 	var googleSrc *googleSources
+	memorySynced := newMemorySync()
 	if len(cfg.Agents) > 0 {
 		a0 := cfg.Agents[0]
 		ns := a0.Memory.Namespace
@@ -822,7 +826,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		// chatmemoryhost.go and internal/chatmemory.
 		home, _ := os.UserHomeDir()
 		chatMem := chatMemoryDeps{Store: s, Memory: memFactory.For(a0.ID, ns), Getenv: os.Getenv,
-			Home: filepath.Join(home, ".karmax"), Log: log,
+			Home: filepath.Join(home, ".karmax"), Log: log, Covered: memorySynced,
 			Extract: func(ctx context.Context, key, prompt string) (string, error) {
 				return harnessRT.get().harnessExtract(ctx, key, prompt)
 			}}
@@ -835,13 +839,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		// Google Calendar and Chat: every signed-in account's events to the
 		// primary agent, and the actions to answer them. See googlesource.go.
 		googleSrc = startGoogleSources(s, b, toolReg, integrationReg, a0.ID, log)
-		// Google Chat → memory, through the same logins. KARMAX's own sends
-		// there are the operator's account too, told apart by the sent-as
-		// ledger.
-		gchatMemory.start(chatMem, googleSrc.chatMemorySource(log), nil,
-			func(c chatmemory.Chat, text string, at time.Time) bool {
-				return s.SentAsOperator(gchatMemory.Tag, c.Account, text, at)
-			})
+		// Google Chat → memory, through the same logins. While it runs, Chat
+		// events are acted on but not filed again (sources.MemorySync).
+		gchatMemory.start(chatMem, googleSrc.chatMemorySource(log), nil, gchatSentAs(s))
 
 		// AWS: every usable profile's CloudWatch alarms and spend, as events
 		// to the primary agent. KARMAX_SOURCE_AWS=off turns it off. See
@@ -1114,6 +1114,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		api:          apiSrv,
 
 		google:          googleSrc,
+		memorySynced:    memorySynced,
 		apiBrowserToken: apiBrowserToken,
 		apiBaseURL:      apiBaseURL,
 	}

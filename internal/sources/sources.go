@@ -32,7 +32,12 @@ type Event struct {
 	// happened before KARMAX was watching, so it is context, not news, and it
 	// never pages the operator however urgent it is.
 	Backlog bool
-	Data    map[string]any
+	// MemorySynced marks an event from a conversation a memory syncer already
+	// reads into long-term memory (see MemorySync): the turn acts on it, and
+	// leaves filing what it says to the syncer, so memory holds the
+	// conversation once.
+	MemorySynced bool
+	Data         map[string]any
 }
 
 // BusEvent is the event as the agent router delivers it.
@@ -51,6 +56,9 @@ func (e Event) BusEvent(agentID string) bus.Event {
 	})
 	if e.Backlog {
 		ev.Payload["backlog"] = true
+	}
+	if e.MemorySynced {
+		ev.Payload[memorySyncedKey] = true
 	}
 	if !e.At.IsZero() {
 		ev.Timestamp = e.At

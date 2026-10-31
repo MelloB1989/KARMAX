@@ -7,7 +7,10 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/chatmemory"
+	"github.com/MelloB1989/karmax/internal/sources"
 	"github.com/MelloB1989/karmax/internal/sources/googleacct"
+	"github.com/MelloB1989/karmax/pkg/loopkit"
+	"go.uber.org/zap"
 )
 
 // wa-memory's settings mean what they always meant.
@@ -144,5 +147,30 @@ func TestChatMemoryReadsTheAccountsChatServes(t *testing.T) {
 	got := chatAccounts(d)
 	if len(got) != 1 || got[0] != "quinn@example.org" {
 		t.Errorf("accounts = %v", got)
+	}
+}
+
+// A memory loop that is on names the event source whose conversations it
+// reads, so event turns from that source leave filing to it. A loop that is
+// off covers nothing, and the turns file as before.
+func TestAChatMemoryLoopThatIsOnCoversItsSource(t *testing.T) {
+	env := map[string]string{"KARMAX_GCHAT_MEMORY": "off"}
+	var loops []string
+	covered := &sources.MemorySync{}
+	d := chatMemoryDeps{Store: testStore(t), Getenv: func(k string) string { return env[k] }, Home: t.TempDir(),
+		Log: zap.NewNop(), Covered: covered, Register: func(l loopkit.Loop) { loops = append(loops, l.Name) }}
+
+	if gchatMemory.start(d, nil, nil, nil) || len(loops) != 0 || covered.Covers("gchat") {
+		t.Fatalf("a loop switched off ran (%v) or covered its source (%v)", loops, covered.Covers("gchat"))
+	}
+	delete(env, "KARMAX_GCHAT_MEMORY")
+	if !gchatMemory.start(d, nil, nil, nil) || len(loops) != 1 || loops[0] != "gchat-memory" {
+		t.Fatalf("loops = %v", loops)
+	}
+	if !covered.Covers("gchat") {
+		t.Error("gchat-memory is on, and Chat events still file what they say")
+	}
+	if !waMemory.start(d, nil, nil, nil) || covered.Covers("whatsapp") {
+		t.Error("wa-memory covers no event source: WhatsApp messages are not source events")
 	}
 }

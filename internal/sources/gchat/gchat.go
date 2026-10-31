@@ -22,6 +22,9 @@ import (
 	"github.com/MelloB1989/karmax/internal/sources"
 )
 
+// SourceName is the source the Chat events carry.
+const SourceName = "gchat"
+
 // Space is one space, group chat or DM.
 type Space struct {
 	Name        string // spaces/AAAA
@@ -387,7 +390,7 @@ func (w *Watcher) event(account string, me Me, sp Space, m Message, p Person) so
 	dm := sp.Type == "DIRECT_MESSAGE"
 	mention := mentionsMe(me, m)
 
-	e := sources.Event{Source: "gchat", Account: account, Key: "gchat|" + strings.ToLower(account) + "|" + m.Name,
+	e := sources.Event{Source: SourceName, Account: account, Key: SourceName + "|" + strings.ToLower(account) + "|" + m.Name,
 		URL: spaceURL(sp), At: m.Created}
 	switch {
 	case dm:
