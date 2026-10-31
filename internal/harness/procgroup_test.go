@@ -121,7 +121,9 @@ func TestClosingASessionEndsTheCommandsItStarted(t *testing.T) {
 
 // The real CLI, closed in the middle of a turn that is running a long shell
 // command, leaves nothing running: the case of an orchestrator's `pnpm
-// install` and a turn that timed out. Spends quota, so it runs only with
+// install` and a turn that timed out. A CLI that answers SIGINT ends the
+// command itself; a hung one (stopped here, so only SIGKILL ends it) used to
+// leave the command running under init. Spends quota, so it runs only with
 // KARMAX_LIVE_HARNESS set.
 func TestLiveClosingMidCommandLeavesNothingRunning(t *testing.T) {
 	if os.Getenv("KARMAX_LIVE_HARNESS") == "" {
@@ -130,32 +132,39 @@ func TestLiveClosingMidCommandLeavesNothingRunning(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude not installed")
 	}
-	sup := New(Config{
-		Binary: "claude", WorkdirRoot: t.TempDir(), MaxLive: 2, Env: os.Environ(),
-		Policies: map[string]Policy{"k": {Model: "haiku", TurnTimeout: 2 * time.Minute}},
-	}, newMemStore(), NewBreaker(0.95, nil), testLog{t}, nil)
-	t.Cleanup(sup.Shutdown)
+	for _, hung := range []bool{false, true} {
+		sup := New(Config{
+			Binary: "claude", WorkdirRoot: t.TempDir(), MaxLive: 2, Env: os.Environ(),
+			Policies: map[string]Policy{"k": {Model: "haiku", TurnTimeout: 2 * time.Minute}},
+		}, newMemStore(), NewBreaker(0.95, nil), testLog{t}, nil)
+		t.Cleanup(sup.Shutdown)
 
-	// A length no other process on the machine is sleeping for.
-	arg := strconv.Itoa(4000 + int(time.Now().UnixNano()%1000))
-	go func() {
-		_, _ = sup.Send(context.Background(), "live:pg", "k",
-			"Use the Bash tool to run exactly this command and wait for it: sleep "+arg)
-	}()
-	var pids []int
-	deadline := time.Now().Add(90 * time.Second)
-	for len(pids) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the session never started the command")
+		// A length no other process on the machine is sleeping for.
+		arg := strconv.Itoa(4000 + int(time.Now().UnixNano()%1000))
+		go func() {
+			_, _ = sup.Send(context.Background(), "live:pg", "k",
+				"Use the Bash tool to run exactly this command and wait for it: sleep "+arg)
+		}()
+		var pids []int
+		deadline := time.Now().Add(90 * time.Second)
+		for len(pids) == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("the session never started the command")
+			}
+			time.Sleep(200 * time.Millisecond)
+			pids = sleeping(arg)
 		}
-		time.Sleep(200 * time.Millisecond)
-		pids = sleeping(arg)
-	}
-	sup.Close("live:pg")
-	for _, pid := range pids {
-		if !gone(pid, 2*time.Second) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-			t.Errorf("the command (pid %d) outlived its closed session", pid)
+		if hung {
+			sup.mu.Lock()
+			_ = syscall.Kill(sup.live["live:pg"].PID(), syscall.SIGSTOP)
+			sup.mu.Unlock()
+		}
+		sup.Close("live:pg")
+		for _, pid := range pids {
+			if !gone(pid, 2*time.Second) {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+				t.Errorf("hung=%v: the command (pid %d) outlived its closed session", hung, pid)
+			}
 		}
 	}
 }
