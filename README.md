@@ -129,13 +129,19 @@ flowchart LR
     REVIEW --> MEM
 ```
 
-WhatsApp reaches memory through the `wa-memory` loop (`internal/chatmemory`): every chat's new
-messages, set beside what memory already holds about them, become facts added under their
-person or project, corrected, or retired. Each chat keeps a cursor, so a message is read once;
-a chat never read before starts at `KARMAX_WA_MEMORY_SINCE`, which is how the same loop
-backfills history. Secrets are never stored, and a fact can only be corrected or retired by a
-handle the model was shown. Channels are skipped; `~/.karmax/wa-memory-deny.txt` names chats
-to skip, and `KARMAX_WA_MEMORY=off` turns it off.
+Chats reach memory through one loop per service over the same syncer (`internal/chatmemory`):
+`wa-memory` for WhatsApp and `gchat-memory` for Google Chat (every space and direct message
+of every Workspace account signed in on the host). Every conversation's new messages — the
+operator's own included, told apart by their account and never by a name — set beside what
+memory already holds about them, become facts added under their person or project,
+corrected, or retired. Each chat keeps a cursor, so a message is read once; a chat never read
+before starts at the loop's `_SINCE` date, or a week before KARMAX first looked at its
+account, which is how the same loop backfills history. Secrets are never stored, and a fact
+can only be corrected or retired by a handle the model was shown. Each loop's settings are
+named after it: `KARMAX_WA_MEMORY=off` / `KARMAX_GCHAT_MEMORY=off` turn one off,
+`_SINCE`, `_BATCHES` and `_DENY_FILE` tune it, and `~/.karmax/<loop>-deny.txt` names chats
+to skip. While a loop reads a source's conversations, that source's event turns act on a
+message but leave filing it to the loop, so memory holds each conversation once.
 
 A write folds into the document that already holds its subject rather than replacing it, so
 the fortieth fact about a project does not delete the previous thirty-nine. Two properties
