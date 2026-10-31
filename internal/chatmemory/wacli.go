@@ -78,34 +78,40 @@ func (w *Wacli) Chats(ctx context.Context) ([]Chat, error) {
 // firstWindow is how far ahead a read first looks; narrowed when it fills.
 const firstWindow = 7 * 24 * time.Hour
 
-// Messages returns up to limit of a chat's messages after a time, oldest first.
+// Messages returns up to limit of a chat's messages that the cursor has not
+// passed, oldest first.
 //
 // wacli answers a bounded query with the NEWEST messages inside the bounds, so
 // asking for what follows a point in a long history would return today's
 // messages and skip everything between. Reading forward instead takes a window
 // ahead of the cursor, narrows it while it comes back full, and slides past
-// windows with nothing in them.
-func (w *Wacli) Messages(ctx context.Context, c Chat, after time.Time, limit int) ([]Message, error) {
+// windows with nothing new in them: nothing at all, or only messages the
+// cursor has passed, such as the others of its own second.
+func (w *Wacli) Messages(ctx context.Context, c Chat, after Cursor, limit int) ([]Message, error) {
 	chat := c.ID
 	if limit <= 0 {
 		limit = 100
 	}
 	now := w.now()
+	// wacli's bounds include their own second (timestamp >= after AND
+	// timestamp <= before); a second early all the same, so the cursor's own
+	// second is read whichever way a bound falls.
+	from := after.At.Add(-time.Second)
 	window := firstWindow
-	for after.Before(now) {
-		before := after.Add(window)
-		got, err := w.page(ctx, chat, after, before, limit)
+	for from.Before(now) {
+		to := from.Add(window)
+		got, err := w.page(ctx, chat, from, to, limit)
 		if err != nil {
 			return nil, err
 		}
-		switch {
-		case len(got) >= limit && window > time.Minute:
+		if len(got) >= limit && window > time.Minute {
 			window /= 4 // full: there may be older ones the newest-first limit cut off
-		case len(got) > 0:
-			return got, nil
-		default:
-			after, window = before, window*2 // nothing here; look further
+			continue
 		}
+		if fresh := unread(got, after); len(fresh) > 0 {
+			return fresh, nil
+		}
+		from, window = to, window*2 // nothing new here; look further
 	}
 	return nil, nil
 }
@@ -135,7 +141,7 @@ func (w *Wacli) page(ctx context.Context, chat string, after, before time.Time, 
 		msgs = append(msgs, Message{ID: m.ID, Chat: m.Chat, Sender: m.Sender,
 			Content: m.Content, At: at, FromMe: m.IsFromMe})
 	}
-	sort.SliceStable(msgs, func(i, j int) bool { return msgs[i].At.Before(msgs[j].At) })
+	sort.SliceStable(msgs, func(i, j int) bool { return cursorOn(msgs[i]).before(cursorOn(msgs[j])) })
 	return msgs, nil
 }
 

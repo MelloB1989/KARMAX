@@ -64,7 +64,7 @@ func TestLiveGChatReadsSpacesAndTellsTheOperatorApart(t *testing.T) {
 	var total, mine, others, apps, empty, full, carried int
 	senders := map[string]bool{}
 	for _, c := range active {
-		msgs, err := src.Messages(ctx, c, since, 151)
+		msgs, err := src.Messages(ctx, c, Cursor{At: since}, 151)
 		if err != nil {
 			t.Errorf("messages of one space: %v", err)
 			continue

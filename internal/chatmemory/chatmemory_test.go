@@ -11,6 +11,7 @@ import (
 
 	"github.com/MelloB1989/karmax/internal/memory"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 var t0 = time.Date(2026, 10, 29, 21, 0, 0, 0, time.UTC)
@@ -26,11 +27,13 @@ func srcKey(c Chat) string { return c.Account + "|" + c.ID }
 
 func (f *fakeSource) Chats(context.Context) ([]Chat, error) { return f.chats, nil }
 
-func (f *fakeSource) Messages(_ context.Context, c Chat, after time.Time, limit int) ([]Message, error) {
+// Messages answers with what the cursor has not passed, in the order the
+// chat's messages were listed: messages of one time may come in any order.
+func (f *fakeSource) Messages(_ context.Context, c Chat, after Cursor, limit int) ([]Message, error) {
 	f.reads[srcKey(c)]++
 	var out []Message
 	for _, m := range f.msgs[srcKey(c)] {
-		if m.At.After(after) {
+		if !after.Passed(m) {
 			out = append(out, m)
 		}
 	}
@@ -76,6 +79,39 @@ type memCursors map[string]Cursor
 func (c memCursors) Get(chat string) (Cursor, bool, error) { v, ok := c[chat]; return v, ok, nil }
 func (c memCursors) Set(chat string, v Cursor) error       { c[chat] = v; return nil }
 
+// loggedCursors is memCursors that remembers every save, in order.
+type loggedCursors struct {
+	memCursors
+	saves *[]saved
+}
+
+type saved struct {
+	chat string
+	cur  Cursor
+}
+
+func (c loggedCursors) Set(chat string, v Cursor) error {
+	*c.saves = append(*c.saves, saved{chat, v})
+	return c.memCursors.Set(chat, v)
+}
+
+// cursorsOnlyMovedForward fails the test when a chat's cursor was ever saved
+// at or behind where it already was: a cursor saved unchanged, or flipping
+// between two messages, never finishes its chat.
+func cursorsOnlyMovedForward(t *testing.T, saves []saved) {
+	t.Helper()
+	last := map[string]Cursor{}
+	for i, s := range saves {
+		if prev, ok := last[s.chat]; ok {
+			if !s.cur.At.After(prev.At) && !(s.cur.At.Equal(prev.At) && s.cur.ID > prev.ID) {
+				t.Errorf("save %d of %s: the cursor went from %v|%s to %v|%s",
+					i, s.chat, prev.At.Format(time.RFC3339), prev.ID, s.cur.At.Format(time.RFC3339), s.cur.ID)
+			}
+		}
+		last[s.chat] = s.cur
+	}
+}
+
 type recorder struct {
 	prompts []string
 	replies []string
@@ -100,12 +136,13 @@ func msg(id, chat, sender, text string, at time.Time, fromMe bool) Message {
 }
 
 type harness struct {
-	src  *fakeSource
-	mem  *fakeMemory
-	cur  memCursors
-	ask  *recorder
-	sent map[string]bool
-	s    *Syncer
+	src   *fakeSource
+	mem   *fakeMemory
+	cur   memCursors
+	saves []saved
+	ask   *recorder
+	sent  map[string]bool
+	s     *Syncer
 }
 
 func newHarness(t *testing.T, cfg Config) *harness {
@@ -130,7 +167,7 @@ func newHarness(t *testing.T, cfg Config) *harness {
 		cfg.Location = time.UTC
 	}
 	sent := func(c Chat, text string, _ time.Time) bool { return h.sent[c.ID+"|"+text] }
-	h.s = New(cfg, h.src, h.mem, h.cur, sent, h.ask.ask, zap.NewNop())
+	h.s = New(cfg, h.src, h.mem, loggedCursors{h.cur, &h.saves}, sent, h.ask.ask, zap.NewNop())
 	return h
 }
 
@@ -582,5 +619,120 @@ func TestAChatWhoseLastActivityWasNotAMessageIsNotReadAgain(t *testing.T) {
 	}
 	if len(h.ask.prompts) != 1 {
 		t.Errorf("prompts = %d, want the one message read once", len(h.ask.prompts))
+	}
+}
+
+// stuckSource answers the way wacli's reader once did: from the cursor's own
+// second, with the first stretch that holds anything, even when everything in
+// it has been read.
+type stuckSource struct{ *fakeSource }
+
+func (s stuckSource) Messages(_ context.Context, c Chat, after Cursor, _ int) ([]Message, error) {
+	s.reads[srcKey(c)]++
+	var out []Message
+	for _, m := range s.msgs[srcKey(c)] {
+		if !m.At.Before(after.At) && m.At.Before(after.At.Add(7*24*time.Hour)) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// A source that answers with only messages already read, while the chat has
+// newer ones, leaves the cursor nowhere to go. That is reported, in the
+// result and at warn naming the chat, rather than passed off as a quiet tick;
+// the cursor is neither saved again nor moved to the chat's last activity
+// past what was never read; and the chat does not hold up the others.
+func TestAChatWhoseCursorCannotMoveIsReportedAsStalled(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	stuck, other := "111@s.whatsapp.net", "222@s.whatsapp.net"
+	src := &fakeSource{msgs: map[string][]Message{}, reads: map[string]int{}, chats: []Chat{
+		{ID: stuck, Name: "Omar", LastMessageAt: t0.Add(30 * 24 * time.Hour)},
+		{ID: other, Name: "Dana", LastMessageAt: t0},
+	}}
+	src.msgs["|"+stuck] = []Message{
+		msg("3EB0A1", stuck, stuck, "already read", t0, false),
+		msg("3EB0B2", stuck, stuck, "a month later", t0.Add(30*24*time.Hour), false),
+	}
+	src.msgs["|"+other] = []Message{msg("3EB0C3", other, other, "dinner at eight", t0, false)}
+	cur := memCursors{stuck: {At: t0, ID: "3EB0A1"}}
+	var saves []saved
+	rec := &recorder{}
+	s := New(Config{Name: "wa-memory", Service: "WhatsApp", Tag: "whatsapp", Operator: "Quinn", Since: t0.Add(-time.Hour), Location: time.UTC},
+		stuckSource{src}, &fakeMemory{}, loggedCursors{cur, &saves}, nil, rec.ask, zap.New(core))
+
+	res, err := s.Tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Stalled) != 1 || res.Stalled[0] != stuck {
+		t.Errorf("stalled = %v, want the chat whose cursor could not move", res.Stalled)
+	}
+	for _, sv := range saves {
+		if sv.chat == stuck {
+			t.Errorf("the stalled chat's cursor was saved: %v|%s", sv.cur.At.Format(time.RFC3339), sv.cur.ID)
+		}
+	}
+	if c := cur[stuck]; c.ID != "3EB0A1" || !c.At.Equal(t0) {
+		t.Errorf("cursor = %v|%s; it must stay where it was, not skip what was never read", c.At.Format(time.RFC3339), c.ID)
+	}
+	if n := src.reads["|"+stuck]; n != 1 {
+		t.Errorf("the stalled chat was read %d times in one tick", n)
+	}
+	if timesRead(rec.prompts, "dinner at eight") != 1 {
+		t.Error("the other chat was not read")
+	}
+	warned := logs.FilterField(zap.String("chat", stuck)).All()
+	if len(warned) != 1 || warned[0].Level != zap.WarnLevel {
+		t.Errorf("warn lines naming the chat = %d, want one", len(warned))
+	}
+}
+
+// timesRead is how many times text was shown to the model.
+func timesRead(prompts []string, text string) int {
+	return strings.Count(strings.Join(prompts, "\n"), text)
+}
+
+// WhatsApp times a message to the second, so a burst of messages shares one.
+// Each of them is read once, in order, and the cursor moves past them, even
+// when the message after them is too long to share their batch.
+//
+// Live, a chat's cursor sat on one of two messages of the same second with a
+// long message next: every batch took the other one of the pair, the cursor
+// flipped between the two, and the chat spent the whole tick's budget on them
+// while the messages after them, and every other chat, waited.
+func TestMessagesOfTheSameSecondAreReadOnceEach(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		long time.Duration // when the long message comes, after the pair
+	}{
+		{"the long one in the next second", time.Second},
+		{"the long one in the same second", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, Config{BatchChars: 200})
+			jid := "111@s.whatsapp.net"
+			sec := t0.Add(time.Minute)
+			h.chat(jid, "Omar", false,
+				msg("3EB0B2", jid, jid, "pair one", sec, false),
+				msg("3EB0A1", jid, jid, "pair two", sec, false),
+				msg("3EB0C3", jid, jid, "a long one "+strings.Repeat("word ", 60), sec.Add(tc.long), false),
+				msg("3EB0D4", jid, jid, "after the long one", sec.Add(2*time.Second), false))
+
+			for i := 0; i < 3; i++ {
+				if _, err := h.s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, text := range []string{"pair one", "pair two", "a long one", "after the long one"} {
+				if n := timesRead(h.ask.prompts, text); n != 1 {
+					t.Errorf("%q was read %d times, want once", text, n)
+				}
+			}
+			if c := h.cur[jid]; c.ID != "3EB0D4" {
+				t.Errorf("cursor = %v|%s, want it past every message", c.At.Format(time.RFC3339), c.ID)
+			}
+			cursorsOnlyMovedForward(t, h.saves)
+		})
 	}
 }
