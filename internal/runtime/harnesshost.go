@@ -673,7 +673,7 @@ framing you "an operator's personal assistant" — whose chat it is, who may be
 trusted, what you may do for the people writing to you — THIS section wins; the
 CLAUDE.md still applies for everything it does not contradict.
 
-KARMAX tools named below (for example memory.retrieve or orgops_status) are
+KARMAX tools named below (for example memory.retrieve or memory.correct) are
 KARMAX tools, not native ones: call them as
 ` + "`karmax tool call <name> k=v`" + ` (` + "`karmax tool list`" + ` shows what exists). Where
 the text below says "use the X tool", read it that way.
