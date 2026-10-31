@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -197,6 +198,15 @@ type Syncer struct {
 
 	operators map[string]bool
 	deny      map[string]bool
+
+	// mu keeps to one tick at a time; the turns below are the syncer's own.
+	mu sync.Mutex
+	// ticks counts ticks; served is the tick in which each chat last had a
+	// batch; current are the chats read to their end since the syncer was
+	// made, whose unread messages are all new ones.
+	ticks   int
+	served  map[string]int
+	current map[string]bool
 }
 
 // New builds a Syncer. sent reports whether KARMAX itself sent a message, which
@@ -234,7 +244,7 @@ func New(cfg Config, src Source, mem Memory, cur Cursors, sent func(c Chat, text
 		log = zap.NewNop()
 	}
 	s := &Syncer{cfg: cfg, src: src, mem: mem, cur: cur, sent: sent, ask: ask, log: log, made: time.Now(),
-		operators: map[string]bool{}, deny: map[string]bool{}}
+		operators: map[string]bool{}, deny: map[string]bool{}, served: map[string]int{}, current: map[string]bool{}}
 	for _, j := range cfg.OperatorIDs {
 		s.operators[bare(j)] = true
 	}
@@ -306,13 +316,24 @@ func (s *Syncer) start(c Chat, looked map[string]time.Time) (time.Time, error) {
 type pending struct {
 	chat Chat
 	cur  Cursor
+	// live is a chat read to its end before, whose unread messages are new.
+	live bool
 }
 
-// Tick reads what is new, chat by chat, and applies it to memory.
+// Tick reads what is new, chat by chat, and applies it to memory, spending up
+// to the tick's batch budget.
 //
-// The most recently active chats go first and each gets one batch per pass,
-// so a backfill of a long history never holds up what was said today.
+// Each chat gets one batch per pass, and passes go on while any chat has more
+// to read and budget remains. New messages go first: chats already read to
+// their end, the most recently active first, so a backfill never holds up
+// what was said today. History follows: chats still reading theirs, the one
+// served longest ago first, so the backfill is shared across every chat
+// rather than going to the busiest ones tick after tick. While history
+// waits, new messages may take at most three quarters of the budget.
 func (s *Syncer) Tick(ctx context.Context) (Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ticks++
 	var res Result
 	chats, err := s.src.Chats(ctx)
 	if err != nil {
@@ -336,27 +357,58 @@ func (s *Syncer) Tick(ctx context.Context) (Result, error) {
 			cur = Cursor{At: at}
 		}
 		if c.LastMessageAt.After(cur.At) {
-			queue = append(queue, pending{chat: c, cur: cur})
+			queue = append(queue, pending{chat: c, cur: cur, live: s.current[key(c)]})
 		}
 	}
-	sort.SliceStable(queue, func(i, j int) bool { return queue[i].chat.LastMessageAt.After(queue[j].chat.LastMessageAt) })
+	sort.SliceStable(queue, func(i, j int) bool {
+		a, b := queue[i], queue[j]
+		if a.live != b.live {
+			return a.live
+		}
+		if sa, sb := s.served[key(a.chat)], s.served[key(b.chat)]; !a.live && sa != sb {
+			return sa < sb
+		}
+		return a.chat.LastMessageAt.After(b.chat.LastMessageAt)
+	})
 
+	budget := s.cfg.BatchesPerTick
+	liveCap := budget - budget/4 // what new messages may take while history waits
+	liveUsed, history := 0, 0
+	for _, p := range queue {
+		if !p.live {
+			history++
+		}
+	}
 	names := map[string]string{}
 	for len(queue) > 0 {
 		var next []pending
 		for _, p := range queue {
-			if res.Batches >= s.cfg.BatchesPerTick {
+			if res.Batches >= budget {
 				res.More = true
 				return res, nil
 			}
+			if p.live && history > 0 && liveUsed >= liveCap {
+				next = append(next, p) // read once history is done, or next tick
+				continue
+			}
+			before := res.Batches
 			cur, done, err := s.batch(ctx, p, names, &res)
 			if err != nil {
 				res.More = true
 				return res, err
 			}
-			if !done {
-				next = append(next, pending{chat: p.chat, cur: cur})
+			s.served[key(p.chat)] = s.ticks
+			if p.live {
+				liveUsed += res.Batches - before
 			}
+			if done {
+				if !p.live {
+					history--
+				}
+				continue
+			}
+			p.cur = cur
+			next = append(next, p)
 		}
 		queue = next
 	}
@@ -364,10 +416,10 @@ func (s *Syncer) Tick(ctx context.Context) (Result, error) {
 }
 
 // batch reads one batch of a chat and applies it, returning the new cursor and
-// whether the chat is done for this tick. The cursor moves only once the batch
-// is applied: a pass the model fails is read again next time. It only ever
-// moves forward, in the chat's order (see Cursor), so each message is read
-// once.
+// whether the chat is done for this tick: read up to its last activity, or
+// stalled. The cursor moves only once the batch is applied: a pass the model
+// fails is read again next time. It only ever moves forward, in the chat's
+// order (see Cursor), so each message is read once.
 func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, res *Result) (Cursor, bool, error) {
 	raw, err := s.src.Messages(ctx, p.chat, p.cur, s.cfg.BatchMessages+1)
 	if err != nil {
@@ -422,6 +474,8 @@ func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, 
 			s.log.Warn(s.cfg.Name+": a chat's cursor cannot move although the chat has newer messages; it is left where it is",
 				zap.String("chat", key(p.chat)), zap.Time("cursor_at", p.cur.At), zap.String("cursor_id", p.cur.ID),
 				zap.Time("last_message_at", p.chat.LastMessageAt), zap.Int("returned", len(raw)))
+		} else {
+			s.current[key(p.chat)] = true
 		}
 		return p.cur, true, nil
 	}
@@ -439,8 +493,13 @@ func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, 
 	if err := s.cur.Set(key(p.chat), next); err != nil {
 		return p.cur, false, fmt.Errorf("%s: save cursor for %s: %w", s.cfg.Name, key(p.chat), err)
 	}
-	done := len(take) == len(fresh) && len(raw) <= s.cfg.BatchMessages
-	return next, done, nil
+	// Done once read up to the chat's last activity: a source's answer ends
+	// where its window or page does, not where the chat does.
+	caughtUp := !p.chat.LastMessageAt.After(next.At)
+	if caughtUp {
+		s.current[key(p.chat)] = true
+	}
+	return next, caughtUp, nil
 }
 
 // line renders one message for the model, naming who said it and whether that
