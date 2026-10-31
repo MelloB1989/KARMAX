@@ -69,8 +69,11 @@ type Source interface {
 	// Chats lists the conversations the operator is in. Channels broadcast at
 	// the operator are not conversations and are not listed.
 	Chats(ctx context.Context) ([]Chat, error)
-	// Messages returns a chat's messages after a time, oldest first.
-	Messages(ctx context.Context, chat Chat, after time.Time, limit int) ([]Message, error)
+	// Messages returns up to limit of a chat's messages that the cursor has
+	// not passed (see Cursor), oldest first. It answers with none only when
+	// none follows the cursor: a source that reads in pages or windows looks
+	// past one that holds only messages the cursor has passed.
+	Messages(ctx context.Context, chat Chat, after Cursor, limit int) ([]Message, error)
 	// Name is a sender's display name, or "" when the service knows none.
 	Name(ctx context.Context, sender string) string
 }
@@ -84,10 +87,45 @@ type Memory interface {
 	ForgetFact(ctx context.Context, handle string) (bool, error)
 }
 
-// Cursor is how far into a chat the syncer has read.
+// Cursor is how far into a chat the syncer has read: through the message ID
+// at time At or, with no ID, up to the moment At and past none of the
+// messages of that time.
+//
+// A chat's messages are read in one order: by time, and messages of the same
+// time by ID. WhatsApp times a message to the second, so a burst of messages
+// shares one time; ordering them by ID as well is what lets a cursor stop
+// between two of them and resume after the right one, instead of taking the
+// others of its second for new every time it is read from.
 type Cursor struct {
 	At time.Time
 	ID string
+}
+
+// before reports whether c comes before d in a chat's order.
+func (c Cursor) before(d Cursor) bool {
+	if !c.At.Equal(d.At) {
+		return c.At.Before(d.At)
+	}
+	return c.ID < d.ID
+}
+
+// Passed reports whether the cursor has passed m, which comes at or before it
+// in the chat's order and so has been read.
+func (c Cursor) Passed(m Message) bool { return !c.before(cursorOn(m)) }
+
+// cursorOn is the cursor standing on m.
+func cursorOn(m Message) Cursor { return Cursor{At: m.At, ID: m.ID} }
+
+// unread is what of ms the cursor has not passed, in the chat's order.
+func unread(ms []Message, c Cursor) []Message {
+	var out []Message
+	for _, m := range ms {
+		if !c.Passed(m) {
+			out = append(out, m)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return cursorOn(out[i]).before(cursorOn(out[j])) })
+	return out
 }
 
 // Cursors persists each chat's cursor.
@@ -139,6 +177,11 @@ type Result struct {
 	Batches, Added, Updated, Forgotten, Refused int
 	// More is work left for the next tick.
 	More bool
+	// Stalled are the chats, by cursor key, whose cursor could not move
+	// although they have newer messages: their source answered with only
+	// messages already read. Each is logged at warn, left where it was, and
+	// tried again next tick.
+	Stalled []string
 }
 
 // Syncer turns one service's new messages into memory.
@@ -321,61 +364,67 @@ func (s *Syncer) Tick(ctx context.Context) (Result, error) {
 }
 
 // batch reads one batch of a chat and applies it, returning the new cursor and
-// whether the chat is caught up. The cursor moves only once the batch is
-// applied: a pass the model fails is read again next time.
+// whether the chat is done for this tick. The cursor moves only once the batch
+// is applied: a pass the model fails is read again next time. It only ever
+// moves forward, in the chat's order (see Cursor), so each message is read
+// once.
 func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, res *Result) (Cursor, bool, error) {
-	// From a second early, because a store's "after" may or may not include
-	// its bound; the cursor's own message is dropped below.
-	raw, err := s.src.Messages(ctx, p.chat, p.cur.At.Add(-time.Second), s.cfg.BatchMessages+1)
+	raw, err := s.src.Messages(ctx, p.chat, p.cur, s.cfg.BatchMessages+1)
 	if err != nil {
 		return p.cur, false, fmt.Errorf("%s: messages of %s: %w", s.cfg.Name, key(p.chat), err)
 	}
-	var fresh []Message
-	for _, m := range raw {
-		if m.At.Before(p.cur.At) || (m.At.Equal(p.cur.At) && (m.ID == p.cur.ID || p.cur.ID == "")) {
-			continue
-		}
-		fresh = append(fresh, m)
-	}
-	sort.SliceStable(fresh, func(i, j int) bool { return fresh[i].At.Before(fresh[j].At) })
-	if len(fresh) == 0 {
-		// The chat's last activity was not a message — a reaction, someone
-		// joining — or nothing was said since the cursor. Nothing is there to
-		// read up to that activity, so the cursor moves to it: otherwise the
-		// chat looks active, and is read again, every tick.
-		if p.chat.LastMessageAt.After(p.cur.At) {
-			cur := Cursor{At: p.chat.LastMessageAt}
-			if err := s.cur.Set(key(p.chat), cur); err != nil {
-				return p.cur, false, fmt.Errorf("%s: save cursor for %s: %w", s.cfg.Name, key(p.chat), err)
+	// Whatever a source hands back that the cursor has passed is dropped.
+	fresh := unread(raw, p.cur)
+
+	var (
+		next  Cursor
+		take  []Message
+		lines []string
+		peer  string // the other person in a direct chat, for a chat with no name
+	)
+	switch {
+	case len(fresh) > 0:
+		size := 0
+		for _, m := range fresh {
+			line, who, operator := s.line(ctx, p.chat, m, names)
+			if len(take) > 0 && size+len(line) > s.cfg.BatchChars {
+				break
 			}
-			return cur, true, nil
+			take = append(take, m)
+			if line != "" {
+				lines = append(lines, line)
+				size += len(line)
+				if peer == "" && !operator {
+					peer = who
+				}
+			}
+		}
+		next = cursorOn(take[len(take)-1])
+	case len(raw) == 0 && p.chat.LastMessageAt.After(p.cur.At):
+		// Nothing follows the cursor: the chat's last activity was not a
+		// message — a reaction, someone joining. Nothing is there to read up
+		// to that activity, so the cursor moves to it: otherwise the chat
+		// looks active, and is read again, every tick.
+		next = Cursor{At: p.chat.LastMessageAt}
+	default:
+		// Nothing follows the cursor and nothing happened since; or the
+		// source answered with only messages already read, which says
+		// nothing of what follows them — moving to the chat's last activity
+		// would skip that.
+		next = p.cur
+	}
+
+	if !p.cur.before(next) {
+		if p.chat.LastMessageAt.After(p.cur.At) {
+			// Saving the cursor where it was would read the chat again, and
+			// stop at the same place, every tick: a stall, said out loud.
+			res.Stalled = append(res.Stalled, key(p.chat))
+			s.log.Warn(s.cfg.Name+": a chat's cursor cannot move although the chat has newer messages; it is left where it is",
+				zap.String("chat", key(p.chat)), zap.Time("cursor_at", p.cur.At), zap.String("cursor_id", p.cur.ID),
+				zap.Time("last_message_at", p.chat.LastMessageAt), zap.Int("returned", len(raw)))
 		}
 		return p.cur, true, nil
 	}
-
-	var (
-		take  []Message
-		lines []string
-		size  int
-		peer  string // the other person in a direct chat, for a chat with no name
-	)
-	for _, m := range fresh {
-		line, who, operator := s.line(ctx, p.chat, m, names)
-		if len(take) > 0 && size+len(line) > s.cfg.BatchChars {
-			break
-		}
-		take = append(take, m)
-		if line != "" {
-			lines = append(lines, line)
-			size += len(line)
-			if peer == "" && !operator {
-				peer = who
-			}
-		}
-	}
-	last := take[len(take)-1]
-	cur := Cursor{At: last.At, ID: last.ID}
-	done := len(take) == len(fresh) && len(raw) <= s.cfg.BatchMessages
 
 	if len(lines) > 0 {
 		res.Batches++
@@ -383,14 +432,15 @@ func (s *Syncer) batch(ctx context.Context, p pending, names map[string]string, 
 		if chat.Name == "" && !chat.IsGroup {
 			chat.Name = peer
 		}
-		if err := s.extract(ctx, chat, lines, last.At, res); err != nil {
+		if err := s.extract(ctx, chat, lines, next.At, res); err != nil {
 			return p.cur, false, err
 		}
 	}
-	if err := s.cur.Set(key(p.chat), cur); err != nil {
+	if err := s.cur.Set(key(p.chat), next); err != nil {
 		return p.cur, false, fmt.Errorf("%s: save cursor for %s: %w", s.cfg.Name, key(p.chat), err)
 	}
-	return cur, done, nil
+	done := len(take) == len(fresh) && len(raw) <= s.cfg.BatchMessages
+	return next, done, nil
 }
 
 // line renders one message for the model, naming who said it and whether that

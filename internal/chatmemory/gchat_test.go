@@ -119,7 +119,7 @@ func TestGChatReadsEveryoneAndKnowsTheOperatorByTheirAccount(t *testing.T) {
 	}
 	src := NewGChat(api, accounts(work), zap.NewNop())
 
-	got, err := src.Messages(context.Background(), Chat{ID: "spaces/AAAA", Account: work}, t0.Add(-time.Hour), 50)
+	got, err := src.Messages(context.Background(), Chat{ID: "spaces/AAAA", Account: work}, Cursor{At: t0.Add(-time.Hour)}, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestGChatWithoutUserIDsKnowsTheOperatorByTheirProfileName(t *testing.T) {
 	}
 	src := NewGChat(api, accounts(work), zap.NewNop())
 
-	got, err := src.Messages(context.Background(), Chat{ID: "spaces/AAAA", Account: work}, t0.Add(-time.Hour), 50)
+	got, err := src.Messages(context.Background(), Chat{ID: "spaces/AAAA", Account: work}, Cursor{At: t0.Add(-time.Hour)}, 50)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("messages = %+v, %v", got, err)
 	}
@@ -167,7 +167,7 @@ func TestGChatNamesASenderOnceThroughAnAccountThatSawThem(t *testing.T) {
 	src := NewGChat(api, accounts(work, side), zap.NewNop())
 	ctx := context.Background()
 	for _, sp := range []string{"spaces/GGGG", "spaces/HHHH"} {
-		if _, err := src.Messages(ctx, Chat{ID: sp, Account: side}, t0.Add(-time.Hour), 50); err != nil {
+		if _, err := src.Messages(ctx, Chat{ID: sp, Account: side}, Cursor{At: t0.Add(-time.Hour)}, 50); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -197,7 +197,7 @@ func TestGChatRemembersTheNameAMessageCarries(t *testing.T) {
 	}
 	src := NewGChat(api, accounts(work), zap.NewNop())
 	ctx := context.Background()
-	if _, err := src.Messages(ctx, Chat{ID: "spaces/AAAA", Account: work}, t0.Add(-time.Hour), 50); err != nil {
+	if _, err := src.Messages(ctx, Chat{ID: "spaces/AAAA", Account: work}, Cursor{At: t0.Add(-time.Hour)}, 50); err != nil {
 		t.Fatal(err)
 	}
 	if n := src.Name(ctx, "users/7"); n != "Dana Reyes" || api.lookups != 0 {
@@ -278,4 +278,74 @@ func TestGChatThroughTheSyncer(t *testing.T) {
 	if strings.Contains(p, "Quinn Avery") {
 		t.Errorf("the operator was named by their profile, not as the operator:\n%s", p)
 	}
+}
+
+// Read from a cursor, Chat answers with what the cursor has not passed, in
+// order. A full page of messages it has passed says nothing of what follows,
+// and is handed back as it is, so the syncer reports the space stalled
+// rather than taking it as read to its end.
+func TestGChatReadsOnFromTheCursor(t *testing.T) {
+	api := newChatAPI()
+	api.msgs[work+"|spaces/AAAA"] = []gchat.Message{
+		{Name: "spaces/AAAA/messages/C3", Sender: "users/7", Text: "c", Created: t0},
+		{Name: "spaces/AAAA/messages/A1", Sender: "users/7", Text: "a", Created: t0},
+		{Name: "spaces/AAAA/messages/B2", Sender: "users/7", Text: "b", Created: t0},
+		{Name: "spaces/AAAA/messages/D4", Sender: "users/7", Text: "d", Created: t0.Add(time.Hour)},
+	}
+	src := NewGChat(api, accounts(work), zap.NewNop())
+	ctx, space := context.Background(), Chat{ID: "spaces/AAAA", Account: work}
+
+	got, err := src.Messages(ctx, space, Cursor{At: t0, ID: "spaces/AAAA/messages/A1"}, 50)
+	if err != nil || len(got) != 3 || got[0].Content != "b" || got[1].Content != "c" || got[2].Content != "d" {
+		t.Fatalf("got %v, %v; want b, c and d in order", ids(got), err)
+	}
+	from := Cursor{At: t0, ID: "spaces/AAAA/messages/C3"}
+	got, err = src.Messages(ctx, space, from, 3)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("got %v, %v; want the full page as it came", ids(got), err)
+	}
+	for _, m := range got {
+		if !from.Passed(m) {
+			t.Errorf("%s is new, and the page should hold only what the cursor passed", m.ID)
+		}
+	}
+}
+
+// Through the syncer: Chat messages that share a time are read once each,
+// and the cursor moves past them even when one of them is too long to share
+// a batch with the others.
+func TestGChatMessagesOfOneTimeAreReadOnceEach(t *testing.T) {
+	api := newChatAPI()
+	at := t0.Add(time.Minute)
+	api.spaces[work] = []gchat.Space{{Name: "spaces/AAAA", DisplayName: "Launch crew", Type: "SPACE", LastActive: at.Add(2 * time.Second)}}
+	api.msgs[work+"|spaces/AAAA"] = []gchat.Message{
+		{Name: "spaces/AAAA/messages/B2", Sender: "users/7", SenderName: "Dana Reyes", Text: "pair one", Created: at},
+		{Name: "spaces/AAAA/messages/A1", Sender: "users/8", SenderName: "Lee Park", Text: "pair two", Created: at},
+		{Name: "spaces/AAAA/messages/C3", Sender: "users/7", SenderName: "Dana Reyes", Text: "a long one " + strings.Repeat("word ", 60), Created: at},
+		{Name: "spaces/AAAA/messages/D4", Sender: "users/8", SenderName: "Lee Park", Text: "after the long one", Created: at.Add(2 * time.Second)},
+	}
+	rec, cur := &recorder{}, memCursors{}
+	var saves []saved
+	s := New(Config{Name: "gchat-memory", Service: "Google Chat", Tag: "gchat", Operator: "Quinn",
+		Since: t0.Add(-time.Hour), Location: time.UTC, BatchChars: 200},
+		NewGChat(api, accounts(work), zap.NewNop()), &fakeMemory{}, loggedCursors{cur, &saves}, nil, rec.ask, zap.NewNop())
+
+	for i := 0; i < 3; i++ {
+		res, err := s.Tick(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Stalled) != 0 {
+			t.Errorf("tick %d: stalled %v", i, res.Stalled)
+		}
+	}
+	for _, text := range []string{"pair one", "pair two", "a long one", "after the long one"} {
+		if n := timesRead(rec.prompts, text); n != 1 {
+			t.Errorf("%q was read %d times, want once", text, n)
+		}
+	}
+	if c := cur[key(Chat{ID: "spaces/AAAA", Account: work})]; c.ID != "spaces/AAAA/messages/D4" {
+		t.Errorf("cursor = %v|%s, want it past every message", c.At.Format(time.RFC3339), c.ID)
+	}
+	cursorsOnlyMovedForward(t, saves)
 }

@@ -162,9 +162,9 @@ func (m chatMemory) start(d chatMemoryDeps, src chatmemory.Source, tune func(*ch
 		Schedule:    loopkit.Every(m.Every),
 		Run: func(ctx context.Context, k loopkit.Kit) error {
 			res, err := syncer.Tick(ctx)
-			if res.Batches > 0 || err != nil {
-				k.Logf("%s: %d batches: added %d, corrected %d, forgot %d, refused %d; more to read: %v",
-					m.Loop, res.Batches, res.Added, res.Updated, res.Forgotten, res.Refused, res.More)
+			if res.Batches > 0 || len(res.Stalled) > 0 || err != nil {
+				k.Logf("%s: %d batches: added %d, corrected %d, forgot %d, refused %d; more to read: %v; stalled chats: %d",
+					m.Loop, res.Batches, res.Added, res.Updated, res.Forgotten, res.Refused, res.More, len(res.Stalled))
 			}
 			return err
 		},

@@ -3,7 +3,6 @@ package chatmemory
 import (
 	"context"
 	"errors"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -127,14 +126,21 @@ func (g *GChat) Chats(ctx context.Context) ([]Chat, error) {
 	return out, nil
 }
 
-// Messages returns a space's messages after a time, oldest first, from every
-// sender. A message from an app says so in its sender's name.
-func (g *GChat) Messages(ctx context.Context, c Chat, after time.Time, limit int) ([]Message, error) {
+// Messages returns up to limit of a space's messages that the cursor has not
+// passed, oldest first, from every sender. A message from an app says so in
+// its sender's name.
+//
+// Chat is asked for what follows a second before the cursor, so the messages
+// of the cursor's own time are there whichever way the API's bound falls; the
+// ones the cursor has passed are dropped. A full page of only those says
+// nothing of what follows it, and is handed back as it is: the syncer then
+// reports the space stalled, where an empty answer would read as its end.
+func (g *GChat) Messages(ctx context.Context, c Chat, after Cursor, limit int) ([]Message, error) {
 	me, err := g.who(ctx, c.Account)
 	if err != nil {
 		return nil, err
 	}
-	msgs, err := g.api.Messages(ctx, c.Account, c.ID, after, limit)
+	msgs, err := g.api.Messages(ctx, c.Account, c.ID, after.At.Add(-time.Second), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -163,8 +169,11 @@ func (g *GChat) Messages(ctx context.Context, c Chat, after time.Time, limit int
 			Content: m.Text, At: m.Created, FromMe: me.Wrote(m)})
 	}
 	g.mu.Unlock()
-	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
-	return out, nil
+	fresh := unread(out, after)
+	if len(fresh) == 0 && limit > 0 && len(msgs) >= limit {
+		return out, nil
+	}
+	return fresh, nil
 }
 
 // Name is a sender's display name (their address when they have none),
