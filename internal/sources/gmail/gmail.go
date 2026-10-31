@@ -385,7 +385,9 @@ func (w *Watcher) Tick(ctx context.Context, account string, publish func(sources
 				}
 			}
 		}
-		e := w.event(account, own, m, inThread).WatchedSince(st.FirstSeen)
+		// Gmail dates mail by its own clock: what it received just after the
+		// first look must not read as before it on this host's.
+		e := w.event(account, own, m, inThread).WatchedSince(st.FirstSeen.Add(-clockSlack))
 		if res.First {
 			e.Backlog = true
 		}

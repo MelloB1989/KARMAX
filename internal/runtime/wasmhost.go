@@ -540,6 +540,8 @@ var outboundTools = map[string]bool{
 	"x_post": true, "linkedin_post": true, "instagram_post": true,
 	// Google Chat messages, and calendar changes Google mails to the guests.
 	"gchat_send": true, "gcal_respond": true, "gcal_reschedule": true, "gcal_create": true,
+	// Email sent as the operator.
+	"gmail_reply": true, "gmail_send": true,
 }
 
 // Session gives a signed loop the same long-lived harness conversation the

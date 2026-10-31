@@ -18,6 +18,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/sources"
 	"github.com/MelloB1989/karmax/internal/sources/gcal"
 	"github.com/MelloB1989/karmax/internal/sources/gchat"
+	"github.com/MelloB1989/karmax/internal/sources/gmail"
 	"github.com/MelloB1989/karmax/internal/sources/googleacct"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -26,29 +27,74 @@ import (
 	"go.uber.org/zap"
 )
 
-// Google Calendar and Google Chat as event sources.
+// Google Calendar, Google Chat and Gmail as event sources.
 //
 // Every Google account a CLI on this host holds (see internal/sources/
-// googleacct) is polled: its calendar every few minutes, its Chat every two.
-// What happened becomes a sources.Event published as webhook.fired to the
-// primary agent, so it is screened, remembered and acted on like any other
-// event. Each account's health is an integration of its own, which is where
-// a signed-out account says what to run.
+// googleacct) is polled: its calendar every few minutes, its Chat and its
+// inbox every two. What happened becomes a sources.Event published as
+// webhook.fired to the primary agent, so it is screened, remembered and acted
+// on like any other event. Each account's health is an integration of its
+// own, which is where a signed-out account, or a login missing a scope, says
+// what to run.
 //
 //	KARMAX_SOURCE_GCAL=off    stop polling calendars
 //	KARMAX_SOURCE_GCHAT=off   stop polling Chat
+//	KARMAX_SOURCE_GMAIL=off   stop polling Gmail (settings: gmailSourceConfig)
 //	KARMAX_GWS_CONFIG_DIRS    more gws config directories, one login each (':'-separated)
 
-// googleSourcesOn reads the off switches.
-func googleSourcesOn(getenv func(string) string) (cal, chat bool) {
-	off := func(k string) bool {
-		switch strings.ToLower(strings.TrimSpace(getenv(k))) {
-		case "off", "0", "false", "no", "disabled":
-			return true
-		}
-		return false
+// switchedOff reads one source's off switch.
+func switchedOff(getenv func(string) string, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv(key))) {
+	case "off", "0", "false", "no", "disabled":
+		return true
 	}
-	return !off("KARMAX_SOURCE_GCAL"), !off("KARMAX_SOURCE_GCHAT")
+	return false
+}
+
+// googleSourcesOn reads the calendar and Chat off switches.
+func googleSourcesOn(getenv func(string) string) (cal, chat bool) {
+	return !switchedOff(getenv, "KARMAX_SOURCE_GCAL"), !switchedOff(getenv, "KARMAX_SOURCE_GCHAT")
+}
+
+// gmailSourceConfig reads the Gmail source's settings, and reports false
+// when KARMAX_SOURCE_GMAIL=off.
+//
+//	KARMAX_SOURCE_GMAIL_EVERY            how often inboxes are polled (default 2m)
+//	KARMAX_SOURCE_GMAIL_SKIP_CATEGORIES  Gmail categories never told, comma-separated
+//	                                     (default promotions,social,updates,forums; "none" tells all)
+//	KARMAX_SOURCE_GMAIL_URGENT           with a person writing to the operator directly, what makes it
+//	                                     urgent: important, own-thread, direct (default important,own-thread;
+//	                                     "none" makes nothing urgent)
+//	KARMAX_SOURCE_GMAIL_AUTOMATED        words in a sender's address that mark mail nobody answers
+//	                                     (default noreply,donotreply; "none" for none)
+//	KARMAX_SOURCE_GMAIL_LOOKBACK         how far back an account's first look reads unread mail (default 24h)
+func gmailSourceConfig(getenv func(string) string) (gmail.Config, string, bool) {
+	if switchedOff(getenv, "KARMAX_SOURCE_GMAIL") {
+		return gmail.Config{}, "", false
+	}
+	get := func(k string) string { return strings.TrimSpace(getenv("KARMAX_SOURCE_GMAIL_" + k)) }
+	// list is nil when unset (the default) and empty for "none".
+	list := func(k string) []string {
+		v := get(k)
+		switch {
+		case v == "":
+			return nil
+		case strings.EqualFold(v, "none"):
+			return []string{}
+		}
+		return splitCSV(v)
+	}
+	cfg := gmail.Config{
+		SkipCategories: list("SKIP_CATEGORIES"),
+		UrgentWhen:     list("URGENT"),
+		Automated:      list("AUTOMATED"),
+		FirstLook:      durationSetting(get("LOOKBACK")),
+	}
+	every := get("EVERY")
+	if durationSetting(every) <= 0 {
+		every = "2m"
+	}
+	return cfg, every, true
 }
 
 // nativeReplacements are installed workflows a compiled-in source replaces,
@@ -104,20 +150,22 @@ type googleSourceDeps struct {
 	Sent tools.SentRecorder
 }
 
-// googleSources is both sources over one client.
+// googleSources is the Google sources over one client.
 type googleSources struct {
-	client   *googleacct.Client
-	loc      *time.Location
-	cal      *gcal.Tracker
-	chat     *gchat.Watcher
-	agentID  string
+	client    *googleacct.Client
+	loc       *time.Location
+	cal       *gcal.Tracker
+	chat      *gchat.Watcher
+	mail      *gmail.Watcher
+	mailEvery string
+	agentID   string
 	publish  func(bus.Event) error
 	seen     sources.Seen
 	log      *zap.Logger
 	register func(integration.Integration)
 	sent     tools.SentRecorder
 
-	calMu, chatMu sync.Mutex // one tick of each at a time
+	calMu, chatMu, mailMu sync.Mutex // one tick of each at a time
 
 	mu         sync.Mutex
 	health     map[string]map[string]sourceHealth // account -> source -> last outcome
@@ -136,12 +184,13 @@ const (
 	googleSeenTTL    = 30 * 24 * time.Hour
 	gcalStateGroup   = "gcal-state"
 	gchatStateGroup  = "gchat-state"
+	gmailStateGroup  = "gmail-state"
 	googleHealthName = "google_account"
 )
 
 // startGoogleSources builds the sources over this host's Google CLIs,
 // registers their loops, and registers the Google actions as tools an agent
-// can be granted (gcal.*, gchat.*, google.accounts).
+// can be granted (gcal.*, gchat.*, gmail.*, google.accounts).
 func startGoogleSources(s *store.Store, b *bus.Log, toolReg *tools.Registry, reg *integration.Registry, agentID string, log *zap.Logger) *googleSources {
 	g := newGoogleSources(googleSourceDeps{
 		Host: googleacct.NewHost(hostpaths.Gog(), os.Getenv), KV: s, Publish: b.Publish, AgentID: agentID,
@@ -178,6 +227,14 @@ func newGoogleSources(d googleSourceDeps) *googleSources {
 	}
 	if chat {
 		g.chat = gchat.New(gchat.Config{Location: d.Loc}, g.client, jsonState[gchat.State]{kv: d.KV, group: gchatStateGroup}, g.seen)
+	}
+	if cfg, every, on := gmailSourceConfig(d.Getenv); on {
+		cfg.Location = d.Loc
+		// Mail from any of the operator's signed-in addresses is their own,
+		// not a person writing to them.
+		cfg.Own = func() []string { return g.client.Host().Accounts(context.Background()).Emails() }
+		g.mail = gmail.New(cfg, g.client, jsonState[gmail.State]{kv: d.KV, group: gmailStateGroup}, g.seen)
+		g.mailEvery = every
 	}
 	return g
 }
@@ -232,6 +289,16 @@ func (g *googleSources) loops() []loopkit.Loop {
 			Run:      func(ctx context.Context, k loopkit.Kit) error { return g.run(ctx, k, "gchat") },
 		})
 	}
+	if g.mail != nil {
+		out = append(out, loopkit.Loop{
+			Name: "gmail-source",
+			Description: "Every " + g.mailEvery + " reads new inbox mail on every Google account signed in on this host with " +
+				"Gmail, leaving out what the operator sent and what Gmail and its sender mark as bulk; a person writing to " +
+				"the operator directly about something Gmail marks important, or answering their thread, is urgent.",
+			Schedule: loopkit.Every(g.mailEvery),
+			Run:      func(ctx context.Context, k loopkit.Kit) error { return g.run(ctx, k, gmail.Name) },
+		})
+	}
 	return out
 }
 
@@ -250,8 +317,11 @@ func (g *googleSources) run(ctx context.Context, k loopkit.Kit, source string) e
 func (g *googleSources) tick(ctx context.Context, source string) error {
 	mu := &g.calMu
 	service := "calendar"
-	if source == "gchat" {
+	switch source {
+	case "gchat":
 		mu, service = &g.chatMu, "chat"
+	case gmail.Name:
+		mu, service = &g.mailMu, googleacct.GmailRead
 	}
 	if !mu.TryLock() {
 		return nil // the previous tick is still working
@@ -283,8 +353,25 @@ func (g *googleSources) tick(ctx context.Context, source string) error {
 			if err == nil && res.First {
 				g.log.Info("gchat: first look at an account", zap.String("account", a.Email), zap.Int("spaces", res.Spaces), zap.Int("published", res.Published))
 			}
+		case gmail.Name:
+			var res gmail.Result
+			res, err = g.mail.Tick(ctx, a.Email, g.emit)
+			if err == nil && res.First {
+				g.log.Info("gmail: first look at an account", zap.String("account", a.Email), zap.Int("listed", res.Listed),
+					zap.Int("published", res.Published), zap.Any("skipped", res.Skipped))
+			}
+			if err == nil && len(res.Failed) > 0 {
+				g.log.Warn("gmail: messages could not be read; tried again next tick", zap.String("account", a.Email), zap.Int("messages", len(res.Failed)))
+			}
 		}
 		g.outcome(a.Email, source, err)
+		if err == nil && source == gmail.Name {
+			// Reading works; what the login cannot do yet is a health problem
+			// of its own, with the command that fixes it.
+			if gap := gmailGap(a); gap != nil {
+				g.note(a.Email, source, gap, "")
+			}
+		}
 		if err != nil && !isUnreachable(err) {
 			failed = append(failed, a.Email+": "+err.Error())
 		}
@@ -305,11 +392,32 @@ func skipReason(a googleacct.Account, service string) string {
 			return "" // tried, so a problem is reported as one
 		}
 	}
-	fix := ""
-	if len(a.Logins) > 0 {
-		fix = a.Logins[0].Fix()
+	return fmt.Sprintf("no login for this account was granted %s; to add it, run `%s`", service, a.FixFor(service))
+}
+
+// gmailGap says what KARMAX cannot do with an account whose mail it reads —
+// send as it, file its mail, read whole emails — and the command that grants
+// it; nil when nothing is missing. Acting freely on mail needs all three.
+func gmailGap(a googleacct.Account) error {
+	var cannot []string
+	need := ""
+	for _, p := range []struct{ power, what string }{
+		{googleacct.GmailSend, "send email as it"},
+		{googleacct.GmailModify, "archive, label or mark its mail read"},
+		{googleacct.GmailBody, "read whole emails"},
+	} {
+		if a.Lacks(p.power) {
+			cannot = append(cannot, p.what)
+			if need == "" {
+				need = p.power
+			}
+		}
 	}
-	return fmt.Sprintf("no login for this account was granted %s; to add it, run `%s` and grant %s", service, fix, service)
+	if len(cannot) == 0 {
+		return nil
+	}
+	return fmt.Errorf("Gmail is read, but KARMAX cannot %s: its login was not granted the scope. To fix, run on the KARMAX host: %s",
+		strings.Join(cannot, ", or "), a.FixFor(need))
 }
 
 func isUnreachable(err error) bool {
@@ -377,7 +485,7 @@ func (g *googleSources) outcome(account, source string, err error) {
 	e := sources.Event{
 		Source: source, Account: account, Type: "account.signed_out",
 		Key:     "google|" + account + "|signed_out|" + time.Now().In(g.loc).Format("2006-01-02"),
-		Title:   fmt.Sprintf("Google account %s is signed out on the KARMAX host: its calendar and chat are not being read", account),
+		Title:   fmt.Sprintf("Google account %s is signed out on the KARMAX host: its calendar, chat and mail are not being read", account),
 		Summary: err.Error(),
 		Urgent:  true,
 		At:      time.Now(),
@@ -394,7 +502,7 @@ func (g *googleSources) healthOf(account string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.present[account] {
-		return fmt.Errorf("%s is no longer signed in on this host; run `gog auth add %s --services calendar,chat` (or `gws auth login`)", account, account)
+		return fmt.Errorf("%s is no longer signed in on this host; run `gog auth add %s --services calendar,chat,gmail` (or `gws auth login`)", account, account)
 	}
 	var problems []string
 	names := make([]string, 0, len(g.health[account]))
@@ -423,8 +531,8 @@ type googleAccountHealth struct {
 func (h *googleAccountHealth) Manifest() integration.Manifest {
 	return integration.Manifest{
 		ID:   googleHealthName + ":" + h.email,
-		Name: "Google account " + h.email + " (Calendar and Chat events)",
-		Description: "Polled for calendar and Chat events through the Google CLIs signed in on this host. " +
+		Name: "Google account " + h.email + " (Calendar, Chat and Gmail events)",
+		Description: "Polled for calendar, Chat and Gmail events through the Google CLIs signed in on this host. " +
 			"Unhealthy means its events are not being read; the error says what to run.",
 		Kind:    integration.KindConnector,
 		Account: h.email,
@@ -440,7 +548,7 @@ func (h *googleAccountHealth) Health(context.Context, connectorkit.Credentials) 
 }
 
 // googleToolsForEvent lends the Google actions to a turn: bound to the
-// account for that account's own calendar or Chat event, and unbound for the
+// account for that account's own calendar, Chat or Gmail event, and unbound for the
 // operator's own turns, where they say which account.
 func (rt *KarmaxRuntime) googleToolsForEvent(evt bus.Event) []tools.Tool {
 	g := rt.google
@@ -449,7 +557,7 @@ func (rt *KarmaxRuntime) googleToolsForEvent(evt bus.Event) []tools.Tool {
 	}
 	if evt.Kind == bus.EventWebhookFired && evt.Payload != nil {
 		src, _ := evt.Payload["source"].(string)
-		if src == "gcal" || src == "gchat" {
+		if src == "gcal" || src == "gchat" || src == gmail.Name {
 			account, _ := evt.Payload["account"].(string)
 			return googleacct.Tools(g.client, g.loc, account, g.sent)
 		}
