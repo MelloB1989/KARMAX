@@ -94,6 +94,8 @@ type Session struct {
 	// caller that gave up on it when it is the rest of one (nil otherwise).
 	// Set before spawn; nil drops background turns.
 	onBackground func(t Turn, claim func(Turn))
+	// ended: the process's output is over, so no background turn can open.
+	ended bool
 
 	// busy is true while a turn is in flight.
 	//
@@ -378,7 +380,8 @@ func (s *Session) dispatch(ev event) bool {
 func (s *Session) giveUp(onLate func(Turn)) {
 	s.route.Lock()
 	s.waiting = false
-	if s.bg == nil {
+	// A process whose output has ended has nothing more to say about it.
+	if s.bg == nil && !s.ended {
 		s.bg = &bgTurn{done: make(chan struct{}), late: true, claim: onLate}
 	}
 	s.route.Unlock()
@@ -400,6 +403,7 @@ func (s *Session) giveUp(onLate func(Turn)) {
 func (s *Session) endBackground() {
 	s.route.Lock()
 	defer s.route.Unlock()
+	s.ended = true
 	if s.bg != nil {
 		close(s.bg.done)
 		s.bg = nil

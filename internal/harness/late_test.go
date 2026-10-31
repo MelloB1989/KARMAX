@@ -90,6 +90,23 @@ func TestALateTurnNobodyClaimedGoesToTheBackgroundHandlerMarkedLate(t *testing.T
 	}
 }
 
+// A caller that gives up on a session whose process has already gone opens no
+// background turn: nothing more will be said, and one left open would hold
+// the next caller until its own time ran out.
+func TestGivingUpOnAGoneProcessOpensNoBackgroundTurn(t *testing.T) {
+	sess := openOne(t, writeScript(t, "while IFS= read -r line; do "+resultLine+"done\n"), Policy{TurnTimeout: 5 * time.Second})
+	sess.Close()
+	select {
+	case <-sess.exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the process did not exit")
+	}
+	sess.giveUp(func(Turn) {})
+	if sess.inBackground() {
+		t.Error("a background turn was opened on a process that has gone")
+	}
+}
+
 // A turn the session started by itself is not late: no caller asked for it.
 func TestAnUnsolicitedTurnIsNotMarkedLate(t *testing.T) {
 	sup, _, rec := newBGSupervisor(t, `while IFS= read -r line; do
