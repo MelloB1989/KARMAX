@@ -1,4 +1,4 @@
-package wamemory
+package chatmemory
 
 import (
 	"context"
@@ -92,7 +92,7 @@ func (r *recorder) ask(_ context.Context, prompt string) (string, error) {
 }
 
 func msg(id, chat, sender, text string, at time.Time, fromMe bool) Message {
-	return Message{ID: id, ChatJID: chat, SenderJID: sender, Content: text, At: at, FromMe: fromMe}
+	return Message{ID: id, Chat: chat, Sender: sender, Content: text, At: at, FromMe: fromMe}
 }
 
 type harness struct {
@@ -134,7 +134,7 @@ func (h *harness) chat(jid, name string, group bool, msgs ...Message) {
 			last = m.At
 		}
 	}
-	h.src.chats = append(h.src.chats, Chat{JID: jid, Name: name, IsGroup: group, LastMessageAt: last})
+	h.src.chats = append(h.src.chats, Chat{ID: jid, Name: name, IsGroup: group, LastMessageAt: last})
 	h.src.msgs[jid] = msgs
 }
 
@@ -276,7 +276,7 @@ func TestMessagesAreReadAgainWhenTheModelFails(t *testing.T) {
 }
 
 func TestSpeakersAreNamedForWhoTheyAre(t *testing.T) {
-	h := newHarness(t, Config{OperatorJIDs: []string{"555@lid"}})
+	h := newHarness(t, Config{OperatorIDs: []string{"555@lid"}})
 	h.src.names["777@lid"] = "Priya Raman"
 	h.sent["1@g.us|I'll send the brief tonight"] = true
 	h.chat("1@g.us", "Contoso core", true,
@@ -308,8 +308,8 @@ func TestSpeakersAreNamedForWhoTheyAre(t *testing.T) {
 // it has learned), and the instructions forbid the fact outright.
 func TestTheOperatorKeepsOneNameWhateverTheirAccountIsCalled(t *testing.T) {
 	h := newHarness(t, Config{
-		OperatorJIDs: []string{"555@lid"},
-		IsOperator:   func(jid string) bool { return strings.HasPrefix(jid, "444") },
+		OperatorIDs: []string{"555@lid"},
+		IsOperator:  func(jid string) bool { return strings.HasPrefix(jid, "444") },
 	})
 	h.src.names["444@lid"] = "Omar" // a label on one of the operator's accounts
 	h.chat("1@g.us", "Contoso core", true,

@@ -1,4 +1,4 @@
-package wamemory
+package chatmemory
 
 import (
 	"context"
@@ -59,7 +59,7 @@ func (s *Syncer) extract(ctx context.Context, chat Chat, lines []string, at time
 	}
 	name := chat.Name
 	if name == "" {
-		name = "+" + bare(chat.JID)
+		name = "+" + bare(chat.ID)
 	}
 	fmt.Fprintf(&b, "\nCHAT: %s (%s)\n\nMEMORY:\n", name, kind)
 	if len(shown) == 0 {
@@ -75,7 +75,7 @@ func (s *Syncer) extract(ctx context.Context, chat Chat, lines []string, at time
 
 	reply, err := s.ask(ctx, b.String())
 	if err != nil {
-		return fmt.Errorf("wa-memory: extract %s: %w", chat.JID, err)
+		return fmt.Errorf("wa-memory: extract %s: %w", chat.ID, err)
 	}
 	ops, err := parseOps(reply)
 	if err != nil {

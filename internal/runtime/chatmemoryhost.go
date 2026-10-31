@@ -9,23 +9,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/chatmemory"
 	"github.com/MelloB1989/karmax/internal/identity"
 	"github.com/MelloB1989/karmax/internal/memory"
 	"github.com/MelloB1989/karmax/internal/store"
-	"github.com/MelloB1989/karmax/internal/wamemory"
 )
 
 // waMemoryConfig reads the WhatsApp → memory syncer's settings, and reports
 // false when KARMAX_WA_MEMORY=off.
 //
 //	KARMAX_WA_MEMORY_SINCE      where a chat never read before starts (YYYY-MM-DD; default a week back)
-//	KARMAX_WA_MEMORY_DENY_FILE  chats never read, one JID or name per line (default ~/.karmax/wa-memory-deny.txt)
+//	KARMAX_WA_MEMORY_DENY_FILE  chats never read, one ID or name per line (default ~/.karmax/wa-memory-deny.txt)
 //	KARMAX_WA_MEMORY_BATCHES    model calls one tick may make (default 12)
-func waMemoryConfig(getenv func(string) string, karmaxHome string, now time.Time, operatorJIDs []string) (wamemory.Config, bool) {
+func waMemoryConfig(getenv func(string) string, karmaxHome string, now time.Time, operatorJIDs []string) (chatmemory.Config, bool) {
 	if strings.EqualFold(strings.TrimSpace(getenv("KARMAX_WA_MEMORY")), "off") {
-		return wamemory.Config{}, false
+		return chatmemory.Config{}, false
 	}
-	cfg := wamemory.Config{Since: now.AddDate(0, 0, -7), OperatorJIDs: operatorJIDs, Location: memory.OperatorLocation()}
+	cfg := chatmemory.Config{Since: now.AddDate(0, 0, -7), OperatorIDs: operatorJIDs, Location: memory.OperatorLocation()}
 	if d, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(getenv("KARMAX_WA_MEMORY_SINCE")), cfg.Location); err == nil {
 		cfg.Since = d
 	}
@@ -53,20 +53,20 @@ type kvCursors struct{ s *store.Store }
 
 const waMemoryCursorGroup = "wa-memory-cursor"
 
-func (c kvCursors) Get(chat string) (wamemory.Cursor, bool, error) {
+func (c kvCursors) Get(chat string) (chatmemory.Cursor, bool, error) {
 	v, ok, err := c.s.KVGet(waMemoryCursorGroup, chat)
 	if err != nil || !ok {
-		return wamemory.Cursor{}, false, err
+		return chatmemory.Cursor{}, false, err
 	}
 	at, id, _ := strings.Cut(v, "|")
 	t, err := time.Parse(time.RFC3339Nano, at)
 	if err != nil {
-		return wamemory.Cursor{}, false, nil // unreadable: read the chat from Since again
+		return chatmemory.Cursor{}, false, nil // unreadable: read the chat from Since again
 	}
-	return wamemory.Cursor{At: t, ID: id}, true, nil
+	return chatmemory.Cursor{At: t, ID: id}, true, nil
 }
 
-func (c kvCursors) Set(chat string, cur wamemory.Cursor) error {
+func (c kvCursors) Set(chat string, cur chatmemory.Cursor) error {
 	return c.s.KVSet(waMemoryCursorGroup, chat, cur.At.Format(time.RFC3339Nano)+"|"+cur.ID, 0)
 }
 

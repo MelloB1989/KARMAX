@@ -1,4 +1,4 @@
-package wamemory
+package chatmemory
 
 import (
 	"context"
@@ -152,7 +152,7 @@ func looksSecret(text string) bool {
 	return false
 }
 
-func zapChat(c Chat) zap.Field { return zap.String("chat", c.JID) }
+func zapChat(c Chat) zap.Field { return zap.String("chat", c.ID) }
 
 func zapErr(err error) zap.Field {
 	if err == nil {

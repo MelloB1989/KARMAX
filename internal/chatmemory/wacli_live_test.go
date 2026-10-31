@@ -1,6 +1,6 @@
 //go:build live
 
-package wamemory
+package chatmemory
 
 import (
 	"context"
@@ -29,12 +29,12 @@ func TestLiveWacliReadsForwardFromTheCursor(t *testing.T) {
 		}
 	}
 	from := time.Now().AddDate(0, -1, 0)
-	got, err := src.Messages(ctx, busiest.JID, from, 50)
+	got, err := src.Messages(ctx, busiest.ID, from, 50)
 	if err != nil || len(got) == 0 {
 		t.Fatalf("messages: %d, %v", len(got), err)
 	}
 	if got[0].At.Before(from) || got[0].At.After(from.Add(7*24*time.Hour)) {
 		t.Errorf("first message %v is not the first after %v", got[0].At, from)
 	}
-	t.Logf("%s: %d messages from %v to %v", busiest.JID, len(got), got[0].At, got[len(got)-1].At)
+	t.Logf("%s: %d messages from %v to %v", busiest.ID, len(got), got[0].At, got[len(got)-1].At)
 }

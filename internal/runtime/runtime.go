@@ -17,6 +17,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/broker"
 	"github.com/MelloB1989/karmax/internal/browser"
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/chatmemory"
 	"github.com/MelloB1989/karmax/internal/clock"
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/comms/slack"
@@ -48,7 +49,6 @@ import (
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/internal/tracker"
 	"github.com/MelloB1989/karmax/internal/voice"
-	"github.com/MelloB1989/karmax/internal/wamemory"
 	"github.com/MelloB1989/karmax/internal/wasmloop"
 	"github.com/MelloB1989/karmax/internal/webhook"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
@@ -452,7 +452,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 	// and — once the bridge says — the linked account KARMAX sends from.
 	// Everything that has to know who is speaking asks this.
 	who := newIdentity(os.Getenv, operatorChats, s)
-	waNames := wamemory.NewWacli(hostpaths.WacliAPIURL())
+	waNames := chatmemory.NewWacli(hostpaths.WacliAPIURL())
 	labelSpeaker := speakerLabeller(who, s.SentWhatsApp, waNames.Name)
 	if waChannel != nil {
 		waChannel.SetIdentity(who)
@@ -817,12 +817,12 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		// WhatsApp → memory: every chat's new messages, set beside what memory
 		// already holds, become facts added, corrected or retired. A chat never
 		// read before starts at KARMAX_WA_MEMORY_SINCE, which is how the same
-		// loop backfills history. See internal/wamemory.
+		// loop backfills history. See internal/chatmemory.
 		home, _ := os.UserHomeDir()
 		if waCfg, on := waMemoryConfig(os.Getenv, filepath.Join(home, ".karmax"), time.Now(), operatorChats); on {
 			// The directory's answer, which includes the LIDs it has learned.
 			waCfg.IsOperator = who.IsOperator
-			syncer := wamemory.New(waCfg, waNames, memFactory.For(a0.ID, ns),
+			syncer := chatmemory.New(waCfg, waNames, memFactory.For(a0.ID, ns),
 				kvCursors{s: s}, s.SentWhatsApp,
 				func(ctx context.Context, prompt string) (string, error) {
 					return harnessRT.get().harnessExtract(ctx, "wa-memory", prompt)

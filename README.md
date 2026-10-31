@@ -129,7 +129,7 @@ flowchart LR
     REVIEW --> MEM
 ```
 
-WhatsApp reaches memory through the `wa-memory` loop (`internal/wamemory`): every chat's new
+WhatsApp reaches memory through the `wa-memory` loop (`internal/chatmemory`): every chat's new
 messages, set beside what memory already holds about them, become facts added under their
 person or project, corrected, or retired. Each chat keeps a cursor, so a message is read once;
 a chat never read before starts at `KARMAX_WA_MEMORY_SINCE`, which is how the same loop

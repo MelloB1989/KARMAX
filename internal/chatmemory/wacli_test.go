@@ -1,4 +1,4 @@
-package wamemory
+package chatmemory
 
 import (
 	"context"

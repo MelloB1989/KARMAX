@@ -30,7 +30,7 @@ func TestWaMemoryConfigFromEnv(t *testing.T) {
 	if len(cfg.Deny) != 2 || cfg.Deny[0] != "Memes" || cfg.Deny[1] != "120363000000000001@g.us" {
 		t.Errorf("deny = %q", cfg.Deny)
 	}
-	if cfg.BatchesPerTick != 5 || cfg.Operator != "Quinn" || len(cfg.OperatorJIDs) != 1 {
+	if cfg.BatchesPerTick != 5 || cfg.Operator != "Quinn" || len(cfg.OperatorIDs) != 1 {
 		t.Errorf("cfg = %+v", cfg)
 	}
 
