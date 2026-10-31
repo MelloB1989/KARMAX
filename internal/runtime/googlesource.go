@@ -159,11 +159,11 @@ type googleSources struct {
 	mail      *gmail.Watcher
 	mailEvery string
 	agentID   string
-	publish  func(bus.Event) error
-	seen     sources.Seen
-	log      *zap.Logger
-	register func(integration.Integration)
-	sent     tools.SentRecorder
+	publish   func(bus.Event) error
+	seen      sources.Seen
+	log       *zap.Logger
+	register  func(integration.Integration)
+	sent      tools.SentRecorder
 
 	calMu, chatMu, mailMu sync.Mutex // one tick of each at a time
 
