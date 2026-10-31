@@ -157,6 +157,17 @@ func (m *Manager) RegisterWithOptions(ch Channel, agentID string, opts ChannelOp
 		agentID: agentID,
 		dnd:     opts.DND,
 	}
+	// A channel that sees the account's own sends reports them, so a send
+	// made around comms is recorded too (echo.go).
+	if es, ok := ch.(EchoSender); ok {
+		typ := ch.Type()
+		es.SetEchoSink(func(e Echo) {
+			if e.ChannelType == "" {
+				e.ChannelType = typ
+			}
+			m.recordEcho(e)
+		})
+	}
 
 	m.log.Info("channel registered",
 		zap.String("channel_id", ch.ID()),
@@ -441,7 +452,10 @@ func (m *Manager) SendFile(producer, channelID, target, path string) error {
 }
 
 // FileMessage is how a sent file is recorded among a chat's messages.
-func FileMessage(path string) string { return "[file] " + filepath.Base(path) }
+func FileMessage(path string) string { return FileMessagePrefix + filepath.Base(path) }
+
+// FileMessagePrefix starts every FileMessage.
+const FileMessagePrefix = "[file] "
 
 // Threader is a channel that understands threads. Slack does; WhatsApp does
 // not, and a channel that cannot thread simply posts.

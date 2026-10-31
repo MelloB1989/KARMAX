@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
@@ -141,6 +142,7 @@ func (rt *KarmaxRuntime) drainPending(parent context.Context, l loopkit.Loop) {
 		if queuedTooLong(t) {
 			rt.log.Warn("dropped a queued event that went stale while waiting",
 				zap.String("loop", l.Name), zap.String("conversation", conversationOf(t)))
+			rt.markTrigger(l.Name, t, store.LoopTriggerDone, false)
 			continue
 		}
 		go rt.runLoopDurable(parent, l, t, 1)

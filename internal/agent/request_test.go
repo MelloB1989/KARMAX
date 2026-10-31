@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/comms"
+	"github.com/MelloB1989/karmax/internal/policy"
 )
 
 // fakeOwner is the task machinery: it records what it was handed.
@@ -179,6 +181,21 @@ func TestTheCurrentRequestIsTheOldestInFlight(t *testing.T) {
 	endSecond()
 	if a.CurrentRequest() != nil {
 		t.Error("a request is current after every turn ended")
+	}
+}
+
+// A send recorded from its echo (made through wacli directly) is counted as
+// an answer — so nothing repeats it — but is not reported as a turn's own
+// "sent as you": an echo cannot say which turn or workflow sent it.
+func TestASendSeenByItsEchoIsNotReportedAsTheTurns(t *testing.T) {
+	a := policyAgent(t, policy.Default())
+	since := time.Now().Add(-time.Minute)
+	outbound(t, a, "e1", "15555550123@s.whatsapp.net", comms.ProducerWacli, "Sure, Thursday works.")
+	if got, _ := a.sentSince(since); len(got) != 0 {
+		t.Errorf("an echo was reported as the turn's send: %v", got)
+	}
+	if !a.repliedDuringTurn("15555550123@s.whatsapp.net", since) {
+		t.Error("an echoed send was not counted as the chat's answer")
 	}
 }
 

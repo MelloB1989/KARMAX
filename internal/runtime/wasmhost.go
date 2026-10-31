@@ -394,6 +394,9 @@ func (w *wasmKit) Tool(ctx context.Context, name string, input map[string]any) (
 			}
 		}
 		w.outbound.Add(1)
+		// Durable too: a crash after this must not replay the message into a
+		// second, differently worded send (looptrigger.go).
+		w.rt.markTriggerActed(w.loop, trig)
 	}
 	if input == nil {
 		input = map[string]any{}

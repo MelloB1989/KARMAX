@@ -214,6 +214,13 @@ func (a *Agent) sentSince(since time.Time) (out, dests []string) {
 		if !comms.IsAnswerProducer(r.SenderID) || strings.TrimSpace(r.Content) == ackMessage {
 			continue
 		}
+		// A send seen only by its echo cannot be told apart from a
+		// workflow's own send in the same minutes, so it is not reported as
+		// this turn's: it is recorded so nothing says it twice, not so a
+		// turn takes credit for it.
+		if r.SenderID == comms.ProducerWacli {
+			continue
+		}
 		if a.isKnownOperatorChat(r.ChannelID) || a.ops.reported[r.ID] != (time.Time{}) {
 			continue
 		}

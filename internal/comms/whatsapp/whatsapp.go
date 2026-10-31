@@ -137,6 +137,8 @@ type wacliMessage struct {
 	// MentionCount = how many JIDs the message @-mentioned, so the proxy loop
 	// can tell a direct mention from an "@all"-style blast.
 	MentionCount int `json:"mention_count"`
+	// FileName names a media message's file.
+	FileName string `json:"file_name"`
 }
 
 // WhatsAppChannel implements comms.Channel for WhatsApp via the local wacli
@@ -160,8 +162,11 @@ type WhatsAppChannel struct {
 	cursors CursorStore
 	// who decides whose account a message came from; names looks up a
 	// sender's label when the event carries none. Both guarded by mu.
-	who    *identity.Directory
-	names  func(jid string) string
+	who   *identity.Directory
+	names func(jid string) string
+	// echo hears the account's sends made through wacli directly. Guarded
+	// by mu.
+	echo   func(comms.Echo)
 	ctx    context.Context
 	cancel context.CancelFunc
 	mu     sync.RWMutex
@@ -352,6 +357,15 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 	chatJID := strings.TrimSpace(env.Payload.Chat.JID)
 	if chatJID == "" {
 		chatJID = strings.TrimSpace(msg.ChatJID)
+	}
+	// The account's own sends are never answered (see below), but one made
+	// through wacli directly — a shell's `wacli send`, a workflow's tool — is
+	// recorded from its echo, so nothing can say it twice without knowing.
+	if env.Event == "outgoing_message" {
+		if env.Payload.Source == "wacli_api" {
+			w.echoSent(chatJID, msg)
+		}
+		return
 	}
 	// Deferred, so it runs down every path this function returns by: an empty
 	// reaction and a real question are equally "seen", and a cursor that only

@@ -174,12 +174,8 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 				if !evt.Timestamp.IsZero() {
 					payload[payloadEventAt] = evt.Timestamp.UTC().Format(time.RFC3339Nano)
 				}
-				for _, name := range loopEvents[evt.Kind] {
-					if l, found := rt.loopkitLoops[name]; found {
-						go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: payload}, 1)
-					}
-				}
-				return nil
+				return rt.deliverToLoops(ctx, loopEvents[evt.Kind],
+					loopkit.Trigger{Kind: loopkit.TriggerEvent, Payload: payload})
 			})
 	}
 
@@ -195,10 +191,12 @@ func (rt *KarmaxRuntime) startLoopkitLoops(ctx context.Context) {
 				if !ok {
 					return nil
 				}
-				if l, found := rt.loopkitLoops[name]; found {
-					go rt.runLoopDurable(ctx, l, loopkit.Trigger{Kind: loopkit.TriggerWebhook, Payload: evt.Payload}, 1)
+				payload := map[string]any{"event_id": evt.ID}
+				for pk, pv := range evt.Payload {
+					payload[pk] = pv
 				}
-				return nil
+				return rt.deliverToLoops(ctx, []string{name},
+					loopkit.Trigger{Kind: loopkit.TriggerWebhook, Payload: payload})
 			})
 	}
 }
@@ -591,6 +589,9 @@ func (k *loopKit) AskWithTools(ctx context.Context, prompt string, lent []tools.
 	if req != nil {
 		ctx = agent.WithRequest(ctx, req)
 		lent = k.withTaskTools(ag, lent)
+		// The message is the request's now: a restart recovers the request,
+		// and does not also replay the message into a second one.
+		k.rt.setTriggerOwner(k.loopName, k.trigger, req.ID)
 	}
 	out, calls, err := ag.ChatDetailed(ctx, prompt, lent)
 	k.noteOwner(req)
@@ -829,6 +830,7 @@ func (k *loopKit) SendWhatsApp(_ context.Context, target, content string) error 
 	if !ok {
 		return fmt.Errorf("no whatsapp channel registered")
 	}
+	k.rt.markTriggerActed(k.loopName, k.trigger)
 	return k.rt.comms.SendFrom(comms.ProducerLoop, channelID, target, content)
 }
 
