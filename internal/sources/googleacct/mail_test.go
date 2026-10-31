@@ -78,12 +78,18 @@ func TestGwsStartsFromTheProfilesHistoryID(t *testing.T) {
 	if id, err := c.Start(context.Background(), acctAddr); err != nil || id != "4242" {
 		t.Fatalf("start %q %v", id, err)
 	}
-	refs, err := c.Recent(context.Background(), acctAddr, 25)
+	refs, err := c.Recent(context.Background(), acctAddr, 25, false)
 	if err != nil || len(refs) != 2 || refs[0].ID != "m3" {
 		t.Fatalf("recent %+v %v", refs, err)
 	}
 	if p := params(t, f.find(t, "gws", "messages", "list")); p["maxResults"] != float64(25) || strings.Contains(argValue(f.find(t, "gws", "messages", "list").args, "--params"), `"q"`) {
 		t.Errorf("recent params %v: the inbox by label, not by search (a metadata-only login cannot search)", p)
+	}
+	if _, err := c.Recent(context.Background(), acctAddr, 25, true); err != nil {
+		t.Fatal(err)
+	}
+	if p := params(t, f.find(t, "gws", "messages", "list")); strings.Join(asStrings(p["labelIds"]), ",") != "INBOX,UNREAD" {
+		t.Errorf("unread recent params %v", p)
 	}
 }
 

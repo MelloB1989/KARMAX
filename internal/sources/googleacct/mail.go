@@ -261,10 +261,14 @@ func (c *Client) History(ctx context.Context, account, start string) (gmail.Page
 	return page, nil
 }
 
-// Recent lists the newest inbox messages, newest first (gmail.API). The
-// inbox is asked for by label, not by search, which a login granted only
-// metadata cannot do.
-func (c *Client) Recent(ctx context.Context, account string, max int) ([]gmail.Ref, error) {
+// Recent lists the newest inbox messages, newest first, only the unread ones
+// when asked (gmail.API). The inbox is asked for by label, not by search,
+// which a login granted only metadata cannot do.
+func (c *Client) Recent(ctx context.Context, account string, max int, unread bool) ([]gmail.Ref, error) {
+	labels, query := []string{"INBOX"}, "in:inbox"
+	if unread {
+		labels, query = append(labels, "UNREAD"), query+" is:unread"
+	}
 	var out []gmail.Ref
 	err := c.with(ctx, account, GmailRead, func(l Login) error {
 		out = nil
@@ -277,9 +281,9 @@ func (c *Client) Recent(ctx context.Context, account string, max int) ([]gmail.R
 		var err error
 		if l.Path == Gws {
 			err = c.gws(ctx, l, "gmail messages list", &listed, "gmail", "users", "messages", "list",
-				"--params", jsonArg(me(map[string]any{"labelIds": []string{"INBOX"}, "maxResults": max})))
+				"--params", jsonArg(me(map[string]any{"labelIds": labels, "maxResults": max})))
 		} else {
-			err = c.gog(ctx, l, "gmail search", &listed, "gmail", "messages", "search", "in:inbox", "--max", fmt.Sprint(max))
+			err = c.gog(ctx, l, "gmail search", &listed, "gmail", "messages", "search", query, "--max", fmt.Sprint(max))
 		}
 		for _, m := range listed.Messages {
 			out = append(out, gmail.Ref{ID: m.ID, ThreadID: m.ThreadID})

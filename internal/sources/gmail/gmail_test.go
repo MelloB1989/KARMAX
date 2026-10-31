@@ -49,12 +49,16 @@ func (f *fakeAPI) History(_ context.Context, _ string, start string) (Page, erro
 	return p, nil
 }
 
-func (f *fakeAPI) Recent(_ context.Context, _ string, max int) ([]Ref, error) {
+func (f *fakeAPI) Recent(_ context.Context, _ string, max int, unread bool) ([]Ref, error) {
 	f.calls["recent"]++
-	if len(f.recent) > max {
-		return f.recent[:max], nil
+	if unread {
+		f.calls["recent:unread"]++
 	}
-	return f.recent, nil
+	out := f.recent
+	if len(out) > max {
+		out = out[:max]
+	}
+	return out, nil
 }
 
 func (f *fakeAPI) Message(_ context.Context, _ string, id string) (Message, error) {
@@ -170,10 +174,11 @@ func TestTheFirstLookIsUnreadBacklogAndNeverPages(t *testing.T) {
 	read := mail("m2", t0.Add(-3*time.Hour))
 	read.Labels = []string{"INBOX"}
 	old := mail("m3", t0.Add(-30*time.Hour))
-	for _, m := range []Message{fresh, read, old} {
+	older := mail("m4", t0.Add(-50*time.Hour))
+	for _, m := range []Message{fresh, read, old, older} {
 		r.api.msgs[m.ID] = m
 	}
-	r.api.recent = []Ref{{ID: "m1"}, {ID: "m2"}, {ID: "m3"}}
+	r.api.recent = []Ref{{ID: "m1"}, {ID: "m2"}, {ID: "m3"}, {ID: "m4"}}
 
 	got, res := r.tick(t)
 	if !res.First || len(got) != 1 || got[0].Key != "m1" {
@@ -185,8 +190,11 @@ func TestTheFirstLookIsUnreadBacklogAndNeverPages(t *testing.T) {
 	if st := r.store[acct]; st.HistoryID != "100" || !st.FirstSeen.Equal(t0) {
 		t.Errorf("state after the first look %+v", st)
 	}
-	if r.api.calls["start"] != 1 || r.api.calls["history"] != 0 {
-		t.Errorf("calls %v", r.api.calls)
+	if r.api.calls["start"] != 1 || r.api.calls["history"] != 0 || r.api.calls["recent:unread"] != 1 {
+		t.Errorf("calls %v: the first look asks for unread inbox mail", r.api.calls)
+	}
+	if r.api.calls["message:m4"] != 0 {
+		t.Error("the listing is newest first, so it stops at the first message older than the look-back")
 	}
 }
 
@@ -380,6 +388,9 @@ func TestAnExpiredHistoryIDFallsBackToTheNewestInboxMail(t *testing.T) {
 	}
 	if st := r.store[acct]; st.HistoryID != "500" {
 		t.Errorf("watching should start again from the current history id: %+v", st)
+	}
+	if r.api.calls["recent:unread"] != 0 {
+		t.Error("the fallback reads all new inbox mail, read or not")
 	}
 }
 

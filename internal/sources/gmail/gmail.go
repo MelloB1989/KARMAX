@@ -95,8 +95,9 @@ type API interface {
 	Start(ctx context.Context, account string) (string, error)
 	// History lists the messages added since start.
 	History(ctx context.Context, account, start string) (Page, error)
-	// Recent lists the newest messages in the inbox, newest first.
-	Recent(ctx context.Context, account string, max int) ([]Ref, error)
+	// Recent lists the newest messages in the inbox, newest first; only the
+	// unread ones when unread is set.
+	Recent(ctx context.Context, account string, max int, unread bool) ([]Ref, error)
 	// Message reads one message's labels, headers and snippet.
 	Message(ctx context.Context, account, id string) (Message, error)
 	// Thread lists a thread's messages with their labels, nothing more.
@@ -258,13 +259,10 @@ func (w *Watcher) Tick(ctx context.Context, account string, publish func(sources
 		st.Failing = map[string]int{}
 	}
 
-	// since is how recent a listed (not history) message must be to be told;
-	// unread is whether it must also be unread.
 	var (
-		refs   []Ref
-		next   string
-		since  time.Time
-		unread bool
+		read []Message // to consider, oldest first
+		next string
+		hold bool
 	)
 	switch {
 	case !found || st.HistoryID == "":
@@ -277,10 +275,11 @@ func (w *Watcher) Tick(ctx context.Context, account string, publish func(sources
 		if next, err = w.api.Start(ctx, account); err != nil {
 			return res, err
 		}
-		if refs, err = w.recent(ctx, account); err != nil {
+		// What is still unread from the last day: what the operator may not
+		// have seen yet.
+		if read, err = w.listed(ctx, account, st.FirstSeen.Add(-w.cfg.FirstLook), true, &res); err != nil {
 			return res, err
 		}
-		since, unread = st.FirstSeen.Add(-w.cfg.FirstLook), true
 	default:
 		page, herr := w.api.History(ctx, account, st.HistoryID)
 		switch {
@@ -289,128 +288,23 @@ func (w *Watcher) Tick(ctx context.Context, account string, publish func(sources
 			if next, err = w.api.Start(ctx, account); err != nil {
 				return res, err
 			}
-			if refs, err = w.recent(ctx, account); err != nil {
+			if read, err = w.listed(ctx, account, st.LastTick.Add(-clockSlack), false, &res); err != nil {
 				return res, err
 			}
-			since = st.LastTick.Add(-clockSlack)
 		case herr != nil:
 			return res, herr
 		default:
-			refs, next = page.Added, page.Next
+			next = page.Next
+			if read, hold, err = w.fromHistory(ctx, account, &st, page.Added, &res); err != nil {
+				return res, err
+			}
 		}
 	}
-	res.Listed = len(refs)
 
 	own := w.own(account)
-	hold := false
-	for _, ref := range refs {
-		if ref.Labels != nil {
-			// The listing already says what the message is: what it rules
-			// out costs no read.
-			if reason := w.ruledOut(ref.Labels); reason != "" {
-				res.Skipped[reason]++
-				continue
-			}
-		}
-		key := seenKey(account, ref.ID)
-		if _, told, err := w.seen.Get(w.seen.Group, key); err != nil {
-			return res, fmt.Errorf("gmail %s: seen: %w", account, err)
-		} else if told {
-			continue
-		}
-		if res.Read >= w.cfg.MaxPerTick {
-			res.More, hold = true, true
-			break
-		}
-		m, err := w.api.Message(ctx, account, ref.ID)
-		switch {
-		case errors.Is(err, ErrGone):
-			continue
-		case err != nil:
-			st.Failing[ref.ID]++
-			if st.Failing[ref.ID] < maxAttempts {
-				res.Failed = append(res.Failed, ref.ID)
-				hold = true
-				continue
-			}
-			delete(st.Failing, ref.ID)
-			res.Skipped["unreadable"]++
-			if _, err := w.seen.First(key); err != nil {
-				return res, fmt.Errorf("gmail %s: seen: %w", account, err)
-			}
-			continue
-		}
-		delete(st.Failing, ref.ID)
-		res.Read++
-		if m.ID == "" {
-			m.ID = ref.ID
-		}
-		if m.ThreadID == "" {
-			m.ThreadID = ref.ThreadID
-		}
-
-		reason := w.ruledOut(m.Labels)
-		switch {
-		case reason != "":
-		case own[address(m.Header("From"))]:
-			reason = "own"
-		case w.bulk(m):
-			reason = "bulk"
-		case !since.IsZero() && !m.At.After(since):
-			reason = "old"
-		case unread && !m.has("UNREAD"):
-			reason = "read"
-		}
-		if reason != "" {
-			res.Skipped[reason]++
-			if reason != "old" && reason != "read" {
-				// Never to be told, so never read again.
-				if _, err := w.seen.First(key); err != nil {
-					return res, fmt.Errorf("gmail %s: seen: %w", account, err)
-				}
-			}
-			continue
-		}
-
-		inThread := false
-		if m.ThreadID != "" && m.ThreadID != m.ID {
-			// A thread's id is its first message's, so only a later
-			// message can answer something the operator wrote.
-			if thread, err := w.api.Thread(ctx, account, m.ThreadID); err == nil {
-				for _, r := range thread {
-					if r.ID != m.ID && hasLabel(r.Labels, "SENT") {
-						inThread = true
-						break
-					}
-				}
-			}
-		}
-		// Gmail dates mail by its own clock: what it received just after the
-		// first look must not read as before it on this host's.
-		e := w.event(account, own, m, inThread).WatchedSince(st.FirstSeen.Add(-clockSlack))
-		if res.First {
-			e.Backlog = true
-		}
-		if e.Backlog {
-			e.Urgent = false // context, never a page
-		}
-
-		isNew, err := w.seen.First(key)
-		if err != nil {
-			return res, fmt.Errorf("gmail %s: seen: %w", account, err)
-		}
-		if !isNew {
-			continue
-		}
-		if err := publish(e); err != nil {
-			return res, fmt.Errorf("gmail %s: publish: %w", account, err)
-		}
-		res.Published++
-		if e.Urgent {
-			res.Urgent++
-		}
-		if e.Backlog {
-			res.Backlog++
+	for _, m := range read {
+		if err := w.consider(ctx, account, st, own, m, &res, publish); err != nil {
+			return res, err
 		}
 	}
 
@@ -426,17 +320,180 @@ func (w *Watcher) Tick(ctx context.Context, account string, publish func(sources
 	return res, nil
 }
 
-// recent is the newest inbox mail, oldest first.
-func (w *Watcher) recent(ctx context.Context, account string) ([]Ref, error) {
-	refs, err := w.api.Recent(ctx, account, w.cfg.MaxPerTick)
+// told reports whether a message was already told (or ruled out for good).
+func (w *Watcher) told(account, id string) (bool, error) {
+	_, ok, err := w.seen.Get(w.seen.Group, seenKey(account, id))
+	if err != nil {
+		return false, fmt.Errorf("gmail %s: seen: %w", account, err)
+	}
+	return ok, nil
+}
+
+// fromHistory reads the messages a history listing added, oldest first,
+// passing over what their labels already rule out and what was told. It
+// holds the history id (hold) while a message could not be read or more was
+// added than one tick reads.
+func (w *Watcher) fromHistory(ctx context.Context, account string, st *State, refs []Ref, res *Result) (read []Message, hold bool, err error) {
+	res.Listed = len(refs)
+	for _, ref := range refs {
+		if ref.Labels != nil {
+			// The listing already says what the message is: what it rules
+			// out costs no read.
+			if reason := w.ruledOut(ref.Labels); reason != "" {
+				res.Skipped[reason]++
+				continue
+			}
+		}
+		if told, err := w.told(account, ref.ID); err != nil || told {
+			if err != nil {
+				return nil, hold, err
+			}
+			continue
+		}
+		if res.Read >= w.cfg.MaxPerTick {
+			res.More = true
+			return read, true, nil
+		}
+		m, err := w.api.Message(ctx, account, ref.ID)
+		switch {
+		case errors.Is(err, ErrGone):
+			continue
+		case err != nil:
+			st.Failing[ref.ID]++
+			if st.Failing[ref.ID] < maxAttempts {
+				res.Failed = append(res.Failed, ref.ID)
+				hold = true
+				continue
+			}
+			delete(st.Failing, ref.ID)
+			res.Skipped["unreadable"]++
+			if _, err := w.seen.First(seenKey(account, ref.ID)); err != nil {
+				return nil, hold, fmt.Errorf("gmail %s: seen: %w", account, err)
+			}
+			continue
+		}
+		delete(st.Failing, ref.ID)
+		res.Read++
+		read = append(read, withRef(m, ref))
+	}
+	return read, hold, nil
+}
+
+// listed reads the newest inbox mail (unread only, when asked) back to since,
+// and returns it oldest first. The listing is newest first, so it stops at
+// the first message older than since.
+func (w *Watcher) listed(ctx context.Context, account string, since time.Time, unread bool, res *Result) ([]Message, error) {
+	refs, err := w.api.Recent(ctx, account, w.cfg.MaxPerTick, unread)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Ref, 0, len(refs))
-	for i := len(refs) - 1; i >= 0; i-- {
-		out = append(out, refs[i])
+	res.Listed = len(refs)
+	var read []Message
+	for _, ref := range refs {
+		if told, err := w.told(account, ref.ID); err != nil || told {
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		m, err := w.api.Message(ctx, account, ref.ID)
+		switch {
+		case errors.Is(err, ErrGone):
+			continue
+		case err != nil:
+			// A listing is not read again, so this one is passed over.
+			res.Failed = append(res.Failed, ref.ID)
+			continue
+		}
+		res.Read++
+		if !m.At.After(since) {
+			res.Skipped["old"]++
+			break
+		}
+		if unread && !m.has("UNREAD") {
+			res.Skipped["read"]++
+			continue
+		}
+		read = append(read, withRef(m, ref))
 	}
-	return out, nil
+	for i, j := 0, len(read)-1; i < j; i, j = i+1, j-1 {
+		read[i], read[j] = read[j], read[i]
+	}
+	return read, nil
+}
+
+func withRef(m Message, ref Ref) Message {
+	if m.ID == "" {
+		m.ID = ref.ID
+	}
+	if m.ThreadID == "" {
+		m.ThreadID = ref.ThreadID
+	}
+	return m
+}
+
+// consider tells one message that was read, unless it is the operator's own,
+// bulk, or not in the inbox after all.
+func (w *Watcher) consider(ctx context.Context, account string, st State, own map[string]bool, m Message, res *Result, publish func(sources.Event) error) error {
+	key := seenKey(account, m.ID)
+	reason := w.ruledOut(m.Labels)
+	switch {
+	case reason != "":
+	case own[address(m.Header("From"))]:
+		reason = "own"
+	case w.bulk(m):
+		reason = "bulk"
+	}
+	if reason != "" {
+		res.Skipped[reason]++
+		// Never to be told, so never read again.
+		if _, err := w.seen.First(key); err != nil {
+			return fmt.Errorf("gmail %s: seen: %w", account, err)
+		}
+		return nil
+	}
+
+	inThread := false
+	if m.ThreadID != "" && m.ThreadID != m.ID {
+		// A thread's id is its first message's, so only a later message can
+		// answer something the operator wrote.
+		if thread, err := w.api.Thread(ctx, account, m.ThreadID); err == nil {
+			for _, r := range thread {
+				if r.ID != m.ID && hasLabel(r.Labels, "SENT") {
+					inThread = true
+					break
+				}
+			}
+		}
+	}
+	// Gmail dates mail by its own clock: what it received just after the
+	// first look must not read as before it on this host's.
+	e := w.event(account, own, m, inThread).WatchedSince(st.FirstSeen.Add(-clockSlack))
+	if res.First {
+		e.Backlog = true
+	}
+	if e.Backlog {
+		e.Urgent = false // context, never a page
+	}
+
+	isNew, err := w.seen.First(key)
+	if err != nil {
+		return fmt.Errorf("gmail %s: seen: %w", account, err)
+	}
+	if !isNew {
+		return nil
+	}
+	if err := publish(e); err != nil {
+		return fmt.Errorf("gmail %s: publish: %w", account, err)
+	}
+	res.Published++
+	if e.Urgent {
+		res.Urgent++
+	}
+	if e.Backlog {
+		res.Backlog++
+	}
+	return nil
 }
 
 func seenKey(account, id string) string {
