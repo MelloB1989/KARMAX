@@ -23,6 +23,8 @@ var (
 	wacliPath   string
 	gogOnce     sync.Once
 	gogPath     string
+	ghOnce      sync.Once
+	ghPath      string
 	browserOnce sync.Once
 	browserPath string
 	binOnce     sync.Once
@@ -57,6 +59,16 @@ func Gog() string {
 		gogPath = resolve("KARMAX_GOG_PATH", "gog", "go/bin/gog", ".local/bin/gog")
 	})
 	return gogPath
+}
+
+// Gh returns the GitHub CLI path: $KARMAX_GH_PATH, then PATH, then where a
+// user-local or Go install puts it. KARMAX reads and acts as every GitHub
+// login gh holds, borrowing a token per call rather than keeping one.
+func Gh() string {
+	ghOnce.Do(func() {
+		ghPath = resolve("KARMAX_GH_PATH", "gh", ".local/bin/gh", "go/bin/gh")
+	})
+	return ghPath
 }
 
 // Browser returns a Chromium-family browser this machine already has:

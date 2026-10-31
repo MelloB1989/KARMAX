@@ -25,6 +25,19 @@ func TestGogPrefersItsOverride(t *testing.T) {
 	}
 }
 
+// gh holds the operator's GitHub logins; an install that keeps it somewhere
+// unusual points KARMAX_GH_PATH at it.
+func TestGhPrefersItsOverride(t *testing.T) {
+	gh := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KARMAX_GH_PATH", gh)
+	if got := Gh(); got != gh {
+		t.Fatalf("Gh() = %q, want the override %q", got, gh)
+	}
+}
+
 // resolve falls through env → PATH → home, and names the command when it finds
 // nothing, so an exec failure says which binary is missing instead of "".
 func TestResolveFallsThroughToHomeThenName(t *testing.T) {
