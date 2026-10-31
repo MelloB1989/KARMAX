@@ -107,6 +107,11 @@ type Agent struct {
 	// ops is the operating policy and what has been reported under it. See
 	// policy.go.
 	ops policyState
+
+	// taskOwner takes over requests a turn cannot finish; current is the
+	// request the agent's thinking is on right now. See request.go.
+	taskOwner TaskOwner
+	current   *Request
 }
 
 // CommsChannelInfo describes a communication channel available to the agent.
@@ -1101,6 +1106,10 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		return err
 	}
 
+	// The request this turn serves, when it is one: an operator's message.
+	// Set only when something can take it over (request.go).
+	var req *Request
+
 	// Proactive routing for WhatsApp/chat events.
 	if evt.Kind == bus.EventCommsMessage && a.commsSend != nil {
 		userMsg, _ := evt.Payload["content"].(string)
@@ -1126,7 +1135,10 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// handle it — its own tools for things it can do directly, or
 		// claude_code.call when IT judges the task complex/multi-step. No
 		// hardcoded routing: the intelligence is the model's, not a keyword list.
+		req = a.messageRequest(evt)
 	}
+	// Whatever happens below, the turn's outcome is known when it returns.
+	defer req.settle()
 
 	recentMem, _ := a.memory.Recent(recentMemoryInPrompt)
 
@@ -1165,6 +1177,18 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// send a lightweight "on it" to the originating chat so the operator
 		// knows the message landed and isn't dropped (high-effort turns take a
 		// while). Cancelled the moment the turn finishes.
+		if req != nil {
+			req.Text, req.Started = userPrompt, turnStart
+			defer a.working(req)()
+			dynamicCtx += a.requestContext(req)
+			// Screened as heavy work: it goes to a task now rather than
+			// spending a turn's whole budget finding out it does not fit.
+			if s := screeningOf(evt); s.Screened && s.Effort == effortHeavy {
+				if res, ok := a.handOff(a.ctx, req, dynamicCtx, nil, nil, "the screen judged it heavy work"); ok {
+					return a.afterHandOff(evt, userPrompt, turnStart, res)
+				}
+			}
+		}
 		ackCancel := a.startAckWatchdog(evt)
 		// Bound the model call: a hung/slow provider must never wedge the single
 		// inbox worker forever (that silently deafens the whole agent). On
@@ -1186,12 +1210,25 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// If the session finishes this turn after the call gives up on it,
 		// the rest comes back to this conversation (latereply.go).
 		var answered atomic.Bool
-		turnCtx = WithLateReply(turnCtx, a.lateReplyFor(evt, turnStart, userPrompt, answered.Load))
+		late := a.lateReplyFor(evt, turnStart, userPrompt, answered.Load)
+		if req != nil {
+			// The rest of a turn a task took over belongs to the task.
+			late = a.requestLate(req, late)
+			turnCtx = WithRequest(turnCtx, req)
+		}
+		turnCtx = WithLateReply(turnCtx, late)
 		response, toolCalls, err := brain.ProcessMessageWithheld(turnCtx, userPrompt, lent, nil)
 		answered.Store(err == nil)
 		turnCancel()
 		ackCancel()
 		if err != nil {
+			// A request the turn could not finish is not a failure to report:
+			// it continues as a task, and the operator is told it is underway.
+			if req != nil && unfinished(err) {
+				if res, ok := a.handOff(a.ctx, req, dynamicCtx, toolCalls, err, "out of time: "+rootCause(err)); ok {
+					return a.afterHandOff(evt, userPrompt, turnStart, res)
+				}
+			}
 			// With what it had already done, so the operator is told that
 			// rather than asked to send it again (turnfailed.go).
 			return &turnFailure{calls: toolCalls, err: fmt.Errorf("main model: %w", err)}
@@ -1332,6 +1369,40 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 
 	// Legacy fallback: this path is only used if initModels() failed
 	return a.handleEventLegacy(evt, userPrompt)
+}
+
+// effortHeavy mirrors reflex.EffortHeavy, as effortTrivial does.
+const effortHeavy = "heavy"
+
+// messageRequest is the request an operator's message makes, when something
+// can take a request over.
+func (a *Agent) messageRequest(evt bus.Event) *Request {
+	if a.owner() == nil {
+		return nil
+	}
+	req := NewRequest(evt.ID, RequestMessage)
+	req.AgentID = a.def.ID
+	req.ChannelID, _ = evt.Payload["karmax_channel_id"].(string)
+	req.Target, _ = evt.Payload["channel_id"].(string)
+	req.Where = "the operator's own chat"
+	if name, _ := evt.Payload["chat_name"].(string); strings.TrimSpace(name) != "" {
+		req.Where = fmt.Sprintf("the operator, in the chat %q", name)
+	}
+	return req
+}
+
+// afterHandOff closes a message's turn whose request a task took over: the
+// operator was told it is underway (by the hand-off), and the turn is
+// recorded and reported like any other. Its journal row already says
+// handed_off, which the turn finishing does not change.
+func (a *Agent) afterHandOff(evt bus.Event, prompt string, started time.Time, res HandoffResult) error {
+	a.recordConversation(a.ctx, evt, prompt, res.Ack)
+	a.publish(bus.NewEvent(bus.EventAgentMessage, a.def.ID, map[string]any{
+		"response": res.Ack, "trigger_event": evt.ID, "task_id": res.TaskID, "handed_off": true,
+	}))
+	a.deliverTurnReport(evt, started, "")
+	a.persistSnapshot()
+	return nil
 }
 
 // ackMessage is the slow-turn acknowledgement. Named because the delivery check
@@ -1499,12 +1570,44 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 		zap.Int("sessions", len(sc)), zap.Int("comms", len(cc)), zap.Int("memory", len(mc)),
 		zap.Int("total", len(dynamicCtx)), zap.Int("system", len(a.def.SystemPrompt)))
 
+	// A call made for a request — a workflow's ask, the app's chat — is
+	// journalled before it starts, and what it cannot finish continues as a
+	// task (request.go). Without an owner for that, it runs as it always did.
+	req := RequestFrom(ctx)
+	if req != nil && a.owner() == nil {
+		req = nil
+	}
+	defer req.settle()
+	if req != nil {
+		if strings.TrimSpace(req.Text) == "" {
+			req.Text = text
+		}
+		a.journalRequest(req)
+		defer a.working(req)()
+		dynamicCtx += a.requestContext(req)
+		ctx = WithLateReply(ctx, a.requestLate(req, func(t HarnessTurn) {
+			// The call gave up and no task took the request: what the session
+			// went on to say reaches the operator rather than nobody.
+			a.ReportBackgroundTurn(req.Started.Truncate(time.Second), t.Text)
+		}))
+	} else {
+		ctx = WithRequest(ctx, nil)
+	}
+
 	brain := a.thinkingBrain()
 	// With the call, not parked on the brain: other conversations share it.
 	response, toolCalls, err := brain.ProcessMessageWithheld(WithTurnContext(ctx, dynamicCtx), text, lent, withhold)
 	if err != nil {
+		if req != nil && unfinished(err) {
+			if res, ok := a.handOff(ctx, req, dynamicCtx, toolCalls, err, "out of time: "+rootCause(err)); ok {
+				a.recordConversation(ctx, evt, text, res.Ack)
+				return res.Ack, toolCalls, nil
+			}
+		}
+		a.finishRequest(req, err)
 		return "", nil, fmt.Errorf("chat: %w", err)
 	}
+	defer a.finishRequest(req, nil)
 
 	// The same tool-loading round-trip the event path does. Without it a chat
 	// turn could ask for a tool, be told it was available, and then call
