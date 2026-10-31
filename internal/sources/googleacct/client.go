@@ -88,13 +88,13 @@ func (e *AuthError) Fixes() []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, l := range e.Tried {
-		if f := l.Fix(); !seen[f] {
+		if f := l.FixFor(e.Service); !seen[f] {
 			seen[f] = true
 			out = append(out, f)
 		}
 	}
-	if !seen[(Login{Email: e.Account, Path: Gog}).Fix()] {
-		out = append(out, (Login{Email: e.Account, Path: Gog}).Fix())
+	if f := (Login{Email: e.Account, Path: Gog}).FixFor(e.Service); !seen[f] {
+		out = append(out, f)
 	}
 	return out
 }
@@ -110,7 +110,7 @@ func (e *UnknownAccountError) Error() string {
 	if len(e.Known) > 0 {
 		known = strings.Join(e.Known, ", ")
 	}
-	return fmt.Sprintf("no Google login on this host is for %s (signed in: %s); add it with `gog auth add %s --services calendar,chat`",
+	return fmt.Sprintf("no Google login on this host is for %s (signed in: %s); add it with `gog auth add %s --services calendar,chat,gmail`",
 		e.Account, known, e.Account)
 }
 

@@ -158,12 +158,15 @@ agents:
       # logins the work belongs to (github.accounts, .read, .reply, .review,
       # .merge). Nothing in it deletes.
       - github.*
-      # Answer, move and create calendar events and write in Google Chat as
-      # whichever signed-in Google account the event came from (gcal.respond,
-      # .reschedule, .create, gchat.send). They are also lent to the turn of
-      # every Calendar or Chat event; this grants them on every turn.
+      # Answer, move and create calendar events, write in Google Chat, and
+      # read, answer, send and file email as whichever signed-in Google
+      # account the event came from (gcal.respond, .reschedule, .create,
+      # gchat.send, gmail.read, .reply, .send, .label). They are also lent to
+      # the turn of every Calendar, Chat or Gmail event; this grants them on
+      # every turn. Nothing in gmail.* deletes or trashes mail.
       - gcal.*
       - gchat.*
+      - gmail.*
       - google.accounts
 
     # Memory configuration

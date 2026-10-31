@@ -59,7 +59,7 @@ func TestDiscoveryMergesBothCLIsAndRanksEachAccountsLogins(t *testing.T) {
 	if fix := dev.Logins[0].Fix(); !strings.Contains(fix, "GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/cfg/gws-side") || !strings.Contains(fix, "gws auth login") {
 		t.Errorf("fix for a side gws dir: %q", fix)
 	}
-	if fix := p.Logins[1].Fix(); fix != "gog auth add priya@example.com --services calendar,chat --force-consent" {
+	if fix := p.Logins[1].Fix(); fix != "gog auth add priya@example.com --services calendar,chat,gmail --force-consent" {
 		t.Errorf("gog fix: %q", fix)
 	}
 }

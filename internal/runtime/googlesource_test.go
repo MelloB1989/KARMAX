@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ func (k *mapKV) KVSet(g, key, v string, _ time.Duration) error {
 type googleRig struct {
 	mu        sync.Mutex
 	answers   map[string]string // command words -> stdout
+	scopes    []string          // what the login was granted
 	failAuth  bool
 	published []bus.Event
 	regs      map[string]integration.Integration
@@ -47,7 +49,9 @@ type googleRig struct {
 }
 
 func newGoogleRig(t *testing.T, getenv func(string) string) *googleRig {
-	r := &googleRig{answers: map[string]string{}, regs: map[string]integration.Integration{}}
+	r := &googleRig{answers: map[string]string{}, regs: map[string]integration.Integration{}, scopes: []string{
+		"https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/chat.messages",
+		"https://www.googleapis.com/auth/gmail.modify"}}
 	run := func(_ context.Context, _ []string, bin string, args ...string) ([]byte, []byte, int, error) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -56,7 +60,8 @@ func newGoogleRig(t *testing.T, getenv func(string) string) *googleRig {
 			return []byte(`{"accounts":[]}`), nil, 0, nil
 		}
 		if strings.Contains(line, "auth status") {
-			return []byte(`{"user":"priya@example.com","has_refresh_token":true,"scopes":["https://www.googleapis.com/auth/calendar","https://www.googleapis.com/auth/chat.messages"]}`), nil, 0, nil
+			scopes, _ := json.Marshal(r.scopes)
+			return []byte(`{"user":"priya@example.com","has_refresh_token":true,"scopes":` + string(scopes) + `}`), nil, 0, nil
 		}
 		if r.failAuth {
 			return nil, []byte("invalid_grant: Token has been expired or revoked."), 2, fmt.Errorf("exit status 2")
@@ -182,7 +187,7 @@ func TestOffSwitchesAndTheWorkflowTheChatSourceReplaces(t *testing.T) {
 	for _, l := range r.g.loops() {
 		names = append(names, l.Name)
 	}
-	if strings.Join(names, ",") != "gchat-source" {
+	if strings.Join(names, ",") != "gchat-source,gmail-source" {
 		t.Fatalf("loops %v with the calendar source off", names)
 	}
 }
