@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MelloB1989/karmax/internal/memory"
@@ -41,7 +42,22 @@ type Merger struct {
 	cfg   Config
 	store *store.Store
 	mem   *memory.Manager
-	log   *zap.Logger
+	// ops is how a pass changes memory: the manager, unless a test says otherwise.
+	ops memoryOps
+	log *zap.Logger
+	// opFloor is how long one forget or write is assumed to take.
+	opFloor time.Duration
+
+	mu sync.Mutex
+	// carry is what a run planned and had no time to apply; the next run
+	// finishes it before planning anything new.
+	carry []cluster
+}
+
+// memoryOps is what a merge changes memory through.
+type memoryOps interface {
+	Forget(handle string) error
+	Write(e memory.MemoryEntry) error
 }
 
 func New(cfg Config, s *store.Store, mem *memory.Manager, log *zap.Logger) *Merger {
@@ -51,7 +67,11 @@ func New(cfg Config, s *store.Store, mem *memory.Manager, log *zap.Logger) *Merg
 	if cfg.MinCategorySize <= 0 {
 		cfg.MinCategorySize = 8
 	}
-	return &Merger{cfg: cfg, store: s, mem: mem, log: log}
+	mg := &Merger{cfg: cfg, store: s, mem: mem, log: log, opFloor: defaultOpFloor}
+	if mem != nil {
+		mg.ops = mem
+	}
+	return mg
 }
 
 const mergePrompt = `You consolidate an operator's long-term memory. Below are memory entries from ONE category, each with a NUMBER. Some are DUPLICATES or NEAR-DUPLICATES (the same fact worded differently), or a STALE fact that a newer entry supersedes.
@@ -88,6 +108,16 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 	entries, err := mg.listEntries(ctx)
 	if err != nil {
 		return 0, err
+	}
+
+	// What the last run planned and ran out of time for is finished first,
+	// before anything new is planned: the model already judged it, and asking
+	// again would pay for the same answer.
+	if carried := mg.takeCarry(); len(carried) > 0 {
+		plan := stillAsPlanned(carried, entries, mg.log)
+		mg.log.Info("memory-merge: finishing what the last run ran out of time for",
+			zap.Int("clusters", len(carried)), zap.Int("still_valid", len(plan)))
+		return mg.apply(ctx, plan), nil
 	}
 
 	// Group non-pinned entries by category (pinned facts are never merged).
@@ -183,71 +213,33 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	deleted := 0
+	var plan []cluster
 	for _, m := range res.Merges {
 		fact := strings.TrimSpace(m.Fact)
 		// Keep only ids that are real, in this batch, and non-pinned.
-		var ids []string
-		seen := map[string]bool{}
+		c := cluster{subject: bestKey, category: batchCat, fact: fact,
+			importance: normalizeImportance(m.Importance), was: map[string]string{}}
 		for _, n := range m.Replaces {
 			e, ok := valid[n]
-			if !ok || e.ID == "" || seen[e.ID] {
+			if _, dup := c.was[e.ID]; !ok || e.ID == "" || dup {
 				continue
 			}
-			ids = append(ids, e.ID)
-			seen[e.ID] = true
+			c.ids = append(c.ids, e.ID)
+			c.was[e.ID] = e.Content
 		}
-		if fact == "" || len(ids) < 2 {
+		if fact == "" || len(c.ids) < 2 {
 			// Logged, because "the model proposed ten clusters and none applied"
 			// is otherwise indistinguishable from "it found nothing".
 			mg.log.Info("memory-merge: cluster rejected",
-				zap.Int("ids_returned", len(m.Replaces)), zap.Int("ids_matched", len(ids)),
+				zap.Int("ids_returned", len(m.Replaces)), zap.Int("ids_matched", len(c.ids)),
 				zap.Ints("numbers_returned", m.Replaces),
 				zap.String("fact", oneLine(fact, 60)))
 			continue // never let the model invent ids or drop facts on <2 cluster
 		}
-
-		// Remove the originals FIRST. Writing the canonical fact and then failing
-		// to delete what it replaces does not consolidate anything — it adds a
-		// memory and keeps every duplicate, so the pass makes the store worse
-		// each time it runs. Observed live: four clusters proposed, one
-		// canonical fact written per cluster, zero deletions, because every id
-		// was a section path the delete refused. Nothing is written unless the
-		// duplicates are actually gone.
-		removed := make([]string, 0, len(ids))
-		for _, id := range ids {
-			if err := mg.mem.Forget(id); err != nil {
-				mg.log.Warn("memory-merge: could not remove a merged entry",
-					zap.String("id", id), zap.Error(err))
-				continue
-			}
-			removed = append(removed, id)
-		}
-		if len(removed) < 2 {
-			// Fewer than two originals actually went away, so there is nothing
-			// this fact would be consolidating.
-			mg.log.Warn("memory-merge: skipping a cluster whose originals could not be removed",
-				zap.Int("wanted", len(ids)), zap.Int("removed", len(removed)))
-			continue
-		}
-		deleted += len(removed)
-
-		importance := normalizeImportance(m.Importance)
-		formatted := fmt.Sprintf("[%s][%s] %s", batchCat, importance, fact)
-		if err := mg.mem.Write(memory.MemoryEntry{
-			Namespace:  mg.cfg.Namespace,
-			Role:       "system",
-			Content:    formatted,
-			Tags:       []string{subjectTag(bestKey), "merged"},
-			Category:   batchCat,
-			Importance: importanceToInt(importance),
-		}); err != nil {
-			mg.log.Error("memory-merge: the originals were removed but the consolidated fact could not be written — those facts are LOST",
-				zap.Strings("removed", removed), zap.String("fact", oneLine(fact, 200)), zap.Error(err))
-			continue
-		}
+		plan = append(plan, c)
 	}
 
+	deleted := mg.apply(ctx, plan)
 	if deleted > 0 {
 		mg.log.Info("memory-merge consolidated entries", zap.String("subject", bestKey), zap.Int("deleted", deleted), zap.Int("clusters", len(res.Merges)))
 	} else {
@@ -260,6 +252,149 @@ func (mg *Merger) Tick(ctx context.Context) (int, error) {
 			zap.Int("clusters_proposed", len(res.Merges)))
 	}
 	return deleted, nil
+}
+
+// cluster is one merge the model proposed: the entries it replaces, with the
+// text each had when the model read it, and the fact that replaces them.
+type cluster struct {
+	subject, category, fact, importance string
+	ids                                 []string
+	was                                 map[string]string
+}
+
+// defaultOpFloor is what one forget or write is assumed to take before this
+// run has timed one. A forget waits for the store to apply it, up to the
+// store's own per-call timeout, which is what this is.
+const defaultOpFloor = 30 * time.Second
+
+// apply carries out a plan and returns how many entries it merged away.
+//
+// It stops between clusters, never inside one: a cluster is forgets and then
+// a write, and stopping between them loses the facts the write was to keep.
+// So a cluster is started only when the run has time left to finish it, and
+// what it has no time for is carried to the next run (see Tick). A run used to
+// apply cluster after cluster with no look at the clock, and ran nineteen
+// minutes on a fourteen-minute deadline.
+func (mg *Merger) apply(ctx context.Context, plan []cluster) int {
+	deleted := 0
+	var slowest time.Duration
+	for i, c := range plan {
+		if !mg.timeFor(ctx, c, slowest) {
+			mg.setCarry(plan[i:])
+			mg.log.Info("memory-merge: out of time; the rest is left for the next run",
+				zap.Int("clusters_done", i), zap.Int("clusters_left", len(plan)-i))
+			break
+		}
+		n, took := mg.applyOne(c)
+		deleted += n
+		slowest = max(slowest, took)
+	}
+	return deleted
+}
+
+// timeFor reports whether the run has time to finish a cluster: one forget per
+// entry and the write, each as slow as the slowest this run has seen.
+func (mg *Merger) timeFor(ctx context.Context, c cluster, slowest time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	need := max(slowest, mg.opFloor) * time.Duration(len(c.ids)+1)
+	return time.Until(deadline) >= need
+}
+
+// applyOne merges one cluster and reports how many entries went, and the
+// longest any one forget or write took.
+func (mg *Merger) applyOne(c cluster) (deleted int, slowest time.Duration) {
+	timed := func(f func() error) error {
+		began := time.Now()
+		err := f()
+		slowest = max(slowest, time.Since(began))
+		return err
+	}
+	// Remove the originals FIRST. Writing the canonical fact and then failing
+	// to delete what it replaces does not consolidate anything — it adds a
+	// memory and keeps every duplicate, so the pass makes the store worse
+	// each time it runs. Observed live: four clusters proposed, one
+	// canonical fact written per cluster, zero deletions, because every id
+	// was a section path the delete refused. Nothing is written unless the
+	// duplicates are actually gone.
+	removed := make([]string, 0, len(c.ids))
+	for _, id := range c.ids {
+		if err := timed(func() error { return mg.ops.Forget(id) }); err != nil {
+			mg.log.Warn("memory-merge: could not remove a merged entry",
+				zap.String("id", id), zap.Error(err))
+			continue
+		}
+		removed = append(removed, id)
+	}
+	if len(removed) < 2 {
+		// Fewer than two originals actually went away, so there is nothing
+		// this fact would be consolidating.
+		mg.log.Warn("memory-merge: skipping a cluster whose originals could not be removed",
+			zap.Int("wanted", len(c.ids)), zap.Int("removed", len(removed)))
+		return 0, slowest
+	}
+
+	formatted := fmt.Sprintf("[%s][%s] %s", c.category, c.importance, c.fact)
+	if err := timed(func() error {
+		return mg.ops.Write(memory.MemoryEntry{
+			Namespace:  mg.cfg.Namespace,
+			Role:       "system",
+			Content:    formatted,
+			Tags:       []string{subjectTag(c.subject), "merged"},
+			Category:   c.category,
+			Importance: importanceToInt(c.importance),
+		})
+	}); err != nil {
+		mg.log.Error("memory-merge: the originals were removed but the consolidated fact could not be written — those facts are LOST",
+			zap.Strings("removed", removed), zap.String("fact", oneLine(c.fact, 200)), zap.Error(err))
+	}
+	return len(removed), slowest
+}
+
+func (mg *Merger) setCarry(left []cluster) {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	mg.carry = append([]cluster(nil), left...)
+}
+
+func (mg *Merger) takeCarry() []cluster {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	c := mg.carry
+	mg.carry = nil
+	return c
+}
+
+// stillAsPlanned keeps the carried clusters whose entries all still say what
+// the model read. One that changed since — corrected, forgotten, merged by
+// something else — is dropped rather than applied to what is there now.
+func stillAsPlanned(carried []cluster, entries []store.StoredMemoryEntry, log *zap.Logger) []cluster {
+	now := make(map[string]string, len(entries))
+	for _, e := range entries {
+		now[e.ID] = e.Content
+	}
+	var out []cluster
+	for _, c := range carried {
+		changed := false
+		for _, id := range c.ids {
+			if text, ok := now[id]; !ok || text != c.was[id] {
+				changed = true
+				break
+			}
+		}
+		if changed {
+			log.Info("memory-merge: dropping a planned cluster whose entries changed since",
+				zap.String("fact", oneLine(c.fact, 60)))
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func normalizeImportance(s string) string {
@@ -304,8 +439,6 @@ func extractJSONObject(s string) string {
 	}
 	return ""
 }
-
-var _ = time.Now // reserved for future rate-limiting between passes
 
 // listEntries reads the memory this instance actually uses.
 func (mg *Merger) listEntries(ctx context.Context) ([]store.StoredMemoryEntry, error) {

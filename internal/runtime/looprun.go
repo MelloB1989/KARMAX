@@ -35,13 +35,17 @@ const (
 	// maxAttempts before a run is dead-lettered. Three is enough to ride out a
 	// restart or a brief outage; more just delays the moment someone is told.
 	maxAttempts = 3
+	// retryBase is the first backoff; it doubles per attempt (1m, 2m, 4m).
+	retryBase = time.Minute
+)
+
+// Variables only so a test can run them in milliseconds.
+var (
 	// leaseTTL must exceed the run timeout, or a slow run loses its lease and a
 	// second copy starts alongside it — the exact overlap this prevents. The
 	// run stays under fifteen minutes too, the claim a LYZN task is lent for.
 	loopRunTimeout = 14 * time.Minute
 	leaseTTL       = 15 * time.Minute
-	// retryBase is the first backoff; it doubles per attempt (1m, 2m, 4m).
-	retryBase = time.Minute
 )
 
 // retryDelay is how long to wait before attempt n+1.
@@ -106,7 +110,13 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 			zap.String("loop", l.Name), zap.String("trigger", trigger.Kind))
 		return
 	}
+	// The lease lasts as long as the run, not a fixed term. See holdLease.
+	stopHolding := func() {}
+	if got {
+		stopHolding = rt.holdLease(l.Name, owner, time.Now())
+	}
 	defer func() {
+		stopHolding()
 		if err := rt.store.ReleaseLoopLease(l.Name, owner); err != nil {
 			rt.log.Warn("could not release loop lease", zap.String("loop", l.Name), zap.Error(err))
 		}

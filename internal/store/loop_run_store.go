@@ -103,6 +103,24 @@ ON CONFLICT(loop) DO UPDATE SET lease_until = excluded.lease_until, lease_owner 
 WHERE loop_state.lease_until IS NULL OR loop_state.lease_until < ?`
 }
 
+// RenewLoopLease extends a lease its owner still holds, so a run that is
+// still in flight keeps its loop for as long as it actually runs. False means
+// the owner no longer holds it.
+func (s *Store) RenewLoopLease(loop, owner string, ttl time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.exec(`UPDATE loop_state SET lease_until = ? WHERE loop = ? AND lease_owner = ?`,
+		time.Now().Add(ttl), loop, owner)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // ReleaseLoopLease frees the lease so the next scheduled tick can run.
 func (s *Store) ReleaseLoopLease(loop, owner string) error {
 	s.mu.Lock()
