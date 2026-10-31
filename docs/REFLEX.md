@@ -73,6 +73,11 @@ the engine it always used.
 `delegate` and `escalate` do not change the engine; they change what the turn is
 told, through `Screening.context()`.
 
+A `heavy` verdict on an operator's message sends it straight to a task (see
+"Work longer than a turn" in HARNESS-ORCHESTRATOR.md): the operator hears
+"on it" at once and the result when it is done, instead of a turn spending its
+whole budget finding out the work does not fit.
+
 ## The safety properties
 
 These are the reasons this is safe to put on the hot path at all.

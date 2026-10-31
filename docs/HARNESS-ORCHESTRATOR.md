@@ -225,6 +225,62 @@ Phase 3 has run for a few days without incident.
 **Phase 5 — hardening.** Breaker tuning against real windows, fallback drills
 (revoke auth and confirm nothing breaks), orphan reaping across restarts.
 
+## Work longer than a turn
+
+A turn has a budget (`turn_timeout`); a request does not. Anything someone
+asks for — an operator's message, a workflow's `ask()` proxying a message
+from a chat it watches, the app's chat — is a **request**: journalled in
+`agent_turns` before the turn starts, and owned until it is done and its
+answer delivered.
+
+```
+request ─▶ journal row ─▶ turn ──finished──▶ answer
+                            │
+                            ├─ ran out of time, or failed after acting
+                            ├─ screened as heavy (reflex effort)
+                            └─ the model hands it over: task.create request=<id>
+                                   │
+                                   ▼  one transaction: turn row handed_off + task row
+                               task (kind "task", its own session)
+                                   │  requester told "on it" now
+                                   ▼
+                               rounds until done / failed / blocked
+                                   │  result + FILE: lines recorded as owed with the round
+                                   ▼
+                               delivered to where the request came from, once
+```
+
+- **No downgrade.** A request that outran its harness turn is never retried
+  on the fallback model or a workflow's lighter gateway: that model would
+  have less time and none of the conversation. Once a task owns a workflow
+  run's request (or the full agent gave up on it and the requester was told),
+  that run's `gateway` and `harness` calls are refused and nothing more is
+  sent into the chat it came from. Every loop model call about a chat is told
+  which requests from it tasks already own.
+- **Late results.** The rest of a turn a task took over goes into the task's
+  progress (`Options.OnLate`); so does a task round's own late result, and a
+  background delegation started for the request.
+- **Where the answer goes.** The chat the request came from when the operator
+  asked there; the operator (their channel, else the app) for anyone else's
+  request through a workflow, and for the app. The task session is told not
+  to send the result itself: KARMAX delivers its final `REPORT` and files.
+- **The operator's own message** is never answered as if they were someone
+  else: a reply to it that speaks of them as away or to be told is refused.
+
+### Crash points
+
+Every step that matters is a row written before or with it, so a crash at
+any point resumes on the next start and nothing is done or said twice:
+
+| killed … | on the next start |
+|---|---|
+| after the request was journalled, before work | an ask or app chat (its caller died too) continues as a task; an operator's message is redelivered to its agent |
+| mid-turn | the message is redelivered; a turn that had only sent the slow-turn ack is not mistaken for answered; a turn whose request a task owns is not re-run |
+| mid-task round | every task the dead process claimed is due at once; its session resumes its transcript |
+| after a round's result was recorded, before delivery | the result is owed (`deliveries`), and sent |
+| after delivery, before it was recorded | the chat shows it went out, so it is recorded and not sent again |
+| during a background delegation | resumed from its row: same session when its transcript exists, else afresh under the same id; its end is announced once (derived event id) |
+
 ## Failure modes, and what happens
 
 | failure | behaviour |
