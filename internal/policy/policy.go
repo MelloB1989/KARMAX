@@ -184,7 +184,7 @@ func (p Policy) Brief() string {
 			fmt.Fprintf(&b, "An urgent event (its source flagged it, or screening scored it at %.2f or above) is sent to them with your final reply. ", p.threshold)
 		}
 		if p.whatsapp[Sent] {
-			b.WriteString("What you sent as the operator during a turn is listed for them in one line. Messages sent with `comms.send` are listed automatically; for anything sent another way (a GitHub comment, an email, a post through another tool) add one line per item to your final reply: `SENT: <service/account> → <recipient>: <what, in a few words>`. ")
+			b.WriteString("What you sent as the operator during a turn is listed for them in one line. Whatever KARMAX's own tools send or do as the operator (`comms.send` and every acting tool: messages, comments, reviews, answers to invitations) is listed automatically — do not declare those. For anything sent some other way (a shell command, a script, a service KARMAX has no tool for) add one line per item to your final reply: `SENT: <service/account> → <recipient>: <what, in a few words>`. ")
 		}
 		b.WriteString("So end the turn with one or two plain sentences on what you did — that is your report.\n")
 	}

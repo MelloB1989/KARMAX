@@ -47,3 +47,54 @@ func TestSeenPublishesAnItemOnce(t *testing.T) {
 		t.Error("the same item was taken as new twice")
 	}
 }
+
+// Any polling source can ask when KARMAX first looked at an account: the time
+// is recorded on the first ask and kept, so a restart does not move it.
+func TestFirstLookIsRecordedOnceAndKept(t *testing.T) {
+	kv := map[string]string{}
+	f := FirstLook{Group: "src-first", Get: func(g, k string) (string, bool, error) { v, ok := kv[g+"/"+k]; return v, ok, nil },
+		Set: func(g, k, v string, _ time.Duration) error { kv[g+"/"+k] = v; return nil }}
+	at := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+
+	since, first, err := f.Since("acct-1", at)
+	if err != nil || !first || !since.Equal(at) {
+		t.Fatalf("first ask = %v, %v, %v; want the time asked, as a first look", since, first, err)
+	}
+	since, first, err = f.Since("acct-1", at.Add(time.Hour))
+	if err != nil || first || !since.Equal(at) {
+		t.Errorf("second ask = %v, %v, %v; want the first look's time kept", since, first, err)
+	}
+	if other, first, _ := f.Since("acct-2", at.Add(time.Hour)); !first || !other.Equal(at.Add(time.Hour)) {
+		t.Errorf("another account shares the first look: %v %v", other, first)
+	}
+	// Unreadable state is a first look again, rather than an account that
+	// never polls.
+	kv["src-first/acct-3"] = "not a time"
+	if got, first, err := f.Since("acct-3", at); err != nil || !first || !got.Equal(at) {
+		t.Errorf("unreadable first look = %v, %v, %v", got, first, err)
+	}
+}
+
+// What happened at or before KARMAX's first look at an account is backlog;
+// what happened after is news. Undated items cannot be placed and are news.
+func TestAnItemFromBeforeTheFirstLookIsBacklog(t *testing.T) {
+	since := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+	if e := (Event{At: since.Add(-time.Minute), Urgent: true}).WatchedSince(since); !e.Backlog {
+		t.Error("an item from before the first look was not marked backlog")
+	}
+	if e := (Event{At: since}).WatchedSince(since); !e.Backlog {
+		t.Error("an item from the moment of the first look was not marked backlog")
+	}
+	if e := (Event{At: since.Add(time.Minute)}).WatchedSince(since); e.Backlog {
+		t.Error("an item from after the first look was marked backlog")
+	}
+	if e := (Event{}).WatchedSince(since); e.Backlog {
+		t.Error("an undated item was marked backlog")
+	}
+	if e := (Event{At: since.Add(-time.Minute)}).WatchedSince(time.Time{}); e.Backlog {
+		t.Error("with no first look known, nothing is backlog")
+	}
+	if e := (Event{At: since.Add(time.Minute), Backlog: true}).WatchedSince(since); !e.Backlog {
+		t.Error("an item its source already marked backlog lost the mark")
+	}
+}

@@ -49,6 +49,21 @@ func TestProposeOnTheFloorIsCreatedWithItsRule(t *testing.T) {
 	}
 }
 
+// A loop's proposal names no floor rule; whoever observes approvals decides
+// whether it waits for the operator, so the "Approval needed" phone push is
+// theirs to send — not sent ahead of a decision that may need nobody.
+func TestARaisedProposalLeavesThePhonePushToItsObserver(t *testing.T) {
+	s := mirrorStore(t)
+	got := captureMirror(t)
+	id, err := CreateProposal(s, "nexus", "task", "Reply to Dana", "", "Send: ships Friday", "normal")
+	if err != nil || id == "" {
+		t.Fatalf("create: %q %v", id, err)
+	}
+	if len(*got) != 1 || (*got)[0].ProposalID != id || (*got)[0].Push == nil {
+		t.Fatalf("the observer was not handed the push: %+v", *got)
+	}
+}
+
 // Ask-first proposes anything, floor or not.
 func TestProposeUnderAskFirstCreatesAnything(t *testing.T) {
 	s := mirrorStore(t)

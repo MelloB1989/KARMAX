@@ -110,6 +110,35 @@ func TestATurnReportsWhatWasSentAsTheOperator(t *testing.T) {
 	}
 }
 
+// Every acting tool records its sends the same way, so the report lists a
+// Slack message, a Google Chat message and an answer to an invitation as it
+// lists a GitHub comment — by the service's name, as the login it was done as —
+// without the model writing a SENT: line for any of them.
+func TestSendsFromEveryActingToolAreReported(t *testing.T) {
+	a := policyAgent(t, policy.Default())
+	since := time.Now().Add(-time.Minute)
+	for i, r := range []store.StoredChannelMessage{
+		{ChannelID: "Alice Example", ChannelType: "slack", SenderName: "northwind-labs", Content: "Reviewed, looks good."},
+		{ChannelID: "spaces/AAAA", ChannelType: "gchat", SenderName: "me@example.org", Content: "On it."},
+		{ChannelID: "“Weekly sync” (lead@example.org)", ChannelType: "gcal", SenderName: "me@example.org", Content: "accepted"},
+	} {
+		r.ID, r.Direction = "s"+string(rune('1'+i)), "outbound"
+		if err := a.store.SaveChannelMessage(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := a.turnReport(accountEvent(false), since, "Answered Alice, the chat, and the invitation.")
+	for _, want := range []string{
+		"Slack as northwind-labs → Alice Example: “Reviewed, looks good.”",
+		"Google Chat as me@example.org → spaces/AAAA: “On it.”",
+		"Google Calendar as me@example.org → “Weekly sync” (lead@example.org): “accepted”",
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report omits %q:\n%s", want, report)
+		}
+	}
+}
+
 // A send KARMAX recorded itself is listed once, even when the model also
 // declared it in a SENT: line of its own wording. Live, every GitHub review
 // appeared twice in one report: once from the store, once from the model.
@@ -195,6 +224,27 @@ func TestTheReportIsDelivered(t *testing.T) {
 	a.deliverTurnReport(accountEvent(true), time.Now(), "Checked it.")
 	if len(got) != 1 || !strings.Contains(got[0], "Urgent") {
 		t.Errorf("delivered %v", got)
+	}
+}
+
+// A turn KARMAX runs on its own behalf — an approved proposal carried out —
+// is reported like an event's turn: what it sent as the operator, in one line.
+func TestATurnRunForAnApprovalIsReported(t *testing.T) {
+	a := policyAgent(t, policy.Default())
+	var got []string
+	a.SetOperatorReport(func(text string) error { got = append(got, text); return nil })
+	since := time.Now().Add(-time.Second)
+	if err := a.store.SaveChannelMessage(store.StoredChannelMessage{ID: "r1", ChannelID: "Alice Example",
+		ChannelType: "slack", SenderName: "northwind-labs", Direction: "outbound", Content: "The dates are 4 and 5 Nov."}); err != nil {
+		t.Fatal(err)
+	}
+	a.ReportTurn(since, "Sent Alice the dates.")
+	if len(got) != 1 || !strings.Contains(got[0], "Sent as you") || !strings.Contains(got[0], "The dates are 4 and 5 Nov.") {
+		t.Errorf("delivered %v", got)
+	}
+	a.ReportTurn(since, "nothing new")
+	if len(got) != 1 {
+		t.Errorf("a turn that sent nothing new was reported: %v", got)
 	}
 }
 

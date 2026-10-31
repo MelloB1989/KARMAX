@@ -72,16 +72,18 @@ func hasTool(ts []tools.Tool, name string) bool {
 	return false
 }
 
-// Act freely, tell after: a message sent as the operator is reported to them.
+// Act freely, tell after: a message sent as the operator is recorded as sent
+// as them, through the recorder every acting tool shares — which is what puts
+// it in the turn's "Sent as you" report without the model having to say so.
 func TestSendingAsTheOperatorTellsThemAfterwards(t *testing.T) {
-	var told []string
+	var told []tools.SentAs
 	var sentTo []string
 	tool := &slackSendTool{
 		send: func(_ context.Context, ws, ch, thread, text string) (slacksrc.Sent, error) {
 			sentTo = append(sentTo, ws+"|"+ch+"|"+thread+"|"+text)
-			return slacksrc.Sent{Workspace: "northwind-labs", Channel: ch, TS: "1.2", URL: "https://example.test/p12"}, nil
+			return slacksrc.Sent{Workspace: "northwind-labs", Channel: ch, Where: "Alice Example", TS: "1.2", URL: "https://example.test/p12"}, nil
 		},
-		tell: func(title, body string) { told = append(told, title+"\n"+body) },
+		sent: func(s tools.SentAs) { told = append(told, s) },
 	}
 	res, err := tool.Execute(context.Background(), map[string]any{"workspace": "northwind-labs", "channel": "D0ALICE",
 		"thread_ts": "", "text": "Reviewed, looks good."})
@@ -91,8 +93,9 @@ func TestSendingAsTheOperatorTellsThemAfterwards(t *testing.T) {
 	if len(sentTo) != 1 || sentTo[0] != "northwind-labs|D0ALICE||Reviewed, looks good." {
 		t.Errorf("sent %v", sentTo)
 	}
-	if len(told) != 1 || !strings.Contains(told[0], "Reviewed, looks good.") || !strings.Contains(told[0], "northwind-labs") {
-		t.Errorf("the operator was told %v", told)
+	want := tools.SentAs{Service: "slack", Account: "northwind-labs", To: "Alice Example", Text: "Reviewed, looks good.", URL: "https://example.test/p12"}
+	if len(told) != 1 || told[0] != want {
+		t.Errorf("recorded %+v, want %+v", told, want)
 	}
 
 	tool.send = func(context.Context, string, string, string, string) (slacksrc.Sent, error) {

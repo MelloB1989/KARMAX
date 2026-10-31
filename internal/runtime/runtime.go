@@ -856,6 +856,10 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		// githubsource.go; KARMAX_SOURCE_GITHUB=off stops the polling.
 		registerGitHubSource(os.Getenv, s, b, toolReg, integrationReg, a0.ID, log)
 
+		// Every registered tool that sends as the operator records through
+		// the one recorder (sentas.go), so its sends are told after.
+		toolReg.GiveSentRecorder(recordSentAs(s, a0.ID))
+
 		// Brain monitor: pings the actual brain the agent depends on — the
 		// harness (Claude Code via the supervisor; see
 		// docs/CLAUDE-ONLY-ORCHESTRATOR.md), not the metered API path nothing

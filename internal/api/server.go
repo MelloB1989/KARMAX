@@ -61,6 +61,9 @@ type Server struct {
 	// registryCache holds the public loop registry's index for a few minutes
 	// at a time — see internal/loopregistry.IndexCache and loops_registry.go.
 	registryCache *loopregistry.IndexCache
+	// runApproved carries out an approved proposal's action; nil runs it as
+	// a turn of the default agent (runApproval). A field so a test can watch.
+	runApproved func(ctx context.Context, prompt string) (string, error)
 }
 
 // ChatTurnOptions is one turn's own request to override the chat kind's
@@ -568,8 +571,23 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be 'approve' or 'reject'"})
 		return
 	}
-	_ = s.store.DecideProposal(id, decidedStatus(req.Decision), req.Note)
-	if err := s.actOnDecision(*p, req.Decision, req.Edit, req.Note); err != nil {
+	if req.Decision == "approve" && !s.canRunApproval() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "no agent available"})
+		return
+	}
+	// Decided only if still pending: the operator on WhatsApp or the policy
+	// may have decided it since it was read, and its action must run once.
+	won, err := s.store.DecideProposalIfPending(id, decidedStatus(req.Decision), req.Note, "")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if !won {
+		updated, _ := s.store.GetProposal(id)
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "already " + updated.Status, "proposal": proposalJSON(*updated)})
+		return
+	}
+	if err := s.actOnDecision(*p, req.Decision, req.Edit, req.Note, ""); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -577,8 +595,16 @@ func (s *Server) handleProposalDecision(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"proposal": proposalJSON(*updated)})
 }
 
+// ErrAlreadyDecided is a decision on a proposal someone has already decided.
+var ErrAlreadyDecided = errors.New("proposal is already decided")
+
+// ByPolicy is who decided a proposal the operating policy cleared: under
+// "act, then report", one that is not on the hard floor needs no one's yes.
+const ByPolicy = "policy (act, then report)"
+
 // DecideProposal is the app's decision for a caller that is not the app —
-// the operator answering on WhatsApp — with who decided recorded.
+// the operator answering on WhatsApp, or the operating policy (ByPolicy) —
+// with who decided recorded.
 func (s *Server) DecideProposal(id, decision, note, by string) error {
 	p, err := s.store.GetProposal(id)
 	if err != nil {
@@ -588,15 +614,23 @@ func (s *Server) DecideProposal(id, decision, note, by string) error {
 		return errors.New("proposal not found")
 	}
 	if p.Status != "pending" {
-		return fmt.Errorf("proposal is already %s", p.Status)
+		return fmt.Errorf("%w: %s", ErrAlreadyDecided, p.Status)
 	}
 	if decision != "approve" && decision != "reject" {
 		return errors.New("decision must be 'approve' or 'reject'")
 	}
-	if err := s.store.DecideProposalBy(id, decidedStatus(decision), note, by); err != nil {
+	// Nothing to carry it out: left pending rather than approved and stuck.
+	if decision == "approve" && !s.canRunApproval() {
+		return errors.New("no agent available")
+	}
+	won, err := s.store.DecideProposalIfPending(id, decidedStatus(decision), note, by)
+	if err != nil {
 		return err
 	}
-	return s.actOnDecision(*p, decision, "", note)
+	if !won {
+		return fmt.Errorf("%w by someone else just now", ErrAlreadyDecided)
+	}
+	return s.actOnDecision(*p, decision, "", note, by)
 }
 
 func decidedStatus(decision string) string {
@@ -608,8 +642,9 @@ func decidedStatus(decision string) string {
 
 // actOnDecision carries out a decision already recorded: an approval runs the
 // action (edit, when set, in place of the proposed one), a reject with a note
-// is fed back so the agent can rework it, and a bare reject just drops it.
-func (s *Server) actOnDecision(p store.StoredProposal, decision, edit, note string) error {
+// is fed back so the agent can rework it, and a bare reject just drops it. by
+// is who decided ("" for the app).
+func (s *Server) actOnDecision(p store.StoredProposal, decision, edit, note, by string) error {
 	id := p.ID
 	if decision == "reject" {
 		// Reject WITH feedback = revise, not drop: feed the feedback back to the
@@ -637,25 +672,19 @@ func (s *Server) actOnDecision(p store.StoredProposal, decision, edit, note stri
 	if strings.TrimSpace(edit) != "" {
 		action = edit
 	}
-	ag := s.resolveAgent("")
-	if ag == nil {
+	if !s.canRunApproval() {
+		_ = s.store.SetProposalResult(id, "failed", "no agent available")
 		return errors.New("no agent available")
 	}
 
-	prompt := fmt.Sprintf(
-		"The operator APPROVED this proposed action. Execute it now using your tools, then confirm exactly what you did.\n\nTitle: %s\nAction: %s",
-		p.Title, action,
-	)
-	if strings.TrimSpace(note) != "" {
-		prompt += "\nNote from the operator: " + note
-	}
+	prompt := approvalPrompt(p.Title, action, note, by)
 
 	// Execute in the background so the decision request returns immediately;
 	// the app polls and sees the status flip to executed/failed.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		reply, gerr := ag.Chat(ctx, prompt)
+		reply, gerr := s.runApproval(ctx, prompt)
 		if gerr != nil {
 			_ = s.store.SetProposalResult(id, "failed", gerr.Error())
 			return
@@ -663,6 +692,53 @@ func (s *Server) actOnDecision(p store.StoredProposal, decision, edit, note stri
 		_ = s.store.SetProposalResult(id, "executed", reply)
 	}()
 	return nil
+}
+
+// approvalPrompt is what the agent is told to carry out. An action cleared by
+// the operating policy is not the operator's approval and is not presented as
+// one: the agent is told why no one was asked, and to stop at anything on the
+// hard floor rather than do it on the policy's word.
+func approvalPrompt(title, action, note, by string) string {
+	if by == ByPolicy {
+		prompt := fmt.Sprintf("A proposal raised for the operator needs no approval under their standing policy (act, then report): "+
+			"it is not on the hard floor. Carry it out now using your tools, then say in a sentence or two exactly what you did — "+
+			"what you send as the operator is reported to them. If doing it would in fact touch the hard floor, do not do that part: "+
+			"call `propose` with `floor` set to the rule instead.\n\nTitle: %s\nAction: %s", title, action)
+		if strings.TrimSpace(note) != "" {
+			prompt += "\nWhy no one was asked: " + note
+		}
+		return prompt
+	}
+	prompt := fmt.Sprintf(
+		"The operator APPROVED this proposed action. Execute it now using your tools, then confirm exactly what you did.\n\nTitle: %s\nAction: %s",
+		title, action,
+	)
+	if strings.TrimSpace(note) != "" {
+		prompt += "\nNote from the operator: " + note
+	}
+	return prompt
+}
+
+// canRunApproval reports whether an approved action has anything to run it.
+func (s *Server) canRunApproval() bool {
+	return s.runApproved != nil || s.resolveAgent("") != nil
+}
+
+// runApproval carries out an approved action as a turn of the default agent,
+// and reports that turn as an event's turn is reported: what it sent as the
+// operator reaches them per the operating policy.
+func (s *Server) runApproval(ctx context.Context, prompt string) (string, error) {
+	if s.runApproved != nil {
+		return s.runApproved(ctx, prompt)
+	}
+	ag := s.resolveAgent("")
+	if ag == nil {
+		return "", errors.New("no agent available")
+	}
+	since := time.Now().Truncate(time.Second)
+	reply, err := ag.Chat(ctx, prompt)
+	ag.ReportTurn(since, reply)
+	return reply, err
 }
 
 func proposalJSON(p store.StoredProposal) map[string]any {

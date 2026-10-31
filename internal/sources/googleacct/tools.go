@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/sources/gcal"
 	"github.com/MelloB1989/karmax/internal/tools"
 )
 
@@ -19,11 +20,14 @@ import (
 // with several accounts signed in, a call that names none is refused with the
 // choices, because acting as the wrong account is the one mistake here that
 // cannot be taken back quietly.
-func Tools(c *Client, loc *time.Location, bound string) []tools.Tool {
+//
+// sent hears what each action said or did to other people as the operator
+// (tools.SentAs), once it has succeeded, so the operator is told after.
+func Tools(c *Client, loc *time.Location, bound string, sent tools.SentRecorder) []tools.Tool {
 	if loc == nil {
 		loc = time.UTC
 	}
-	b := base{c: c, loc: loc, bound: strings.ToLower(strings.TrimSpace(bound))}
+	b := base{c: c, loc: loc, bound: strings.ToLower(strings.TrimSpace(bound)), sent: sent}
 	return []tools.Tool{&accountsTool{b}, &sendTool{b}, &respondTool{b}, &rescheduleTool{b}, &createTool{b}}
 }
 
@@ -36,6 +40,41 @@ type base struct {
 	c     *Client
 	loc   *time.Location
 	bound string
+	sent  tools.SentRecorder
+}
+
+// when is a time as the operator reads it, in their zone.
+func (b base) when(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.In(b.loc).Format("Mon 2 Jan 15:04")
+}
+
+// invitation names a calendar event for telling the operator: its title, and
+// whose it is when that is not the operator's.
+func invitation(ev gcal.Event, id string) string {
+	what := "an event"
+	if s := strings.TrimSpace(ev.Summary); s != "" {
+		what = "“" + s + "”"
+	} else if id != "" {
+		what = "event " + id
+	}
+	if ev.Organizer != "" && !ev.OrganizerSelf {
+		what += " (" + ev.Organizer + ")"
+	}
+	return what
+}
+
+// guests are an event's attendees other than the account itself.
+func guests(ev gcal.Event) []string {
+	var out []string
+	for _, a := range ev.Attendees {
+		if !a.Self && a.Email != "" {
+			out = append(out, a.Email)
+		}
+	}
+	return out
 }
 
 const accountParam = `"account": {"type": "string", "description": "The Google address to act as — the account the event or message came from. Optional only when one account is signed in, or the tool was lent for an event."}`
@@ -201,6 +240,14 @@ func (t *sendTool) Execute(ctx context.Context, in map[string]any) (tools.ToolRe
 	if err != nil {
 		return tools.ErrorResult(err), nil
 	}
+	where := to
+	if where == "" {
+		where = sent.Space
+	}
+	if where == "" {
+		where = space
+	}
+	t.sent.Record(tools.SentAs{Service: "gchat", Account: account, To: where, Text: text})
 	return tools.SuccessResult(map[string]any{"sent_as": account, "message": sent.Name, "space": sent.Space, "thread": sent.Thread}), nil
 }
 
@@ -236,6 +283,8 @@ func (t *respondTool) Execute(ctx context.Context, in map[string]any) (tools.Too
 	if err != nil {
 		return tools.ErrorResult(err), nil
 	}
+	t.sent.Record(tools.SentAs{Service: "gcal", Account: account, To: invitation(ev, str(in, "event_id")),
+		Action: str(in, "response"), Text: str(in, "comment"), URL: ev.Link})
 	return tools.SuccessResult(map[string]any{"answered_as": account, "event_id": ev.ID, "response": str(in, "response"), "summary": ev.Summary}), nil
 }
 
@@ -284,6 +333,12 @@ func (t *rescheduleTool) Execute(ctx context.Context, in map[string]any) (tools.
 	if err != nil {
 		return tools.ErrorResult(err), nil
 	}
+	// Moving an event other people are in changes their day too, and is told
+	// after; moving a private one is not something sent.
+	if len(guests(ev)) > 0 {
+		t.sent.Record(tools.SentAs{Service: "gcal", Account: account, To: invitation(ev, str(in, "event_id")),
+			Action: "moved", Text: "to " + t.when(start), URL: ev.Link})
+	}
 	return tools.SuccessResult(map[string]any{"moved_as": account, "event_id": ev.ID, "start": stamp(ev.Start), "end": stamp(ev.End), "link": ev.Link}), nil
 }
 
@@ -329,13 +384,19 @@ func (t *createTool) Execute(ctx context.Context, in map[string]any) (tools.Tool
 	if err != nil {
 		return tools.ErrorResult(err), nil
 	}
+	attendees := strList(in["attendees"])
 	ev, err := t.c.Create(ctx, account, NewEvent{
 		CalendarID: str(in, "calendar_id"), Title: str(in, "title"), Start: start, End: end,
-		Attendees: strList(in["attendees"]), Description: str(in, "description"), Location: str(in, "location"),
+		Attendees: attendees, Description: str(in, "description"), Location: str(in, "location"),
 		Meet: boolOr(in, "meet", false), Notify: boolOr(in, "notify", true),
 	})
 	if err != nil {
 		return tools.ErrorResult(err), nil
+	}
+	// An invitation is sent as the operator; an entry nobody is invited to is not.
+	if len(attendees) > 0 {
+		t.sent.Record(tools.SentAs{Service: "gcal", Account: account, To: strings.Join(attendees, ", "), Action: "invited",
+			Text: fmt.Sprintf("“%s” on %s", str(in, "title"), t.when(start)), URL: ev.Link})
 	}
 	return tools.SuccessResult(map[string]any{"created_as": account, "event_id": ev.ID, "link": ev.Link, "meet": ev.Meet}), nil
 }

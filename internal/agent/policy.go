@@ -10,6 +10,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/comms"
 	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/sources"
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"go.uber.org/zap"
 )
@@ -68,13 +69,20 @@ func (a *Agent) operatingPolicy() policy.Policy {
 func (a *Agent) buildPolicyContext() string { return a.operatingPolicy().Brief() }
 
 // sentLinePrefix marks a send the model declares in its final reply, for what
-// KARMAX cannot see itself: a GitHub comment, an email, a post.
+// KARMAX cannot see itself: an email or a post made through a shell command or
+// a service KARMAX has no tool for. What its own acting tools send is recorded
+// by them (tools.SentAs) and needs no declaration.
 const sentLinePrefix = "SENT:"
 
 // deliverTurnReport sends the turn's report, if the policy calls for one, and
 // keeps it on record in the app.
 func (a *Agent) deliverTurnReport(evt bus.Event, since time.Time, response string) {
-	text := a.turnReport(evt, since, response)
+	a.sendReport(a.turnReport(evt, since, response))
+}
+
+// sendReport delivers a composed report: kept in the app, and sent to the
+// operator's WhatsApp when a sender is installed. Empty sends nothing.
+func (a *Agent) sendReport(text string) {
 	if text == "" {
 		return
 	}
@@ -92,10 +100,26 @@ func (a *Agent) deliverTurnReport(evt bus.Event, since time.Time, response strin
 	}
 }
 
+// ReportTurn reports a turn KARMAX ran on its own behalf rather than for an
+// event — an approved proposal carried out — as an event's turn is reported:
+// what it sent as the operator since the turn began, per the policy.
+func (a *Agent) ReportTurn(since time.Time, response string) {
+	a.deliverTurnReport(bus.Event{Kind: "api.chat", AgentID: a.def.ID}, since, response)
+}
+
 // turnReport is what the operator is told after a turn: the event, if it was
 // urgent, with what was done about it; and what was sent as them. Empty when
 // there is nothing the policy sends.
 func (a *Agent) turnReport(evt bus.Event, since time.Time, response string) string {
+	return a.reportFor(evt, since, response, urgentHeader)
+}
+
+// urgentHeader opens the report of an urgent event's turn.
+const urgentHeader = "⚠️ Urgent — "
+
+// reportFor is turnReport with the words that open an urgent event's line:
+// the page itself, or a follow-up to one already sent.
+func (a *Agent) reportFor(evt bus.Event, since time.Time, response, header string) string {
 	// The operator's own conversation reports itself: they are in it.
 	if evt.Kind == bus.EventCommsMessage {
 		if chat, _ := evt.Payload["channel_id"].(string); a.isFromOperator(chat) {
@@ -105,7 +129,7 @@ func (a *Agent) turnReport(evt bus.Event, since time.Time, response string) stri
 	p := a.operatingPolicy()
 	var b strings.Builder
 	if p.ToWhatsApp(policy.Urgent) && turnIsUrgent(evt, p) {
-		b.WriteString("⚠️ Urgent — " + eventHeadline(evt) + "\n")
+		b.WriteString(header + eventHeadline(evt) + "\n")
 		if done := strings.TrimSpace(withoutSentLines(response)); done != "" {
 			b.WriteString(truncateStr(done, 700) + "\n")
 		}
@@ -195,8 +219,9 @@ func (a *Agent) sentSince(since time.Time) (out, dests []string) {
 		}
 		a.ops.reported[r.ID] = time.Now()
 		label := channelLabel(r.ChannelType)
-		// A send recorded with the login it was made as (the GitHub acting
-		// tools record theirs) says which of the operator's accounts spoke.
+		// A send recorded with the login it was made as (every acting tool
+		// records theirs, tools.SentAs) says which of the operator's accounts
+		// spoke.
 		if as := strings.TrimSpace(r.SenderName); as != "" {
 			label += " as " + as
 		}
@@ -255,16 +280,10 @@ func (a *Agent) recipientName(chatID string) string {
 }
 
 func channelLabel(t string) string {
-	switch strings.ToLower(t) {
-	case "whatsapp":
-		return "WhatsApp"
-	case "github":
-		return "GitHub"
-	case "":
+	if strings.TrimSpace(t) == "" {
 		return "message"
-	default:
-		return strings.ToUpper(t[:1]) + t[1:]
 	}
+	return tools.ServiceName(t)
 }
 
 // declaredSends are the SENT: lines the model wrote for sends KARMAX cannot

@@ -19,6 +19,10 @@ type MirrorEvent struct {
 	Floor string
 	// Urgent marks a notification whoever raised it judged cannot wait.
 	Urgent bool
+	// Push tells the operator's phone an approval is waiting. The observer
+	// calls it when the approval does wait for them; one the operating
+	// policy clears needs no one, and is not announced.
+	Push func()
 }
 
 var (
@@ -33,11 +37,13 @@ func SetMirrorHook(fn func(MirrorEvent)) {
 	mirrorMu.Unlock()
 }
 
-func notifyMirror(ev MirrorEvent) {
+// notifyMirror hands ev to the observer, and reports whether there was one.
+func notifyMirror(ev MirrorEvent) bool {
 	mirrorMu.RLock()
 	fn := mirrorHook
 	mirrorMu.RUnlock()
 	if fn != nil {
 		fn(ev)
 	}
+	return fn != nil
 }

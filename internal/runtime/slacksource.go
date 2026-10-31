@@ -15,7 +15,6 @@ import (
 	"github.com/MelloB1989/karmax/internal/sources"
 	slacksrc "github.com/MelloB1989/karmax/internal/sources/slack"
 	"github.com/MelloB1989/karmax/internal/tools"
-	"github.com/MelloB1989/karmax/internal/tools/builtin"
 	"github.com/MelloB1989/karmax/pkg/loopkit"
 	"go.uber.org/zap"
 )
@@ -69,7 +68,7 @@ func (rt *KarmaxRuntime) registerSlackSource(reg *integration.Registry) {
 			return src.Send(ctx, workspaces(), ws, ch, thread, text)
 		},
 		// The operator lets KARMAX speak for them and is told afterwards.
-		tell: func(title, body string) { builtin.PushAppNotification(rt.store, agentID, "update", title, body) },
+		sent: recordSentAs(rt.store, agentID),
 	}
 	if rt.tools != nil {
 		rt.tools.Register(tool)
@@ -152,7 +151,7 @@ func (rt *KarmaxRuntime) sourceToolsForEvent(evt bus.Event) []tools.Tool {
 // slackSendTool posts as the operator.
 type slackSendTool struct {
 	send func(ctx context.Context, workspace, channel, threadTS, text string) (slacksrc.Sent, error)
-	tell func(title, body string)
+	sent tools.SentRecorder
 }
 
 func (t *slackSendTool) Manifest() tools.ToolManifest {
@@ -188,13 +187,8 @@ func (t *slackSendTool) Execute(ctx context.Context, in map[string]any) (tools.T
 	if err != nil {
 		return tools.ErrorResult(err), nil
 	}
-	if t.tell != nil {
-		body := fmt.Sprintf("In %s (%s): %s", sent.Workspace, sent.Channel, clip(text, 240))
-		if sent.URL != "" {
-			body += "\n" + sent.URL
-		}
-		t.tell("Sent as you on Slack", body)
-	}
+	t.sent.Record(tools.SentAs{Service: slacksrc.Name, Account: sent.Workspace, To: firstNonEmpty(sent.Where, sent.Channel),
+		Text: text, URL: sent.URL})
 	return tools.SuccessResult(map[string]any{"posted": true, "workspace": sent.Workspace, "channel": sent.Channel,
 		"ts": sent.TS, "url": sent.URL}), nil
 }

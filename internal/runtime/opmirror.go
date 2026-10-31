@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/store"
 	"github.com/MelloB1989/karmax/internal/tools/builtin"
@@ -27,11 +29,20 @@ const (
 // the operator's personal chat. Now the policy decides: an approval reaches
 // WhatsApp when it is on the hard floor, a notification when it is urgent, and
 // nothing else does.
+//
+// It is also where a proposal raised for the operator meets the policy. Under
+// "act, then report" a proposal that is not on the hard floor — a loop's
+// suggested reply, say — needs no one's yes; it used to sit unseen in the
+// app's inbox. approve carries it out through the operator's own approval
+// path, and what it sends is reported after, like any turn's.
 type operatorMirror struct {
 	log    *zap.Logger
 	send   func(text string) error
 	decide func(ctx context.Context, state any, q loopkit.Questions) (*loopkit.Decision, error)
 	policy policy.Policy
+	// approve decides a proposal as the policy (see installOperatorMirror).
+	// Nil leaves every proposal to the operator.
+	approve func(id, note string) error
 
 	mu       sync.Mutex
 	inFlight map[string]int
@@ -48,13 +59,24 @@ func (m *operatorMirror) Hook(ev builtin.MirrorEvent) {
 }
 
 func (m *operatorMirror) handle(ev builtin.MirrorEvent) {
-	if m.send == nil {
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorJevTimeout)
 	defer cancel()
 
-	if !m.worthWhatsApp(ctx, ev) {
+	var worth bool
+	if ev.Kind == builtin.MirrorApproval {
+		waits := m.waitsForOperator(ctx, ev)
+		if !waits && m.actOn(ev) {
+			return // carried out (or already decided); its turn reports what it sent
+		}
+		if ev.Push != nil {
+			ev.Push() // it waits in the app: the phone says so
+		}
+		// Off the floor it waits in the app only; WhatsApp is for the floor.
+		worth = waits && m.policy.ToWhatsApp(policy.Approval)
+	} else {
+		worth = m.worthWhatsApp(ctx, ev)
+	}
+	if !worth || m.send == nil {
 		return
 	}
 	text := mirrorText(ev)
@@ -73,18 +95,47 @@ func (m *operatorMirror) handle(ev builtin.MirrorEvent) {
 	}
 }
 
-// worthWhatsApp applies the operating policy to one item.
-func (m *operatorMirror) worthWhatsApp(ctx context.Context, ev builtin.MirrorEvent) bool {
-	if ev.Kind == builtin.MirrorApproval {
-		if !m.policy.ToWhatsApp(policy.Approval) {
-			return false
-		}
-		// Ask-first: every approval is one the operator is waiting to give.
-		if !m.policy.ActFirst() || strings.TrimSpace(ev.Floor) != "" {
-			return true
-		}
-		return m.onFloor(ctx, ev)
+// waitsForOperator applies the operating policy to a proposal: under "ask
+// first" every one is the operator's to give; under "act, then report" only
+// one on the hard floor is — named so by its raiser, or placed there by Jev.
+func (m *operatorMirror) waitsForOperator(ctx context.Context, ev builtin.MirrorEvent) bool {
+	if !m.policy.ActFirst() || strings.TrimSpace(ev.Floor) != "" {
+		return true
 	}
+	return m.onFloor(ctx, ev)
+}
+
+// policyNote is recorded with a proposal the policy approved: why no one was
+// asked.
+func (m *operatorMirror) policyNote() string {
+	return "not on the hard floor (" + strings.Join(m.policy.HardFloor(), "; ") +
+		"), so under the operator's policy (act, then report) it needs no approval"
+}
+
+// actOn carries out a proposal that waits for no one, through the approval
+// path the operator's own yes takes. It reports true when there is nothing
+// left to do: carried out, or already decided by someone else. On false the
+// proposal is still pending, and waits in the app like any other.
+func (m *operatorMirror) actOn(ev builtin.MirrorEvent) bool {
+	if m.approve == nil || strings.TrimSpace(ev.ProposalID) == "" {
+		return false
+	}
+	err := m.approve(ev.ProposalID, m.policyNote())
+	switch {
+	case err == nil:
+		m.log.Info("carried out a proposal off the hard floor, under act-then-report",
+			zap.String("proposal", ev.ProposalID), zap.String("source", ev.Source))
+		return true
+	case errors.Is(err, api.ErrAlreadyDecided):
+		return true
+	}
+	m.log.Warn("could not carry out a proposal off the hard floor; it waits in the app",
+		zap.String("proposal", ev.ProposalID), zap.Error(err))
+	return false
+}
+
+// worthWhatsApp applies the operating policy to a notification.
+func (m *operatorMirror) worthWhatsApp(ctx context.Context, ev builtin.MirrorEvent) bool {
 	if m.policy.ToWhatsApp(policy.Notification) {
 		return true
 	}
@@ -93,6 +144,11 @@ func (m *operatorMirror) worthWhatsApp(ctx context.Context, ev builtin.MirrorEve
 	}
 	return ev.Urgent || m.urgent(ctx, ev)
 }
+
+// offFloorBelow is how sure Jev must be that a proposal is NOT on the hard
+// floor (its "on the floor" likelihood below this) for it to be carried out
+// without the operator.
+const offFloorBelow = 0.3
 
 // onFloor asks whether an approval that did not name a floor rule — a loop's
 // proposal — is on the hard floor. An approval waits on a person, so one that
@@ -115,7 +171,9 @@ func (m *operatorMirror) onFloor(ctx context.Context, ev builtin.MirrorEvent) bo
 	if err != nil || dec == nil {
 		return true
 	}
-	return dec.Yes("floor", 0.5)
+	// Off the floor means carried out without anyone's yes, so it takes a
+	// clear no: an unsure answer leaves the proposal with the operator.
+	return dec.Yes("floor", offFloorBelow)
 }
 
 // urgencyLevels is the length of the urgency rubric below.
@@ -188,6 +246,12 @@ func clip(s string, n int) string {
 // installOperatorMirror wires the mirror and re-registers the proactive notifier behind its guard.
 func (rt *KarmaxRuntime) installOperatorMirror(s *store.Store, agentID string, send func(string) error) {
 	m := newOperatorMirror(rt.log.Named("opmirror"), send, rt.decide, rt.policy)
+	// A proposal the policy clears goes through the operator's own approval
+	// path: decided once (whoever is first), carried out as a turn of the
+	// agent, its outcome recorded on the proposal, its sends reported.
+	if rt.api != nil {
+		m.approve = func(id, note string) error { return rt.api.DecideProposal(id, "approve", note, api.ByPolicy) }
+	}
 	builtin.SetMirrorHook(m.Hook)
 	rt.comms.SetProactiveNotifier(m.Notifier(func(target, content string) {
 		builtin.PushAppNotificationQuiet(s, agentID, "update", "Sent to "+target, clip(content, 240))

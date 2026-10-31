@@ -133,10 +133,12 @@ type Config struct {
 	// --settings — what a session would otherwise have taken from the
 	// operator's own settings, such as effortLevel.
 	Settings map[string]any
-	// OnBackgroundTurn hears every turn a session ran without being asked —
-	// a message from another session arriving while it was idle starts one.
-	// The turn is already accounted (usage, breaker, audit) before this is
-	// called. Nil drops it after accounting.
+	// OnBackgroundTurn hears every turn a session ran that no caller is
+	// waiting for and none claimed — a message from another session arriving
+	// while it was idle starts one; the rest of a turn whose caller gave up
+	// without an OnLate is one too (Turn.Late). The turn is already accounted
+	// (usage, breaker, audit) before this is called. Nil drops it after
+	// accounting.
 	OnBackgroundTurn func(key, kind string, t Turn)
 }
 
@@ -242,6 +244,12 @@ type Options struct {
 	// seeded: it is read from the config on every open, and a live session
 	// whose prompt differs is respawned (transcript kept) before the turn.
 	SystemPrompt string
+	// OnLate hears the rest of this turn if it finishes after SendWith has
+	// given up on it (the caller's context or the turn timeout ran out once
+	// it was written): what the session said and did from then on, with its
+	// final text, marked Late. Called off the session's reader, after the
+	// turn is accounted. Nil leaves such a turn to OnBackgroundTurn.
+	OnLate func(Turn)
 }
 
 // Send is the whole caller-facing surface: give it a key and a message.
@@ -273,7 +281,7 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 		return Turn{}, err
 	}
 
-	turn, err := sess.Send(ctx, text, pol.TurnTimeout, opt.OnEvent)
+	turn, err := sess.send(ctx, text, pol.TurnTimeout, opt.OnEvent, opt.OnLate)
 
 	// Quota is reported per turn, so the breaker learns from every call
 	// including the ones that fail.
@@ -314,9 +322,11 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	return turn, nil
 }
 
-// background accounts a turn a session ran without being asked, exactly as
-// SendWith accounts one it was asked for, then hands it to OnBackgroundTurn.
-func (s *Supervisor) background(key, kind string, t Turn) {
+// background accounts a turn no caller was waiting for, exactly as SendWith
+// accounts one it was asked for, then hands it to whoever it belongs to: the
+// caller that gave up on it (claim, its Options.OnLate), or else
+// OnBackgroundTurn.
+func (s *Supervisor) background(key, kind string, t Turn, claim func(Turn)) {
 	s.breaker.Observe(t.Limits)
 	if s.audit != nil {
 		for _, tc := range t.ToolCalls {
@@ -325,8 +335,12 @@ func (s *Supervisor) background(key, kind string, t Turn) {
 	}
 	_ = s.store.RecordHarnessTurn(key, t.CostUSD, t.Usage.InputTokens,
 		t.Usage.OutputTokens, t.Usage.CacheReadTokens, time.Now())
-	s.log.Info("harness: a session ran a turn by itself", "key", key, "kind", kind,
-		"tools", len(t.ToolCalls))
+	s.log.Info("harness: a session ran a turn no caller was waiting for", "key", key, "kind", kind,
+		"tools", len(t.ToolCalls), "late", t.Late, "claimed", claim != nil)
+	if claim != nil {
+		claim(t)
+		return
+	}
 	if s.cfg.OnBackgroundTurn != nil {
 		s.cfg.OnBackgroundTurn(key, kind, t)
 	}
@@ -440,7 +454,7 @@ func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Polic
 		Name: pol.Name, Launch: pol.Launch, InheritMCP: pol.InheritMCP,
 		OnlyMCPConfig: s.cfg.OnlyMCPConfig}
 	s.customise(sess, pol)
-	sess.onBackground = func(t Turn) { s.background(key, kind, t) }
+	sess.onBackground = func(t Turn, claim func(Turn)) { s.background(key, kind, t, claim) }
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
 	// sweep can find; the reverse leaves a process nothing knows about.

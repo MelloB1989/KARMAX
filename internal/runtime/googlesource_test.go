@@ -11,6 +11,7 @@ import (
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/integration"
 	"github.com/MelloB1989/karmax/internal/sources/googleacct"
+	"github.com/MelloB1989/karmax/internal/tools"
 	"github.com/MelloB1989/karmax/pkg/connectorkit"
 	"go.uber.org/zap"
 )
@@ -197,6 +198,33 @@ func TestToolsAreLentForAnAccountsOwnEvents(t *testing.T) {
 	other := bus.NewEvent(bus.EventWebhookFired, "nexus", map[string]any{"source": "github", "account": "octo"})
 	if got := rt.googleToolsForEvent(other); len(got) != 0 {
 		t.Fatalf("lent Google tools to a GitHub event: %d", len(got))
+	}
+}
+
+// A message sent with a lent Google tool is recorded through the recorder the
+// runtime gives every acting tool.
+func TestLentGoogleToolsRecordWhatTheySend(t *testing.T) {
+	r := newGoogleRig(t, noEnv)
+	var got []tools.SentAs
+	r.g.sent = func(s tools.SentAs) { got = append(got, s) }
+	r.answers["chat spaces messages create"] = `{"name":"spaces/S1/messages/m","space":{"name":"spaces/S1"}}`
+	rt := &KarmaxRuntime{google: r.g}
+	ev := bus.NewEvent(bus.EventWebhookFired, "nexus", map[string]any{"source": "gchat", "account": "priya@example.com"})
+	var send tools.Tool
+	for _, tl := range rt.googleToolsForEvent(ev) {
+		if tl.Manifest().Name == "gchat.send" {
+			send = tl
+		}
+	}
+	if send == nil {
+		t.Fatal("gchat.send was not lent")
+	}
+	res, err := send.Execute(context.Background(), map[string]any{"space": "spaces/S1", "text": "Thanks, merging now."})
+	if err != nil || res.IsError {
+		t.Fatalf("send: %v %+v", err, res)
+	}
+	if len(got) != 1 || got[0].Account != "priya@example.com" || got[0].Service != "gchat" || got[0].Text != "Thanks, merging now." {
+		t.Errorf("recorded %+v", got)
 	}
 }
 

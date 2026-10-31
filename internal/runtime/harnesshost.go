@@ -121,6 +121,7 @@ func (rt *KarmaxRuntime) startHarness() *harness.Supervisor {
 		Settings:      hc.Settings,
 		OnBackgroundTurn: func(key, kind string, t harness.Turn) {
 			_ = rt.bus.Publish(backgroundTurnEvent(key, kind, t))
+			rt.reportBackgroundTurn(key, t) // to the operator, per policy (latereply.go)
 		},
 	}, harnessStore{rt.store}, breaker, harnessLog{rt.log}, rt.auditHarnessTool)
 
@@ -163,6 +164,7 @@ func backgroundTurnEvent(key, kind string, t harness.Turn) bus.Event {
 		"tools":    tools,
 		"cost_usd": t.CostUSD,
 		"model":    t.Model,
+		"late":     t.Late,
 	}
 	if t.Err != nil {
 		payload["error"] = t.Err.Error()
@@ -603,6 +605,7 @@ func (h harnessSenderFor) Send(ctx context.Context, key, kind, text string) (age
 	turn, err := h.sup.SendWith(ctx, key, kind, text, harness.Options{
 		MCPConfig:    browserMCPConfig(ctx, h.browser, kind),
 		SystemPrompt: h.prompts[key],
+		OnLate:       lateReplyTo(agent.LateReplyFrom(ctx)),
 	})
 	calls := make([]agent.HarnessToolCall, 0, len(turn.ToolCalls))
 	for _, tc := range turn.ToolCalls {

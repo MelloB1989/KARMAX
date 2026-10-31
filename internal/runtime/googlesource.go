@@ -100,6 +100,8 @@ type googleSourceDeps struct {
 	Log      *zap.Logger
 	Register func(integration.Integration)
 	Getenv   func(string) string
+	// Sent records what the Google actions send as the operator.
+	Sent tools.SentRecorder
 }
 
 // googleSources is both sources over one client.
@@ -113,6 +115,7 @@ type googleSources struct {
 	seen     sources.Seen
 	log      *zap.Logger
 	register func(integration.Integration)
+	sent     tools.SentRecorder
 
 	calMu, chatMu sync.Mutex // one tick of each at a time
 
@@ -143,11 +146,12 @@ func startGoogleSources(s *store.Store, b *bus.Log, toolReg *tools.Registry, reg
 	g := newGoogleSources(googleSourceDeps{
 		Host: googleacct.NewHost(hostpaths.Gog(), os.Getenv), KV: s, Publish: b.Publish, AgentID: agentID,
 		Loc: memory.OperatorLocation(), Log: log, Register: reg.Register, Getenv: os.Getenv,
+		Sent: recordSentAs(s, agentID),
 	})
 	for _, l := range g.loops() {
 		loopkit.Register(l)
 	}
-	for _, t := range googleacct.Tools(g.client, g.loc, "") {
+	for _, t := range googleacct.Tools(g.client, g.loc, "", g.sent) {
 		toolReg.Register(t)
 	}
 	return g
@@ -162,7 +166,7 @@ func newGoogleSources(d googleSourceDeps) *googleSources {
 	}
 	g := &googleSources{
 		client: googleacct.NewClient(d.Host, d.Loc), loc: d.Loc, agentID: d.AgentID,
-		publish: d.Publish, log: d.Log, register: d.Register,
+		publish: d.Publish, log: d.Log, register: d.Register, sent: d.Sent,
 		seen:       sources.Seen{Group: googleSeenGroup, TTL: googleSeenTTL, Get: d.KV.KVGet, Set: d.KV.KVSet},
 		health:     map[string]map[string]sourceHealth{},
 		registered: map[string]bool{},
@@ -447,12 +451,12 @@ func (rt *KarmaxRuntime) googleToolsForEvent(evt bus.Event) []tools.Tool {
 		src, _ := evt.Payload["source"].(string)
 		if src == "gcal" || src == "gchat" {
 			account, _ := evt.Payload["account"].(string)
-			return googleacct.Tools(g.client, g.loc, account)
+			return googleacct.Tools(g.client, g.loc, account, g.sent)
 		}
 		return nil
 	}
 	if isOperatorTurn(evt, rt.isOperatorChat) {
-		return googleacct.Tools(g.client, g.loc, "")
+		return googleacct.Tools(g.client, g.loc, "", g.sent)
 	}
 	return nil
 }
