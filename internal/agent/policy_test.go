@@ -227,6 +227,27 @@ func TestTheReportIsDelivered(t *testing.T) {
 	}
 }
 
+// A turn KARMAX runs on its own behalf — an approved proposal carried out —
+// is reported like an event's turn: what it sent as the operator, in one line.
+func TestATurnRunForAnApprovalIsReported(t *testing.T) {
+	a := policyAgent(t, policy.Default())
+	var got []string
+	a.SetOperatorReport(func(text string) error { got = append(got, text); return nil })
+	since := time.Now().Add(-time.Second)
+	if err := a.store.SaveChannelMessage(store.StoredChannelMessage{ID: "r1", ChannelID: "Alice Example",
+		ChannelType: "slack", SenderName: "northwind-labs", Direction: "outbound", Content: "The dates are 4 and 5 Nov."}); err != nil {
+		t.Fatal(err)
+	}
+	a.ReportTurn(since, "Sent Alice the dates.")
+	if len(got) != 1 || !strings.Contains(got[0], "Sent as you") || !strings.Contains(got[0], "The dates are 4 and 5 Nov.") {
+		t.Errorf("delivered %v", got)
+	}
+	a.ReportTurn(since, "nothing new")
+	if len(got) != 1 {
+		t.Errorf("a turn that sent nothing new was reported: %v", got)
+	}
+}
+
 // comms.escalate is a second way to ask permission; under act-then-report it
 // follows the same floor rule as propose.
 func TestEscalateFollowsTheFloor(t *testing.T) {

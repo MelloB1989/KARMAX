@@ -88,8 +88,11 @@ func (t *ProposeTool) Execute(ctx context.Context, input map[string]any) (tools.
 	}), nil
 }
 
-// CreateProposal writes a pending approval to the store and pushes an
-// "Approval needed" notification to the phone. It is the single entry point
+// CreateProposal writes a pending approval to the store and hands it to the
+// observer of approvals, which applies the operating policy: under "act, then
+// report" one that is not on the hard floor is carried out, and one that waits
+// for the operator is pushed to their phone (see MirrorEvent.Push). It is the
+// single entry point
 // for EVERYTHING that needs the operator's decision — the propose tool, the
 // proactive WhatsApp proxy, and loops — so decisions always land in the
 // approvals inbox (actionable: approve → execute), never as plain
@@ -141,15 +144,23 @@ func CreateProposalOnFloor(s *store.Store, agentID, kind, title, summary, action
 	if urgency == "low" {
 		priority = "default"
 	}
-	_, _, _ = SendExpoPush(s, "Approval needed", title, priority, map[string]any{
-		"type":        "proposal",
-		"proposal_id": id,
-	})
+	push := func() {
+		_, _, _ = SendExpoPush(s, "Approval needed", title, priority, map[string]any{
+			"type":        "proposal",
+			"proposal_id": id,
+		})
+	}
 	body := action
 	if strings.TrimSpace(summary) != "" {
 		body = summary + "\n\n" + action
 	}
-	notifyMirror(MirrorEvent{Kind: MirrorApproval, Title: title, Body: body, Source: "proposal:" + kind, ProposalID: id, Floor: floor})
+	// The observer applies the operating policy — a proposal it clears needs
+	// no one and is not announced — so the phone push is its to send. With no
+	// observer the approval waits, and the phone is told now.
+	if !notifyMirror(MirrorEvent{Kind: MirrorApproval, Title: title, Body: body, Source: "proposal:" + kind,
+		ProposalID: id, Floor: floor, Push: push}) {
+		push()
+	}
 	return id, nil
 }
 

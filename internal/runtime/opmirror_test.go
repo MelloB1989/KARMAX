@@ -3,12 +3,14 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/MelloB1989/karmax/internal/api"
 	"github.com/MelloB1989/karmax/internal/bus"
 	"github.com/MelloB1989/karmax/internal/policy"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -131,6 +133,131 @@ func TestAnApprovalOffTheFloorStaysInTheApp(t *testing.T) {
 	m.handle(builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: "Delete the staging bucket", Body: "x", ProposalID: "p-3"})
 	if n := len(sink.all()); n != 1 {
 		t.Fatalf("an on-floor approval did not reach WhatsApp: %v", sink.all())
+	}
+}
+
+// approvals records what the policy approved, and whether the phone was told
+// an approval is waiting.
+type approvals struct {
+	mu       sync.Mutex
+	approved []string
+	notes    []string
+	pushed   int
+	fail     error
+}
+
+func (a *approvals) approve(id, note string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.fail != nil {
+		return a.fail
+	}
+	a.approved = append(a.approved, id)
+	a.notes = append(a.notes, note)
+	return nil
+}
+
+func (a *approvals) push() {
+	a.mu.Lock()
+	a.pushed++
+	a.mu.Unlock()
+}
+
+func actingMirror(sink *sendSink, decide func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error), p policy.Policy) (*operatorMirror, *approvals) {
+	m := mirrorWith(sink, decide, p)
+	a := &approvals{}
+	m.approve = a.approve
+	return m, a
+}
+
+func (a *approvals) proposal(id, title string, floor string) builtin.MirrorEvent {
+	return builtin.MirrorEvent{Kind: builtin.MirrorApproval, Title: title, Body: "draft", Source: "proposal:task",
+		ProposalID: id, Floor: floor, Push: a.push}
+}
+
+// Under "act", a proposal from a loop that is not on the hard floor is not
+// left unseen in the app's inbox: it is approved by the policy and carried
+// out through the same path the operator's approval takes. The operator is
+// not asked, on WhatsApp or by a phone push; what it sends is reported after.
+func TestAnOffFloorProposalIsCarriedOutUnderAct(t *testing.T) {
+	sink := &sendSink{}
+	m, a := actingMirror(sink, jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0.1}}), policy.Default())
+	m.handle(a.proposal("p-10", "Reply to Dana with the dates", ""))
+	if len(a.approved) != 1 || a.approved[0] != "p-10" {
+		t.Fatalf("approved %v, want the off-floor proposal", a.approved)
+	}
+	if !strings.Contains(a.notes[0], "hard floor") {
+		t.Errorf("the approval's note %q does not say why no one was asked", a.notes[0])
+	}
+	if n := len(sink.all()); n != 0 || a.pushed != 0 {
+		t.Errorf("the operator was asked about it: %d WhatsApp, %d push", n, a.pushed)
+	}
+}
+
+// A proposal on the hard floor still waits for the operator — whether its
+// raiser named the rule or Jev placed it there, or Jev could not say.
+func TestAHardFloorProposalStillWaitsForTheOperator(t *testing.T) {
+	for name, c := range map[string]struct {
+		decide func(context.Context, any, loopkit.Questions) (*loopkit.Decision, error)
+		floor  string
+	}{
+		"named":          {jevAnswers(nil, nil), "payments or spending money"},
+		"classified":     {jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0.9}}), ""},
+		"unclassifiable": {jevDown, ""},
+	} {
+		sink := &sendSink{}
+		m, a := actingMirror(sink, c.decide, policy.Default())
+		m.handle(a.proposal("p-11", "Pay the invoice", c.floor))
+		if len(a.approved) != 0 {
+			t.Errorf("%s: a hard-floor proposal was approved by the policy", name)
+		}
+		if n := len(sink.all()); n != 1 || a.pushed != 1 {
+			t.Errorf("%s: the operator was not asked: %d WhatsApp, %d push", name, n, a.pushed)
+		}
+	}
+}
+
+// Under "ask first" every proposal is the operator's to decide.
+func TestAskFirstNeverCarriesOutAProposal(t *testing.T) {
+	sink := &sendSink{}
+	m, a := actingMirror(sink, jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0}}), policy.New(policy.Config{Autonomy: "ask"}))
+	m.handle(a.proposal("p-12", "Reply to Dana", ""))
+	if len(a.approved) != 0 || a.pushed != 1 {
+		t.Errorf("ask-first: approved %v, pushed %d; want it left for the operator", a.approved, a.pushed)
+	}
+}
+
+// Carrying out an off-floor proposal does not depend on a WhatsApp channel.
+func TestAnOffFloorProposalIsCarriedOutWithoutWhatsApp(t *testing.T) {
+	m := newOperatorMirror(zap.NewNop(), nil, jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0.1}}), policy.Default())
+	a := &approvals{}
+	m.approve = a.approve
+	m.handle(a.proposal("p-13", "Reply to Dana", ""))
+	if len(a.approved) != 1 {
+		t.Fatalf("with no WhatsApp channel the proposal was left: %v", a.approved)
+	}
+}
+
+// When the policy's approval cannot go through (no agent, or someone decided
+// it first) nothing is sent to WhatsApp for an off-floor proposal; one that
+// still waits keeps its phone push.
+func TestAnOffFloorProposalThatCannotBeCarriedOutWaitsInTheApp(t *testing.T) {
+	sink := &sendSink{}
+	m, a := actingMirror(sink, jevAnswers(nil, map[string]loopkit.Answer{"floor": {Noul: 0.1}}), policy.Default())
+	a.fail = errors.New("no agent available")
+	m.handle(a.proposal("p-14", "Reply to Dana", ""))
+	if n := len(sink.all()); n != 0 {
+		t.Errorf("an off-floor proposal reached WhatsApp: %v", sink.all())
+	}
+	if a.pushed != 1 {
+		t.Errorf("a proposal left waiting in the app was not pushed to the phone (%d)", a.pushed)
+	}
+
+	// Decided by someone else first: nothing is waiting, so nothing is pushed.
+	a.fail, a.pushed = fmt.Errorf("%w: approved", api.ErrAlreadyDecided), 0
+	m.handle(a.proposal("p-15", "Reply to Dana", ""))
+	if a.pushed != 0 || len(sink.all()) != 0 {
+		t.Errorf("a proposal already decided was announced: %d push, %v", a.pushed, sink.all())
 	}
 }
 

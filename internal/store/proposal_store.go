@@ -118,6 +118,24 @@ func scanProposals(rows *sql.Rows) ([]StoredProposal, error) {
 	return out, rows.Err()
 }
 
+// DecideProposalIfPending records a decision only while the proposal is still
+// pending, and reports whether this call made it. The app, the operator on
+// WhatsApp and the operating policy can all decide the same proposal at once;
+// the first wins, so an approved action is carried out once. by may be empty
+// (the app has no name to record).
+func (s *Store) DecideProposalIfPending(id, status, note, by string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.exec(`
+UPDATE proposals SET status = ?, decision_note = ?, decided_by = ?, decided_at = datetime('now')
+WHERE id = ? AND status = 'pending'`, status, note, by, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // DecideProposalBy records a decision along with the operator who made it.
 //
 // DecideProposal stays as it is for the phone app, which authenticates with a

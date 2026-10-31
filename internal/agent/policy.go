@@ -95,6 +95,13 @@ func (a *Agent) deliverTurnReport(evt bus.Event, since time.Time, response strin
 	}
 }
 
+// ReportTurn reports a turn KARMAX ran on its own behalf rather than for an
+// event — an approved proposal carried out — as an event's turn is reported:
+// what it sent as the operator since the turn began, per the policy.
+func (a *Agent) ReportTurn(since time.Time, response string) {
+	a.deliverTurnReport(bus.Event{Kind: "api.chat", AgentID: a.def.ID}, since, response)
+}
+
 // turnReport is what the operator is told after a turn: the event, if it was
 // urgent, with what was done about it; and what was sent as them. Empty when
 // there is nothing the policy sends.
