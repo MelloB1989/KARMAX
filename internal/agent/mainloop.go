@@ -139,6 +139,12 @@ func (m *MainModelSession) ProcessMessageWithheld(ctx context.Context, userMessa
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Installed under the lock the whole turn holds, so no other
+	// conversation's context can land between setting it and using it.
+	if dyn, ok := turnContextFrom(ctx); ok && dyn != "" {
+		m.session.SetContext(dyn)
+	}
+
 	userMessage = karmahelper.CleanContent(userMessage)
 	m.log.Info("calling main model",
 		zap.Int("message_len", len(userMessage)),

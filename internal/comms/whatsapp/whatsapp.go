@@ -29,6 +29,21 @@ const (
 	wacliCmdTimeout = 15 * time.Second
 )
 
+// bridgeRetryDelays are the waits between tries of a send the bridge refused
+// before anything reached WhatsApp. wacli drops its connection several times
+// a day and is back within seconds; this rides that out inside sendTimeout.
+var bridgeRetryDelays = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+
+// bridgeNotReady reports whether wacli refused a send without handing it to
+// WhatsApp, so trying again cannot deliver it twice: its WhatsApp client is
+// between connections (wacli checks this before building the message), or the
+// daemon is not listening at all. A timeout is deliberately not here — the
+// message may have gone, and a person cannot un-receive a duplicate.
+func bridgeNotReady(output string) bool {
+	return strings.Contains(output, "client is not connected") ||
+		strings.Contains(output, "connection refused")
+}
+
 // wacliWebhookEnvelope is the JSON body wacli POSTs to our webhook endpoint.
 // See wacli service.go buildMessageWebhookPayload / dispatchWebhook.
 //
@@ -487,8 +502,7 @@ func (w *WhatsAppChannel) Send(ctx context.Context, target, content string) erro
 	// Split long messages at WhatsApp's practical limit.
 	chunks := splitContent(content, 4096)
 	for _, chunk := range chunks {
-		cmd := exec.CommandContext(sendCtx, w.wacliPath, "send", "--to", target, "--text", chunk)
-		out, err := cmd.CombinedOutput()
+		out, err := w.runSend(sendCtx, "--to", target, "--text", chunk)
 		if err != nil {
 			w.log.Error("failed to send whatsapp message",
 				zap.String("channel_id", w.id),
@@ -571,8 +585,7 @@ func (w *WhatsAppChannel) SendFile(ctx context.Context, target, filename string,
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(sendCtx, w.wacliPath, "send", "--to", target, "--media", tmpPath)
-	out, err := cmd.CombinedOutput()
+	out, err := w.runSend(sendCtx, "--to", target, "--media", tmpPath)
 	if err != nil {
 		w.log.Error("failed to send whatsapp file",
 			zap.String("channel_id", w.id),
@@ -589,6 +602,29 @@ func (w *WhatsAppChannel) SendFile(ctx context.Context, target, filename string,
 // IncomingMessages returns the read-only channel of inbound messages.
 func (w *WhatsAppChannel) IncomingMessages() <-chan comms.Message {
 	return w.inbox
+}
+
+// runSend runs one `wacli send`, trying again while the bridge refuses it
+// without having sent anything (bridgeNotReady), within ctx. It returns the
+// last attempt's output and error.
+func (w *WhatsAppChannel) runSend(ctx context.Context, args ...string) ([]byte, error) {
+	argv := append([]string{"send"}, args...)
+	for attempt := 0; ; attempt++ {
+		out, err := exec.CommandContext(ctx, w.wacliPath, argv...).CombinedOutput()
+		if err == nil || attempt >= len(bridgeRetryDelays) || !bridgeNotReady(string(out)) {
+			return out, err
+		}
+		w.log.Info("wacli is not connected to WhatsApp yet; sending again shortly",
+			zap.String("channel_id", w.id),
+			zap.Int("attempt", attempt+1),
+			zap.Duration("wait", bridgeRetryDelays[attempt]),
+		)
+		select {
+		case <-ctx.Done():
+			return out, err
+		case <-time.After(bridgeRetryDelays[attempt]):
+		}
+	}
 }
 
 // splitContent breaks s into chunks of at most maxLen bytes.

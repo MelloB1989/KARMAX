@@ -75,6 +75,8 @@ type Agent struct {
 
 	// Communication send function (injected to avoid circular imports)
 	commsSend func(channelID, target, content string) error
+	// statusSend sends turn-status notices; see SetStatusSend.
+	statusSend func(channelID, target, content string) error
 	// Communication escalation function for permission requests and failures.
 	commsEscalate func(agentID, primaryChannelID, content string) error
 
@@ -126,6 +128,22 @@ func NewAgent(def AgentDef, b *bus.Log, s *store.Store, mem *memory.Manager, age
 // to dispatch messages via communication channels.
 func (a *Agent) SetCommsSend(fn func(channelID, target, content string) error) {
 	a.commsSend = fn
+}
+
+// SetStatusSend injects the send used for the agent's fixed turn-status
+// notices (the slow-turn ack, the failed-turn notice). They are the same
+// words every time, each about a different message, so they must not go
+// through the duplicate guard ordinary messages do. Unset, commsSend is used.
+func (a *Agent) SetStatusSend(fn func(channelID, target, content string) error) {
+	a.statusSend = fn
+}
+
+// sendStatus sends a turn-status notice.
+func (a *Agent) sendStatus(channelID, target, content string) error {
+	if a.statusSend != nil {
+		return a.statusSend(channelID, target, content)
+	}
+	return a.commsSend(channelID, target, content)
 }
 
 // SetCommsEscalate injects the escalation function used for dangerous actions
@@ -1058,7 +1076,7 @@ func (a *Agent) tellOperatorTurnFailed(evt bus.Event, started time.Time, cause e
 	if !a.shouldTellOperatorTurnFailed(evt, cause) {
 		return
 	}
-	if err := a.commsSend(channelID, target, turnFailedNotice); err != nil {
+	if err := a.sendStatus(channelID, target, turnFailedNotice); err != nil {
 		a.log.Warn("could not tell the operator a turn failed", zap.Error(err))
 	}
 }
@@ -1198,7 +1216,11 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		// Bound the model call: a hung/slow provider must never wedge the single
 		// inbox worker forever (that silently deafens the whole agent). On
 		// timeout the turn fails and the loop moves on to the next message.
-		turnCtx, turnCancel := context.WithTimeout(a.ctx, 3*time.Minute)
+		// The bound is the brain's own (turnBudget): a harness session has a
+		// configured turn timeout, and a shorter one here cut off turns it was
+		// still entitled to finish.
+		brain := a.brainFor(evt)
+		turnCtx, turnCancel := context.WithTimeout(a.ctx, turnBudget(brain))
 		// Mark whose behalf this turn acts on, for connectors that authenticate
 		// as an individual rather than as the install. Established from WHO SENT
 		// the message, before the model sees anything — never from a tool
@@ -1206,8 +1228,8 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 		turnCtx = connectorkit.WithActor(turnCtx, a.actingMember(evt))
 		turnCtx = memory.WithSource(turnCtx, a.memorySource(evt))
 		lent := a.lentTools(evt)
-		brain := a.brainFor(evt)
-		brain.SetTurnContext(dynamicCtx)
+		// With the call, not parked on the brain: other conversations share it.
+		turnCtx = WithTurnContext(turnCtx, dynamicCtx)
 		response, toolCalls, err := brain.ProcessMessageWithheld(turnCtx, userPrompt, lent, nil)
 		turnCancel()
 		ackCancel()
@@ -1234,7 +1256,7 @@ func (a *Agent) handleEvent(evt bus.Event) error {
 				"1. ACTUALLY DO IT — call the correct tool this turn (comms.send / reminder.add / scheduler.add / claude_code.call / etc.). Delegate to claude_code if it needs the shell, files, or research.\n" +
 				"2. If you literally CANNOT (you're missing information — e.g. you don't have the credentials/file/detail it needs), say so plainly in ONE sentence and ask the one specific thing you need. Never a vague \"standing by\".\n" +
 				"Do not just acknowledge again. Act or state the blocker."
-			rctx, rcancel := context.WithTimeout(a.ctx, 3*time.Minute)
+			rctx, rcancel := context.WithTimeout(a.ctx, turnBudget(brain))
 			resp2, tc2, err2 := brain.ProcessMessageWithheld(rctx, nudge, nil, nil)
 			rcancel()
 			if err2 == nil && strings.TrimSpace(resp2) != "" {
@@ -1436,7 +1458,7 @@ func (a *Agent) startAckWatchdog(evt bus.Event) func() {
 		select {
 		case <-done:
 		case <-time.After(6 * time.Second):
-			if err := a.commsSend(channelID, target, ackMessage); err != nil {
+			if err := a.sendStatus(channelID, target, ackMessage); err != nil {
 				a.log.Warn("ack watchdog send failed", zap.Error(err))
 			} else {
 				a.log.Info("sent slow-turn ack", zap.String("channel", channelID))
@@ -1513,8 +1535,8 @@ func (a *Agent) ChatDetailedWithheld(ctx context.Context, text string, lent []to
 		zap.Int("total", len(dynamicCtx)), zap.Int("system", len(a.def.SystemPrompt)))
 
 	brain := a.thinkingBrain()
-	brain.SetTurnContext(dynamicCtx)
-	response, toolCalls, err := brain.ProcessMessageWithheld(ctx, text, lent, withhold)
+	// With the call, not parked on the brain: other conversations share it.
+	response, toolCalls, err := brain.ProcessMessageWithheld(WithTurnContext(ctx, dynamicCtx), text, lent, withhold)
 	if err != nil {
 		return "", nil, fmt.Errorf("chat: %w", err)
 	}

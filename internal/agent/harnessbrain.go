@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MelloB1989/karma/models"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -62,6 +63,28 @@ func NewHarnessBrain(send HarnessSender, sessionKey, kind string, fallback Brain
 	return &harnessBrain{send: send, sessionKey: sessionKey, kind: kind, fallback: fallback}
 }
 
+// harnessBudget is a HarnessSender that knows how long a turn of a kind can
+// take. Optional, so a sender that does not know leaves the old bound.
+type harnessBudget interface {
+	TurnBudget(kind string) time.Duration
+}
+
+// TurnBudget is the harness's own limit for this kind plus the fallback's
+// budget, so a turn the harness declines late still leaves the fallback a
+// whole turn of its own.
+func (h *harnessBrain) TurnBudget() time.Duration {
+	primary := defaultTurnBudget
+	if b, ok := h.send.(harnessBudget); ok {
+		if d := b.TurnBudget(h.kind); d > 0 {
+			primary = d
+		}
+	}
+	if h.fallback == nil {
+		return primary
+	}
+	return primary + turnBudget(h.fallback)
+}
+
 func (h *harnessBrain) SetTurnContext(dynamicContext string) {
 	h.mu.Lock()
 	h.turnCtx = dynamicContext
@@ -75,20 +98,36 @@ func (h *harnessBrain) SetTurnContext(dynamicContext string) {
 func (h *harnessBrain) ProcessMessageWithheld(ctx context.Context, userMessage string,
 	lent []tools.Tool, withhold map[string]bool) (string, []karmahelper.ToolCallRecord, error) {
 
-	h.mu.Lock()
-	dyn := h.turnCtx
-	h.turnCtx = ""
-	h.mu.Unlock()
+	dyn, carried := turnContextFrom(ctx)
+	if !carried {
+		h.mu.Lock()
+		dyn = h.turnCtx
+		h.turnCtx = ""
+		h.mu.Unlock()
+	}
 
 	prompt := composeHarnessPrompt(dyn, userMessage, lent, withhold)
 
 	turn, err := h.send.Send(ctx, h.sessionKey, h.kind, prompt)
 	if err != nil || !turn.Available {
+		if err == nil {
+			err = fmt.Errorf("harness unavailable: %s", turn.Reason)
+		}
 		if h.fallback == nil {
-			if err == nil {
-				err = fmt.Errorf("harness unavailable: %s", turn.Reason)
-			}
 			return "", nil, err
+		}
+		// The harness took the turn and acted before it failed — commands
+		// ran, messages may have gone. The fallback has none of that
+		// conversation, so handing it the same message is how one "go ahead"
+		// gets done twice.
+		if n := len(turn.ToolCalls); n > 0 {
+			return "", nil, fmt.Errorf("harness turn failed after %d tool call(s), so it is not run again on the fallback: %w", n, err)
+		}
+		// Nothing left to answer with: the fallback would only start a
+		// process to fail in the same instant, and its "deadline exceeded"
+		// would replace the reason the harness gave.
+		if ctx.Err() != nil {
+			return "", nil, fmt.Errorf("%w (no time left to fall back: %v)", err, ctx.Err())
 		}
 		// Falling back is the normal case, not an incident: the account's
 		// windows are shared with the operator and run out routinely.

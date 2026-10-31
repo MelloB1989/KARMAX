@@ -383,12 +383,16 @@ const (
 	ProducerLoop = "loop"
 	// ProducerSystem marks an alert, escalation or notice from the daemon.
 	ProducerSystem = "system"
+	// ProducerStatus marks a fixed notice about one turn — the slow-turn ack,
+	// the failed-turn notice. Its words are the same every time by design and
+	// each is about a different message, so it is never a repeat of the last.
+	ProducerStatus = "status"
 )
 
 // IsAnswerProducer reports whether an outbound recorded with this producer
 // could be an agent's reply to the operator, as opposed to a loop or system post.
 func IsAnswerProducer(producer string) bool {
-	return producer != ProducerLoop && producer != ProducerSystem
+	return producer != ProducerLoop && producer != ProducerSystem && producer != ProducerStatus
 }
 
 // SendFrom is Send with the producer recorded on the stored outbound, so the
@@ -583,8 +587,9 @@ func (m *Manager) send(ctx context.Context, producer, channelID, target, content
 
 	// Say a thing once. This is the only place every outbound message passes
 	// through, so it is the only place that can see a repeat regardless of
-	// which loop, tool or recipe produced it.
-	if why, dup := m.recentlySaid(target, content); dup {
+	// which loop, tool or recipe produced it. A turn-status notice is the
+	// exception: the same words about a different message each time.
+	if why, dup := m.recentlySaid(target, content); dup && producer != ProducerStatus {
 		m.log.Info("refusing a duplicate message",
 			zap.String("target", target),
 			zap.String("reason", why),

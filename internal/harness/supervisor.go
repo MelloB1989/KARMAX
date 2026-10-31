@@ -42,6 +42,12 @@ type Policy struct {
 	// session other sessions message must stay up: a closed one has no inbox,
 	// and every message to it bounces.
 	Resident bool
+	// InheritMCP lets this kind's sessions start the MCP servers in the
+	// operator's own Claude Code config. Off, a session gets only what KARMAX
+	// passes it (--strict-mcp-config): those servers are the operator's
+	// tools, started as a process tree per session whether or not a session
+	// ever calls one.
+	InheritMCP bool
 }
 
 // Store is what the supervisor needs to remember sessions across restarts.
@@ -251,9 +257,11 @@ func (s *Supervisor) SendWith(ctx context.Context, key, kind, text string, opt O
 	}
 
 	now := time.Now()
-	if errors.Is(err, ErrSessionBusy) {
+	if errors.Is(err, ErrSessionBusy) || errors.Is(err, ErrTurnNotSent) {
 		// Nothing was written and nothing failed: the session is busy with a
-		// turn another session asked for, and killing it would lose that.
+		// turn someone else asked for, or this caller ran out of time before
+		// it wrote anything. Killing it would lose the other turn, or a
+		// healthy session for nothing.
 		return turn, err
 	}
 	if err != nil {
@@ -400,7 +408,7 @@ func (s *Supervisor) openLocked(ctx context.Context, key, kind string, pol Polic
 	}
 	sess := &Session{Key: key, Kind: kind, ID: id, Model: wantModel, Pinned: requested != "",
 		Effort: wantEffort, Thinking: opt.Thinking, MCPConfig: opt.MCPConfig, SystemPrompt: opt.SystemPrompt,
-		Name: pol.Name, Launch: pol.Launch}
+		Name: pol.Name, Launch: pol.Launch, InheritMCP: pol.InheritMCP}
 	sess.onBackground = func(t Turn) { s.background(key, kind, t) }
 
 	// Written BEFORE the spawn. A crash in between leaves a row the startup
@@ -723,6 +731,18 @@ func (s *Supervisor) Shutdown() {
 	}
 }
 
+// spawnGrace covers starting or resuming a process before a turn is written.
+const spawnGrace = 30 * time.Second
+
+// TurnBudget is the longest SendWith can take for kind: waiting out the turn
+// ahead of it (a caller's, or one the session started by itself — at most
+// the kind's TurnTimeout), the turn itself (TurnTimeout again), and starting
+// the process. A caller bounding the call with less cuts off turns the kind's
+// own configuration still allows.
+func (s *Supervisor) TurnBudget(kind string) time.Duration {
+	return 2*s.policy(kind).TurnTimeout + spawnGrace
+}
+
 func (s *Supervisor) policy(kind string) Policy {
 	if p, ok := s.cfg.Policies[kind]; ok {
 		return withDefaults(p)
@@ -735,12 +755,24 @@ func (s *Supervisor) policy(kind string) Policy {
 	return withDefaults(Policy{Model: s.cfg.CheapModel})
 }
 
+// DefaultMaxTurns bounds a kind whose policy names no max_turns.
+//
+// Zero used to mean "never start over", so a kind nobody thought to limit kept
+// one transcript forever and every turn re-read all of it. The health check's
+// session is the case that showed it: a one-word ping every ten minutes had
+// grown to 5,471 turns and 266k tokens read per ping. A negative max_turns is
+// still the way to ask for a transcript that never ends.
+const DefaultMaxTurns = 200
+
 func withDefaults(p Policy) Policy {
 	if p.TurnTimeout <= 0 {
 		p.TurnTimeout = 2 * time.Minute
 	}
 	if p.Idle <= 0 {
 		p.Idle = 10 * time.Minute
+	}
+	if p.MaxTurns == 0 {
+		p.MaxTurns = DefaultMaxTurns
 	}
 	return p
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/MelloB1989/karma/models"
 	"github.com/MelloB1989/karmax/internal/tools"
@@ -38,3 +39,44 @@ type Brain interface {
 // change. If a method is added to MainModelSession that the harness cannot
 // honour, this line is what fails, at compile time, rather than at 2am.
 var _ Brain = (*MainModelSession)(nil)
+
+// defaultTurnBudget bounds one turn of a brain that does not say how long its
+// turns may take. A hung provider must never wedge a conversation's worker.
+const defaultTurnBudget = 3 * time.Minute
+
+// turnBudget is how long the agent gives b for one turn.
+//
+// A brain that knows its own limit (TurnBudget) is given it, and never less
+// than the default. The agent's three minutes used to be imposed on every
+// brain, including a harness session configured for longer and one that
+// first has to wait out a turn another session started — so a turn the
+// orchestrator finished inside its own configured time was cut off by the
+// agent's, and the operator was told to send the message again.
+func turnBudget(b Brain) time.Duration {
+	if tb, ok := b.(interface{ TurnBudget() time.Duration }); ok {
+		if d := tb.TurnBudget(); d > defaultTurnBudget {
+			return d
+		}
+	}
+	return defaultTurnBudget
+}
+
+type turnContextKey struct{}
+
+// WithTurnContext carries a turn's dynamic context — the clock, the profile,
+// what the agent has just done, what memory turned up — with the call itself.
+//
+// Conversations run concurrently and share one brain, so a context parked on
+// the brain (SetTurnContext) and collected by the next call could be
+// collected by another conversation's call; handing it over also took the
+// API session's lock, which made a harness turn wait for an unrelated one.
+// A brain prefers this to anything SetTurnContext left.
+func WithTurnContext(ctx context.Context, dynamicContext string) context.Context {
+	return context.WithValue(ctx, turnContextKey{}, dynamicContext)
+}
+
+// turnContextFrom returns the context WithTurnContext attached, if any.
+func turnContextFrom(ctx context.Context) (string, bool) {
+	s, ok := ctx.Value(turnContextKey{}).(string)
+	return s, ok
+}
