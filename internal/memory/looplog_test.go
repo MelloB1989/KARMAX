@@ -143,6 +143,64 @@ func TestALoopLogsDocumentsAreKnownByTheirPath(t *testing.T) {
 	}
 }
 
+// A run's lines are one entry in the loop's log, dated by when the run began.
+func TestARunsLinesAreOneEntryInTheLoopsLog(t *testing.T) {
+	began := time.Date(2026, 10, 31, 23, 58, 0, 0, time.UTC)
+	e, ok := LoopRunEntry("night-watch", []string{"group-a [waiting]: Omar owes the deck", "group-b [flagged]: Priya asked for the invoice"}, began)
+	if !ok {
+		t.Fatal("a run with lines made no entry")
+	}
+	if !IsLoopLog(e) || PathFor(e, nil) != "facts/context/night-watch/2026-10.md" {
+		t.Errorf("filed as %q at %s", e.Category, PathFor(e, nil))
+	}
+	if e.Content != "group-a [waiting]: Omar owes the deck\ngroup-b [flagged]: Priya asked for the invoice" {
+		t.Errorf("content = %q", e.Content)
+	}
+	if _, ok := LoopRunEntry("night-watch", nil, began); ok {
+		t.Error("a run that said nothing made an entry")
+	}
+}
+
+// What a line says, without when it was said: the run's own date and clock
+// time are not news, any other date or time is.
+func TestALinesKeyIgnoresOnlyTheRunsOwnStamp(t *testing.T) {
+	ist := time.FixedZone("IST", 5*3600+1800)
+	run1 := time.Date(2026, 10, 31, 2, 10, 0, 0, ist)
+	run2 := time.Date(2026, 10, 31, 5, 10, 30, 0, ist)
+	next := time.Date(2026, 11, 1, 9, 0, 0, 0, ist)
+	key := func(line string, at time.Time) string { return LogLineKey(line, at, at.Add(time.Minute), ist) }
+
+	same := [][2]string{
+		// The loop's own stamp, in the forms loops write it.
+		{"(night-watch, 31 Oct 02:10) group-a [waiting]: Omar owes the deck", "(night-watch, 31 Oct 05:10) group-a [waiting]: Omar owes the deck"},
+		{"2026-10-31T02:10:00 group-a quiet", "2026-10-31T05:10:30 group-a quiet"},
+		{"Oct 31, 2:10 AM: relay ok", "Oct 31, 5:11 am: relay ok"},
+		// A WASM loop's clock is UTC.
+		{"(night-watch, 30 Oct 20:40) group-a quiet", "(night-watch, 30 Oct 23:40) group-a quiet"},
+	}
+	for _, p := range same {
+		if a, b := key(p[0], run1), key(p[1], run2); a != b {
+			t.Errorf("only the run's stamp differs, yet\n%q\n%q", a, b)
+		}
+	}
+	differ := [][2]string{
+		{"group-a [waiting]: Omar owes the deck", "group-a [flagged]: Omar owes the deck"},
+		// A date or time that is not the run's own is what the line says.
+		{"(night-watch, 31 Oct 02:10) the call moved to 4 Nov", "(night-watch, 31 Oct 05:10) the call moved to 5 Nov"},
+		{"(night-watch, 31 Oct 02:10) the call is at 18:30", "(night-watch, 31 Oct 05:10) the call is at 19:30"},
+		{"relay answered in 102 ms", "relay answered in 140 ms"},
+	}
+	for _, p := range differ {
+		if a, b := key(p[0], run1), key(p[1], run2); a == b {
+			t.Errorf("these say different things, yet both key to %q", a)
+		}
+	}
+	// A new day's run stamps a new date, and is still the same line.
+	if a, b := key("(night-watch, 31 Oct 05:10) group-a quiet", run2), key("(night-watch, 1 Nov 09:00) group-a quiet", next); a != b {
+		t.Errorf("a stamp from the next day changed the key:\n%q\n%q", a, b)
+	}
+}
+
 // setLogDocCap bounds loop-log documents for one test.
 func setLogDocCap(n int) func() {
 	was := logDocCap

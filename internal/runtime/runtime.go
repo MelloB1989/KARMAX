@@ -152,6 +152,8 @@ type KarmaxRuntime struct {
 	// pending holds event triggers that arrived while a loop was running, so a
 	// busy loop delays a message instead of destroying it.
 	pending *pendingTriggers
+	// runLogs holds each loop's run in flight's log lines; see looplog.go.
+	runLogs sync.Map
 
 	// reflex is System One: the cheap probability model every event is
 	// screened by before anything expensive looks at it. Nil-safe — an

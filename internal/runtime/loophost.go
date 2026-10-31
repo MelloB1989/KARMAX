@@ -722,6 +722,12 @@ func (k *loopKit) Remember(fact string) error {
 	if k.mem == nil {
 		return fmt.Errorf("memory unavailable")
 	}
+	// Within a run, the line waits for the run's one write: see looplog.go.
+	if k.rt != nil {
+		if held, err := k.rt.logLine(k.loopName, fact); held {
+			return err
+		}
+	}
 	// The loop's log, not a fact: see memory.CategoryLog.
 	return k.mem.Write(memory.LoopLog(k.loopName, fact))
 }

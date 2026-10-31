@@ -137,7 +137,10 @@ func (rt *KarmaxRuntime) runLoopOn(parent context.Context, l loopkit.Loop, trigg
 		rt.log.Warn("could not record loop run", zap.String("loop", l.Name), zap.Error(err))
 	}
 
+	// One write to the loop's log for the whole run, made however it ends.
+	runLog := rt.beginRunLog(l.Name)
 	runErr := rt.executeLoop(parent, l, trigger, executionID)
+	rt.endRunLog(runLog, runErr != nil)
 
 	if runErr == nil {
 		rt.finishExecution(l.Name, executionID)

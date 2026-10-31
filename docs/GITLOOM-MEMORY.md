@@ -170,3 +170,11 @@ what is written is kept to what changes something.
   `<yyyy-mm>-part-2.md` and so on, so no document of any loop's log grows
   towards the store's 256 KB request limit. Logs filed before this policy, at
   `facts/context/<loop>.md`, stop growing.
+- **A loop's run is one write.** The runtime holds the lines a run remembers
+  and files them as one entry when the run ends, whether it succeeded or
+  failed (`internal/runtime/looplog.go`). The lines of a run the daemon died
+  in are kept in SQLite and filed by the loop's next run. A line that says
+  what the loop's previous run said is left out, comparing the text with the
+  run's own date and clock time masked (`memory.LogLineKey`). Any other date
+  or time in a line is compared as written. A run with nothing new to say
+  writes nothing.
