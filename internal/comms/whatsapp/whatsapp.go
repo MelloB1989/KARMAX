@@ -162,8 +162,8 @@ type WhatsAppChannel struct {
 	cursors CursorStore
 	// who decides whose account a message came from; names looks up a
 	// sender's label when the event carries none. Both guarded by mu.
-	who    *identity.Directory
-	names  func(jid string) string
+	who   *identity.Directory
+	names func(jid string) string
 	// echo hears the account's sends made through wacli directly. Guarded
 	// by mu.
 	echo   func(comms.Echo)
