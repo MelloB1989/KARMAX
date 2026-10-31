@@ -78,8 +78,13 @@ over `--input-format stream-json --output-format stream-json`.
 - **send(key, text) → reply** — write one stream-json user event to stdin, read
   until the matching `result`. Timeout per policy; on timeout mark `dead` and let
   the next send resume.
-- **close(key)** — SIGTERM, then SIGKILL after a grace period. Ephemeral kinds
-  delete the transcript; durable kinds keep it for `--resume`.
+- **close(key)** — EOF, then SIGINT to the session's process group (each
+  session leads its own), then SIGKILL after a grace period. Whatever the
+  session started that is still running then gets SIGTERM, and SIGKILL after
+  the same grace: the CLI runs each shell command in a session of its own, out
+  of reach of a group signal, so its process tree is read before it is told to
+  stop. Ephemeral kinds delete the transcript; durable kinds keep it for
+  `--resume`.
 - **reap** — an idle sweep closes sessions past their kind's idle window, and a
   startup sweep kills orphans whose pid is gone or unknown. Both are needed: the
   daemon restarts often.
