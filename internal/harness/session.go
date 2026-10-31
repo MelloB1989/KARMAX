@@ -549,11 +549,6 @@ func (t *Turn) absorb(ev event) {
 // The result event is the only reliable delimiter: text arrives in pieces, tool
 // calls interleave, and nothing else says "this exchange is over".
 func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, sink func(Event)) (Turn, error) {
-	line, err := userEvent(text)
-	if err != nil {
-		return Turn{}, err
-	}
-
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
@@ -575,6 +570,12 @@ func (s *Session) Send(ctx context.Context, text string, timeout time.Duration, 
 	defer func() { <-s.slot }()
 	s.busy.Store(true)
 	defer s.busy.Store(false)
+
+	// Inside the slot, so this return clears open()'s claim like every other.
+	line, err := userEvent(text)
+	if err != nil {
+		return Turn{}, err
+	}
 
 	var turn Turn
 	// A turn the session started by itself is finished before this one is
