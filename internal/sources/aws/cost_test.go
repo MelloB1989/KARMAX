@@ -199,6 +199,10 @@ func TestACrossedBudgetIsUrgentOncePerPeriod(t *testing.T) {
 	if len(evs) != 1 || !evs[0].Urgent || evs[0].Data["kind"] != "budget" {
 		t.Fatalf("budget events = %+v", evs)
 	}
+	// Crossed before KARMAX ever read this account: context, not a page.
+	if !evs[0].Backlog {
+		t.Errorf("the first read's budget was published as news: %+v", evs[0])
+	}
 	for _, want := range []string{"example-monthly", "80%", "290", "300"} {
 		if !strings.Contains(evs[0].Summary, want) {
 			t.Errorf("summary %q lacks %q", evs[0].Summary, want)
@@ -211,8 +215,8 @@ func TestACrossedBudgetIsUrgentOncePerPeriod(t *testing.T) {
 	}
 	h.now = time.Date(2026, 11, 2, 1, 0, 0, 0, time.UTC)
 	h.src.PollCost(context.Background())
-	if next := ofType(h.take(), "cost.anomaly"); len(next) != 1 {
-		t.Fatalf("a new month's crossing was not told: %+v", next)
+	if next := ofType(h.take(), "cost.anomaly"); len(next) != 1 || next[0].Backlog {
+		t.Fatalf("a new month's crossing was not told as news: %+v", next)
 	}
 }
 

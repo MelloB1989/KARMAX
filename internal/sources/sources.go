@@ -28,7 +28,11 @@ type Event struct {
 	// Urgent marks what the operator must hear about now: an alarm firing, a
 	// bill spike, a person asking them directly.
 	Urgent bool
-	Data   map[string]any
+	// Backlog marks an item published on first sight of an account: it
+	// happened before KARMAX was watching, so it is context, not news, and it
+	// never pages the operator however urgent it is.
+	Backlog bool
+	Data    map[string]any
 }
 
 // BusEvent is the event as the agent router delivers it.
@@ -45,6 +49,9 @@ func (e Event) BusEvent(agentID string) bus.Event {
 		"urgent":  e.Urgent,
 		"data":    e.Data,
 	})
+	if e.Backlog {
+		ev.Payload["backlog"] = true
+	}
 	if !e.At.IsZero() {
 		ev.Timestamp = e.At
 	}

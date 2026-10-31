@@ -40,6 +40,9 @@ func TestAnAlarmGoingOffIsPublishedOnceAndUrgent(t *testing.T) {
 	if e.Source != "aws" || e.Account != "111122223333/us-east-1" || e.Type != "alarm.ALARM" || !e.Urgent {
 		t.Errorf("event = %s %s %s urgent=%v", e.Source, e.Account, e.Type, e.Urgent)
 	}
+	if e.Backlog {
+		t.Error("an alarm going off after the first read was published as backlog")
+	}
 	for _, want := range []string{"Threshold Crossed", "CPUUtilization", "80", "GreaterThanThreshold", "InstanceId=i-0example"} {
 		if !strings.Contains(e.Summary, want) {
 			t.Errorf("summary %q lacks %q", e.Summary, want)
@@ -137,6 +140,10 @@ func TestAStandingAlarmIsToldOnceOnFirstSight(t *testing.T) {
 	if len(evs) != 1 || evs[0].Type != "alarm.ALARM" || evs[0].Urgent {
 		t.Fatalf("events = %+v, want one non-urgent standing alarm", evs)
 	}
+	// What the first read finds predates KARMAX watching: never a page.
+	if !evs[0].Backlog {
+		t.Errorf("a first-sight alarm was published as news: %+v", evs[0])
+	}
 	h.now = h.now.Add(5 * time.Minute)
 	h.src.PollAlarms(context.Background())
 	if again := h.take(); len(again) != 0 {
@@ -155,12 +162,21 @@ func TestWithoutHistoryAccessStatesAreCompared(t *testing.T) {
 		t.Fatalf("an alarm in OK on first sight was published: %+v", evs)
 	}
 
+	// An account already alarming on its first state comparison is backlog.
+	standing := &fakeAPI{account: "444455556666", historyErr: &DeniedError{Err: errors.New("cloudwatch:DescribeAlarmHistory")}}
+	standing.alarms = []Alarm{cpuAlarm("ALARM", h.now.Add(-time.Minute))}
+	hs := newHarness(t, Config{Profiles: []string{"ops-admin"}}, map[string]*fakeAPI{"ops-admin": standing})
+	hs.src.PollAlarms(context.Background())
+	if evs := hs.take(); len(evs) != 1 || !evs[0].Backlog {
+		t.Fatalf("first comparison events = %+v, want one backlog alarm", evs)
+	}
+
 	h.now = h.now.Add(5 * time.Minute)
 	acct.alarms = []Alarm{cpuAlarm("ALARM", h.now.Add(-time.Minute))}
 	h.src.PollAlarms(context.Background())
 	evs := h.take()
-	if len(evs) != 1 || evs[0].Type != "alarm.ALARM" || !evs[0].Urgent {
-		t.Fatalf("events = %+v, want an urgent alarm.ALARM", evs)
+	if len(evs) != 1 || evs[0].Type != "alarm.ALARM" || !evs[0].Urgent || evs[0].Backlog {
+		t.Fatalf("events = %+v, want an urgent alarm.ALARM that is news", evs)
 	}
 
 	h.now = h.now.Add(5 * time.Minute)

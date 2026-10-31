@@ -134,7 +134,7 @@ func (s *Source) pollAlarmsOf(ctx context.Context, r reader) (alarmResult, error
 		}
 	case isDenied(err):
 		res.note = "alarm history not readable (cloudwatch:DescribeAlarmHistory), comparing states instead"
-		n, err := s.compareStates(r, alarms, now)
+		n, err := s.compareStates(r, alarms, now, firstSight)
 		res.published += n
 		if err != nil {
 			return res, err
@@ -169,7 +169,7 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 		if t.To == "ALARM" {
 			told[t.Alarm] = true
 		}
-		ok, err := s.emit(s.alarmEvent(r, t, a, t.To == "ALARM" && stillFiring))
+		ok, err := s.emit(asBacklog(s.alarmEvent(r, t, a, t.To == "ALARM" && stillFiring), firstSight))
 		if err != nil {
 			return n, err
 		}
@@ -188,7 +188,7 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 		}
 		t := Transition{Alarm: a.Name, Composite: a.Composite, At: a.UpdatedAt, To: "ALARM", Reason: a.Reason}
 		recent := now.Sub(a.UpdatedAt) <= s.cfg.AlarmLookback
-		ok, err := s.emit(s.alarmEvent(r, t, a, recent))
+		ok, err := s.emit(asBacklog(s.alarmEvent(r, t, a, recent), firstSight))
 		if err != nil {
 			return n, err
 		}
@@ -202,7 +202,7 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 // compareStates finds transitions without alarm history, by comparing each
 // alarm with how the last read left it. Used when the role may not read
 // history; it misses an alarm that went off and recovered between two reads.
-func (s *Source) compareStates(r reader, alarms []Alarm, now time.Time) (int, error) {
+func (s *Source) compareStates(r reader, alarms []Alarm, now time.Time, firstSight bool) (int, error) {
 	n := 0
 	for i := range alarms {
 		a := &alarms[i]
@@ -225,7 +225,7 @@ func (s *Source) compareStates(r reader, alarms []Alarm, now time.Time) (int, er
 		}
 		if t != nil {
 			urgent := t.To == "ALARM" && now.Sub(a.UpdatedAt) <= s.cfg.AlarmLookback
-			ok, err := s.emit(s.alarmEvent(r, *t, a, urgent))
+			ok, err := s.emit(asBacklog(s.alarmEvent(r, *t, a, urgent), firstSight))
 			if err != nil {
 				return n, err
 			}
@@ -351,4 +351,12 @@ func describeMetric(a *Alarm) string {
 func alarmURL(region, name string) string {
 	return fmt.Sprintf("https://%s.console.aws.amazon.com/cloudwatch/home?region=%s#alarmsV2:alarm/%s",
 		region, region, url.PathEscape(name))
+}
+
+// asBacklog marks what the first read of an account finds. It happened before
+// KARMAX was watching, so it reaches the agent as context and never pages the
+// operator, however urgent it is.
+func asBacklog(e sources.Event, firstSight bool) sources.Event {
+	e.Backlog = firstSight
+	return e
 }

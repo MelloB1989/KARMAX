@@ -46,6 +46,24 @@ func TestAnEventSurvivesTheBusRoundTrip(t *testing.T) {
 	}
 }
 
+// What a source publishes on first sight of an account happened before KARMAX
+// was watching; consumers must be able to tell, after the bus round trip.
+func TestABacklogItemIsMarkedAcrossTheBus(t *testing.T) {
+	e := Event{Source: "github", Account: "octo", Title: "Old mention", Urgent: true, Backlog: true}
+	wire, _ := json.Marshal(e.BusEvent("agent-1"))
+	var evt bus.Event
+	if err := json.Unmarshal(wire, &evt); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := FromBusEvent(evt)
+	if !ok || !got.Backlog || !got.Urgent {
+		t.Errorf("decoded %+v", got)
+	}
+	if fresh, _ := FromBusEvent(Event{Source: "github", Account: "octo"}.BusEvent("a")); fresh.Backlog {
+		t.Error("an ordinary event decoded as backlog")
+	}
+}
+
 // A webhook from the HTTP server is also webhook.fired, and must not be taken
 // for a source event: its payload has a route but no source and account.
 func TestAPlainWebhookIsNotASourceEvent(t *testing.T) {

@@ -35,6 +35,7 @@ func FromBusEvent(evt bus.Event) (Event, bool) {
 		return Event{}, false
 	}
 	e.Urgent, _ = evt.Payload["urgent"].(bool)
+	e.Backlog, _ = evt.Payload["backlog"].(bool)
 	if d, ok := evt.Payload["data"].(map[string]any); ok {
 		e.Data = d
 	}
