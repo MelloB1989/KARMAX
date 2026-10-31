@@ -1056,6 +1056,9 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 		// Wire comms send function into the agent
 		a.SetCommsSend(commsMgr.Send)
+		a.SetStatusSend(func(channelID, target, content string) error {
+			return commsMgr.SendFrom(comms.ProducerStatus, channelID, target, content)
+		})
 		a.SetCommsEscalate(commsMgr.RequestEscalation)
 
 		a.SetOperatorChats(operatorChats)

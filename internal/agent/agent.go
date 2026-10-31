@@ -74,6 +74,8 @@ type Agent struct {
 
 	// Communication send function (injected to avoid circular imports)
 	commsSend func(channelID, target, content string) error
+	// statusSend sends turn-status notices; see SetStatusSend.
+	statusSend func(channelID, target, content string) error
 	// Communication escalation function for permission requests and failures.
 	commsEscalate func(agentID, primaryChannelID, content string) error
 
@@ -121,6 +123,22 @@ func NewAgent(def AgentDef, b *bus.Log, s *store.Store, mem *memory.Manager, age
 // to dispatch messages via communication channels.
 func (a *Agent) SetCommsSend(fn func(channelID, target, content string) error) {
 	a.commsSend = fn
+}
+
+// SetStatusSend injects the send used for the agent's fixed turn-status
+// notices (the slow-turn ack, the failed-turn notice). They are the same
+// words every time, each about a different message, so they must not go
+// through the duplicate guard ordinary messages do. Unset, commsSend is used.
+func (a *Agent) SetStatusSend(fn func(channelID, target, content string) error) {
+	a.statusSend = fn
+}
+
+// sendStatus sends a turn-status notice.
+func (a *Agent) sendStatus(channelID, target, content string) error {
+	if a.statusSend != nil {
+		return a.statusSend(channelID, target, content)
+	}
+	return a.commsSend(channelID, target, content)
 }
 
 // SetCommsEscalate injects the escalation function used for dangerous actions
@@ -1043,7 +1061,7 @@ func (a *Agent) tellOperatorTurnFailed(evt bus.Event, started time.Time, cause e
 	if !a.shouldTellOperatorTurnFailed(evt, cause) {
 		return
 	}
-	if err := a.commsSend(channelID, target, turnFailedNotice); err != nil {
+	if err := a.sendStatus(channelID, target, turnFailedNotice); err != nil {
 		a.log.Warn("could not tell the operator a turn failed", zap.Error(err))
 	}
 }
@@ -1424,7 +1442,7 @@ func (a *Agent) startAckWatchdog(evt bus.Event) func() {
 		select {
 		case <-done:
 		case <-time.After(6 * time.Second):
-			if err := a.commsSend(channelID, target, ackMessage); err != nil {
+			if err := a.sendStatus(channelID, target, ackMessage); err != nil {
 				a.log.Warn("ack watchdog send failed", zap.Error(err))
 			} else {
 				a.log.Info("sent slow-turn ack", zap.String("channel", channelID))

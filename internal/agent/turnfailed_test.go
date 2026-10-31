@@ -67,6 +67,31 @@ func TestAFailedTurnThatAlreadyRepliedSendsNothingMore(t *testing.T) {
 	}
 }
 
+// The notice is the same words every time, so it goes out as a turn status:
+// sent as an ordinary message, the duplicate guard refused a second failure's
+// notice for six hours after the first, and that failure was silence.
+func TestTheFailureNoticeGoesOutAsATurnStatus(t *testing.T) {
+	a := replyTestAgent(t)
+	a.SetOperatorChats([]string{"100000000000001@lid"})
+	ordinary := recordSends(a)
+	var status []string
+	a.SetStatusSend(func(_, target, content string) error {
+		status = append(status, target+": "+content)
+		return nil
+	})
+
+	for range 2 {
+		a.tellOperatorTurnFailed(failedTurnEvent("100000000000001@lid"), time.Now().Add(-time.Second), errors.New("harness error"))
+	}
+
+	if len(status) != 2 {
+		t.Errorf("status notices = %v, want one per failed turn", status)
+	}
+	if len(*ordinary) != 0 {
+		t.Errorf("the notice went out as an ordinary message: %v", *ordinary)
+	}
+}
+
 // Jev decides whether a failure is worth telling; a no keeps the chat quiet.
 func TestJevCanDecideAFailedTurnNeedsNoNotice(t *testing.T) {
 	a := replyTestAgent(t)
