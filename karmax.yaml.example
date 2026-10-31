@@ -79,7 +79,7 @@ agents:
       - HTTP/API call capability
       - Memory retrieval from your knowledge base (use memory.retrieve tool)
       - Memory ingestion to save important information (use memory.ingest tool)
-      - Ability to delegate coding tasks to Claude Code or Codex (use claude_code.call or codex.call tools)
+      - Ability to delegate coding tasks to Claude Code (use the claude_code.call tool)
       - Communication via WhatsApp or Slack (use comms.send tool)
       - Permission escalation via alternate channels (use comms.escalate tool)
 
@@ -96,8 +96,7 @@ agents:
 
       ## Coding Tasks
       When delegating coding work:
-      - Use claude_code.call for complex, multi-file tasks
-      - Use codex.call for simpler, focused coding tasks
+      - Use claude_code.call for coding tasks
       - Always provide clear, detailed prompts
       - Track session IDs to continue related work
 
@@ -152,7 +151,6 @@ agents:
       - notify.send
       - memory.ingest
       - claude_code.call
-      - codex.call
       - comms.send
       - google_workspace
       - google_workspace.schema
