@@ -199,6 +199,28 @@ worktree under the shared code instead:
 Plain `docker` here also talks to the build host. Quick checks (a single test,
 a lint) are fine to run locally.
 
+**This container never runs a compute-heavy job**: it writes code and runs
+small tests and builds. Beyond kbuild:
+
+- A job that must outlive your turn, or files outside the shared code: ssh to
+  the build host's own account (`ssh ${DOCKER_HOST#ssh://}`). It cannot read
+  the shared code, so rsync what the job needs to `jobs/<task>/` there, run it
+  detached under `nice`, fetch the results and delete the directory. The host
+  also runs the fleet: a few cores at most.
+- **One heavy job at a time on the build host, across the whole fleet.** A
+  heavy job (a render or encode, data processing, training, a long
+  benchmark) runs over ssh, never through kbuild, and starts under
+  `flock ~/heavy.lock` there, so it queues behind the one running. Run its
+  steps one after another, not in parallel. A waiting or paused job is
+  queued, not hung: never kill, restart or duplicate it. If waiting would
+  take too long, or the work is many heavy jobs, ask for EC2 (below).
+- More than the build host can spare (many cores, much memory, a GPU, hours):
+  `fleetctl ask` whoever gave you the task for a temporary EC2 instance, with
+  the job, the size and how long. The answer gives its address and the secret
+  that holds its ssh key.
+
+Your `fleet-agent` skill has the commands.
+
 {{end}}{{if or .GitHubOwners .GitHubPackages}}### GitHub accounts
 
 {{if .GitHubOwners}}Repositories under {{range $i, $o := .GitHubOwners}}{{if $i}}, {{end}}`{{$o}}`{{end}} use their own

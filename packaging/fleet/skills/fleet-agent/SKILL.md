@@ -1,6 +1,6 @@
 ---
 name: fleet-agent
-description: Use whenever you are a fleet agent and need to talk to someone (report, ask, progress note), use the operator's accounts (mail, calendar, WhatsApp, GitHub, Slack through the KARMAX gateway), receive files, handle a secret, or check what you may do — the full fleetctl command reference with examples and what to do when a command fails.
+description: Use whenever you are a fleet agent and need to talk to someone (report, ask, progress note), run anything heavier than a small test or build (a full suite, a big build, data processing, training: never in your container), use the operator's accounts (mail, calendar, WhatsApp, GitHub, Slack through the KARMAX gateway), receive files, handle a secret, or check what you may do — the full fleetctl command reference with examples and what to do when a command fails.
 ---
 
 # fleetctl for a fleet agent
@@ -12,6 +12,59 @@ reference. Look a command up here instead of guessing.
 
 Check that it works with `fleetctl whoami` or `fleetctl status`. Never send a
 test message: a tell to the orchestrator wakes it for a real turn.
+
+## Heavy jobs never run in this container
+
+**Important.** Your container is for writing code and running small tests and
+builds: it has a CPU or two and a few GB, shared with your sibling slots. A
+full test suite, a big build, data processing, training, a long benchmark or
+anything else compute-heavy runs elsewhere, in this order:
+
+1. **`kbuild <cmd>`**: on the fleet host, in the fleet image, as you, in this
+   directory, under the shared code (it sees it at the same path; it cannot
+   see `/work`). Nothing to copy: `kbuild go test -race ./...`,
+   `kbuild "npm ci && npm run build"`. Builds and test suites only: a heavy
+   job never goes through kbuild (see the rule below).
+2. **ssh to the fleet host**, for a heavy job, one that must outlive your
+   turn, or files outside the shared code. You log in to its build account,
+   which cannot read the shared code: copy what the job needs.
+   ```
+   h=${DOCKER_HOST#ssh://}                                  # the build account on the fleet host
+   ssh "$h" mkdir -p jobs/<task> && rsync -a ./job/ "$h":jobs/<task>/
+   ssh "$h" 'cd jobs/<task> && nohup flock ~/heavy.lock nice ./run.sh > run.log 2>&1 < /dev/null &'
+   ssh "$h" 'tail -5 jobs/<task>/run.log'                    # check back; do not sit in a loop
+   rsync -a "$h":jobs/<task>/out/ ./out/ && ssh "$h" 'rm -rf jobs/<task>'   # always clean up
+   ```
+   It has docker, git, python3, make and rsync; plain `docker` here runs there
+   too, and `run.sh` may `docker run` an image. The host also runs the fleet:
+   stay within a few cores (`nice`, `docker run --cpus 4 --memory 6g`) and
+   never fill its disk.
+
+   **One heavy job at a time on the fleet host, fleet-wide.** It has 12 cores
+   and 16 GB for every agent's container as well: seven 4K renders at once
+   once filled its memory and swap and stalled the whole fleet. A heavy job
+   (a render or encode, data processing, training, a long benchmark: several
+   cores or GBs for more than about 10 minutes) always starts under
+   `flock ~/heavy.lock`, as above, so it waits behind the one running. A
+   queued job's `run.log` stays empty until its turn; `ssh "$h" 'flock -n
+   ~/heavy.lock true && echo free || echo busy'` says whether one is running.
+   Inside a job, run its steps one after another, never several in parallel.
+   Never kill, restart or duplicate a job that is waiting or paused (state
+   `T`): it is queued, not hung. If waiting would take too long, or the work
+   is many heavy jobs, ask for an EC2 instance (3) instead.
+3. **A temporary EC2 instance**, for more than the host can spare (many cores,
+   lots of memory, a GPU, hours of compute). Ask whoever gave you the task:
+   ```
+   fleetctl ask "I need an EC2 instance for <job>: <instance type, or cores and memory>, about <N> h, because <why>"
+   ```
+   The answer names the instance (`ubuntu@<ip>`, passwordless sudo) and the
+   secret that holds its ssh key: `fleetctl secret get <secret> --to ec2-key`,
+   then `ssh -i /work/.secrets/ec2-key -o StrictHostKeyChecking=accept-new
+   ubuntu@<ip>`. It is terminated at the time the answer gives: copy results
+   back before then, and say in your report when you are done with it.
+
+No kbuild section in your CLAUDE.md means this fleet has no build host, so 1
+and 2 are not open to you, and a sandbox has neither: ask.
 
 ## If you are a sandbox
 
@@ -153,12 +206,6 @@ that to whoever runs the fleet unless your brief tells you to.
 the owner's own account for the owners listed in your CLAUDE.md. No other
 account is available. Never set `GH_TOKEN` yourself or print a token. Never
 push to `main`; never rebase or force-push a branch once you have reported it.
-
-## kbuild
-
-Builds and test suites go to the build host: `kbuild go test -race ./...` from
-the repo or a worktree under the shared code. If your CLAUDE.md has no kbuild
-section, this fleet has no build host.
 
 ## Public repos
 

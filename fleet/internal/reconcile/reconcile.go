@@ -104,6 +104,10 @@ type State struct {
 	Low      bool  `json:"low,omitempty"`
 	Reserved bool  `json:"reserved,omitempty"`
 	Quota    Quota `json:"quota"`
+	// QuotaHeld: fleetd's orchestrator knows the agent as held back by its
+	// quota (cooling, low or reserved), and has not been told it is free yet.
+	// Kept on the agent's slot 1, which speaks for its slots.
+	QuotaHeld bool `json:"quota_held,omitempty"`
 
 	// Model is the last status line's model, and RecordedAt the tick that
 	// wrote this state: the console shows both next to what it saw live.

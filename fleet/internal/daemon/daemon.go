@@ -377,6 +377,11 @@ func (f *Fleet) tickOne(ctx context.Context, name string, now time.Time) {
 	if o.Sibling && o.Unreachable == "" && !o.ContainerUp {
 		next = followContainer(next, f.State(w.Agent))
 	}
+	if !o.Sibling {
+		var news []reconcile.Action
+		next, news = quotaNews(name, old, next, now)
+		acts = append(acts, news...)
+	}
 	if !old.UnreachableSince.IsZero() && next.UnreachableSince.IsZero() {
 		f.event(name, "fleet.reachable", "", map[string]string{"host": w.Host, "after": Dur(now.Sub(old.UnreachableSince))})
 	}

@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# fleet-ec2 — a temporary EC2 instance for one fleet task's heavy job, run on
+# the fleet's host by whoever orchestrates (the orchestrator, or a Claude
+# session using the fleet skill) when an agent asks for more compute than its
+# container or the fleet host can spare.
+#
+#   fleet-ec2 up <task> [--type c7i.4xlarge] [--hours 4] [--disk 100] [--region R]
+#   fleet-ec2 down <task>        terminate it; delete its key pair, security group and secret
+#   fleet-ec2 ls                 the fleet's instances, running or not yet gone
+#
+# up uses the AWS keys of fleet.yaml's aws.keys_csv (never printed) and:
+#   - makes a key pair whose private key goes straight into fleetd's secret
+#     store as ec2-<task>, granted to the task (the grant ends when it closes);
+#   - opens ssh to this network's public address only;
+#   - starts Ubuntu 24.04 (arm64 for a Graviton type) that powers itself off,
+#     and so is terminated, after --hours, whatever else happens;
+#   - prints the answer to give the agent.
+# Every resource is tagged fleet-task=<task>.
+set -euo pipefail
+
+die() { echo "fleet-ec2: $*" >&2; exit 2; }
+use() { die "usage: fleet-ec2 up <task> [--type c7i.4xlarge] [--hours 4] [--disk 100] [--region R] | down <task> | ls"; }
+
+conf=${FLEET_CONFIG:-$HOME/.karmax/fleet/fleet.yaml}
+[ -r "$conf" ] || die "cannot read $conf (set FLEET_CONFIG)"
+# aws: { keys_csv: …, regions: [first, …] } in fleet.yaml, as the AWS tab reads them.
+aws_key() { awk -v k="$1" '/^aws:/{a=1;next} a&&/^[^ #]/{a=0} a&&$1==k":"{sub(/^[^:]*:[ \t]*/,""); print; exit}' "$conf"; }
+csv=$(aws_key keys_csv)
+case $csv in "~/"*) csv=$HOME/${csv#"~/"} ;; esac
+[ -n "$csv" ] && [ -r "$csv" ] || die "fleet.yaml has no readable aws.keys_csv"
+region=$(aws_key regions | tr -d '[]' | cut -d, -f1 | tr -d ' ')
+# Row 2 of the CSV is key id, secret (CRLF, a BOM on the header row).
+kid=$(awk -F, 'NR==2{printf "%s",$1}' "$csv")
+ksec=$(awk -F, 'NR==2{sub(/\r$/,"",$2); printf "%s",$2}' "$csv")
+[ -n "$kid" ] && [ -n "$ksec" ] || die "$csv has no keys on its second row"
+
+cmd=${1:-}; [ $# -gt 0 ] && shift || true
+task=
+case $cmd in
+  up | down)
+    task=${1:-}; [ $# -gt 0 ] && shift || true
+    [[ $task =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || use
+    ;;
+  ls) ;;
+  *) use ;;
+esac
+type=c7i.4xlarge hours=4 disk=100
+while [ $# -gt 0 ]; do
+  case $1 in
+    --type) type=${2:?}; shift 2 ;;
+    --hours) hours=${2:?}; shift 2 ;;
+    --disk) disk=${2:?}; shift 2 ;;
+    --region) region=${2:?}; shift 2 ;;
+    *) use ;;
+  esac
+done
+[ -n "$region" ] || die "no region: give --region or aws.regions in fleet.yaml"
+[[ $hours =~ ^[0-9]+$ ]] && [ "$hours" -ge 1 ] && [ "$hours" -le 72 ] || die "--hours is 1 to 72"
+[[ $disk =~ ^[0-9]+$ ]] && [ "$disk" -ge 8 ] && [ "$disk" -le 2000 ] || die "--disk is 8 to 2000 (GiB)"
+
+a() { AWS_ACCESS_KEY_ID=$kid AWS_SECRET_ACCESS_KEY=$ksec AWS_DEFAULT_REGION=$region AWS_PAGER= aws "$@"; }
+name=fleet-$task
+secret=ec2-$task
+[ ${#secret} -le 64 ] || secret=ec2-${task:0:45}-${task: -14}
+
+live() { # the task's instances not yet terminated
+  a ec2 describe-instances --filters "Name=tag:fleet-task,Values=$task" \
+    "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
+    --query 'Reservations[].Instances[].InstanceId' --output text
+}
+
+teardown() {
+  local ids sg
+  ids=$(live)
+  if [ -n "$ids" ]; then
+    a ec2 terminate-instances --instance-ids $ids >/dev/null
+    a ec2 wait instance-terminated --instance-ids $ids
+    echo "terminated $ids"
+  fi
+  sg=$(a ec2 describe-security-groups --filters "Name=group-name,Values=$name" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+  if [ -n "$sg" ] && [ "$sg" != None ]; then
+    for i in 1 2 3 4 5 6; do # the instance's network interface lets go a little after it is gone
+      a ec2 delete-security-group --group-id "$sg" >/dev/null 2>&1 && { echo "deleted security group $sg"; break; }
+      sleep 10
+    done
+  fi
+  if a ec2 describe-key-pairs --key-names "$name" >/dev/null 2>&1; then # deleting one that is not there succeeds too
+    a ec2 delete-key-pair --key-name "$name" >/dev/null && echo "deleted key pair $name"
+  fi
+  fleetctl secret rm "$secret" >/dev/null 2>&1 && echo "deleted secret $secret" || true
+}
+
+case $cmd in
+ls)
+  a ec2 describe-instances --filters Name=tag-key,Values=fleet-task \
+    "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
+    --query 'Reservations[].Instances[].[Tags[?Key==`fleet-task`]|[0].Value, InstanceId, InstanceType, State.Name, PublicIpAddress, LaunchTime, Tags[?Key==`fleet-expires`]|[0].Value]' \
+    --output text | awk 'BEGIN{n=0} {n++; print} END{if(n==0) print "no fleet instances"}'
+  ;;
+down)
+  teardown
+  ;;
+up)
+  command -v fleetctl >/dev/null || die "fleetctl is not on PATH"
+  [ -z "$(live)" ] || die "task $task already has an instance (fleet-ec2 ls; fleet-ec2 down $task)"
+  fleetctl tasks --open --json | grep -q "\"id\":\"$task\"" || die "no open task $task"
+  arch=$(a ec2 describe-instance-types --instance-types "$type" --query 'InstanceTypes[0].ProcessorInfo.SupportedArchitectures[0]' --output text) ||
+    die "no instance type $type in $region"
+  case $arch in x86_64) arch=amd64 ;; arm64) ;; *) die "$type is $arch: no Ubuntu image for it" ;; esac
+  ami=$(a ssm get-parameter --name "/aws/service/canonical/ubuntu/server/24.04/stable/current/$arch/hvm/ebs-gp3/ami-id" --query Parameter.Value --output text)
+  root=$(a ec2 describe-images --image-ids "$ami" --query 'Images[0].RootDeviceName' --output text)
+  vpc=$(a ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
+  [ "$vpc" != None ] || die "no default VPC in $region"
+  ip=$(curl -fsS --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')
+  [[ $ip =~ ^[0-9.]+$ ]] || die "cannot tell this network's public address"
+  expires=$(date -u -d "+$hours hours" +%Y-%m-%dT%H:%M:%SZ)
+
+  trap 'echo "fleet-ec2: up failed; cleaning up" >&2; teardown >&2' ERR
+  # The private key goes from AWS into fleetd and nowhere else; the echo
+  # keeps its last newline, which fleetctl secret put would drop.
+  { a ec2 create-key-pair --key-name "$name" --key-type ed25519 \
+      --tag-specifications "ResourceType=key-pair,Tags=[{Key=fleet-task,Value=$task}]" \
+      --query KeyMaterial --output text; echo; } | fleetctl secret put "$secret" >/dev/null
+  sg=$(a ec2 create-security-group --group-name "$name" --description "fleet task $task: ssh from the fleet" --vpc-id "$vpc" \
+    --tag-specifications "ResourceType=security-group,Tags=[{Key=fleet-task,Value=$task}]" --query GroupId --output text)
+  a ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "$ip/32" >/dev/null
+  id=$(a ec2 run-instances --image-id "$ami" --instance-type "$type" --key-name "$name" --security-group-ids "$sg" \
+    --instance-initiated-shutdown-behavior terminate \
+    --block-device-mappings "DeviceName=$root,Ebs={VolumeSize=$disk,VolumeType=gp3,DeleteOnTermination=true}" \
+    --user-data "$(printf '#!/bin/sh\nshutdown -h +%d "fleet-ec2: this instance ends at %s"\n' $((hours * 60)) "$expires")" \
+    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$name},{Key=fleet-task,Value=$task},{Key=fleet-expires,Value=$expires}]" \
+    "ResourceType=volume,Tags=[{Key=fleet-task,Value=$task}]" \
+    --query 'Instances[0].InstanceId' --output text)
+  a ec2 wait instance-running --instance-ids "$id"
+  pub=$(a ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+  fleetctl secret grant "$secret" --task "$task" --ttl "${hours}h" >/dev/null
+  trap - ERR
+  ends=$(date -d "$expires" +%H:%M)
+  cat <<EOF
+$id ($type, $arch, ${disk} GiB, $region) is up at $pub for task $task.
+It powers off and is terminated at $ends ($hours h) whatever happens; end it sooner with: fleet-ec2 down $task
+Answer the agent with:
+
+  fleetctl answer $task "Your EC2 instance is ubuntu@$pub ($type, passwordless sudo; it is terminated at $ends, so copy results back before then). Its key is granted to this task as $secret: fleetctl secret get $secret --to ec2-key, then ssh -i /work/.secrets/ec2-key -o StrictHostKeyChecking=accept-new ubuntu@$pub (rsync -e 'ssh -i /work/.secrets/ec2-key' to copy). It may take a minute to accept ssh. Say in your report when you are done with it."
+EOF
+  ;;
+esac

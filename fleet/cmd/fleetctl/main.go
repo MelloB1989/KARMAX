@@ -49,7 +49,12 @@ wait on a write's approval ride out a fleetd restart: they say so once on stderr
 Roster and records (fleetd):
   status [--json]                     one row per worker (agent and slot), for the orchestrator
   ls [--json]                         the same, as a table, each agent's slots under it
-  quota [--json]                      each subscription's windows
+  quota [--json]                      each subscription's windows, and the agents its quota holds back
+                                      (rate-limited, low or reserved) with when that lifts
+  quota wait [<agent|account>…] [--all] [--timeout 12h] [--json]
+                                      until a hold lifts: on those named, else on every agent held now;
+                                      --all: until all of them are free (exit 0; 4 timeout). fleetd also
+                                      tells the orchestrator (fleet.agent.quota_held, .quota_reset)
   events <agent> [--since 2h] [--json]
   usage [--by agent|model] [--since 7d] [--json]
   history <agent> [-n 20] [--json]
@@ -588,19 +593,7 @@ func run(cmd string, args []string) error {
 		return table(out.Agents, out.Orchestrator)
 
 	case "quota":
-		return getAndPrint(args, "/v1/quota", func(raw json.RawMessage) error {
-			var q map[string]ledger.Quota
-			if err := json.Unmarshal(raw, &q); err != nil {
-				return err
-			}
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			fmt.Fprintln(w, "ACCOUNT\t5H%\tRESETS\t7D%\tRESETS\tAS OF\tSOURCE")
-			for acct, x := range q {
-				fmt.Fprintf(w, "%s\t%.0f\t%s\t%.0f\t%s\t%s\t%s\n", acct, x.FiveHour, clock(x.FiveResets), x.SevenDay,
-					clock(x.SevenResets), clock(x.At), x.Source)
-			}
-			return w.Flush()
-		})
+		return quotaCmd(args)
 
 	case "events":
 		var since string

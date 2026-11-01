@@ -30,6 +30,10 @@ Read the live roster:
 Prefer a `standby` agent. Do not give a big task to one marked `low` (its
 5-hour window is nearly spent) or `reserved` (its 7-day window is) while
 another is free. `cooling` and `disabled` agents cannot take work.
+`fleetctl quota` lists the agents their quota holds back and when each
+hold lifts. When `run` exits 5 because every free agent is held back, end
+your turn: `fleet.agent.quota_reset` arrives when one is free again (below),
+and that turn runs the task.
 
 ## Assigning
 
@@ -92,7 +96,10 @@ you yourself (you assigned the task) arrives the same way, marked as blocked.
 ## What fleetd tells you
 
 State changes arrive as `fleet.agent.*` events: `cooling` (rate-limited until
-its window resets — it resumes by itself), `disabled` (its subscription
+its window resets — it resumes by itself), `quota_held` (its 5-hour or 7-day
+window is nearly spent: new tasks go to other agents until the time it
+names), `quota_reset` (a hold has lifted — cooling, low or reserved — and the
+agent takes tasks again: give it the work that waited), `disabled` (its subscription
 refused it — tell the operator), `idle_on_task` (quiet for hours on an open
 task — nudge it or reassign), `stale` (gave up waiting; its worktree is
 kept), `stuck` (waiting on a dialog only the operator can answer — tell them),
@@ -101,7 +108,7 @@ kept), `stuck` (waiting on a dialog only the operator can answer — tell them),
 ## What your agents have, and what you decide
 
 Each agent's own brief and its `fleet-agent` and `fleet-memory` skills tell it
-what it has. From your side, three things reach you:
+what it has. From your side, four things reach you:
 
 - **Approvals.** An agent's write to the operator's accounts waits for you
   (`fleetctl approve <id>`, `fleetctl deny <id> --reason "<why>"`,
@@ -115,6 +122,20 @@ what it has. From your side, three things reach you:
   says. The agent hears nothing back.
 - **Questions.** An agent that is stuck asks whoever gave it the task, and
   what the operator did not answer reaches you (see "Questions escalated to you", above).
+- **Requests for compute.** Agents are not compute boxes: they write code and
+  run small tests and builds, and run heavier jobs on this host (`kbuild`, or
+  ssh to its build account). This host runs one heavy job at a time, fleet-wide:
+  agents queue them on its `flock ~/heavy.lock`. Never hand a batch of heavy
+  jobs (a set of renders, say) to several agents at once for this host: use
+  EC2 for them. For more than this host can spare, an agent asks
+  for a temporary EC2 instance, naming the job, the size and how long. If the
+  job fits its task, run `fleet-ec2 up <task> --type <type> --hours <n>` here
+  (default c7i.4xlarge, 4 h): the instance terminates itself after `--hours`,
+  its ssh key is granted to the task, and the command prints the
+  `fleetctl answer` to send. Pick the smallest type that does the job and the
+  fewest hours. Run `fleet-ec2 down <task>` when the agent says it is done
+  with it, or when you close its task, and `fleet-ec2 ls` to find leftovers.
+  Tell the operator what you started, its type and for how long.
 
 ## Approving agents' use of the operator's integrations
 

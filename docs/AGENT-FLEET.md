@@ -416,9 +416,10 @@ Plus the archives (transcripts and manifests) and fleetd's own log in journald.
 | reader | how |
 |---|---|
 | **The orchestrator** | `fleetctl status --json`: one compact row per agent — state, task, idle, 5 h %, 7 d %, reset times, context %, allowed models. Read before assigning work. Its persona says: don't give an agent at `low` or `reserved` a big task when another is free. |
-| **The orchestrator, pushed** | fleetd POSTs state changes (`fleet.agent.cooling`, `.disabled`, `.stale`, `.idle_on_task`, `.crashed`) to a KARMAX **webhook route** — `webhooks.routes` in `karmax.yaml` already turns a POST into a bus event — so they arrive as orchestrator turns. Existing feature, no daemon code. |
-| **You, at a terminal** | `fleetctl ls` (AGENT HOST STATE TASK IDLE 5H% 7D% RESET CTX% WORKTREES), `fleetctl quota`, `fleetctl events agent-03 --since 2h`, `fleetctl usage --by agent --since 7d`, `fleetctl history agent-03`. All take `--json`. |
+| **The orchestrator, pushed** | fleetd POSTs state changes (`fleet.agent.cooling`, `.quota_held`, `.quota_reset`, `.disabled`, `.stale`, `.idle_on_task`, `.crashed`) to a KARMAX **webhook route** — `webhooks.routes` in `karmax.yaml` already turns a POST into a bus event — so they arrive as orchestrator turns. Existing feature, no daemon code. |
+| **You, at a terminal** | `fleetctl ls` (AGENT HOST STATE TASK IDLE 5H% 7D% RESET CTX% WORKTREES), `fleetctl quota` (and the agents their quota holds back, until when), `fleetctl quota wait [<agent>…]` (until a hold lifts; exit 4 at `--timeout`, 12 h), `fleetctl events agent-03 --since 2h`, `fleetctl usage --by agent --since 7d`, `fleetctl history agent-03`. All take `--json`. |
 | **You, in the KARMAX app** | A **Fleet** dashboard, created once with KARMAX's existing `dashboard` tool. fleetd rewrites its `data/*.json` under `~/.karmax/dashboards/<id>/` every tick; the app renders straight off those files. No daemon code. |
+| **Quota holds** | An agent is held back from new tasks by its quota while it is rate-limited (`cooling`), `low` (5 h ≥ `low_5h`) or `reserved` (7 d ≥ `reserved_7d`); its slots share the hold. Slot 1's tick tells the orchestrator once when a low or reserved hold begins (`quota_held`, with when it lifts; a rate limit is told as `cooling`) and once when the hold lifts (`quota_reset`), even if the agent was down or out of reach at the reset (`quota_held` in its state remembers the hold until its end is told). Claude sessions, which get no pushes, run `fleetctl quota wait` in the background. |
 | **You, on your phone** | `karmax notify` for the few things worth a push: an agent disabled, all agents cooling, a crash loop, a 7-day window ≥ 90 %. |
 
 ## Putting the fleet to work from any Claude session
@@ -846,6 +847,30 @@ aws:
   A new account has no forecast yet; that is not an error.
 - **Sharing.** The read is fleetd's, cached and shared: callers at once share one read, and a caller who
   leaves does not end it. The tab reads when shown, then every 5 minutes while shown.
+
+## Heavy jobs — not in an agent's container
+
+An agent's container has a CPU or two and a few GB, shared by its slots: it writes code and runs small
+tests and builds. Anything heavier runs elsewhere (the `fleet-agent` skill and the agent's brief say how):
+
+1. `kbuild <cmd>`: on the build host (`fleet.yaml` `build:`), in the fleet image, in the same directory under
+   the shared code.
+2. `ssh ${DOCKER_HOST#ssh://}`: a shell in the build host's own account (the build key), for jobs that
+   outlive a turn or need files outside the shared code; it cannot read the shared code, so the agent copies
+   work to `jobs/<task>/`, runs it detached under `nice`, fetches results and deletes the directory.
+   **One heavy job at a time on the build host, fleet-wide**: a heavy job (render or encode, data processing,
+   training, a long benchmark) goes this way, never through `kbuild`, and starts under `flock ~/heavy.lock` in
+   that account, so it queues behind the one running; its steps run one after another. (2026-11-01: seven 4K
+   renders at once filled the host's 16 GB and its swap and stalled every agent.) Many heavy jobs at once go to EC2.
+3. A temporary EC2 instance, which the agent asks its assigner for (`fleetctl ask`). On the fleet host,
+   `fleet/scripts/fleet-ec2` (installed as `fleet-ec2`) does it with `aws.keys_csv`'s keys:
+   `fleet-ec2 up <task> [--type c7i.4xlarge] [--hours 4] [--disk 100] [--region R]` makes a key pair whose
+   private key goes straight into fleetd's secret store as `ec2-<task>`, granted to the task; a security
+   group open to this network's public address on 22 only; and Ubuntu 24.04 (arm64 for a Graviton type)
+   with `shutdown -h +<hours>` in its user data and shutdown behavior `terminate`, so it ends whatever
+   else happens. It prints the `fleetctl answer` to send. `fleet-ec2 down <task>` terminates it and deletes
+   the key pair, the group and the secret; `fleet-ec2 ls` lists what is not gone yet. Everything is tagged
+   `fleet-task=<task>`.
 
 ## Hosts
 
