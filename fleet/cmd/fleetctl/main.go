@@ -186,7 +186,7 @@ the up plan are host-side):
   up [--dry-run|--plan] [--when-idle [--timeout 2h]] [<host>…] | down [<host>…]
                                       docker compose, per host. up first lists the containers it
                                       will recreate and why (image, env, brief); --dry-run stops there; --when-idle
-                                      recreates each agent alone, once fleetd says it is not working
+                                      recreates each agent alone, once none of its slots works or holds a task
   image build [--tag T] [--src <repo>]  docker build of packaging/fleet/Dockerfile, its UID, GID, user,
                                       home and Claude Code version from fleet.yaml; prints the command first
   image ship <host> [--tag T]         docker save | docker --context <host> load (fleet host only)
@@ -1551,7 +1551,8 @@ func fleetdStates(ctx context.Context) (map[string]string, error) {
 }
 
 // agentStates is each agent's state for recreating its container, which
-// holds all its slots: working while any slot works, else its first slot's.
+// holds all its slots: "working" while any slot works or holds an open task
+// (a task waiting on an answer is work going on too), else its first slot's.
 func agentStates(rows []daemon.Row) map[string]string {
 	m := map[string]string{}
 	for _, r := range rows {
@@ -1559,8 +1560,12 @@ func agentStates(rows []daemon.Row) map[string]string {
 		if a == "" {
 			a = r.Agent
 		}
-		if s, ok := m[a]; !ok || (r.State == "working" && s != "working") {
-			m[a] = r.State
+		s := r.State
+		if r.Task != "" {
+			s = "working"
+		}
+		if old, ok := m[a]; !ok || (s == "working" && old != "working") {
+			m[a] = s
 		}
 	}
 	return m

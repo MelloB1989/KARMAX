@@ -350,6 +350,73 @@ func TestRelayFromTheOperatorSaysHowToReply(t *testing.T) {
 	}
 }
 
+// The pane of agent-12 on 2026-11-02: fleetd's carry-on prompt, typed after
+// a container restart, left in the input box as a paste because Claude Code
+// dropped the Enter that came with it.
+const stuckPane = `✻ Crunched for 12s · done 8:52 PM
+────────────────────────────────────────
+❯ [Pasted text #1 +11 lines]
+────────────────────────────────────────
+  agent-12 · Opus 5.5 · ctx 16% · 5h 1% · 7d -%
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+`
+
+const sentPane = `❯ [Pasted text #1 +11 lines]
+● Checking where things stand first.
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  agent-12 · Opus 5.5 · ctx 16% · 5h 1% · 7d -%
+`
+
+// Claude Code takes multi-line input as a paste and drops an Enter that
+// lands while it is still taking it in: Prompt presses Enter again while the
+// input box still holds the paste, and stops once it is sent.
+func TestPromptPressesEnterAgainWhileThePasteWaits(t *testing.T) {
+	defer func(d time.Duration) { promptSettle = d }(promptSettle)
+	promptSettle = time.Millisecond
+	captures := 0
+	r := &fakeRunner{answer: func(argv []string) (string, error) {
+		if slices.Contains(argv, "capture-pane") {
+			captures++
+			if captures == 1 {
+				return stuckPane, nil
+			}
+			return sentPane, nil
+		}
+		return "", nil
+	}}
+	if err := newAgent(r).Prompt(context.Background(), "Your session was restarted.\nCheck where things stand."); err != nil {
+		t.Fatal(err)
+	}
+	enters := 0
+	for _, c := range r.calls {
+		if c[len(c)-1] == "Enter" {
+			enters++
+		}
+	}
+	if enters != 2 || captures != 2 {
+		t.Fatalf("%d Enters after %d looks, want 2 and 2: %q", enters, captures, r.calls)
+	}
+}
+
+func TestUnsentReadsOnlyTheInputBox(t *testing.T) {
+	for _, c := range []struct {
+		pane, text string
+		want       bool
+	}{
+		{stuckPane, "go on", true},
+		{sentPane, "go on", false}, // the paste above the box is history
+		{"────\n❯ /compact\n────\n status", "/compact", true},
+		{"❯ /compact\n  ⎿  Compacted\n────\n❯ \n────\n status", "/compact", false},
+		{"no box at all", "go on", false},
+	} {
+		if got := unsent(c.pane, c.text); got != c.want {
+			t.Errorf("unsent(%q, %q) = %v, want %v", c.pane, c.text, got, c.want)
+		}
+	}
+}
+
 func TestPromptStartingWithDashIsText(t *testing.T) {
 	r := &fakeRunner{}
 	if err := newAgent(r).Prompt(context.Background(), "-1 is not a flag"); err != nil {

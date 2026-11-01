@@ -355,14 +355,76 @@ func (a *Agent) Fresh(ctx context.Context) error {
 	return err
 }
 
+// promptSettle is how long Claude Code may take to take in typed text before
+// Enter, and between tries. It reads fast or multi-line input as a paste
+// ("[Pasted text #1 +11 lines]") and drops an Enter that lands while it is
+// still taking it in, leaving the prompt unsent in the input box.
+var promptSettle = 700 * time.Millisecond
+
+// promptTries is how often Prompt presses Enter while the text still waits.
+const promptTries = 4
+
 // Prompt types text into the pane and presses Enter: your keyboard, with your
-// authority. It is never a model-callable tool.
+// authority. It is never a model-callable tool. It gives the text a moment to
+// land first, and presses Enter again while the input box still holds it.
 func (a *Agent) Prompt(ctx context.Context, text string) error {
 	if _, err := a.C.Run(ctx, "tmux", "send-keys", "-t", a.target(), "-l", "--", text); err != nil {
 		return err
 	}
-	_, err := a.C.Run(ctx, "tmux", "send-keys", "-t", a.target(), "Enter")
-	return err
+	for try := 1; ; try++ {
+		if err := sleepCtx(ctx, promptSettle); err != nil {
+			return err
+		}
+		if _, err := a.C.Run(ctx, "tmux", "send-keys", "-t", a.target(), "Enter"); err != nil {
+			return err
+		}
+		if try == promptTries {
+			return nil
+		}
+		if err := sleepCtx(ctx, promptSettle); err != nil {
+			return err
+		}
+		pane, err := a.C.Run(ctx, "tmux", "capture-pane", "-p", "-t", a.target(), "-S", "-12")
+		if err != nil || !unsent(string(pane), text) {
+			return nil // sent, or the pane cannot tell: the Enter stands
+		}
+	}
+}
+
+// unsent says whether the input box at the bottom of a Claude Code pane (the
+// lines between its last two rules) still holds text: as a paste
+// placeholder, or as the start of the text itself.
+func unsent(pane, text string) bool {
+	lines := strings.Split(strings.TrimRight(pane, "\n"), "\n")
+	var rules []int
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "──") {
+			rules = append(rules, i)
+		}
+	}
+	if len(rules) < 2 {
+		return false
+	}
+	box := strings.Join(lines[rules[len(rules)-2]+1:rules[len(rules)-1]], "\n")
+	first, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	if len(first) > 30 {
+		first = first[:30]
+	}
+	return strings.Contains(box, "[Pasted text") || (first != "" && strings.Contains(box, first))
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Interrupt presses Escape in the pane, as a person would to stop the agent's
