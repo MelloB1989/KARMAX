@@ -1547,11 +1547,23 @@ func fleetdStates(ctx context.Context) (map[string]string, error) {
 	if err := c.do("GET", "/v1/status", nil, &out); err != nil {
 		return nil, err
 	}
+	return agentStates(out.Agents), nil
+}
+
+// agentStates is each agent's state for recreating its container, which
+// holds all its slots: working while any slot works, else its first slot's.
+func agentStates(rows []daemon.Row) map[string]string {
 	m := map[string]string{}
-	for _, r := range out.Agents {
-		m[r.Agent] = r.State
+	for _, r := range rows {
+		a := r.SlotOf
+		if a == "" {
+			a = r.Agent
+		}
+		if s, ok := m[a]; !ok || (r.State == "working" && s != "working") {
+			m[a] = r.State
+		}
 	}
-	return m, nil
+	return m
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
