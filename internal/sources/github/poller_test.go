@@ -521,7 +521,8 @@ func TestParseScope(t *testing.T) {
 	if sc := ParseScope("  "); !sc.Allows("anyone", "any/repo") {
 		t.Error("an empty scope must allow everything")
 	}
-	sc := ParseScope(" octo-work = contoso/eval-* , contoso/web ; Octo-Ops=ops/* ")
+	// A login's patterns limit only the owners they name; "*" is every login.
+	sc := ParseScope(" octo-work = contoso/eval-* , contoso/web ; Octo-Ops=ops/* ; *=fabrikam/grade-* ")
 	for _, c := range []struct {
 		account, repo string
 		want          bool
@@ -530,10 +531,13 @@ func TestParseScope(t *testing.T) {
 		{"octo-work", "CONTOSO/Eval-Web", true},
 		{"octo-work", "contoso/web", true},
 		{"octo-work", "contoso/billing", false},
-		{"octo-work", "", false},
+		{"octo-work", "northwind/app", true}, // an owner its patterns don't name
 		{"octo-ops", "ops/infra", true},
-		{"octo-ops", "contoso/eval-api", false},
-		{"octo-user", "contoso/billing", true},
+		{"octo-ops", "contoso/billing", true},     // contoso is limited for octo-work only
+		{"octo-user", "contoso/billing", true},    // a login with no patterns of its own
+		{"octo-user", "fabrikam/grade-api", true}, // "*" applies to every login
+		{"octo-user", "fabrikam/payroll", false},
+		{"octo-work", "fabrikam/payroll", false},
 	} {
 		if got := sc.Allows(c.account, c.repo); got != c.want {
 			t.Errorf("Allows(%q, %q) = %v, want %v", c.account, c.repo, got, c.want)
