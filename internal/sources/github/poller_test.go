@@ -51,15 +51,21 @@ func (h *hub) account(login string) ghconn.Account {
 
 // add puts a thread in login's inbox and moves its Last-Modified on.
 func (h *hub) add(login, id, reason string, updated time.Time) {
+	h.addIn(login, id, "contoso/app", reason, updated)
+}
+
+// addIn puts a thread from repo (owner/name) in login's inbox.
+func (h *hub) addIn(login, id, repo, reason string, updated time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	b := h.base(login)
+	owner := strings.SplitN(repo, "/", 2)[0]
 	n := map[string]any{"id": id, "unread": true, "reason": reason, "updated_at": updated.Format(time.RFC3339),
 		"subject": map[string]any{"title": "Thread " + id, "type": "PullRequest",
-			"url":                b + "/repos/contoso/app/pulls/" + id,
-			"latest_comment_url": b + "/repos/contoso/app/issues/comments/" + id},
-		"repository": map[string]any{"full_name": "contoso/app", "html_url": "https://github.com/contoso/app",
-			"owner": map[string]any{"login": "contoso"}}}
+			"url":                b + "/repos/" + repo + "/pulls/" + id,
+			"latest_comment_url": b + "/repos/" + repo + "/issues/comments/" + id},
+		"repository": map[string]any{"full_name": repo, "html_url": "https://github.com/" + repo,
+			"owner": map[string]any{"login": owner}}}
 	kept := h.notes[login][:0]
 	for _, old := range h.notes[login] {
 		if old["id"] != id {
@@ -477,5 +483,60 @@ func TestATokenIsNeverSentToAnotherHost(t *testing.T) {
 	}
 	if other != 0 {
 		t.Errorf("%d requests went to a host that is not the account's", other)
+	}
+}
+
+// An account can be scoped to the repositories the operator cares about. A
+// notification from any other repository is never an event, so the agent never
+// acts on it, now or when the thread moves again; an account the scope does not
+// name is not limited.
+func TestAnAccountsScopeKeepsOutOtherRepositories(t *testing.T) {
+	r := newRig(t, "octo-work", "octo-user")
+	r.p.Scope = ParseScope("octo-work=contoso/eval-*,contoso/*-grader")
+	r.hub.addIn("octo-work", "1", "contoso/eval-api", "mention", t0.Add(-3*time.Hour))
+	r.hub.addIn("octo-work", "2", "contoso/billing", "mention", t0.Add(-2*time.Hour))
+	r.hub.addIn("octo-work", "3", "Contoso/Essay-Grader", "review_requested", t0.Add(-time.Hour))
+	r.hub.addIn("octo-user", "4", "contoso/billing", "mention", t0.Add(-time.Hour))
+	r.tick(t)
+	got := strings.Join(keys(r.take()), " ")
+	for _, want := range []string{"octo-work:1", "octo-work:3", "octo-user:4"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("in-scope thread %s was not published: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "octo-work:2") {
+		t.Errorf("a thread outside the account's scope was published: %s", got)
+	}
+
+	// The out-of-scope thread moves again: still not news.
+	r.now = t0.Add(5 * time.Minute)
+	r.hub.addIn("octo-work", "2", "contoso/billing", "mention", t0.Add(4*time.Minute))
+	r.tick(t)
+	if again := r.take(); len(again) != 0 {
+		t.Errorf("an out-of-scope thread with new activity was published: %v", keys(again))
+	}
+}
+
+func TestParseScope(t *testing.T) {
+	if sc := ParseScope("  "); !sc.Allows("anyone", "any/repo") {
+		t.Error("an empty scope must allow everything")
+	}
+	sc := ParseScope(" octo-work = contoso/eval-* , contoso/web ; Octo-Ops=ops/* ")
+	for _, c := range []struct {
+		account, repo string
+		want          bool
+	}{
+		{"octo-work", "contoso/eval-api", true},
+		{"octo-work", "CONTOSO/Eval-Web", true},
+		{"octo-work", "contoso/web", true},
+		{"octo-work", "contoso/billing", false},
+		{"octo-work", "", false},
+		{"octo-ops", "ops/infra", true},
+		{"octo-ops", "contoso/eval-api", false},
+		{"octo-user", "contoso/billing", true},
+	} {
+		if got := sc.Allows(c.account, c.repo); got != c.want {
+			t.Errorf("Allows(%q, %q) = %v, want %v", c.account, c.repo, got, c.want)
+		}
 	}
 }

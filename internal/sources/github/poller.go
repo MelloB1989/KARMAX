@@ -48,6 +48,9 @@ type Poller struct {
 	FirstWindow time.Duration
 	// PerPage is the notifications page size. Default 50.
 	PerPage int
+	// Scope limits the repositories each account's events come from; nil
+	// limits nothing.
+	Scope Scope
 }
 
 // AccountResult is how one account's tick went.
@@ -197,6 +200,15 @@ func (p *Poller) account(ctx context.Context, a ghconn.Account) AccountResult {
 		key := a.Name() + "/" + n.Key()
 		if n.UpdatedAt.Before(st.Floor) {
 			// Older than this account's floor: not news, now or later.
+			if _, err := seen.First(key); err != nil {
+				r.Err = err
+				return r
+			}
+			continue
+		}
+		if !p.Scope.Allows(a.Name(), n.Repository.FullName) {
+			// Not a repository this account is watched for: never news, so
+			// marked seen rather than looked at again every poll.
 			if _, err := seen.First(key); err != nil {
 				r.Err = err
 				return r

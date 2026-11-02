@@ -48,6 +48,12 @@ func registerGitHubSource(getenv func(string) string, s *store.Store, b *bus.Log
 		Logins:  logins,
 		KV:      sourcegh.KV{Get: s.KVGet, Set: s.KVSet},
 		Publish: func(e sources.Event) error { return b.Publish(e.BusEvent(agentID)) },
+		// KARMAX_GITHUB_SCOPE limits an account's events to the repositories
+		// the operator cares about: "login=owner/glob,owner/glob;login=…".
+		Scope: sourcegh.ParseScope(getenv("KARMAX_GITHUB_SCOPE")),
+	}
+	if len(poller.Scope) > 0 {
+		log.Info("github source scoped", zap.Any("scope", poller.Scope))
 	}
 	loopkit.Register(loopkit.Loop{
 		Name: "github-source",
