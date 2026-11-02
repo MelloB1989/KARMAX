@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -72,6 +73,7 @@ type Source struct {
 	seen    sources.Seen
 	publish func(sources.Event) error
 	now     func() time.Time
+	ignore  []*regexp.Regexp // Config.AlarmIgnore
 
 	mu        sync.Mutex
 	apis      map[string]API    // profile@region
@@ -91,6 +93,7 @@ func New(o Options) *Source {
 	}
 	return &Source{
 		cfg: o.Config.withDefaults(), dial: o.Dial, kv: o.KV, publish: o.Publish, now: o.Now,
+		ignore:    globs(o.Config.AlarmIgnore),
 		seen:      sources.Seen{Group: "aws-source-seen", TTL: seenTTL, Get: o.KV.Get, Set: o.KV.Set},
 		apis:      map[string]API{},
 		accounts:  map[string]string{},

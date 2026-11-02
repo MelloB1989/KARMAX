@@ -30,6 +30,9 @@ approvals and urgent things.
 | AWS | every usable profile in `~/.aws/config` | CloudWatch alarms in ALARM; daily cost and anomalies (Cost Explorer / budgets) |
 | PostHog | API key when connected | alerts/insight thresholds, new error spikes |
 
+A flapping alarm is held back before it becomes an event (debounce, cooldown and
+an ignore list): see [AWS-ALARMS.md](../../AWS-ALARMS.md).
+
 A source that has no credentials yet stays off and says so in its health
 check; connecting an account in the morning turns it on without a code change.
 

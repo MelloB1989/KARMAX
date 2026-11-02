@@ -23,11 +23,15 @@ const (
 
 // AlarmReport is what one alarm poll did.
 type AlarmReport struct {
-	Readers   int      // account/regions read
-	Alarms    int      // alarms seen
-	InAlarm   int      // of those, in ALARM now
-	Published int      // events published
-	Fixes     []string // login commands that would bring skipped profiles back
+	Readers   int // account/regions read
+	Alarms    int // alarms seen
+	InAlarm   int // of those, in ALARM now
+	Published int // events published
+	Ignored   int // alarms the ignore list hides
+	// Held is every alarm whose flips the gate held back this poll, with how
+	// many it has held since the alarm was last told. See gate.go.
+	Held  []HeldAlarm
+	Fixes []string // login commands that would bring skipped profiles back
 }
 
 // PollAlarms reads every account and region once and publishes the alarms
@@ -73,7 +77,13 @@ func (s *Source) PollAlarms(ctx context.Context) (AlarmReport, error) {
 		rep.Alarms += res.alarms
 		rep.InAlarm += res.inAlarm
 		rep.Published += res.published
-		h.Detail = joinDetail(fmt.Sprintf("%d alarms, %d in ALARM", res.alarms, res.inAlarm), res.note)
+		rep.Ignored += res.ignored
+		rep.Held = append(rep.Held, res.held...)
+		detail := fmt.Sprintf("%d alarms, %d in ALARM", res.alarms, res.inAlarm)
+		if res.ignored > 0 {
+			detail += fmt.Sprintf(", %d ignored", res.ignored)
+		}
+		h.Detail = joinDetail(detail, res.note)
 		health[r.profile.Name] = h
 	}
 	for name, h := range health {
@@ -92,25 +102,35 @@ func (s *Source) PollAlarms(ctx context.Context) (AlarmReport, error) {
 }
 
 type alarmResult struct {
-	alarms, inAlarm, published int
-	note                       string
+	alarms, inAlarm, published, ignored int
+	held                                []HeldAlarm
+	note                                string
 }
 
 // pollAlarmsOf reads one account and region.
 func (s *Source) pollAlarmsOf(ctx context.Context, r reader) (alarmResult, error) {
 	var res alarmResult
-	alarms, err := r.api.Alarms(ctx)
+	all, err := r.api.Alarms(ctx)
 	if err != nil {
 		return res, err
+	}
+	// What the ignore list names is counted, and otherwise never looked at.
+	alarms := make([]Alarm, 0, len(all))
+	for _, a := range all {
+		if a.State == "ALARM" {
+			res.inAlarm++
+		}
+		if s.ignored(a.Name) {
+			res.ignored++
+			continue
+		}
+		alarms = append(alarms, a)
 	}
 	byName := make(map[string]*Alarm, len(alarms))
 	for i := range alarms {
 		byName[alarms[i].Name] = &alarms[i]
-		if alarms[i].State == "ALARM" {
-			res.inAlarm++
-		}
 	}
-	res.alarms = len(alarms)
+	res.alarms = len(all)
 
 	now := s.now()
 	cursorKey := r.account + "/" + r.region
@@ -124,31 +144,51 @@ func (s *Source) pollAlarmsOf(ctx context.Context, r reader) (alarmResult, error
 		}
 	}
 
+	var cands []candidate
+	var commit func() error
 	hist, err := r.api.AlarmHistory(ctx, from, now)
 	switch {
 	case err == nil:
-		n, err := s.publishHistory(r, hist, byName, firstSight, now)
-		res.published += n
-		if err != nil {
-			return res, err
+		kept := hist[:0:0]
+		for _, t := range hist {
+			if !s.ignored(t.Alarm) {
+				kept = append(kept, t)
+			}
 		}
+		cands = s.historyCandidates(r, kept, byName, firstSight, now)
 	case isDenied(err):
 		res.note = "alarm history not readable (cloudwatch:DescribeAlarmHistory), comparing states instead"
-		n, err := s.compareStates(r, alarms, now, firstSight)
-		res.published += n
-		if err != nil {
+		if cands, commit, err = s.stateCandidates(r, alarms, now, firstSight); err != nil {
 			return res, err
 		}
 	default:
 		return res, err
 	}
+	n, held, err := s.gate(r, alarms, cands, firstSight, now)
+	res.published, res.held = n, held
+	if err != nil {
+		return res, err
+	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			return res, err
+		}
+	}
 	return res, s.kv.Set(alarmCursorGroup, cursorKey, now.UTC().Format(time.RFC3339Nano), 0)
 }
 
-// publishHistory publishes each transition into ALARM, and each from ALARM
-// back to OK. A transition into ALARM is urgent only while it still holds:
-// the alarm's latest change, and the alarm in ALARM now.
-func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*Alarm, firstSight bool, now time.Time) (int, error) {
+// candidate is a transition as it would be published with no gate: the gate
+// (gate.go) decides whether, and when, it is.
+type candidate struct {
+	t  Transition
+	a  *Alarm // nil when the alarm has since been deleted
+	ev sources.Event
+}
+
+// historyCandidates is each transition into ALARM, and each from ALARM back
+// to OK. A transition into ALARM is urgent only while it still holds: the
+// alarm's latest change, and the alarm in ALARM now.
+func (s *Source) historyCandidates(r reader, hist []Transition, byName map[string]*Alarm, firstSight bool, now time.Time) []candidate {
 	latest := map[string]time.Time{}
 	for _, t := range hist {
 		if t.At.After(latest[t.Alarm]) {
@@ -156,7 +196,7 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 		}
 	}
 	told := map[string]bool{}
-	n := 0
+	var out []candidate
 	for _, t := range hist {
 		switch {
 		case t.To == "ALARM":
@@ -169,16 +209,10 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 		if t.To == "ALARM" {
 			told[t.Alarm] = true
 		}
-		ok, err := s.emit(asBacklog(s.alarmEvent(r, t, a, t.To == "ALARM" && stillFiring), firstSight))
-		if err != nil {
-			return n, err
-		}
-		if ok {
-			n++
-		}
+		out = append(out, candidate{t, a, asBacklog(s.alarmEvent(r, t, a, t.To == "ALARM" && stillFiring), firstSight)})
 	}
 	if !firstSight {
-		return n, nil
+		return out
 	}
 	// The first read of an account: alarms already firing before the
 	// lookback are told once, as context rather than news.
@@ -188,29 +222,25 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 		}
 		t := Transition{Alarm: a.Name, Composite: a.Composite, At: a.UpdatedAt, To: "ALARM", Reason: a.Reason}
 		recent := now.Sub(a.UpdatedAt) <= s.cfg.AlarmLookback
-		ok, err := s.emit(asBacklog(s.alarmEvent(r, t, a, recent), firstSight))
-		if err != nil {
-			return n, err
-		}
-		if ok {
-			n++
-		}
+		out = append(out, candidate{t, a, asBacklog(s.alarmEvent(r, t, a, recent), firstSight)})
 	}
-	return n, nil
+	return out
 }
 
-// compareStates finds transitions without alarm history, by comparing each
+// stateCandidates finds transitions without alarm history, by comparing each
 // alarm with how the last read left it. Used when the role may not read
 // history; it misses an alarm that went off and recovered between two reads.
-func (s *Source) compareStates(r reader, alarms []Alarm, now time.Time, firstSight bool) (int, error) {
-	n := 0
+// commit records the states read, once what they found has been published.
+func (s *Source) stateCandidates(r reader, alarms []Alarm, now time.Time, firstSight bool) ([]candidate, func() error, error) {
+	var out []candidate
+	sets := map[string]string{}
 	for i := range alarms {
 		a := &alarms[i]
 		key := r.account + "/" + r.region + "/" + a.Name
 		cur := a.State + "|" + a.UpdatedAt.UTC().Format(time.RFC3339Nano)
 		prev, found, err := s.kv.Get(alarmStateGroup, key)
 		if err != nil {
-			return n, err
+			return nil, nil, err
 		}
 		if found && prev == cur {
 			continue
@@ -225,19 +255,19 @@ func (s *Source) compareStates(r reader, alarms []Alarm, now time.Time, firstSig
 		}
 		if t != nil {
 			urgent := t.To == "ALARM" && now.Sub(a.UpdatedAt) <= s.cfg.AlarmLookback
-			ok, err := s.emit(asBacklog(s.alarmEvent(r, *t, a, urgent), firstSight))
-			if err != nil {
-				return n, err
-			}
-			if ok {
-				n++
-			}
+			out = append(out, candidate{*t, a, asBacklog(s.alarmEvent(r, *t, a, urgent), firstSight)})
 		}
-		if err := s.kv.Set(alarmStateGroup, key, cur, 0); err != nil {
-			return n, err
-		}
+		sets[key] = cur
 	}
-	return n, nil
+	commit := func() error {
+		for k, v := range sets {
+			if err := s.kv.Set(alarmStateGroup, k, v, 0); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return out, commit, nil
 }
 
 // alarmEvent is a transition as the decision core reads it. a is nil when

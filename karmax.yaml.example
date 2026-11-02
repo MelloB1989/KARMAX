@@ -287,3 +287,32 @@ policy:
   # (A source's first look at an account is never a page either: it is marked
   # backlog.)
   urgent_max_age: 2h
+
+# Event sources that read on a schedule. Their on/off switches and logins are
+# environment variables (KARMAX_SOURCE_*); this is the policy part.
+# sources:
+#   aws:
+#     # CloudWatch alarms, polled every 5 minutes. Every alarm told wakes a model
+#     # turn, so a flapping alarm costs one turn per flip; these keep it to one.
+#     alarms:
+#       # An alarm is told only once it has been in ALARM at this many polls in
+#       # a row (3 = 15 minutes); its OK only if its ALARM was. An ALARM over
+#       # sooner tells nothing. ON BY DEFAULT at 3, even with this block absent;
+#       # 1 tells every ALARM at once, as before. An account's first read, an
+#       # alarm not seen before and the OK of an alarm already told are never
+#       # held.
+#       debounce_polls: 3
+#       # After an alarm is told, its next ALARMs are held this long, and the
+#       # next one told says "flipped N times since the last report". One that
+#       # stays in ALARM for 4 x debounce_polls (1 hour at 3) is told anyway.
+#       # Absent or 0: off.
+#       cooldown: 6h
+#       # Alarm names never told: globs where * matches any characters,
+#       # slashes included. Absent or empty hides nothing. ECS service
+#       # auto scaling's target-tracking alarms (named
+#       # TargetTracking-service/<cluster>/<service>-AlarmHigh-<id>, and
+#       # -AlarmLow-; AWS owns them, DO NOT EDIT OR DELETE) flip as scaling
+#       # works, which is not news:
+#       ignore:
+#         - "TargetTracking-*-AlarmHigh-*"
+#         - "TargetTracking-*-AlarmLow-*"

@@ -18,6 +18,16 @@ type Config struct {
 	// AlarmLookback is how far back the first read of an account looks for
 	// transitions; an alarm firing since before then is told once as context.
 	AlarmLookback time.Duration
+	// AlarmDebounce is how many consecutive polls an alarm must be in ALARM
+	// at before its ALARM is published (and with it, later, its OK). 1
+	// publishes at once, as before the gate; 0 means the default.
+	AlarmDebounce int
+	// AlarmCooldown holds an alarm's next ALARMs for this long after one is
+	// published, counting them into the next report. 0 is off.
+	AlarmCooldown time.Duration
+	// AlarmIgnore names alarms never to publish: globs on the alarm name,
+	// where * matches any characters, slashes included.
+	AlarmIgnore []string
 
 	// A day is a spike when it costs more than SpikeFactor times the mean of
 	// the TrailingDays before it AND more than SpikeFloor (in the bill's
@@ -39,6 +49,7 @@ type Config struct {
 // Defaults.
 const (
 	DefaultAlarmLookback = 24 * time.Hour
+	DefaultAlarmDebounce = 3 // polls: 15 minutes at the loop's 5
 	DefaultSpikeFactor   = 1.5
 	DefaultSpikeFloor    = 5.0
 	DefaultTrailingDays  = 7
@@ -48,6 +59,12 @@ const (
 func (c Config) withDefaults() Config {
 	if c.AlarmLookback <= 0 {
 		c.AlarmLookback = DefaultAlarmLookback
+	}
+	if c.AlarmDebounce <= 0 {
+		c.AlarmDebounce = DefaultAlarmDebounce
+	}
+	if c.AlarmCooldown < 0 {
+		c.AlarmCooldown = 0
 	}
 	if c.SpikeFactor <= 0 {
 		c.SpikeFactor = DefaultSpikeFactor

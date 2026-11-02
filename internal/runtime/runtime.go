@@ -854,7 +854,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 		// AWS: every usable profile's CloudWatch alarms and spend, as events
 		// to the primary agent. KARMAX_SOURCE_AWS=off turns it off. See
 		// awssource.go and internal/sources/aws.
-		registerAWSSource(os.Getenv, home, s, b, a0.ID, toolReg, log)
+		registerAWSSource(os.Getenv, home, cfg.Sources.AWS, s, b, a0.ID, toolReg, log)
 
 		// GitHub → events, and acting as the right login: every account gh
 		// is logged in to. Before the agents bind their tools. See

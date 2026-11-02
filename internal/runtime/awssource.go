@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/MelloB1989/karmax/internal/bus"
+	"github.com/MelloB1989/karmax/internal/config"
 	"github.com/MelloB1989/karmax/internal/sources"
 	awssource "github.com/MelloB1989/karmax/internal/sources/aws"
 	"github.com/MelloB1989/karmax/internal/store"
@@ -20,16 +21,18 @@ import (
 // memory already handle. The agent gets aws.read to look deeper.
 //
 // Off with KARMAX_SOURCE_AWS=off; the other settings are in
-// awssource.ConfigFromEnv. Health is written per profile ("aws:<profile>")
+// awssource.ConfigFromEnv, and the alarm gate (debounce, cooldown, ignore
+// list) is sources.aws.alarms in karmax.yaml. Health is written per profile ("aws:<profile>")
 // and for the source as a whole ("aws") to the connector health table, and
 // a login newly needed is told once in the app, never on WhatsApp.
-func registerAWSSource(getenv func(string) string, home string, s *store.Store, b *bus.Log, agentID string,
+func registerAWSSource(getenv func(string) string, home string, yc config.AWSSourceConfig, s *store.Store, b *bus.Log, agentID string,
 	reg *tools.Registry, log *zap.Logger) bool {
 	cfg, on := awssource.ConfigFromEnv(getenv, home)
 	if !on {
 		log.Info("AWS source off (KARMAX_SOURCE_AWS=off)")
 		return false
 	}
+	cfg = withAlarmGate(cfg, yc.Alarms)
 	src := awssource.New(awssource.Options{
 		Config:  cfg,
 		Dial:    awssource.SDKDialer(cfg),
@@ -47,6 +50,9 @@ func registerAWSSource(getenv func(string) string, home string, s *store.Store, 
 		Run: func(ctx context.Context, k loopkit.Kit) error {
 			rep, err := src.PollAlarms(ctx)
 			health.record(src.Health(), rep.Fixes, true)
+			for _, h := range rep.Held {
+				log.Info("aws-alarms: flips held back", zap.String("alarm", h.Alarm), zap.Int("count", h.Count))
+			}
 			if rep.Published > 0 || err != nil {
 				k.Logf("aws-alarms: %d account/regions, %d alarms (%d in ALARM), %d events published",
 					rep.Readers, rep.Alarms, rep.InAlarm, rep.Published)
@@ -118,4 +124,15 @@ func (h awsHealth) record(hs []awssource.Health, fixes []string, tell bool) {
 	if err := h.s.KVSet(awsSourceKV, awsToldKey, strings.Join(fixes, "\n"), 0); err != nil {
 		h.log.Warn("could not remember which AWS logins were told", zap.Error(err))
 	}
+}
+
+// withAlarmGate applies karmax.yaml's sources.aws.alarms. Unset, debounce is
+// on at its default and the cooldown and ignore list are off.
+func withAlarmGate(cfg awssource.Config, y config.AWSAlarmsConfig) awssource.Config {
+	if y.DebouncePolls != nil {
+		cfg.AlarmDebounce = max(*y.DebouncePolls, 1)
+	}
+	cfg.AlarmCooldown = y.Cooldown
+	cfg.AlarmIgnore = y.Ignore
+	return cfg
 }

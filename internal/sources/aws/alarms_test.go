@@ -18,11 +18,12 @@ func cpuAlarm(state string, at time.Time) Alarm {
 	}
 }
 
-// An alarm going off is published once, urgently, with what a person needs
+// With the debounce off (gate_test.go has it on), an alarm going off is
+// published once, urgently, with what a person needs
 // to judge it: the reason, the metric and the threshold.
 func TestAnAlarmGoingOffIsPublishedOnceAndUrgent(t *testing.T) {
 	acct := &fakeAPI{account: "111122223333"}
-	h := newHarness(t, Config{Profiles: []string{"ops-admin"}}, map[string]*fakeAPI{"ops-admin": acct})
+	h := newHarness(t, Config{Profiles: []string{"ops-admin"}, AlarmDebounce: 1}, map[string]*fakeAPI{"ops-admin": acct})
 	h.src.PollAlarms(context.Background()) // first sight: nothing has happened yet
 
 	fired := h.now.Add(2 * time.Minute)
@@ -88,7 +89,7 @@ func TestARecoveryIsPublishedButNotUrgent(t *testing.T) {
 // nobody needs waking for it.
 func TestAnAlarmThatAlreadyRecoveredIsNotUrgent(t *testing.T) {
 	acct := &fakeAPI{account: "111122223333"}
-	h := newHarness(t, Config{Profiles: []string{"ops-admin"}}, map[string]*fakeAPI{"ops-admin": acct})
+	h := newHarness(t, Config{Profiles: []string{"ops-admin"}, AlarmDebounce: 1}, map[string]*fakeAPI{"ops-admin": acct})
 	h.src.PollAlarms(context.Background())
 
 	t1 := h.now.Add(time.Minute)
@@ -156,7 +157,7 @@ func TestAStandingAlarmIsToldOnceOnFirstSight(t *testing.T) {
 func TestWithoutHistoryAccessStatesAreCompared(t *testing.T) {
 	acct := &fakeAPI{account: "111122223333", historyErr: &DeniedError{Err: errors.New("cloudwatch:DescribeAlarmHistory")}}
 	acct.alarms = []Alarm{cpuAlarm("OK", time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC))}
-	h := newHarness(t, Config{Profiles: []string{"ops-admin"}}, map[string]*fakeAPI{"ops-admin": acct})
+	h := newHarness(t, Config{Profiles: []string{"ops-admin"}, AlarmDebounce: 1}, map[string]*fakeAPI{"ops-admin": acct})
 	h.src.PollAlarms(context.Background())
 	if evs := h.take(); len(evs) != 0 {
 		t.Fatalf("an alarm in OK on first sight was published: %+v", evs)

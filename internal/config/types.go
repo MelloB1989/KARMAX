@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/MelloB1989/karmax/internal/mcp"
 	"github.com/MelloB1989/karmax/internal/policy"
@@ -25,6 +26,8 @@ type KarmaxConfig struct {
 	// Policy is how KARMAX acts for the operator and when it reaches them:
 	// act then report, the hard floor, and what reaches their WhatsApp.
 	Policy policy.Config `yaml:"policy"`
+	// Sources tunes the event sources that read on a schedule.
+	Sources SourcesConfig `yaml:"sources"`
 	// Which services this install manages. Omitted means every one compiled
 	// in, so an upgrade never switches somebody's integrations off.
 	Connectors   RegistryConfig `yaml:"connectors"`
@@ -146,6 +149,32 @@ type DatabaseConfig struct {
 // ColdScanConfig is DEPRECATED and ignored: cold-scan is now a marketplace
 // loop (karmax loops install cold-scan), configured via KARMAX_LOOP_COLD_SCAN_*
 // env keys. The struct remains only so older karmax.yaml files still parse.
+// SourcesConfig tunes the event sources. Their switches and logins are in
+// the environment (KARMAX_SOURCE_*); this is what is policy.
+type SourcesConfig struct {
+	AWS AWSSourceConfig `yaml:"aws"`
+}
+
+// AWSSourceConfig tunes the AWS source.
+type AWSSourceConfig struct {
+	Alarms AWSAlarmsConfig `yaml:"alarms"`
+}
+
+// AWSAlarmsConfig is what keeps a flapping CloudWatch alarm from waking the
+// agent on every flip. See internal/sources/aws/gate.go.
+type AWSAlarmsConfig struct {
+	// DebouncePolls is how many consecutive polls (5 minutes apart) an alarm
+	// must be in ALARM at before it is told; its OK is told only if its ALARM
+	// was. Unset is 3; 1 (or 0) tells every ALARM at once, as before.
+	DebouncePolls *int `yaml:"debounce_polls"`
+	// Cooldown holds an alarm's further ALARMs for this long after one is
+	// told, and counts them into the next report. Unset or 0 is off.
+	Cooldown time.Duration `yaml:"cooldown"`
+	// Ignore is alarm names never told: globs where * matches any
+	// characters, slashes included. Empty hides nothing.
+	Ignore []string `yaml:"ignore"`
+}
+
 type ColdScanConfig struct {
 	Enabled          bool    `yaml:"enabled"`
 	IntervalMinutes  int     `yaml:"interval_minutes"`    // default 20
