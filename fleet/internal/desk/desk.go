@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,13 @@ type invalid struct{ error }
 func (invalid) Is(t error) bool { return t == ErrInvalid }
 
 func invalidf(format string, a ...any) error { return invalid{fmt.Errorf(format, a...)} }
+
+// missing is a thing the desk does not have, as ErrNoSession answers it.
+type missing struct{ error }
+
+func (missing) Is(t error) bool { return t == ErrNoSession }
+
+func missingf(format string, a ...any) error { return missing{fmt.Errorf(format, a...)} }
 
 // Every new session's window, until a typist's terminal sizes it.
 const cols, rows = 200, 50
@@ -75,15 +83,38 @@ type Manager struct {
 	Log  func(format string, args ...any)
 	Host string // the machine, as the list names it
 
+	// PasteDir is where pasted files are written (PathDeskPaste); "" is
+	// desk-paste beside State.
+	PasteDir string
+	// HookScript and HookSettings are Claude Code's hooks (notes.go),
+	// written by fleetd; "" runs Claude Code without them. Notes is where
+	// the hooks leave their notes; "" is desk-notes beside State.
+	HookScript, HookSettings, Notes string
+
 	mu     sync.Mutex
 	st     state
 	loaded bool
+
+	notes    noteCache   // each session's note (notes.go)
+	snap     snapshot    // the list the long poll answers with (watch.go)
+	branches branchCache // cwd → git branch
+	swept    time.Time   // pastes were last swept
+	optsSet  bool        // the server's options are set (serverOptions)
 }
 
 // state is desk.json.
 type state struct {
-	Boot     string   `json:"boot_id"`
-	Sessions []record `json:"sessions"` // in their order
+	Boot       string      `json:"boot_id"`
+	Workspaces []workspace `json:"workspaces"` // in their order
+	Sessions   []record    `json:"sessions"`   // in their order
+}
+
+// workspace is a group of sessions shown together.
+type workspace struct {
+	ID      string    `json:"id"`
+	Name    string    `json:"name"`
+	Layout  string    `json:"layout"`
+	Created time.Time `json:"created"`
 }
 
 // record is a session as the desk keeps it.
@@ -98,6 +129,10 @@ type record struct {
 	// Error is why a restart could not bring it back. It stays so, listed,
 	// until it is ended.
 	Error string `json:"error,omitempty"`
+	// Workspace is the id of the workspace it is in; Label the name the
+	// operator gave it.
+	Workspace string `json:"workspace,omitempty"`
+	Label     string `json:"label,omitempty"`
 }
 
 // New is the desk on tmux socket, its record in stateDir.
@@ -105,7 +140,8 @@ func New(socket, stateDir string) *Manager {
 	home, _ := os.UserHomeDir()
 	host, _ := os.Hostname()
 	m := &Manager{Socket: socket, State: filepath.Join(stateDir, "desk.json"), Tmux: "tmux", Shell: loginShell(),
-		Claude: "claude", ClaudeDir: filepath.Join(home, ".claude"), Home: home, BootID: bootID, Now: time.Now, Host: host}
+		Claude: "claude", ClaudeDir: filepath.Join(home, ".claude"), Home: home, BootID: bootID, Now: time.Now, Host: host,
+		HookScript: filepath.Join(stateDir, "desk-hook.sh"), HookSettings: filepath.Join(stateDir, "desk-hooks.json")}
 	if p, err := exec.LookPath("systemd-run"); err == nil {
 		m.SystemdRun = p
 	}
@@ -150,6 +186,10 @@ func (m *Manager) Run(ctx context.Context) {
 		if err := m.Sync(ctx); err != nil {
 			why = err.Error()
 		}
+		m.mu.Lock()
+		m.serverOptions(ctx)
+		m.sweep()
+		m.mu.Unlock()
 		if why != last && why != "" { // once per new failure, not every tick
 			m.logf("%s", why)
 		}
@@ -175,7 +215,7 @@ func (m *Manager) Sync(ctx context.Context) error {
 // boot, one not running was closed, and is forgotten. Each running session's
 // Claude Code session is followed. m.mu is held.
 func (m *Manager) sync(ctx context.Context) (map[string]pane, error) {
-	m.load()
+	m.loadAll()
 	live, err := m.panes(ctx)
 	if err != nil {
 		return nil, err
@@ -212,6 +252,7 @@ func (m *Manager) sync(ctx context.Context) (map[string]pane, error) {
 				continue
 			}
 			m.logf("%s: closed", r.Name)
+			m.forgetNote(r.Name)
 			changed = true
 		}
 		m.st.Sessions = keep
@@ -228,6 +269,7 @@ func (m *Manager) sync(ctx context.Context) (map[string]pane, error) {
 				r.Claude, changed = c.ID, true
 			}
 			p.busy = c.Status == "busy"
+			p.status = claudeStatus(c.Status)
 			live[r.Name] = p
 		}
 	}
@@ -243,7 +285,7 @@ func (m *Manager) restore(ctx context.Context, r *record) error {
 	if fi, err := os.Stat(r.Dir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("%s is gone", r.Dir)
 	}
-	return m.start(ctx, r.Name, r.Dir, m.paneArgv(*r, true))
+	return m.started(ctx, r.Name, r.Dir, m.paneArgv(*r, true))
 }
 
 func (m *Manager) renumber() {
@@ -273,15 +315,23 @@ func (m *Manager) Create(ctx context.Context, c fleetapi.DeskCreate) (fleetapi.D
 	if cmd == "" {
 		cmd = "claude"
 	}
-	r := record{Name: name, Dir: dir, Command: cmd, Order: len(m.st.Sessions), Created: m.Now()}
+	ws := c.Workspace
+	if ws == "" {
+		ws = m.st.Workspaces[0].ID
+	} else if m.workspace(ws) < 0 {
+		return fleetapi.DeskSession{}, invalidf("no workspace %q", ws)
+	}
+	r := record{Name: name, Dir: dir, Command: cmd, Order: len(m.st.Sessions), Created: m.Now(), Workspace: ws, Label: cleanLabel(c.Label)}
 	if isClaude(cmd) && !choosesSession(cmd) {
 		r.Claude = newUUID()
 	}
-	if err := m.start(ctx, r.Name, r.Dir, m.paneArgv(r, false)); err != nil {
+	if err := m.started(ctx, r.Name, r.Dir, m.paneArgv(r, false)); err != nil {
 		return fleetapi.DeskSession{}, err
 	}
-	m.st.Sessions = append(m.st.Sessions, r)
+	m.st.Sessions = slices.Insert(m.st.Sessions, m.endOf(ws), r)
+	m.renumber()
 	m.save()
+	m.touch()
 	m.logf("%s: started in %s: %s", r.Name, r.Dir, r.Command)
 	s := r.view()
 	s.Running = true
@@ -362,7 +412,7 @@ func newUUID() string {
 func (m *Manager) End(ctx context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.load()
+	m.loadAll()
 	i := m.find(name)
 	if i < 0 {
 		return fmt.Errorf("%w %q", ErrNoSession, name)
@@ -373,6 +423,8 @@ func (m *Manager) End(ctx context.Context, name string) error {
 	m.st.Sessions = append(m.st.Sessions[:i], m.st.Sessions[i+1:]...)
 	m.renumber()
 	m.save()
+	m.touch()
+	m.forgetNote(name)
 	m.logf("%s: ended", name)
 	return nil
 }
@@ -396,8 +448,8 @@ func (m *Manager) List(ctx context.Context, lines int) (fleetapi.DeskList, error
 	defer m.mu.Unlock()
 	out := fleetapi.DeskList{Host: m.Host, Sessions: []fleetapi.DeskSession{}}
 	live, err := m.sync(ctx)
+	out.Workspaces = m.workspaceViews()
 	if err != nil { // tmux did not answer: what is recorded, and why no more
-		m.load()
 		for _, r := range m.st.Sessions {
 			s := r.view()
 			s.Error = err.Error()
@@ -410,6 +462,11 @@ func (m *Manager) List(ctx context.Context, lines int) (fleetapi.DeskList, error
 		s := r.view()
 		if p, up := live[r.Name]; up {
 			s.Running, s.Clients, s.Busy, s.Cols = true, p.clients, p.busy, p.cols
+			s.Status, s.Title, s.Cwd = p.status, cleanTitle(p.title, m.Host), p.cwd
+			if isClaude(r.Command) {
+				s.Note = m.note(r.Name)
+			}
+			s.Branch = m.branches.of(p.cwd, m.Now())
 			if lines > 0 {
 				text, err := m.capture(ctx, r.Name, lines)
 				s.At = m.Now()
@@ -427,7 +484,7 @@ func (m *Manager) List(ctx context.Context, lines int) (fleetapi.DeskList, error
 
 func (r record) view() fleetapi.DeskSession {
 	return fleetapi.DeskSession{Name: r.Name, Dir: r.Dir, Command: r.Command, Order: r.Order, Created: r.Created,
-		Claude: r.Claude, Restored: r.Restored, Error: r.Error}
+		Claude: r.Claude, Restored: r.Restored, Error: r.Error, Workspace: r.Workspace, Label: r.Label}
 }
 
 // Terminal is where the terminal route reaches a session: its tmux session
@@ -435,7 +492,7 @@ func (r record) view() fleetapi.DeskSession {
 func (m *Manager) Terminal(name string) (term.Target, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.load()
+	m.loadAll()
 	i := m.find(name)
 	if i < 0 {
 		return term.Target{}, false
@@ -466,6 +523,20 @@ func (m *Manager) load() {
 	}
 	m.st = st
 	m.renumber()
+}
+
+// loadAll reads desk.json once, and makes sure of its workspaces: one at
+// least, and every session in one that is there.
+func (m *Manager) loadAll() {
+	m.load()
+	if len(m.st.Workspaces) == 0 {
+		m.st.Workspaces = []workspace{{ID: fleetapi.DefaultWorkspace, Name: "Main", Layout: fleetapi.LayoutTabs, Created: m.Now()}}
+	}
+	for i := range m.st.Sessions {
+		if m.workspace(m.st.Sessions[i].Workspace) < 0 {
+			m.st.Sessions[i].Workspace = m.st.Workspaces[0].ID
+		}
+	}
 }
 
 // save writes desk.json whole, 0600, by rename.

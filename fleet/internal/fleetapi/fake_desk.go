@@ -3,9 +3,11 @@ package fleetapi
 import (
 	"context"
 	"fmt"
+	"io"
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,14 +32,21 @@ func (f *Fake) seedDesk() {
 		return
 	}
 	t := f.Now()
+	f.deskWS = []DeskWorkspace{
+		{ID: DefaultWorkspace, Name: "Main", Layout: LayoutTabs, Order: 0, Created: t.Add(-26 * time.Hour)},
+		{ID: "wops", Name: "Ops", Layout: LayoutColumns, Order: 1, Created: t.Add(-2 * time.Hour)},
+	}
 	f.desk = []DeskSession{
 		{Name: "api", Dir: fakeHome + "/code/api", Command: "claude --model opus", Order: 0, Created: t.Add(-2*time.Hour - 10*time.Minute),
-			Running: true, Busy: true, Clients: 1, Claude: "4f1c2a9e-7b3d-4e8a-9c61-2d5f0a8b7e13"},
+			Running: true, Busy: true, Clients: 1, Claude: "4f1c2a9e-7b3d-4e8a-9c61-2d5f0a8b7e13",
+			Workspace: DefaultWorkspace, Title: "Fix the cache eviction", Status: StatusWorking, Cwd: fakeHome + "/code/api", Branch: "main"},
 		{Name: "web", Dir: fakeHome + "/code/web", Command: "claude", Order: 1, Created: t.Add(-26 * time.Hour),
-			Running: true, Restored: t.Add(-3 * time.Minute), Claude: "9a2e6c41-0d8f-4b17-a3e5-6c9b1f2d4a70"},
-		{Name: "infra", Dir: fakeHome + "/code/infra", Command: "shell", Order: 2, Created: t.Add(-45 * time.Minute), Running: true},
+			Running: true, Restored: t.Add(-3 * time.Minute), Claude: "9a2e6c41-0d8f-4b17-a3e5-6c9b1f2d4a70",
+			Workspace: DefaultWorkspace, Title: "Landing page copy", Status: StatusWaiting, Cwd: fakeHome + "/code/web", Branch: "redesign"},
+		{Name: "infra", Dir: fakeHome + "/code/infra", Command: "shell", Order: 2, Created: t.Add(-45 * time.Minute), Running: true,
+			Workspace: "wops", Cwd: fakeHome + "/code/infra"},
 		{Name: "notes", Dir: fakeHome + "/code/notes", Command: "claude --model sonnet", Order: 3, Created: t.Add(-4 * time.Hour),
-			Running: true, Claude: "c37d0b85-5e2a-4f96-8b1c-e04a7d63f9b2"},
+			Running: true, Claude: "c37d0b85-5e2a-4f96-8b1c-e04a7d63f9b2", Workspace: "wops", Status: StatusIdle, Cwd: fakeHome + "/code/notes"},
 	}
 }
 
@@ -97,8 +106,19 @@ func (f *Fake) DeskCreate(ctx context.Context, c DeskCreate) (*DeskSession, erro
 	for _, s := range f.desk {
 		order = max(order, s.Order+1)
 	}
-	s := DeskSession{Name: name, Dir: dir, Command: cmd, Order: order, Created: f.Now(), Running: true}
+	ws := c.Workspace
+	if ws == "" {
+		ws = f.deskWS[0].ID
+	}
+	if f.wsIndex(ws) < 0 {
+		return nil, fmt.Errorf("400: no workspace %q", ws)
+	}
+	s := DeskSession{Name: name, Dir: dir, Command: cmd, Order: order, Created: f.Now(), Running: true, Workspace: ws, Label: c.Label, Cwd: dir}
+	if isClaudeCmd(cmd) {
+		s.Status = StatusIdle
+	}
 	f.desk = append(f.desk, s)
+	f.deskVer++
 	f.record("desk new name=%q dir=%q command=%q", c.Name, c.Dir, c.Command)
 	return &s, nil
 }
@@ -113,6 +133,7 @@ func (f *Fake) DeskEnd(ctx context.Context, name string) error {
 	for i, s := range f.desk {
 		if s.Name == name {
 			f.desk = append(f.desk[:i], f.desk[i+1:]...)
+			f.deskVer++
 			f.record("desk end %s", name)
 			return nil
 		}
@@ -285,4 +306,308 @@ func fakeDeskScreen(s DeskSession, step int) string {
 		lines = append(welcome, prompt("? for shortcuts")...)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func isClaudeCmd(cmd string) bool { return cmd == "claude" || strings.HasPrefix(cmd, "claude ") }
+
+func (f *Fake) wsIndex(id string) int {
+	return slices.IndexFunc(f.deskWS, func(w DeskWorkspace) bool { return w.ID == id })
+}
+
+func (f *Fake) admin() error {
+	if f.Role != RoleAdmin {
+		return fmt.Errorf("403: the desk is for admins")
+	}
+	f.seedDesk()
+	return nil
+}
+
+// DeskWatch answers at once: the demo's desk changes as it steps, and the
+// TUI asks again.
+func (f *Fake) DeskWatch(ctx context.Context, since string) (*DeskList, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.admin(); err != nil {
+		return nil, err
+	}
+	out := &DeskList{Host: fakeDeskHost, Version: fmt.Sprint(f.deskVer), Workspaces: slices.Clone(f.deskWS), Sessions: slices.Clone(f.desk)}
+	for i := range out.Workspaces {
+		out.Workspaces[i].Order = i
+	}
+	return out, nil
+}
+
+func (f *Fake) DeskUpdate(ctx context.Context, name string, u DeskUpdate) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.admin(); err != nil {
+		return err
+	}
+	i := slices.IndexFunc(f.desk, func(s DeskSession) bool { return s.Name == name })
+	if i < 0 {
+		return fmt.Errorf("404: no desk session %q", name)
+	}
+	s := f.desk[i]
+	if u.Label != nil {
+		s.Label = strings.TrimSpace(*u.Label)
+	}
+	if u.Workspace != nil {
+		if f.wsIndex(*u.Workspace) < 0 {
+			return fmt.Errorf("400: no workspace %q", *u.Workspace)
+		}
+		s.Workspace = *u.Workspace
+	}
+	f.desk = slices.Delete(f.desk, i, i+1)
+	at := i
+	if u.Before != nil || u.Workspace != nil {
+		at = len(f.desk)
+		for j := len(f.desk) - 1; j >= 0; j-- {
+			if f.desk[j].Workspace == s.Workspace {
+				at = j + 1
+				break
+			}
+		}
+		if u.Before != nil && *u.Before != "" {
+			if j := slices.IndexFunc(f.desk, func(x DeskSession) bool { return x.Name == *u.Before }); j >= 0 {
+				at = j
+			}
+		}
+	}
+	f.desk = slices.Insert(f.desk, at, s)
+	for j := range f.desk {
+		f.desk[j].Order = j
+	}
+	f.deskVer++
+	f.record("desk update %s", name)
+	return nil
+}
+
+func (f *Fake) DeskWorkspaceCreate(ctx context.Context, c DeskWorkspaceCreate) (*DeskWorkspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.admin(); err != nil {
+		return nil, err
+	}
+	layout := c.Layout
+	if layout == "" {
+		layout = LayoutTabs
+	}
+	if !slices.Contains(Layouts, layout) {
+		return nil, fmt.Errorf("400: layout %q", layout)
+	}
+	name := strings.TrimSpace(c.Name)
+	if name == "" {
+		name = fmt.Sprintf("Workspace %d", len(f.deskWS)+1)
+	}
+	w := DeskWorkspace{ID: fmt.Sprintf("w%d", len(f.deskWS)+f.deskVer+1), Name: name, Layout: layout, Order: len(f.deskWS), Created: f.Now()}
+	f.deskWS = append(f.deskWS, w)
+	f.deskVer++
+	f.record("desk workspace new %s", name)
+	return &w, nil
+}
+
+func (f *Fake) DeskWorkspaceUpdate(ctx context.Context, id string, u DeskWorkspaceUpdate) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.admin(); err != nil {
+		return err
+	}
+	i := f.wsIndex(id)
+	if i < 0 {
+		return fmt.Errorf("404: no workspace %q", id)
+	}
+	w := f.deskWS[i]
+	if u.Name != nil {
+		w.Name = strings.TrimSpace(*u.Name)
+	}
+	if u.Layout != nil {
+		if !slices.Contains(Layouts, *u.Layout) {
+			return fmt.Errorf("400: layout %q", *u.Layout)
+		}
+		w.Layout = *u.Layout
+	}
+	f.deskWS[i] = w
+	if u.Before != nil {
+		rest := slices.Delete(slices.Clone(f.deskWS), i, i+1)
+		at := len(rest)
+		if *u.Before != "" {
+			at = slices.IndexFunc(rest, func(x DeskWorkspace) bool { return x.ID == *u.Before })
+			if at < 0 {
+				return fmt.Errorf("400: no workspace %q", *u.Before)
+			}
+		}
+		f.deskWS = slices.Insert(rest, at, w)
+	}
+	f.deskVer++
+	f.record("desk workspace update %s", id)
+	return nil
+}
+
+func (f *Fake) DeskWorkspaceDelete(ctx context.Context, id string, end bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.admin(); err != nil {
+		return err
+	}
+	i := f.wsIndex(id)
+	if i < 0 {
+		return fmt.Errorf("404: no workspace %q", id)
+	}
+	if len(f.deskWS) == 1 {
+		return fmt.Errorf("400: the desk keeps one workspace at least")
+	}
+	in := slices.ContainsFunc(f.desk, func(s DeskSession) bool { return s.Workspace == id })
+	if in && !end {
+		return fmt.Errorf("409: %s has sessions", f.deskWS[i].Name)
+	}
+	f.desk = slices.DeleteFunc(f.desk, func(s DeskSession) bool { return s.Workspace == id })
+	f.deskWS = slices.Delete(f.deskWS, i, i+1)
+	f.deskVer++
+	f.record("desk workspace delete %s end=%v", id, end)
+	return nil
+}
+
+// DeskPaste takes the paste and says where the demo machine has it.
+func (f *Fake) DeskPaste(ctx context.Context, session, file string, body io.Reader, size int64, tar bool) (*DeskPasted, error) {
+	n, _ := io.Copy(io.Discard, body)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.admin(); err != nil {
+		return nil, err
+	}
+	f.record("desk paste %s %s tar=%v %d", session, file, tar, n)
+	return &DeskPasted{Path: fakeHome + "/.karmax/fleet/desk-paste/" + strings.ReplaceAll(file, " ", "-"), Size: n}, nil
+}
+
+// DeskTerm is a demo session's terminal: its screen, then a prompt that
+// echoes what is typed.
+func (f *Fake) DeskTerm(ctx context.Context, name string, cols, rows int, force bool) (TermConn, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.admin(); err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(f.desk, func(s DeskSession) bool { return s.Name == name })
+	if i < 0 {
+		return nil, fmt.Errorf("404: no desk session %q", name)
+	}
+	t := &FakeTerm{Name: name, in: make(chan fakeTermMsg, 256), done: make(chan struct{})}
+	t.in <- fakeTermMsg{frame: &TermFrame{Type: FrameHello, Worker: DeskWorker(name), Mode: TermType, Cols: cols, Rows: rows}}
+	screen := strings.ReplaceAll(fakeDeskScreen(f.desk[i], f.step), "\n", "\r\n")
+	t.in <- fakeTermMsg{data: []byte("\x1b[H\x1b[2J" + screen + "\r\n$ ")}
+	f.record("desk term %s %dx%d force=%v", name, cols, rows, force)
+	if f.terms == nil {
+		f.terms = map[string]*FakeTerm{}
+	}
+	f.terms[name] = t
+	return t, nil
+}
+
+type fakeTermMsg struct {
+	data  []byte
+	frame *TermFrame
+}
+
+// FakeTerm is a demo session's terminal: what is typed comes back, a new
+// line a new prompt.
+type FakeTerm struct {
+	Name string
+	mu   sync.Mutex
+	in   chan fakeTermMsg
+	done chan struct{}
+	once sync.Once
+	// Typed is everything sent, Sizes every resize: what a test reads.
+	Typed []byte
+	Sizes [][2]int
+}
+
+func (t *FakeTerm) Recv(ctx context.Context) ([]byte, *TermFrame, error) {
+	select {
+	case m := <-t.in:
+		return m.data, m.frame, nil
+	case <-t.done:
+		return nil, nil, io.EOF
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+}
+
+func (t *FakeTerm) Send(ctx context.Context, data []byte) error {
+	t.mu.Lock()
+	t.Typed = append(t.Typed, data...)
+	t.mu.Unlock()
+	echo := strings.ReplaceAll(string(data), "\r", "\r\n$ ")
+	select {
+	case t.in <- fakeTermMsg{data: []byte(echo)}:
+	case <-t.done:
+		return io.EOF
+	default: // nobody reads: drop the echo
+	}
+	return nil
+}
+
+func (t *FakeTerm) Resize(ctx context.Context, cols, rows int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Sizes = append(t.Sizes, [2]int{cols, rows})
+	return nil
+}
+
+func (t *FakeTerm) Close() error {
+	t.once.Do(func() { close(t.done) })
+	return nil
+}
+
+// TypedText is what was typed so far.
+func (t *FakeTerm) TypedText() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.Typed)
+}
+
+// Emit is the session's program writing data: a test's output.
+func (t *FakeTerm) Emit(data []byte) {
+	select {
+	case t.in <- fakeTermMsg{data: data}:
+	case <-t.done:
+	}
+}
+
+// SetDeskStatus changes a demo session's Claude Code status, as fleetd's
+// next look would see it.
+func (f *Fake) SetDeskStatus(name, status string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seedDesk()
+	for i := range f.desk {
+		if f.desk[i].Name == name {
+			f.desk[i].Status = status
+			f.desk[i].Busy = status == StatusWorking
+			f.deskVer++
+		}
+	}
+}
+
+// DeskTermOf is session name's latest terminal, nil before one.
+func (f *Fake) DeskTermOf(name string) *FakeTerm {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.terms[name]
+}
+
+// SetDeskNote gives a demo session a note from its Claude Code's hooks, at
+// at; kind "" clears it.
+func (f *Fake) SetDeskNote(name, kind, text string, at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seedDesk()
+	for i := range f.desk {
+		if f.desk[i].Name == name {
+			f.desk[i].Note = nil
+			if kind != "" {
+				f.desk[i].Note = &DeskNote{Kind: kind, Text: text, At: at}
+			}
+			f.deskVer++
+		}
+	}
 }

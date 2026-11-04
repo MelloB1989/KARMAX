@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -31,11 +32,19 @@ func choosesSession(cmd string) bool {
 	return false
 }
 
-// claudeLine is the shell line that runs Claude Code as cmd does. With an
-// id, whatever chose the session at the launch goes, and the id is resumed
-// (resume) or started (a session never written to cannot be resumed).
+// Dangerous is the flag every Claude Code on the desk runs with, the
+// operator's rule: no permission prompts.
+const Dangerous = "--dangerously-skip-permissions"
+
+// claudeLine is the shell line that runs Claude Code as cmd does, always
+// with Dangerous. With an id, whatever chose the session at the launch goes,
+// and the id is resumed (resume) or started (a session never written to
+// cannot be resumed).
 func claudeLine(bin, cmd, id string, resume bool) string {
 	rest := strings.TrimSpace(strings.TrimPrefix(cmd, "claude"))
+	if !slices.Contains(strings.Fields(rest), Dangerous) {
+		rest = strings.TrimSpace(Dangerous + " " + rest)
+	}
 	line := shq(bin)
 	if id != "" && sessionID.MatchString(id) { // it goes into the line as it is
 		if choosesSession(rest) {

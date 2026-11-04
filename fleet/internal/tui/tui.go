@@ -21,6 +21,7 @@ import (
 
 	"time"
 
+	"github.com/MelloB1989/karmax/fleet/internal/clipboard"
 	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 )
 
@@ -34,6 +35,15 @@ type Options struct {
 	// same view.
 	Attach func(worker string, mode fleetapi.TermMode) tea.ExecCommand
 	Now    func() time.Time // the clock; time.Now when nil (tests fix it)
+	// Clipboard is this machine's (files, images): what the Sessions tab
+	// pastes into a session with Ctrl+V. nil: none here.
+	Clipboard clipboard.Clipboard
+	// Local: the TUI runs on fleetd's own machine, so a pasted file's path
+	// is already a path there.
+	Local bool
+	// DeskState is where the Sessions tab keeps its choices (the workspace
+	// shown, each one's focus, the sidebar); "" keeps none.
+	DeskState string
 }
 
 // Ctx is what every tab draws from and acts through. The app owns it; a
@@ -52,7 +62,31 @@ type Ctx struct {
 	// Selected is the worker the user last selected, shared by tabs so
 	// Fleet → Screens keeps the same agent in view.
 	Selected string
+	// Clipboard, Local and DeskState are the Options' (the Sessions tab's).
+	Clipboard clipboard.Clipboard
+	Local     bool
+	DeskState string
 }
+
+// What a tab may be besides a Tab.
+type (
+	// fullscreener draws the whole terminal, no frame around it.
+	fullscreener interface{ Fullscreen() bool }
+	// rawer takes every key while Raw, Ctrl-C and the app's own too.
+	rawer interface{ Raw() bool }
+	// cursorer puts the terminal's cursor somewhere (nil hides it).
+	cursorer interface{ Cursor() *tea.Cursor }
+	// mouser wants the mouse.
+	mouser interface{ Mouse() bool }
+	// titler names the terminal window ("" keeps the app's).
+	titler interface{ WindowTitle() string }
+	// focuser wants to hear when the terminal window gains or loses focus.
+	focuser interface{ ReportFocus() bool }
+	// backgrounder takes its own messages while another tab is shown.
+	backgrounder interface{ Background(msg tea.Msg) bool }
+	// waker starts its work as snapshots come, shown or not.
+	waker interface{ Wake(c *Ctx) tea.Cmd }
+)
 
 // Tab is one tab of the TUI.
 type Tab interface {

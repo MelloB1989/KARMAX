@@ -26,6 +26,9 @@ type Fake struct {
 	devices []Device
 	knocks  []Knock
 	desk    []DeskSession
+	deskWS  []DeskWorkspace
+	deskVer int
+	terms   map[string]*FakeTerm // each session's latest terminal
 	Calls   []string
 	// ScreensAsked is the workers of each Screens call, in order.
 	ScreensAsked [][]string

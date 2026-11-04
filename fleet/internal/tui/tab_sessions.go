@@ -1,116 +1,196 @@
 package tui
 
 import (
-	"cmp"
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
-	"image/color"
-	"path"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 )
 
+// The Sessions tab is the desk as workspaces, cmux's way, in the terminal:
+// a sidebar of workspaces (⌘B, or b, hides it), and the chosen one's
+// sessions live, in its layout. Keys go to the focused session; Ctrl-]
+// steps out to move around (and back with ⏎). A file pasted or dropped
+// here, or an image on the clipboard (Ctrl+V), goes to the session's
+// machine and is typed there as its path.
+
+type deskMode int
+
 const (
-	deskEvery   = 2 * time.Second  // how often the shown desk is polled
-	deskTimeout = 20 * time.Second // one poll's bound
-	// deskLost: an answer this late went to another tab (this one was
-	// hidden) or nowhere; the next poll goes without it.
-	deskLost     = 5 * time.Second
-	deskTileW    = 52 // the grid has width ÷ deskTileW columns …
-	deskCols     = 3  // … at most three
-	deskTileH    = 8  // and rows of at least this many lines
-	dirsWait     = 150 * time.Millisecond
-	restoredNew  = 15 * time.Minute // a restore this recent is badged
-	deskSuggests = 5                // directories the launch form lists at once
+	navMode  deskMode = iota // keys move around the desk
+	typeMode                 // keys go to the focused session
 )
 
-// deskTab is the Sessions tab (admins): the operator's own tmux sessions on
-// fleetd's machine, the desk, as a grid of live screens, polled every 2 s
-// while shown. ⏎ attaches and detaching comes back here; n launches one.
-type deskTab struct {
-	list    *fleetapi.DeskList   // the last answer, keeping screens a failed capture would blank
-	seen    map[string]time.Time // when each session's screen arrived, by this clock
-	err     string               // the last poll's failure; "" once one answers
-	sel     string               // the selected session
-	selI    int                  // and its place, kept when it goes
-	zoom    bool
-	off     int  // the first row of tiles in view
-	w, h    int  // the body's size, from the last View
-	lines   int  // the lines the last poll asked for
-	flying  bool // a poll is out
-	sentAt  time.Time
-	now     bool // poll at once: r, a change, or back from a session
-	away    bool // an attach is out; the app's toast says it is back
-	confirm *confirm
-	form    *launchForm
-	attach  bool     // attach on launch
-	recent  []string // directories launched from here, newest first
-}
-
-func newSessions() Tab { return &deskTab{seen: map[string]time.Time{}, attach: true} }
+// deskRetry bounds the long poll's backoff.
+const deskRetry = 15 * time.Second
 
 type (
-	deskMsg struct {
+	deskListMsg struct {
 		list *fleetapi.DeskList
 		err  error
 	}
-	deskTickMsg struct{}
-	deskMadeMsg struct {
-		s   *fleetapi.DeskSession
-		err error
-	}
-	deskEndedMsg struct {
-		name string
-		err  error
-	}
-	// dirsTickMsg is a pause in typing the directory: n is its edit count.
-	dirsTickMsg struct{ n int }
-	dirsMsg     struct {
-		n    int
-		dirs []string
-		err  error
+	deskRetryMsg struct{}
+	// deskDoneMsg is a change to the desk sent: what to say, and a session
+	// or workspace to show once the desk has it.
+	deskDoneMsg struct {
+		say    string
+		err    error
+		focus  string // a session
+		active string // a workspace
 	}
 )
 
+// sideRow is a row of the sidebar: a workspace's card, or a session of the
+// shown workspace.
+type sideRow struct {
+	ws      string
+	session string // "" for the workspace's card
+}
+
+// hit is a place on screen the mouse may click.
+type hit struct {
+	b       box
+	ws      string // a workspace's card
+	session string // a session's row, tab or pane
+	pane    bool   // the session's terminal: clicks go into it
+	term    box    // its terminal's cells, for a pane
+	layout  bool   // the layout's name: the next layout
+}
+
+type deskTab struct {
+	mgr *termMgr
+
+	list    *fleetapi.DeskList
+	err     string // the last poll's failure; "" once one answers
+	polling atomic.Bool
+	pollAt  time.Time // when the poll out was sent
+	retryAt time.Time
+	back    time.Duration
+
+	mode     deskMode
+	active   string            // the workspace shown
+	focus    map[string]string // each workspace's focused session
+	sidebar  bool
+	cursor   int // navMode: the sidebar row
+	zoom     bool
+	unread   map[string]string // a session's news while not seen: finished | waiting
+	statuses map[string]string // each session's last status
+	w, h     int
+
+	// What View drew, for the mouse and the cursor.
+	hits      []hit
+	termBoxes map[string]box
+	drag      string // the session a mouse button went down in
+
+	// The questions: one at a time.
+	form    *launchForm
+	confirm *confirm
+	ask     *askLine
+	pick    *wsPick
+
+	// What Claude Code said, as notices: the newest first.
+	notices   []notice
+	noteAt    map[string]time.Time // each session's latest note taken
+	hooked    map[string]bool      // its Claude Code has hooks: its notes are the news, not its status
+	termFocus bool                 // the terminal window has the focus (until told otherwise)
+	viewedAt  time.Time            // View last drew the tab: it is on screen
+	panel     *noticePanel         // the notices, listed (!)
+	recent    []string
+	// want is a workspace just made: shown once the desk has it.
+	want   string
+	state  string // where the window's choices are kept ("" nowhere)
+	loaded bool
+	toast  ToastMsg
+	toastT time.Time
+}
+
+func newSessions() Tab {
+	return &deskTab{focus: map[string]string{}, unread: map[string]string{}, statuses: map[string]string{}, sidebar: true,
+		noteAt: map[string]time.Time{}, hooked: map[string]bool{}, termFocus: true}
+}
+
+// notice is something a session's Claude Code said: it needs the operator,
+// or its turn ended.
+type notice struct {
+	at      time.Time
+	session string
+	ws      string
+	kind    string // fleetapi.NoteNeeds | NoteDone
+	text    string
+}
+
+// maxNotices is how many notices are kept.
+const maxNotices = 50
+
 func (d *deskTab) Title() string               { return "Sessions" }
 func (d *deskTab) Visible(me fleetapi.Me) bool { return me.Role == fleetapi.RoleAdmin }
-func (d *deskTab) Capturing() bool             { return d.form != nil || d.confirm != nil }
+func (d *deskTab) Capturing() bool {
+	return d.form != nil || d.confirm != nil || d.ask != nil || d.pick != nil || d.panel != nil
+}
 
-var deskKeys = struct{ Move, Attach, Watch, New, End, Zoom, Refresh, Quick key.Binding }{
-	Move:    key.NewBinding(key.WithKeys("up", "down", "left", "right", "k", "j", "h", "l"), key.WithHelp("←↑↓→", "select")),
-	Attach:  key.NewBinding(key.WithKeys("enter", "a"), key.WithHelp("⏎/a", "attach")),
-	Watch:   keyIs("w", "watch"),
-	New:     keyIs("n", "new"),
-	End:     keyIs("x", "end"),
-	Zoom:    keyIs("z", "zoom"),
-	Refresh: keyIs("r", "refresh"),
-	Quick:   key.NewBinding(key.WithKeys("alt+1"), key.WithHelp("alt+1–9", "attach Nth")),
+// ReportFocus: the terminal says when its window gains and loses the focus,
+// so that a session on screen in a window not looked at is still news.
+func (d *deskTab) ReportFocus() bool { return true }
+
+// Background: the desk keeps listening while another tab is shown, so that
+// a session that needs the operator is said wherever they are.
+func (d *deskTab) Background(msg tea.Msg) bool {
+	switch msg.(type) {
+	case deskListMsg, deskRetryMsg, deskPaintMsg, tea.FocusMsg, tea.BlurMsg:
+		return true
+	}
+	return false
+}
+
+// Wake starts the desk's long poll (the app calls it as snapshots come,
+// for an admin).
+func (d *deskTab) Wake(c *Ctx) tea.Cmd { return d.Update(deskRetryMsg{}, c) }
+
+// Raw: while typing into a session every key is the session's, Ctrl-C and
+// the digits too.
+func (d *deskTab) Raw() bool { return d.mode == typeMode && !d.Capturing() }
+
+// Fullscreen: the desk takes the whole terminal, as a multiplexer does.
+func (d *deskTab) Fullscreen() bool { return true }
+
+// Mouse: clicks choose, the wheel scrolls a session's history.
+func (d *deskTab) Mouse() bool { return true }
+
+var deskKeys = struct{ Type, Nav, Move, New, Workspace, Layout, Rename, MoveTo, End, Zoom, Sidebar, Order key.Binding }{
+	Type:      key.NewBinding(key.WithKeys("enter", "i"), key.WithHelp("⏎", "type in it")),
+	Nav:       keyIs("ctrl+]", "step out (typing)"),
+	Move:      key.NewBinding(key.WithKeys("up", "down", "k", "j"), key.WithHelp("↑↓", "workspaces, sessions")),
+	New:       keyIs("n", "new session"),
+	Workspace: keyIs("W", "new workspace"),
+	Layout:    keyIs("l", "layout"),
+	Rename:    keyIs("r", "rename"),
+	MoveTo:    keyIs("m", "move to workspace"),
+	End:       keyIs("x", "end"),
+	Zoom:      keyIs("z", "zoom"),
+	Sidebar:   key.NewBinding(key.WithKeys("b"), key.WithHelp("b/⌘B", "sidebar")),
+	Order:     key.NewBinding(key.WithKeys("K", "J"), key.WithHelp("⇧↑↓", "reorder")),
 }
 
 func (d *deskTab) Help() []key.Binding {
 	k := deskKeys
-	switch {
-	case d.form != nil:
-		return []key.Binding{keyIs("⏎", "launch"), keyIs("tab", "complete"), keyIs("↑↓", "choose"), keyIs("ctrl+a", "attach on launch"), keyIs("esc", "cancel")}
-	case d.confirm != nil:
-		return []key.Binding{keyIs("y", "end it"), keyIs("n", "keep it")}
-	case d.zoom:
-		return []key.Binding{k.Move, k.Attach, k.Watch, keyIs("esc", "grid")}
-	}
-	return []key.Binding{k.Move, k.Attach, k.Watch, k.New, k.End, k.Zoom, k.Refresh, k.Quick}
+	return []key.Binding{k.Type, k.Nav, k.Move, k.New, k.Workspace, k.Layout, k.Rename, k.MoveTo, k.End, k.Zoom, k.Sidebar, k.Order,
+		keyIs("[ ]", "sessions"), keyIs("{ }", "workspaces"), keyIs("alt+1–9", "workspace N"), keyIs("ctrl+v", "paste a file or image (typing)")}
 }
 
-// sessions is the desk in its order.
+// ---- the desk as known ----
+
 func (d *deskTab) sessions() []fleetapi.DeskSession {
 	if d.list == nil {
 		return nil
@@ -118,7 +198,6 @@ func (d *deskTab) sessions() []fleetapi.DeskSession {
 	return d.list.Sessions
 }
 
-// host is the machine the desk is on.
 func (d *deskTab) host() string {
 	if d.list == nil || d.list.Host == "" {
 		return "fleetd's machine"
@@ -126,86 +205,207 @@ func (d *deskTab) host() string {
 	return d.list.Host
 }
 
-// reselect keeps the selection on its session as the desk changes, or on
-// its place when that session has gone.
-func (d *deskTab) reselect() {
-	ss := d.sessions()
-	if len(ss) == 0 {
-		d.sel, d.selI, d.zoom = "", 0, false
-		return
+func (d *deskTab) workspaces() []fleetapi.DeskWorkspace {
+	if d.list == nil {
+		return nil
 	}
-	if i := slices.IndexFunc(ss, func(s fleetapi.DeskSession) bool { return s.Name == d.sel }); i >= 0 {
-		d.selI = i
-		return
-	}
-	d.selI = min(max(d.selI, 0), len(ss)-1)
-	d.sel = ss[d.selI].Name
+	return d.list.Workspaces
 }
 
-// setList takes sessions as the desk, in their order.
-func (d *deskTab) setList(host string, ss []fleetapi.DeskSession) {
-	slices.SortStableFunc(ss, func(a, b fleetapi.DeskSession) int { return cmp.Compare(a.Order, b.Order) })
-	d.list = &fleetapi.DeskList{Host: host, Sessions: ss}
-	d.reselect()
-}
-
-func ceilDiv(a, b int) int { return (a + b - 1) / b }
-
-// deskGrid lays n tiles out in a w×h body: columns (1–3), rows in view and
-// the tile height. When every tile fits the columns are balanced, so four
-// tiles are 2×2, not 3 and 1.
-func deskGrid(n, w, h int) (cols, rows, tileH int) {
-	cols = min(deskCols, max(1, w/deskTileW))
-	fit := max(1, h/deskTileH)
-	if n > 0 && n <= cols*fit {
-		cols = min(cols, n)
-		for cols > 1 && ceilDiv(n, cols-1) == ceilDiv(n, cols) {
-			cols--
+func (d *deskTab) ws(id string) (fleetapi.DeskWorkspace, bool) {
+	for _, w := range d.workspaces() {
+		if w.ID == id {
+			return w, true
 		}
-		rows = ceilDiv(n, cols)
-	} else {
-		rows = fit
 	}
-	return cols, rows, max(1, h/rows)
+	return fleetapi.DeskWorkspace{}, false
 }
 
-// gridH is the grid's height: the body less the header and a question.
-func (d *deskTab) gridH() int {
-	h := d.h - 1
-	if d.confirm != nil {
-		h--
+func (d *deskTab) wsName(id string) string {
+	if w, ok := d.ws(id); ok {
+		return w.Name
 	}
-	return max(0, h)
+	return "the workspace"
 }
 
-// tileLines is how many lines of screen a tile shows: the zoomed one's,
-// or, before the desk is known, a lone tile's.
-func (d *deskTab) tileLines() int {
-	if d.w <= 0 || d.h <= 0 {
-		return 40
+func (d *deskTab) session(name string) (fleetapi.DeskSession, bool) {
+	for _, s := range d.sessions() {
+		if s.Name == name {
+			return s, true
+		}
 	}
-	if d.zoom {
-		return max(1, d.h-2)
-	}
-	_, _, th := deskGrid(max(1, len(d.sessions())), d.w, d.gridH())
-	return max(1, th-2)
+	return fleetapi.DeskSession{}, false
 }
+
+// in is workspace id's sessions, in order.
+func (d *deskTab) in(id string) []fleetapi.DeskSession {
+	var out []fleetapi.DeskSession
+	for _, s := range d.sessions() {
+		if s.Workspace == id {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// focused is the shown workspace's focused session, "" for none.
+func (d *deskTab) focused() string { return d.focus[d.active] }
+
+// shownName is how a session is named on screen: the label the operator
+// gave it, else what Claude Code calls it, else tmux's name.
+func shownName(s fleetapi.DeskSession) string {
+	switch {
+	case s.Label != "":
+		return s.Label
+	case s.Title != "" && s.Title != "Claude Code":
+		return s.Title
+	}
+	return s.Name
+}
+
+// settle keeps the shown workspace and each focus on something that is
+// there.
+func (d *deskTab) settle() {
+	wss := d.workspaces()
+	if len(wss) == 0 {
+		return
+	}
+	if _, ok := d.ws(d.active); !ok {
+		d.active = wss[0].ID
+	}
+	for _, w := range wss {
+		ss := d.in(w.ID)
+		if f := d.focus[w.ID]; !slices.ContainsFunc(ss, func(s fleetapi.DeskSession) bool { return s.Name == f }) {
+			if len(ss) > 0 {
+				d.focus[w.ID] = ss[0].Name
+			} else {
+				delete(d.focus, w.ID)
+			}
+		}
+	}
+	if d.focused() == "" && d.mode == typeMode {
+		d.mode = navMode
+	}
+	rows := d.rows()
+	d.cursor = min(max(d.cursor, 0), max(len(rows)-1, 0))
+}
+
+// rows is the sidebar's rows: each workspace, the shown one's sessions
+// under it.
+func (d *deskTab) rows() []sideRow {
+	var out []sideRow
+	for _, w := range d.workspaces() {
+		out = append(out, sideRow{ws: w.ID})
+		if w.ID == d.active {
+			for _, s := range d.in(w.ID) {
+				out = append(out, sideRow{ws: w.ID, session: s.Name})
+			}
+		}
+	}
+	return out
+}
+
+// syncCursor puts the sidebar's cursor on the focused session, else on the
+// shown workspace.
+func (d *deskTab) syncCursor() {
+	for i, r := range d.rows() {
+		if r.ws == d.active && r.session == d.focused() {
+			d.cursor = i
+			return
+		}
+	}
+	for i, r := range d.rows() {
+		if r.ws == d.active && r.session == "" {
+			d.cursor = i
+			return
+		}
+	}
+}
+
+// ---- the window's choices, kept ----
+
+type deskUI struct {
+	Active  string            `json:"active"`
+	Focus   map[string]string `json:"focus"`
+	Sidebar bool              `json:"sidebar"`
+}
+
+func (d *deskTab) loadUI(c *Ctx) {
+	if d.loaded {
+		return
+	}
+	d.loaded, d.state = true, c.DeskState
+	if d.state == "" {
+		return
+	}
+	b, err := os.ReadFile(d.state)
+	if err != nil {
+		return
+	}
+	var u deskUI
+	if json.Unmarshal(b, &u) != nil {
+		return
+	}
+	d.active, d.sidebar = u.Active, u.Sidebar
+	for k, v := range u.Focus {
+		d.focus[k] = v
+	}
+}
+
+func (d *deskTab) saveUI() {
+	if d.state == "" {
+		return
+	}
+	b, _ := json.Marshal(deskUI{Active: d.active, Focus: d.focus, Sidebar: d.sidebar})
+	os.MkdirAll(filepath.Dir(d.state), 0o700)
+	tmp := d.state + ".new"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		os.Rename(tmp, d.state)
+	}
+}
+
+// ---- update ----
 
 func (d *deskTab) Update(msg tea.Msg, c *Ctx) tea.Cmd {
+	d.loadUI(c)
+	if d.mgr == nil && c.Client != nil {
+		d.mgr = newTermMgr(context.Background(), c.Client)
+	}
 	var cmds []tea.Cmd
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		if d.w == 0 { // until the first View: about the body's size
-			d.w, d.h = max(0, m.Width-4), max(0, m.Height-frameRows)
+		d.w, d.h = m.Width, m.Height
+	case deskListMsg:
+		cmds = append(cmds, d.take(m, c))
+	case deskRetryMsg:
+	case deskPaintMsg:
+		for _, s := range m.clips {
+			cmds = append(cmds, tea.SetClipboard(s), toastCmd(fmt.Sprintf("copied %d characters", len([]rune(s))), false))
 		}
-	case deskMsg:
-		d.flying = false
-		d.take(m, c)
-		cmds = append(cmds, tea.Tick(deskEvery, func(time.Time) tea.Msg { return deskTickMsg{} }))
+	case deskDoneMsg:
+		if m.err != nil {
+			cmds = append(cmds, toastCmd(m.err.Error(), true))
+		} else {
+			if m.active != "" {
+				if _, ok := d.ws(m.active); ok {
+					d.active = m.active
+				} else {
+					d.want = m.active
+				}
+			}
+			if m.focus != "" {
+				if s, ok := d.session(m.focus); ok {
+					d.active, d.focus[s.Workspace] = s.Workspace, s.Name
+				}
+			}
+			if m.say != "" {
+				cmds = append(cmds, toastCmd(m.say, false))
+			}
+		}
 	case deskMadeMsg:
-		cmds = append(cmds, d.made(m, c))
-	case deskEndedMsg:
-		cmds = append(cmds, d.ended(m))
+		cmds = append(cmds, d.made(m))
+	case deskPastedMsg:
+		cmds = append(cmds, d.pasted(m))
 	case dirsTickMsg:
 		if d.form != nil && m.n == d.form.n {
 			cmds = append(cmds, d.form.lookup(c))
@@ -214,197 +414,707 @@ func (d *deskTab) Update(msg tea.Msg, c *Ctx) tea.Cmd {
 		if d.form != nil {
 			d.form.offered(m)
 		}
-	case tea.PasteMsg:
-		if d.form != nil {
-			cmds = append(cmds, d.form.typeInto(m))
-		}
 	case ToastMsg:
-		if d.away { // back from a session
-			d.away, d.now = false, true
-		}
+		d.toast, d.toastT = m, c.Now
+	case tea.FocusMsg:
+		d.termFocus = true
+	case tea.BlurMsg:
+		d.termFocus = false
 	case tea.KeyPressMsg:
 		cmds = append(cmds, d.key(m, c))
+	case tea.PasteMsg:
+		cmds = append(cmds, d.paste(m, c))
+	case tea.MouseClickMsg:
+		cmds = append(cmds, d.click(m.Mouse(), c))
+	case tea.MouseReleaseMsg:
+		d.mouseTo(d.drag, uv.MouseReleaseEvent(toUV(m.Mouse())))
+		d.drag = ""
+	case tea.MouseMotionMsg:
+		if d.drag != "" {
+			d.mouseTo(d.drag, uv.MouseMotionEvent(toUV(m.Mouse())))
+		}
+	case tea.MouseWheelMsg:
+		mm := m.Mouse()
+		for _, h := range d.hits {
+			if h.pane && h.term.in(mm.X, mm.Y) {
+				d.mouseTo(h.session, uv.MouseWheelEvent(toUV(mm)))
+				break
+			}
+		}
 	}
-	return tea.Batch(append(cmds, d.fetch(c))...)
+	d.settle()
+	d.arrange(c)
+	if d.mgr != nil {
+		cmds = append(cmds, d.mgr.wait())
+	}
+	cmds = append(cmds, d.poll(c))
+	return tea.Batch(cmds...)
 }
 
-// take is a poll's answer. A failed poll keeps the screens shown, marked
-// with their age (tile); so does a session whose own capture failed.
-func (d *deskTab) take(m deskMsg, c *Ctx) {
+func toUV(m tea.Mouse) uv.Mouse {
+	return uv.Mouse{X: m.X, Y: m.Y, Button: uv.MouseButton(m.Button), Mod: m.Mod}
+}
+
+// mouseTo gives a mouse event to session's program, at its terminal's
+// cells.
+func (d *deskTab) mouseTo(session string, ev uv.MouseEvent) {
+	b, ok := d.termBoxes[session]
+	if !ok || d.mgr == nil {
+		return
+	}
+	t := d.mgr.peek(session)
+	if t == nil {
+		return
+	}
+	shift := func(m uv.Mouse) uv.Mouse {
+		m.X, m.Y = min(max(m.X-b.x, 0), b.w-1), min(max(m.Y-b.y, 0), b.h-1)
+		return m
+	}
+	switch e := ev.(type) {
+	case uv.MouseClickEvent:
+		t.mouse(uv.MouseClickEvent(shift(uv.Mouse(e))))
+	case uv.MouseReleaseEvent:
+		t.mouse(uv.MouseReleaseEvent(shift(uv.Mouse(e))))
+	case uv.MouseMotionEvent:
+		t.mouse(uv.MouseMotionEvent(shift(uv.Mouse(e))))
+	case uv.MouseWheelEvent:
+		t.mouse(uv.MouseWheelEvent(shift(uv.Mouse(e))))
+	}
+}
+
+// poll is the long poll for the desk's changes: one at a time, again at
+// once after an answer, after a backoff after a failure.
+func (d *deskTab) poll(c *Ctx) tea.Cmd {
+	if c.Client == nil || c.Now.Before(d.retryAt) {
+		return nil
+	}
+	if !d.polling.CompareAndSwap(false, true) {
+		if c.Now.Sub(d.pollAt) < 2*time.Minute { // out; one older is lost
+			return nil
+		}
+	}
+	d.pollAt = c.Now
+	since := ""
+	if d.list != nil {
+		since = d.list.Version
+	}
+	cl := c.Client
+	return func() tea.Msg {
+		defer d.polling.Store(false) // an answer another tab got is lost: the next Update asks again
+		l, err := cl.DeskWatch(context.Background(), since)
+		return deskListMsg{list: l, err: err}
+	}
+}
+
+// take is the desk as fleetd now says: what finished or asks for the
+// operator while not seen is marked, and said.
+func (d *deskTab) take(m deskListMsg, c *Ctx) tea.Cmd {
 	if m.err != nil || m.list == nil {
 		d.err = "fleetd sent no desk"
 		if m.err != nil {
-			d.err = m.err.Error()
+			d.err = oneLine(m.err.Error())
 		}
-		return
+		d.back = min(max(d.back*2, time.Second), deskRetry)
+		d.retryAt = c.Now.Add(d.back)
+		return tea.Tick(d.back, func(time.Time) tea.Msg { return deskRetryMsg{} })
 	}
-	d.err = ""
-	old := map[string]fleetapi.DeskSession{}
-	for _, s := range d.sessions() {
-		old[s.Name] = s
+	d.err, d.back = "", 0
+	first := d.list == nil
+	d.list = m.list
+	if _, ok := d.ws(d.want); ok {
+		d.active, d.want = d.want, ""
+		d.syncCursor()
 	}
-	ss := slices.Clone(m.list.Sessions)
-	for i, s := range ss {
-		if o := old[s.Name]; s.Text == "" && s.Error != "" && o.Text != "" {
-			ss[i].Text, ss[i].Cols, ss[i].At = o.Text, o.Cols, o.At
+	if first && d.active == "" && len(m.list.Workspaces) > 0 {
+		d.active = m.list.Workspaces[0].ID
+	}
+	return d.news(m.list, first, c)
+}
+
+// news is what changed for the operator since the last list: a note from a
+// session's Claude Code (its hooks), or, for one without hooks, its status
+// (asking, or done working). A notice for a session on screen, in a window
+// looked at, is seen already; any other is marked, kept, said in the
+// footer and sent to the desktop.
+func (d *deskTab) news(l *fleetapi.DeskList, first bool, c *Ctx) tea.Cmd {
+	looked := d.termFocus && c.Now.Sub(d.viewedAt) < 2*time.Second
+	shown := d.shownSet()
+	var fresh []notice
+	seen := map[string]bool{}
+	for _, s := range l.Sessions {
+		seen[s.Name] = true
+		was, now := d.statuses[s.Name], s.Status
+		d.statuses[s.Name] = now
+		if s.Note != nil {
+			d.hooked[s.Name] = true
+			if s.Note.At.After(d.noteAt[s.Name]) {
+				d.noteAt[s.Name] = s.Note.At
+				if !first {
+					fresh = append(fresh, notice{at: c.Now, session: s.Name, ws: s.Workspace, kind: s.Note.Kind, text: s.Note.Text})
+				}
+			}
 			continue
 		}
-		d.seen[s.Name] = c.Now
-	}
-	d.setList(m.list.Host, ss)
-}
-
-// fetch polls the desk when the last poll is 2 s old, one is wanted now,
-// or the tiles now hold more lines than it asked for; one poll at a time.
-func (d *deskTab) fetch(c *Ctx) tea.Cmd {
-	if c.Client == nil {
-		return nil
-	}
-	lines := d.tileLines()
-	if d.flying && c.Now.Sub(d.sentAt) < deskLost {
-		return nil // its answer polls again if it is not enough
-	}
-	if !d.now && lines <= d.lines && c.Now.Sub(d.sentAt) < deskEvery {
-		return nil
-	}
-	d.lines, d.flying, d.sentAt, d.now = lines, true, c.Now, false
-	cl := c.Client
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), deskTimeout)
-		defer cancel()
-		l, err := cl.Desk(ctx, lines)
-		return deskMsg{list: l, err: err}
-	}
-}
-
-func (d *deskTab) key(m tea.KeyPressMsg, c *Ctx) tea.Cmd {
-	k := m.String()
-	if d.confirm != nil {
-		cf := d.confirm
-		d.confirm = nil
-		return cf.update(k)
-	}
-	if d.form != nil {
-		return d.formKey(m, c)
-	}
-	switch k {
-	case "n":
-		d.form = newLaunchForm(c.Theme, d.recents())
-		if len(d.form.recents) == 0 { // fleetd's starting points: home, the code
-			return d.form.lookup(c)
+		if first || was == now || d.hooked[s.Name] {
+			continue
 		}
-		return nil
-	case "r":
-		d.now = true
-		return nil
-	}
-	ss := d.sessions()
-	if len(ss) == 0 {
-		return nil
-	}
-	d.reselect()
-	step := 1
-	if !d.zoom { // up and down move a row; zoomed, every move is one tile
-		step, _, _ = deskGrid(len(ss), d.w, d.gridH())
-	}
-	i := d.selI
-	switch k {
-	case "up", "k":
-		i = max(0, i-step)
-	case "down", "j":
-		i = min(len(ss)-1, i+step)
-	case "left", "h":
-		i = max(0, i-1)
-	case "right", "l":
-		i = min(len(ss)-1, i+1)
-	case "enter", "a":
-		return d.attachTo(c, ss[i].Name, fleetapi.TermType)
-	case "w":
-		return d.attachTo(c, ss[i].Name, fleetapi.TermWatch)
-	case "z":
-		d.zoom = !d.zoom
-	case "esc":
-		d.zoom = false
-	case "x":
-		d.confirm = d.endConfirm(c, ss[i])
-	default:
-		if n, ok := quickKey(k); ok {
-			if n >= len(ss) {
-				return toastCmd(fmt.Sprintf("there is no session %d", n+1), true)
-			}
-			d.selI, d.sel = n, ss[n].Name
-			return d.attachTo(c, ss[n].Name, fleetapi.TermType)
+		switch {
+		case now == fleetapi.StatusWaiting:
+			fresh = append(fresh, notice{at: c.Now, session: s.Name, ws: s.Workspace, kind: fleetapi.NoteNeeds, text: "needs you"})
+		case was == fleetapi.StatusWorking && now == fleetapi.StatusIdle:
+			fresh = append(fresh, notice{at: c.Now, session: s.Name, ws: s.Workspace, kind: fleetapi.NoteDone, text: "finished its turn"})
 		}
 	}
-	d.selI, d.sel = i, ss[i].Name
+	for n := range d.statuses {
+		if !seen[n] {
+			delete(d.statuses, n)
+			delete(d.unread, n)
+			delete(d.noteAt, n)
+			delete(d.hooked, n)
+		}
+	}
+	var cmds []tea.Cmd
+	var said []string
+	for _, n := range fresh {
+		if shown[n.session] && looked {
+			continue // the operator is looking at it
+		}
+		d.unread[n.session] = n.kind
+		d.notices = append([]notice{n}, d.notices...)
+		s, _ := d.session(n.session)
+		said = append(said, shownName(s)+" "+n.text)
+		cmds = append(cmds, notify("Claude · "+shownName(s), n.text+" · "+d.wsName(n.ws)))
+	}
+	if len(d.notices) > maxNotices {
+		d.notices = d.notices[:maxNotices]
+	}
+	if len(said) > 0 {
+		cmds = append(cmds, toastCmd(strings.Join(said, " · ")+" · u jumps there", false))
+	}
+	return tea.Batch(cmds...)
+}
+
+// jump goes to the session the newest notice is about that still waits to
+// be seen (else the newest at all), and types in it.
+func (d *deskTab) jump() tea.Cmd {
+	pick := -1
+	for i, n := range d.notices {
+		if _, ok := d.session(n.session); !ok {
+			continue
+		}
+		if d.unread[n.session] != "" {
+			pick = i
+			break
+		}
+		if pick < 0 {
+			pick = i
+		}
+	}
+	if pick < 0 {
+		return toastCmd("nothing new from Claude", false)
+	}
+	d.goTo(d.notices[pick].session)
 	return nil
 }
 
-// quickKey is alt+1 … alt+9's session, from 0.
-func quickKey(k string) (int, bool) {
-	if d, ok := strings.CutPrefix(k, "alt+"); ok && len(d) == 1 && d[0] >= '1' && d[0] <= '9' {
-		return int(d[0] - '1'), true
+// goTo shows session name in its workspace, and types in it.
+func (d *deskTab) goTo(name string) {
+	s, ok := d.session(name)
+	if !ok {
+		return
 	}
-	return 0, false
+	d.active, d.focus[s.Workspace], d.zoom = s.Workspace, s.Name, false
+	d.mode = typeMode
+	delete(d.unread, s.Name)
+	d.saveUI()
 }
 
-// attachTo joins session name in this terminal; the TUI comes back when
-// its terminal closes, and polls at once.
-func (d *deskTab) attachTo(c *Ctx, name string, mode fleetapi.TermMode) tea.Cmd {
-	if c.Attach == nil {
-		return toastCmd("attaching is not available here", true)
-	}
-	d.away = true
-	return c.Attach(fleetapi.DeskWorker(name), mode)
+// notify is a desktop notice through the terminal (OSC 777, which cmux,
+// Ghostty, iTerm2 and others take): a session needs the operator.
+func notify(title, body string) tea.Cmd {
+	clean := func(s string) string { return strings.NewReplacer(";", ",", "\x07", "", "\x1b", "").Replace(s) }
+	return tea.Raw("\x1b]777;notify;" + clean(title) + ";" + clean(body) + "\x07")
 }
 
-func (d *deskTab) endConfirm(c *Ctx, s fleetapi.DeskSession) *confirm {
-	why := "Its Claude Code session stays on disk."
-	if !isClaude(s.Command) {
-		why = "What runs in it stops."
+// shownSet is the sessions on screen now.
+func (d *deskTab) shownSet() map[string]bool {
+	out := map[string]bool{}
+	for n := range d.termBoxes {
+		out[n] = true
 	}
-	cl, name := c.Client, s.Name
-	return &confirm{ask: fmt.Sprintf("End %s? %s", name, why), act: func() tea.Msg {
+	return out
+}
+
+// ---- layout ----
+
+// frame is the screen's parts: the sidebar, the head line, the panes'
+// area and the foot line.
+func (d *deskTab) frame() (side box, head int, area box, foot int) {
+	w, h := d.w, d.h
+	sw := 0
+	if d.sidebar && w >= 60 {
+		sw = min(max(w*22/100, 28), 40)
+	}
+	side = box{0, 0, sw, h}
+	x := 0
+	if sw > 0 {
+		x = sw + 1
+	}
+	area = box{x, 1, max(0, w-x), max(0, h-2)}
+	return side, 0, area, h - 1
+}
+
+// panes is the shown workspace's sessions and where each goes; bar: one
+// shows at a time, under a bar of tabs (its first line).
+func (d *deskTab) panes() ([]fleetapi.DeskSession, []box, bool) {
+	ss := d.in(d.active)
+	w, _ := d.ws(d.active)
+	_, _, area, _ := d.frame()
+	fi := slices.IndexFunc(ss, func(s fleetapi.DeskSession) bool { return s.Name == d.focused() })
+	bs := paneBoxes(w.Layout, len(ss), fi, area, d.zoom)
+	if split(bs) || len(ss) == 0 {
+		return ss, bs, false
+	}
+	for i := range bs {
+		if bs[i].w > 0 {
+			bs[i].y, bs[i].h = bs[i].y+1, max(0, bs[i].h-1)
+		}
+	}
+	return ss, bs, true
+}
+
+// termBox is a pane's terminal: under its head when panes are split.
+func termBox(b box, splitView bool) box {
+	if splitView {
+		return box{b.x, b.y + 1, b.w, max(0, b.h-1)}
+	}
+	return b
+}
+
+// arrange sizes the shown terminals to their panes and tells the keeper
+// which are shown.
+func (d *deskTab) arrange(c *Ctx) {
+	if d.mgr == nil || d.list == nil || d.w == 0 {
+		return
+	}
+	ss, bs, _ := d.panes()
+	sp := split(bs)
+	d.termBoxes = map[string]box{}
+	var shown []string
+	for i, s := range ss {
+		if bs[i].w == 0 || !s.Running {
+			continue
+		}
+		tb := termBox(bs[i], sp)
+		if tb.w < 2 || tb.h < 1 {
+			continue
+		}
+		t := d.mgr.get(s.Name, tb.w, tb.h)
+		d.mgr.resize(t, tb.w, tb.h)
+		d.termBoxes[s.Name] = tb
+		shown = append(shown, s.Name)
+		delete(d.unread, s.Name)
+	}
+	onDesk := map[string]bool{}
+	for _, s := range d.sessions() {
+		onDesk[s.Name] = true
+	}
+	d.mgr.keep(shown, d.prewarm(), onDesk, c.Now)
+}
+
+// prewarm is each other workspace's focused session, made at the size its
+// pane would have: connected before it is first shown, so that going to
+// any workspace shows it at once.
+func (d *deskTab) prewarm() []string {
+	_, _, area, _ := d.frame()
+	var out []string
+	for _, w := range d.workspaces() {
+		if w.ID == d.active {
+			continue
+		}
+		ss := d.in(w.ID)
+		fi := slices.IndexFunc(ss, func(s fleetapi.DeskSession) bool { return s.Name == d.focus[w.ID] })
+		if fi < 0 {
+			fi = 0
+		}
+		if len(ss) == 0 || !ss[fi].Running {
+			continue
+		}
+		bs := paneBoxes(w.Layout, len(ss), fi, area, false)
+		tb := termBox(bs[fi], split(bs))
+		if !split(bs) {
+			tb.y, tb.h = tb.y+1, tb.h-1 // under its tab bar
+		}
+		if tb.w < 2 || tb.h < 1 {
+			continue
+		}
+		t := d.mgr.get(ss[fi].Name, tb.w, tb.h)
+		if t.emu.Width() == 0 || t.emu.Height() == 0 {
+			continue
+		}
+		out = append(out, ss[fi].Name)
+	}
+	return out
+}
+
+// ---- keys ----
+
+func (d *deskTab) key(m tea.KeyPressMsg, c *Ctx) tea.Cmd {
+	k := m.String()
+	switch {
+	case d.confirm != nil:
+		cf := d.confirm
+		d.confirm = nil
+		return cf.update(k)
+	case d.form != nil:
+		return d.formKey(m, c)
+	case d.ask != nil:
+		return d.ask.key(d, m, c)
+	case d.pick != nil:
+		return d.pick.key(d, k, c)
+	case d.panel != nil:
+		return d.panel.key(d, k)
+	}
+	if cmd, ok := d.superKey(k, c); ok {
+		return cmd
+	}
+	if d.mode == typeMode {
+		return d.typeKey(m, c)
+	}
+	return d.navKey(k, c)
+}
+
+// superKey is ⌘ with a key, when the terminal passes ⌘ on (kitty's
+// keyboard protocol): the same in both modes.
+func (d *deskTab) superKey(k string, c *Ctx) (tea.Cmd, bool) {
+	rest, ok := strings.CutPrefix(k, "super+")
+	if !ok {
+		return nil, false
+	}
+	switch rest {
+	case "b":
+		return d.toggleSidebar(), true
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		return d.toWorkspace(int(rest[0] - '1')), true
+	case "up", "alt+up":
+		if !d.paneStep(0, -1) {
+			d.stepWorkspace(-1)
+		}
+		return nil, true
+	case "down", "alt+down":
+		if !d.paneStep(0, 1) {
+			d.stepWorkspace(1)
+		}
+		return nil, true
+	case "left", "alt+left":
+		if !d.paneStep(-1, 0) {
+			d.stepSession(-1)
+		}
+		return nil, true
+	case "right", "alt+right":
+		if !d.paneStep(1, 0) {
+			d.stepSession(1)
+		}
+		return nil, true
+	case "[", "shift+[", "{":
+		d.stepSession(-1)
+		return nil, true
+	case "]", "shift+]", "}":
+		d.stepSession(1)
+		return nil, true
+	case "n", "t", "e":
+		return d.openForm(c), true
+	case "shift+n", "shift+t", "shift+e":
+		d.askWorkspace()
+		return nil, true
+	case "enter":
+		d.zoom = !d.zoom
+		return nil, true
+	case "\\":
+		return d.cycleLayout(c), true
+	case "k", "j":
+		d.mode = navMode
+		d.syncCursor()
+		return nil, true
+	case "u", "shift+u":
+		return d.jump(), true
+	}
+	return nil, false
+}
+
+// typeKey: a key for the focused session, but Ctrl-] (step out) and
+// Ctrl-V (paste a file or an image).
+func (d *deskTab) typeKey(m tea.KeyPressMsg, c *Ctx) tea.Cmd {
+	k := m.String()
+	switch k {
+	case "ctrl+]":
+		d.mode = navMode
+		d.syncCursor()
+		return nil
+	}
+	name := d.focused()
+	t := d.term(name)
+	if t == nil {
+		d.mode = navMode
+		return nil
+	}
+	st, _, _ := t.status()
+	switch st {
+	case termLive:
+		if k == "ctrl+v" {
+			return tea.Batch(ctrlV(c.Client, c.Clipboard, name, c.Local), d.uploading(c, "the clipboard"))
+		}
+		t.key(m)
+	case termHeld, termReleased:
+		if k == "enter" {
+			d.mgr.takeOver(t)
+		}
+	case termDown, termIdle:
+		if k == "enter" {
+			d.mgr.retryNow(t)
+		}
+	}
+	return nil
+}
+
+// uploading says a paste is on its way, when it takes a moment.
+func (d *deskTab) uploading(c *Ctx, what string) tea.Cmd {
+	if c.Clipboard == nil && what == "the clipboard" {
+		return nil
+	}
+	return toastCmd("↑ sending "+what+"…", false)
+}
+
+func (d *deskTab) term(name string) *deskTerm {
+	if d.mgr == nil || name == "" {
+		return nil
+	}
+	return d.mgr.peek(name)
+}
+
+// navKey: the keys that move around the desk and change it.
+func (d *deskTab) navKey(k string, c *Ctx) tea.Cmd {
+	rows := d.rows()
+	switch k {
+	case "up", "k", "down", "j":
+		by := 1
+		if k == "up" || k == "k" {
+			by = -1
+		}
+		d.cursor = min(max(d.cursor+by, 0), max(len(rows)-1, 0))
+		d.follow()
+		return nil
+	case "enter", "i", "esc", "right":
+		if d.cursor < len(rows) && rows[d.cursor].session != "" {
+			d.focus[d.active] = rows[d.cursor].session
+		}
+		if d.focused() != "" {
+			d.mode = typeMode
+			d.saveUI()
+		}
+		return nil
+	case "left", "h":
+		for i := d.cursor; i >= 0 && i < len(rows); i-- {
+			if rows[i].session == "" {
+				d.cursor = i
+				break
+			}
+		}
+		return nil
+	case "b":
+		return d.toggleSidebar()
+	case "n":
+		return d.openForm(c)
+	case "W", "N":
+		d.askWorkspace()
+		return nil
+	case "l":
+		return d.cycleLayout(c)
+	case "z":
+		d.zoom = !d.zoom
+		return nil
+	case "[":
+		d.stepSession(-1)
+		return nil
+	case "]":
+		d.stepSession(1)
+		return nil
+	case "{":
+		d.stepWorkspace(-1)
+		return nil
+	case "}":
+		d.stepWorkspace(1)
+		return nil
+	case "r":
+		d.askRename()
+		return nil
+	case "m":
+		if s := d.cursorSession(); s != "" {
+			d.pick = newWsPick(d, s)
+		}
+		return nil
+	case "x", "delete":
+		return d.askEnd(c)
+	case "u":
+		return d.jump()
+	case "!":
+		d.panel = &noticePanel{}
+		return nil
+	case "K", "shift+up":
+		return d.reorder(c, -1)
+	case "J", "shift+down":
+		return d.reorder(c, 1)
+	}
+	if n, ok := strings.CutPrefix(k, "alt+"); ok && len(n) == 1 && n[0] >= '1' && n[0] <= '9' {
+		return d.toWorkspace(int(n[0] - '1'))
+	}
+	return nil
+}
+
+// follow makes what the cursor is on the shown: its workspace, its session.
+func (d *deskTab) follow() {
+	rows := d.rows()
+	if d.cursor >= len(rows) {
+		return
+	}
+	r := rows[d.cursor]
+	if r.ws != d.active {
+		d.active = r.ws
+		d.zoom = false
+		// the rows changed under the cursor: keep it on this workspace
+		for i, x := range d.rows() {
+			if x.ws == r.ws && x.session == "" {
+				d.cursor = i
+			}
+		}
+	}
+	if r.session != "" {
+		d.focus[d.active] = r.session
+	}
+	d.saveUI()
+}
+
+// cursorSession is the session the cursor is on, else the focused one.
+func (d *deskTab) cursorSession() string {
+	rows := d.rows()
+	if d.cursor < len(rows) && rows[d.cursor].session != "" {
+		return rows[d.cursor].session
+	}
+	return d.focused()
+}
+
+func (d *deskTab) toggleSidebar() tea.Cmd {
+	d.sidebar = !d.sidebar
+	d.saveUI()
+	return nil
+}
+
+func (d *deskTab) toWorkspace(i int) tea.Cmd {
+	wss := d.workspaces()
+	if i < 0 || i >= len(wss) {
+		return nil
+	}
+	d.active, d.zoom = wss[i].ID, false
+	if d.mode == navMode {
+		d.syncCursor()
+	}
+	d.saveUI()
+	return nil
+}
+
+func (d *deskTab) stepWorkspace(by int) {
+	wss := d.workspaces()
+	i := slices.IndexFunc(wss, func(w fleetapi.DeskWorkspace) bool { return w.ID == d.active })
+	if len(wss) == 0 {
+		return
+	}
+	d.toWorkspace((i + by + len(wss)) % len(wss))
+}
+
+func (d *deskTab) stepSession(by int) {
+	ss := d.in(d.active)
+	if len(ss) == 0 {
+		return
+	}
+	i := slices.IndexFunc(ss, func(s fleetapi.DeskSession) bool { return s.Name == d.focused() })
+	d.focus[d.active] = ss[(i+by+len(ss))%len(ss)].Name
+	if d.mode == navMode {
+		d.syncCursor()
+	}
+	d.saveUI()
+}
+
+// paneStep moves the focus to the pane beside it; false when there is
+// none that way.
+func (d *deskTab) paneStep(dx, dy int) bool {
+	ss, bs, _ := d.panes()
+	if !split(bs) {
+		return false
+	}
+	fi := slices.IndexFunc(ss, func(s fleetapi.DeskSession) bool { return s.Name == d.focused() })
+	j := neighbour(bs, fi, dx, dy)
+	if j < 0 {
+		return false
+	}
+	d.focus[d.active] = ss[j].Name
+	d.saveUI()
+	return true
+}
+
+// ---- changes to the desk ----
+
+// do sends a change to fleetd: the poll that follows shows it.
+func (d *deskTab) do(c *Ctx, say string, f func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error)) tea.Cmd {
+	cl := c.Client
+	if cl == nil {
+		return nil
+	}
+	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 		defer cancel()
-		return deskEndedMsg{name: name, err: cl.DeskEnd(ctx, name)}
-	}}
-}
-
-func (d *deskTab) ended(m deskEndedMsg) tea.Cmd {
-	if m.err != nil {
-		return toastCmd(m.err.Error(), true)
-	}
-	ss := slices.DeleteFunc(slices.Clone(d.sessions()), func(s fleetapi.DeskSession) bool { return s.Name == m.name })
-	delete(d.seen, m.name)
-	d.setList(d.host(), ss)
-	d.now = true
-	return toastCmd("ended "+m.name, false)
-}
-
-// made is a launch's answer: the new session is selected and shown at
-// once, and attached unless the form said not to (or was dropped).
-func (d *deskTab) made(m deskMadeMsg, c *Ctx) tea.Cmd {
-	f := d.form
-	if m.err != nil {
-		if f != nil {
-			f.busy, f.err = false, m.err.Error()
-			return nil
+		m, err := f(ctx, cl)
+		if err != nil {
+			return deskDoneMsg{err: err}
 		}
-		return toastCmd(m.err.Error(), true)
+		if m.say == "" {
+			m.say = say
+		}
+		return m
 	}
-	s := *m.s
-	d.form = nil
-	d.recent = append([]string{s.Dir}, slices.DeleteFunc(d.recent, func(x string) bool { return x == s.Dir })...)
-	ss := slices.DeleteFunc(slices.Clone(d.sessions()), func(x fleetapi.DeskSession) bool { return x.Name == s.Name })
-	d.seen[s.Name] = c.Now
-	d.setList(d.host(), append(ss, s))
-	d.sel, d.now = s.Name, true
-	d.reselect()
-	if f != nil && d.attach {
-		return d.attachTo(c, s.Name, fleetapi.TermType)
+}
+
+func (d *deskTab) cycleLayout(c *Ctx) tea.Cmd {
+	w, ok := d.ws(d.active)
+	if !ok {
+		return nil
 	}
-	return toastCmd("launched "+s.Name+" · ⏎ attaches", false)
+	next := nextLayout(w.Layout)
+	d.setLayout(w.ID, next) // at once, on screen; fleetd keeps it
+	d.zoom = false
+	return d.do(c, "layout: "+next, func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+		return deskDoneMsg{}, cl.DeskWorkspaceUpdate(ctx, w.ID, fleetapi.DeskWorkspaceUpdate{Layout: &next})
+	})
+}
+
+func (d *deskTab) setLayout(id, layout string) {
+	for i := range d.list.Workspaces {
+		if d.list.Workspaces[i].ID == id {
+			d.list.Workspaces[i].Layout = layout
+		}
+	}
+}
+
+func (d *deskTab) openForm(c *Ctx) tea.Cmd {
+	d.form = newLaunchForm(c.Theme, d.recents())
+	if s, ok := d.session(d.focused()); ok && s.Cwd != "" {
+		d.form.dir.SetValue(shortDir(s.Cwd) + "/")
+		d.form.dir.CursorEnd()
+		return d.form.edited()
+	}
+	if len(d.form.recents) == 0 {
+		return d.form.lookup(c)
+	}
+	return nil
 }
 
 // recents is the directories offered before anything is typed: those
@@ -418,855 +1128,339 @@ func (d *deskTab) recents() []string {
 	}
 	var out []string
 	for _, x := range all {
-		if x != "" && !slices.Contains(out, x) {
+		if !slices.Contains(out, x) {
 			out = append(out, x)
 		}
 	}
 	return out
 }
 
-// isClaude: the command runs Claude Code.
-func isClaude(cmd string) bool {
-	f := strings.Fields(cmd)
-	return len(f) == 0 || f[0] == "claude"
-}
-
-// cmdLabel is a session's command in a word: claude, its model, shell, or
-// the program it runs.
-func cmdLabel(cmd string) string {
-	f := strings.Fields(cmd)
-	switch {
-	case len(f) == 0:
-		return "claude"
-	case f[0] == "claude":
-		for i, x := range f {
-			if v, ok := strings.CutPrefix(x, "--model="); ok {
-				return v
-			}
-			if x == "--model" && i+1 < len(f) {
-				return f[i+1]
-			}
+// made is a launch's answer: the new session is focused, and typed in.
+func (d *deskTab) made(m deskMadeMsg) tea.Cmd {
+	f := d.form
+	if m.err != nil {
+		if f != nil {
+			f.busy, f.err = false, m.err.Error()
+			return nil
 		}
-		return "claude"
+		return toastCmd(m.err.Error(), true)
 	}
-	return path.Base(f[0])
-}
-
-// cmdColor is a command label's color.
-func cmdColor(t *Theme, label string) color.Color {
-	switch label {
-	case "claude":
-		return t.Amber
-	case "opus":
-		return t.Violet
-	case "sonnet":
-		return t.Cyan
-	case "haiku":
-		return t.Frost
-	case "shell":
-		return t.Green
-	}
-	return t.Dim
-}
-
-// shortDir is a directory as its owner writes it: their home as ~.
-func shortDir(dir string) string {
-	if rest, ok := strings.CutPrefix(dir, "/home/"); ok {
-		if _, tail, ok := strings.Cut(rest, "/"); ok {
-			return "~/" + tail
+	s := *m.s
+	d.form = nil
+	d.recent = append([]string{s.Dir}, slices.DeleteFunc(d.recent, func(x string) bool { return x == s.Dir })...)
+	if d.list != nil && !slices.ContainsFunc(d.list.Sessions, func(x fleetapi.DeskSession) bool { return x.Name == s.Name }) {
+		if s.Workspace == "" {
+			s.Workspace = d.active
 		}
-		return "~"
+		d.list.Sessions = append(d.list.Sessions, s)
 	}
-	if dir == "/root" {
-		return "~"
-	}
-	if rest, ok := strings.CutPrefix(dir, "/root/"); ok {
-		return "~/" + rest
-	}
-	return dir
+	d.active, d.focus[s.Workspace] = s.Workspace, s.Name
+	d.mode = typeMode
+	d.saveUI()
+	return toastCmd("launched "+s.Name+" · Ctrl-] steps out", false)
 }
 
-var deskSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-func (d *deskTab) View(c *Ctx, w, h int) string {
-	d.w, d.h = w, h
-	if w <= 0 || h <= 0 {
-		return ""
-	}
-	th := c.Theme
-	bh := h
-	if d.confirm != nil {
-		bh--
-	}
-	var body string
-	switch ss := d.sessions(); {
-	case d.list == nil && d.err != "":
-		body = center(th.Danger.Render("the desk did not answer")+"\n\n"+th.Muted.Render(oneLine(d.err)), w, bh)
-	case d.list == nil:
-		body = centerNote(th, "reading the desk…", w, bh)
-	case len(ss) == 0:
-		body = d.emptyView(c, w, bh)
-	case d.zoom:
-		d.reselect()
-		body = strings.Join(d.tile(c, d.selI, ss[d.selI], true, w, bh), "\n")
-	default:
-		body = d.grid(c, w, bh)
-	}
-	if d.form != nil {
-		body = overlay(th, block(body, w, bh), d.formView(c, w, bh), w, bh)
-	}
-	if d.confirm == nil {
-		return block(body, w, h)
-	}
-	if bh <= 0 {
-		return d.confirm.view(th, w)
-	}
-	return block(body, w, bh) + "\n" + d.confirm.view(th, w)
+func (d *deskTab) askWorkspace() {
+	d.ask = newAskLine("New workspace", "a name", "", func(name string, c *Ctx) tea.Cmd {
+		return d.do(c, "", func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+			w, err := cl.DeskWorkspaceCreate(ctx, fleetapi.DeskWorkspaceCreate{Name: name})
+			if err != nil {
+				return deskDoneMsg{}, err
+			}
+			return deskDoneMsg{say: "made " + w.Name + " · n starts a session in it", active: w.ID}, nil
+		})
+	})
 }
 
-// grid is the header over the tiles in view, exactly w×h.
-func (d *deskTab) grid(c *Ctx, w, h int) string {
-	ss := d.sessions()
-	gh := max(0, h-1)
-	cols, rows, tileH := deskGrid(len(ss), w, gh)
-	d.reselect()
-	d.off = keepInView(d.off, d.selI/cols, ceilDiv(len(ss), cols), rows)
-	tileW := w / cols
-	var out []string
-	for r := 0; r < rows; r++ {
-		row := make([]string, tileH)
-		for k := 0; k < cols; k++ {
-			i := (d.off+r)*cols + k
-			tw := tileW
-			if k == cols-1 {
-				tw = w - tileW*(cols-1) // the last column takes the remainder
-			}
-			var t []string
-			if i < len(ss) {
-				t = d.tile(c, i, ss[i], i == d.selI, tw, tileH)
-			} else {
-				t = strings.Split(fillBody(nil, tw, tileH), "\n")
-			}
-			for j := range row {
-				row[j] += t[j]
-			}
+func (d *deskTab) askRename() {
+	rows := d.rows()
+	if d.cursor < len(rows) && rows[d.cursor].session == "" && d.mode == navMode {
+		w, ok := d.ws(rows[d.cursor].ws)
+		if !ok {
+			return
 		}
-		out = append(out, row...)
+		d.ask = newAskLine("Rename "+w.Name, "the workspace's name", w.Name, func(name string, c *Ctx) tea.Cmd {
+			return d.do(c, "renamed to "+name, func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+				return deskDoneMsg{}, cl.DeskWorkspaceUpdate(ctx, w.ID, fleetapi.DeskWorkspaceUpdate{Name: &name})
+			})
+		})
+		return
 	}
-	shown := min(len(ss), (d.off+rows)*cols) - d.off*cols
-	return fillBody(append([]string{d.header(c, w, len(ss)-shown)}, out...), w, h)
+	s, ok := d.session(d.cursorSession())
+	if !ok {
+		return
+	}
+	d.ask = newAskLine("Rename "+shownName(s), "a name to show (empty: "+s.Name+"'s own)", s.Label, func(label string, c *Ctx) tea.Cmd {
+		return d.do(c, "renamed", func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+			return deskDoneMsg{}, cl.DeskUpdate(ctx, s.Name, fleetapi.DeskUpdate{Label: &label})
+		})
+	})
+	d.ask.empty = true
 }
 
-// header is the desk in a line: where it is, how many, how busy; and why
-// it is stale, or how many tiles are out of view.
-func (d *deskTab) header(c *Ctx, w, hidden int) string {
-	th := c.Theme
-	ss := d.sessions()
-	busy, att := 0, 0
-	for _, s := range ss {
-		if s.Busy {
-			busy++
+func (d *deskTab) askEnd(c *Ctx) tea.Cmd {
+	rows := d.rows()
+	if d.cursor < len(rows) && rows[d.cursor].session == "" {
+		w, ok := d.ws(rows[d.cursor].ws)
+		if !ok {
+			return nil
 		}
-		att += s.Clients
-	}
-	noun := "sessions"
-	if len(ss) == 1 {
-		noun = "session"
-	}
-	left := th.Strong.Render(d.host()) + th.Muted.Render(fmt.Sprintf(" · %d %s", len(ss), noun))
-	if busy > 0 {
-		left += th.Muted.Render(" · ") + paint(th.Amber, fmt.Sprintf("%d working", busy))
-	}
-	if att > 0 {
-		left += th.Muted.Render(" · ") + paint(th.Green, fmt.Sprintf("%d attached", att))
-	}
-	var right string
-	switch {
-	case d.err != "":
-		right = th.Danger.Render("⚠ ") + th.Muted.Render(oneLine(d.err))
-	case hidden > 0:
-		right = th.Muted.Render(fmt.Sprintf("↓ %d more", hidden))
-	}
-	if right == "" {
-		return Fit(left, w)
-	}
-	return spread(left, ansi.Truncate(right, max(0, w*2/3), "…"), w)
-}
-
-// tile is one session, exactly w×h: its number, state, name, directory and
-// command on the top border, its screen inside, and below how it is.
-func (d *deskTab) tile(c *Ctx, i int, s fleetapi.DeskSession, sel bool, w, h int) []string {
-	th := c.Theme
-	in := max(0, w-2)
-	dot := th.Green
-	switch {
-	case s.Error != "" && s.Text == "":
-		dot = th.Alert
-	case !s.Running:
-		dot = th.Grey
-	case s.Busy:
-		dot = th.Amber
-	}
-	name := th.Strong.Render(s.Name)
-	if sel {
-		name = th.Selected.Render(s.Name)
-	}
-	left := paint(dot, "●") + " " + name
-	if i < 9 {
-		left = th.Muted.Render(fmt.Sprint(i+1)) + " " + left
-	}
-	if old := d.stale(c, s); old != "" {
-		left += " " + th.Danger.Render("⚠ "+old+" old")
-	}
-	label := cmdLabel(s.Command)
-	badge := lipgloss.NewStyle().Foreground(cmdColor(th, label)).Bold(true).Render(label)
-	if dir := th.Muted.Render(shortDir(s.Dir)); lipgloss.Width(left)+2+lipgloss.Width(dir)+lipgloss.Width(badge)+6 <= in {
-		left += "  " + dir
-	}
-
-	var state string
-	switch {
-	case !s.Running:
-		state = th.Muted.Render("stopped")
-	case s.Busy:
-		state = paint(th.Amber, deskSpinner[c.Frame%len(deskSpinner)]+" working")
-	case isClaude(s.Command):
-		state = th.Muted.Render("ready")
-	default:
-		state = th.Muted.Render("running")
-	}
-	var meta []string
-	if !s.Restored.IsZero() && c.Now.Sub(s.Restored) < restoredNew {
-		meta = append(meta, paint(th.Frost, "↻ restored "+Since(c.Now, s.Restored)))
-	}
-	if s.Clients > 0 {
-		meta = append(meta, paint(th.Green, fmt.Sprintf("● %d attached", s.Clients)))
-	}
-	if s.Running && !s.Created.IsZero() {
-		meta = append(meta, th.Muted.Render("up "+Since(c.Now, s.Created)))
-	}
-
-	col := th.Line
-	if sel {
-		col = th.Amber
-	}
-	return deskBox(col, sel, left, badge, state, strings.Join(meta, th.Muted.Render(" · ")), d.screen(c, s, in, h-2), w, h)
-}
-
-// stale is the age of a screen kept from an earlier poll, or "".
-func (d *deskTab) stale(c *Ctx, s fleetapi.DeskSession) string {
-	if s.Text == "" || d.err == "" && s.Error == "" {
-		return ""
-	}
-	return Since(c.Now, d.seen[s.Name])
-}
-
-// screen is a session's last n lines, w wide, behind a one-cell margin.
-func (d *deskTab) screen(c *Ctx, s fleetapi.DeskSession, w, n int) []string {
-	th := c.Theme
-	if n <= 0 || w <= 0 {
+		n := len(d.in(w.ID))
+		if len(d.workspaces()) == 1 {
+			return toastCmd("the desk keeps one workspace at least", true)
+		}
+		ask := "Remove " + w.Name + "?"
+		if n > 0 {
+			ask = fmt.Sprintf("Remove %s and end its %d session(s)?", w.Name, n)
+		}
+		d.confirm = &confirm{ask: ask, act: d.do(c, "removed "+w.Name, func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+			return deskDoneMsg{}, cl.DeskWorkspaceDelete(ctx, w.ID, n > 0)
+		})}
 		return nil
 	}
-	switch {
-	case s.Text != "":
-		lines := strings.Split(strings.TrimRight(s.Text, "\n"), "\n")
-		if len(lines) > n {
-			lines = lines[len(lines)-n:]
-		}
-		out := make([]string, len(lines))
-		for i, l := range lines {
-			out[i] = " " + rawLine(l, max(0, w-1))
-		}
-		return out
-	case s.Error != "":
-		return []string{" " + th.Danger.Render(oneLine(s.Error))}
-	case !s.Running:
-		return []string{" " + th.Muted.Render("not running")}
-	case d.err != "":
-		return []string{" " + th.Danger.Render(oneLine(d.err))}
-	}
-	return []string{" " + th.Muted.Render("…")}
-}
-
-// deskBox draws body in a box of exactly w×h, with tl and tr set into its
-// top border and bl and br into its bottom one; heavy when selected.
-func deskBox(col color.Color, heavy bool, tl, tr, bl, br string, body []string, w, h int) []string {
-	if w < 2 || h < 2 {
-		return strings.Split(fillBody(nil, w, h), "\n")
-	}
-	c := [6]string{"╭", "╮", "╰", "╯", "─", "│"}
-	if heavy {
-		c = [6]string{"┏", "┓", "┗", "┛", "━", "┃"}
-	}
-	bs := lipgloss.NewStyle().Foreground(col)
-	in := w - 2
-	out := []string{bs.Render(c[0]) + edgeLine(bs, c[4], tl, tr, in) + bs.Render(c[1])}
-	for i := 0; i < h-2; i++ {
-		line := ""
-		if i < len(body) {
-			line = body[i]
-		}
-		out = append(out, bs.Render(c[5])+Fit(line, in)+bs.Render(c[5]))
-	}
-	return append(out, bs.Render(c[2])+edgeLine(bs, c[4], bl, br, in)+bs.Render(c[3]))
-}
-
-// edgeLine is a border in cells wide with left and right set into it;
-// right goes, then left is cut, when they do not fit.
-func edgeLine(bs lipgloss.Style, hz, left, right string, in int) string {
-	lw, rw := 0, 0
-	if left != "" {
-		lw = lipgloss.Width(left) + 3 // "─ left "
-	}
-	if right != "" {
-		rw = lipgloss.Width(right) + 3 // " right ─"
-	}
-	if lw+rw > in {
-		right, rw = "", 0
-	}
-	if lw > in {
-		if in >= 5 {
-			left = ansi.Truncate(left, in-3, "…")
-			lw = lipgloss.Width(left) + 3
-		} else {
-			left, lw = "", 0
-		}
-	}
-	var b strings.Builder
-	if left != "" {
-		b.WriteString(bs.Render(hz+" ") + left + bs.Render(" "))
-	}
-	b.WriteString(bs.Render(strings.Repeat(hz, max(0, in-lw-rw))))
-	if right != "" {
-		b.WriteString(bs.Render(" ") + right + bs.Render(" "+hz))
-	}
-	return b.String()
-}
-
-// deskCard is lines in a rounded box w wide with title and right set into
-// its top border, each line two cells in from the sides.
-func deskCard(col color.Color, title, right string, lines []string, w int) []string {
-	if w < 6 {
+	s, ok := d.session(d.cursorSession())
+	if !ok {
 		return nil
 	}
-	bs := lipgloss.NewStyle().Foreground(col)
-	in := w - 2
-	out := []string{bs.Render("╭") + edgeLine(bs, "─", title, right, in) + bs.Render("╮")}
-	for _, l := range lines {
-		out = append(out, bs.Render("│")+"  "+Fit(l, in-4)+"  "+bs.Render("│"))
+	why := "Its Claude Code session stays on disk."
+	if !isClaude(s.Command) {
+		why = "What runs in it stops."
 	}
-	return append(out, bs.Render("╰"+strings.Repeat("─", in)+"╯"))
+	d.confirm = &confirm{ask: fmt.Sprintf("End %s? %s", shownName(s), why), act: d.do(c, "ended "+shownName(s), func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+		return deskDoneMsg{}, cl.DeskEnd(ctx, s.Name)
+	})}
+	return nil
 }
 
-// overlay sets box over the middle of bg, w×h, dimmed behind it.
-func overlay(t *Theme, bg string, box []string, w, h int) string {
-	lines := strings.Split(bg, "\n")
-	bw := 0
-	for _, l := range box {
-		bw = max(bw, lipgloss.Width(l))
+// reorder moves what the cursor is on, a session in its workspace or a
+// workspace among them, by one.
+func (d *deskTab) reorder(c *Ctx, by int) tea.Cmd {
+	rows := d.rows()
+	if d.cursor >= len(rows) {
+		return nil
 	}
-	bw = min(bw, w)
-	x, y := max(0, (w-bw)/2), max(0, (h-len(box))/2)
-	dim := t.Muted.Faint(true)
-	for i, l := range lines {
-		plain := ansi.Strip(l)
-		if i < y || i >= y+len(box) {
-			lines[i] = dim.Render(plain)
+	r := rows[d.cursor]
+	if r.session == "" {
+		wss := d.workspaces()
+		i := slices.IndexFunc(wss, func(w fleetapi.DeskWorkspace) bool { return w.ID == r.ws })
+		j := i + by
+		if i < 0 || j < 0 || j >= len(wss) {
+			return nil
+		}
+		before := ""
+		if by < 0 {
+			before = wss[j].ID
+		} else if j+1 < len(wss) {
+			before = wss[j+1].ID
+		}
+		wss[i], wss[j] = wss[j], wss[i] // at once, on screen
+		d.syncCursor()
+		return d.do(c, "", func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+			return deskDoneMsg{}, cl.DeskWorkspaceUpdate(ctx, r.ws, fleetapi.DeskWorkspaceUpdate{Before: &before})
+		})
+	}
+	ss := d.in(r.ws)
+	i := slices.IndexFunc(ss, func(s fleetapi.DeskSession) bool { return s.Name == r.session })
+	j := i + by
+	if i < 0 || j < 0 || j >= len(ss) {
+		return nil
+	}
+	before := ""
+	if by < 0 {
+		before = ss[j].Name
+	} else if j+1 < len(ss) {
+		before = ss[j+1].Name
+	}
+	a := slices.IndexFunc(d.list.Sessions, func(s fleetapi.DeskSession) bool { return s.Name == ss[i].Name })
+	b := slices.IndexFunc(d.list.Sessions, func(s fleetapi.DeskSession) bool { return s.Name == ss[j].Name })
+	d.list.Sessions[a], d.list.Sessions[b] = d.list.Sessions[b], d.list.Sessions[a]
+	d.cursor += by
+	return d.do(c, "", func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+		return deskDoneMsg{}, cl.DeskUpdate(ctx, r.session, fleetapi.DeskUpdate{Before: &before})
+	})
+}
+
+// ---- pastes ----
+
+// paste is text the terminal pasted: a file or folder dropped on it, or
+// copied in a file manager, arrives as its path here; it is sent to the
+// session's machine, and its path there typed. Any other text is typed.
+func (d *deskTab) paste(m tea.PasteMsg, c *Ctx) tea.Cmd {
+	switch {
+	case d.form != nil:
+		return d.form.typeInto(m)
+	case d.ask != nil:
+		var cmd tea.Cmd
+		d.ask.in, cmd = d.ask.in.Update(m)
+		return cmd
+	case d.mode != typeMode:
+		return nil
+	}
+	name := d.focused()
+	t := d.term(name)
+	if t == nil {
+		return nil
+	}
+	if files := localPaths(m.Content); len(files) > 0 && !c.Local {
+		names := make([]string, len(files))
+		for i, f := range files {
+			names[i] = filepath.Base(f)
+		}
+		return tea.Batch(pasteFiles(c.Client, name, files, c.Local), d.uploading(c, strings.Join(names, ", ")))
+	}
+	t.paste(m.Content)
+	return nil
+}
+
+// pasted is a paste sent: its paths typed into its session.
+func (d *deskTab) pasted(m deskPastedMsg) tea.Cmd {
+	if m.err != nil {
+		return toastCmd("paste: "+m.err.Error(), true)
+	}
+	t := d.term(m.session)
+	if t == nil {
+		return toastCmd(m.session+" is gone: nothing pasted", true)
+	}
+	if m.kind == "none" { // Ctrl+V with no file or image: the key, as typed
+		t.emu.SendText("\x16")
+		return nil
+	}
+	t.paste(typedPaths(m.paths))
+	what := strings.Join(m.names, ", ")
+	if len(m.names) > 2 {
+		what = fmt.Sprintf("%d files", len(m.names))
+	}
+	if m.bytes > 0 {
+		what += " · " + bytesOf(m.bytes)
+	}
+	return toastCmd("pasted "+what, false)
+}
+
+// ---- the mouse ----
+
+func (d *deskTab) click(m tea.Mouse, c *Ctx) tea.Cmd {
+	for _, h := range d.hits {
+		if !h.b.in(m.X, m.Y) {
 			continue
 		}
-		lines[i] = Fit(dim.Render(ansi.Cut(plain, 0, x)), x) + Fit(box[i-y], bw) + dim.Render(ansi.Cut(plain, x+bw, w))
-	}
-	return fillBody(lines, w, h)
-}
-
-// emptyView is a desk with no sessions: what to press, and what a session
-// is, in a card in the middle.
-func (d *deskTab) emptyView(c *Ctx, w, h int) string {
-	th := c.Theme
-	cw := min(w-2, 62)
-	if cw < 10 {
-		return centerNote(th, "no sessions · n starts one", w, h)
-	}
-	in := cw - 6
-	host := d.host()
-	mid := func(s string) string { return strings.Repeat(" ", max(0, (in-lipgloss.Width(s))/2)) + s }
-	lines := []string{
-		"",
-		mid(th.Strong.Render("No sessions on " + host + " yet")),
-		mid(th.Muted.Render("press ") + lipgloss.NewStyle().Foreground(th.Amber).Bold(true).Render("n") + th.Muted.Render(" to start one")),
-		"",
-	}
-	about := "A session runs in tmux on " + host + ", Claude Code unless you pick another command. " +
-		"It keeps running when you detach, and a restart brings it back in its place, its Claude Code session resumed."
-	for _, l := range strings.Split(ansi.Wordwrap(about, in, ""), "\n") {
-		lines = append(lines, th.Muted.Render(l))
-	}
-	lines = append(lines, "")
-	return center(strings.Join(deskCard(th.Line, th.Title.Render("Sessions"), "", lines, cw), "\n"), w, h)
-}
-
-// The launch form's fields.
-const (
-	launchDir = iota
-	launchCmd
-	launchCustom // only when Custom… is chosen
-	launchName
-)
-
-// launchCmds is the command picker's chips: the label, a shorter one for a
-// narrow form, and the command sent ("" is Claude Code's default).
-var launchCmds = []struct{ label, short, cmd string }{
-	{"Claude", "Claude", ""},
-	{"Claude Opus", "Opus", "claude --model opus"},
-	{"Claude Sonnet", "Sonnet", "claude --model sonnet"},
-	{"Shell", "Shell", "shell"},
-	{"Custom…", "Custom…", ""},
-}
-
-const launchCustomCmd = 4 // Custom…: the command is typed
-
-// launchForm is n's form: a directory, completed from fleetd's machine as
-// it is typed, the command and a name.
-type launchForm struct {
-	dir, custom, name textinput.Model
-	field             int
-	cmd               int      // the chosen chip
-	sugg              []string // the directories offered under the field
-	recent            bool     // they are the recent ones: nothing is typed
-	hi, top           int      // the highlighted one, the first in view
-	moved             bool     // ↑↓ chose it
-	n                 int      // the directory's edits: an answer for an older one is dropped
-	waiting           bool     // a lookup is due or out
-	lookErr           string
-	err               string // the launch's failure
-	busy              bool   // the launch is out
-	recents           []string
-}
-
-func newLaunchForm(t *Theme, recents []string) *launchForm {
-	in := func(ph string) textinput.Model {
-		m := textinput.New()
-		m.Prompt, m.Placeholder = "", ph
-		return m
-	}
-	f := &launchForm{dir: in("type a path · tab completes"), custom: in("a command, run in the directory"), name: in(""), recents: recents}
-	f.dir.ShowSuggestions = true
-	f.style(t)
-	f.dir.Focus()
-	f.offerRecent()
-	return f
-}
-
-// style gives the fields the theme's colors and a steady cursor.
-func (f *launchForm) style(t *Theme) {
-	s := textinput.DefaultStyles(t.Dark)
-	text := lipgloss.NewStyle().Foreground(t.Text)
-	s.Focused.Text, s.Blurred.Text = text, text
-	s.Focused.Placeholder, s.Blurred.Placeholder = t.Muted, t.Muted
-	s.Focused.Suggestion, s.Blurred.Suggestion = t.Muted, t.Muted
-	s.Cursor.Color, s.Cursor.Blink = t.Amber, false
-	for _, m := range []*textinput.Model{&f.dir, &f.custom, &f.name} {
-		m.SetStyles(s)
-	}
-}
-
-// offerRecent lists the recent directories.
-func (f *launchForm) offerRecent() {
-	f.sugg, f.recent, f.hi, f.moved, f.waiting, f.lookErr = f.recents, true, 0, false, false, ""
-	f.ghost()
-}
-
-// ghost shows the rest of the highlighted directory after what is typed.
-func (f *launchForm) ghost() {
-	if f.hi < len(f.sugg) {
-		f.dir.SetSuggestions([]string{f.sugg[f.hi]})
-	} else {
-		f.dir.SetSuggestions(nil)
-	}
-}
-
-func (f *launchForm) fields() []int {
-	if f.cmd == launchCustomCmd {
-		return []int{launchDir, launchCmd, launchCustom, launchName}
-	}
-	return []int{launchDir, launchCmd, launchName}
-}
-
-// next is the field after this one (by), wrapping.
-func (f *launchForm) next(by int) int {
-	fs := f.fields()
-	i := max(0, slices.Index(fs, f.field))
-	return fs[(i+by+len(fs))%len(fs)]
-}
-
-func (f *launchForm) focus(field int) tea.Cmd {
-	f.field = field
-	f.dir.Blur()
-	f.custom.Blur()
-	f.name.Blur()
-	switch field {
-	case launchDir:
-		return f.dir.Focus()
-	case launchCustom:
-		return f.custom.Focus()
-	case launchName:
-		return f.name.Focus()
+		switch {
+		case h.layout:
+			return d.cycleLayout(c)
+		case h.session != "":
+			if s, ok := d.session(h.session); ok {
+				d.active, d.focus[s.Workspace] = s.Workspace, s.Name
+				d.mode = typeMode
+				d.saveUI()
+			}
+			if h.pane && h.term.in(m.X, m.Y) {
+				d.drag = h.session
+				d.mouseTo(h.session, uv.MouseClickEvent(toUV(m)))
+			}
+			return nil
+		case h.ws != "":
+			d.active, d.zoom = h.ws, false
+			d.mode = navMode
+			d.syncCursor()
+			d.saveUI()
+			return nil
+		}
 	}
 	return nil
 }
 
-// formKey takes a key while the form is open.
-func (d *deskTab) formKey(m tea.KeyPressMsg, c *Ctx) tea.Cmd {
-	f := d.form
-	k := m.String()
-	switch k {
-	case "esc":
-		d.form = nil
-		return nil
-	case "ctrl+a":
-		d.attach = !d.attach
-		return nil
-	case "enter":
-		return d.launch(c)
-	case "shift+tab":
-		return f.focus(f.next(-1))
-	}
-	switch f.field {
-	case launchDir:
-		switch k {
-		case "tab":
-			if f.accept() {
-				return f.lookup(c)
-			}
-			return f.focus(f.next(1))
-		case "up", "ctrl+p":
-			if f.hi > 0 {
-				f.hi, f.moved = f.hi-1, true
-				f.ghost()
-			}
-			return nil
-		case "down", "ctrl+n":
-			if f.hi+1 < len(f.sugg) {
-				f.hi, f.moved = f.hi+1, true
-				f.ghost()
-				return nil
-			}
-			return f.focus(f.next(1))
-		}
-		return f.typeInto(m)
-	case launchCmd:
-		n := len(launchCmds)
-		switch k {
-		case "left", "h":
-			f.cmd = (f.cmd + n - 1) % n
-		case "right", "l", "space":
-			f.cmd = (f.cmd + 1) % n
-		case "tab", "down", "j":
-			return f.focus(f.next(1))
-		case "up", "k":
-			return f.focus(f.next(-1))
-		}
-		return nil
-	}
-	switch k {
-	case "tab", "down":
-		return f.focus(f.next(1))
-	case "up":
-		return f.focus(f.next(-1))
-	}
-	return f.typeInto(m)
+// ---- small questions ----
+
+// askLine is a one-line question in a card: a name.
+type askLine struct {
+	title string
+	in    textinput.Model
+	empty bool // an empty answer is one
+	send  func(text string, c *Ctx) tea.Cmd
 }
 
-// typeInto gives a key or a paste to the field in focus; an edit of the
-// directory looks again.
-func (f *launchForm) typeInto(msg tea.Msg) tea.Cmd {
-	in := map[int]*textinput.Model{launchDir: &f.dir, launchCustom: &f.custom, launchName: &f.name}[f.field]
-	if in == nil {
+func newAskLine(title, placeholder, value string, send func(string, *Ctx) tea.Cmd) *askLine {
+	in := textinput.New()
+	in.Prompt, in.Placeholder = "", placeholder
+	in.SetValue(value)
+	in.CursorEnd()
+	in.Focus()
+	return &askLine{title: title, in: in, send: send}
+}
+
+func (a *askLine) key(d *deskTab, m tea.KeyPressMsg, c *Ctx) tea.Cmd {
+	switch m.String() {
+	case "esc":
+		d.ask = nil
 		return nil
+	case "enter":
+		v := strings.TrimSpace(a.in.Value())
+		if v == "" && !a.empty {
+			return nil
+		}
+		d.ask = nil
+		return a.send(v, c)
 	}
-	before := in.Value()
 	var cmd tea.Cmd
-	*in, cmd = in.Update(msg)
-	if in.Value() == before {
-		return cmd
-	}
-	f.err = ""
-	if f.field == launchDir {
-		return tea.Batch(cmd, f.edited())
-	}
+	a.in, cmd = a.in.Update(m)
 	return cmd
 }
 
-// edited follows an edit of the directory: the offers narrow to those that
-// still match at once, and fleetd is asked once typing pauses.
-func (f *launchForm) edited() tea.Cmd {
-	f.n++
-	f.moved = false
-	v := f.dir.Value()
-	if v == "" {
-		f.offerRecent()
-		return nil
-	}
-	f.sugg = slices.DeleteFunc(slices.Clone(f.sugg), func(s string) bool { return !completes(v, s) && !strings.EqualFold(s, v) })
-	f.hi, f.waiting = 0, true
-	f.ghost()
-	n := f.n
-	return tea.Tick(dirsWait, func(time.Time) tea.Msg { return dirsTickMsg{n: n} })
+func (a *askLine) view(th *Theme, w int) []string {
+	a.in.SetWidth(max(8, w-8))
+	lines := []string{""}
+	lines = append(lines, wrapped(a.title, w-6, th.Strong)...)
+	lines = append(lines, "", a.in.View(), "", hintsFit(th, w-6, "⏎ done", "esc cancel"))
+	return deskCard(th.Amber, "", "", lines, w)
 }
 
-// accept takes the highlighted directory into the field and descends into
-// it; false when there is none to take.
-func (f *launchForm) accept() bool {
-	if f.hi >= len(f.sugg) {
-		return false
-	}
-	v := strings.TrimSuffix(f.sugg[f.hi], "/") + "/"
-	if v == f.dir.Value() {
-		return false
-	}
-	f.dir.SetValue(v)
-	f.dir.CursorEnd()
-	f.n++
-	f.sugg, f.recent, f.hi, f.moved, f.waiting = nil, false, 0, false, true
-	f.ghost()
-	return true
+// wsPick chooses the workspace a session moves to.
+type wsPick struct {
+	session string
+	hi      int
 }
 
-// lookup asks fleetd for the directories that match what is typed.
-func (f *launchForm) lookup(c *Ctx) tea.Cmd {
-	cl, n, prefix := c.Client, f.n, f.dir.Value()
-	if cl == nil {
-		return nil
-	}
-	f.waiting = true
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-		defer cancel()
-		dirs, err := cl.DeskDirs(ctx, prefix)
-		return dirsMsg{n: n, dirs: dirs, err: err}
-	}
+func newWsPick(d *deskTab, session string) *wsPick {
+	return &wsPick{session: session}
 }
 
-// offered is fleetd's directories, unless typing has gone on since.
-func (f *launchForm) offered(m dirsMsg) {
-	if m.n != f.n {
-		return
-	}
-	f.waiting = false
-	if m.err != nil {
-		f.sugg, f.lookErr = nil, m.err.Error()
-	} else {
-		f.sugg, f.lookErr = m.dirs, ""
-	}
-	f.recent, f.hi, f.top, f.moved = false, 0, 0, false
-	f.ghost()
-}
-
-// target is the directory a launch goes to: the highlighted offer when ↑↓
-// chose it, nothing is typed, or it finishes the name being typed; else
-// what is typed (fleetd offers a directory's insides once it is typed
-// whole, and ⏎ then means that directory).
-func (f *launchForm) target() string {
-	v := strings.TrimSpace(f.dir.Value())
-	if f.hi < len(f.sugg) {
-		pick := f.sugg[f.hi]
-		if f.moved || v == "" || completes(v, pick) && !slices.Contains(f.sugg, v) {
-			v = pick
+func (p *wsPick) key(d *deskTab, k string, c *Ctx) tea.Cmd {
+	wss := d.workspaces()
+	switch k {
+	case "esc", "q":
+		d.pick = nil
+	case "up", "k":
+		p.hi = max(0, p.hi-1)
+	case "down", "j":
+		p.hi = min(len(wss)-1, p.hi+1)
+	case "enter":
+		d.pick = nil
+		if p.hi < len(wss) {
+			to := wss[p.hi]
+			name := p.session
+			return d.do(c, "moved to "+to.Name, func(ctx context.Context, cl fleetapi.Client) (deskDoneMsg, error) {
+				return deskDoneMsg{focus: name}, cl.DeskUpdate(ctx, name, fleetapi.DeskUpdate{Workspace: &to.ID})
+			})
 		}
 	}
-	if len(v) > 1 {
-		v = strings.TrimSuffix(v, "/")
-	}
-	return v
+	return nil
 }
 
-// completes: dir is beside what typed names, its name starting with the
-// last part of typed, whatever the case; not a directory inside typed.
-func completes(typed, dir string) bool {
-	if typed == "" || strings.HasSuffix(typed, "/") || strings.HasPrefix(dir, typed+"/") {
-		return false
-	}
-	return nameStarts(path.Base(dir), typed[strings.LastIndex(typed, "/")+1:])
-}
-
-// nameStarts: name starts with part, whatever the case.
-func nameStarts(name, part string) bool {
-	return len(name) >= len(part) && strings.EqualFold(name[:len(part)], part)
-}
-
-// autoName is the name fleetd gives a session in dir when none is asked
-// for: the directory's, made unique as fleetd does.
-func autoName(dir string, ss []fleetapi.DeskSession) string {
-	base := path.Base(dir)
-	taken := func(n string) bool {
-		return slices.ContainsFunc(ss, func(s fleetapi.DeskSession) bool { return s.Name == n })
-	}
-	name := base
-	for i := 2; taken(name); i++ {
-		name = fmt.Sprintf("%s-%d", base, i)
-	}
-	return name
-}
-
-// launch sends the form: the session is made, and the form closes when
-// fleetd says it is (made), or shows why not.
-func (d *deskTab) launch(c *Ctx) tea.Cmd {
-	f := d.form
-	if f.busy {
-		return nil
-	}
-	dir := f.target()
-	if dir == "" {
-		f.err = "type a directory"
-		return f.focus(launchDir)
-	}
-	command := launchCmds[f.cmd].cmd
-	if f.cmd == launchCustomCmd {
-		if command = strings.TrimSpace(f.custom.Value()); command == "" {
-			f.err = "type the command to run"
-			return f.focus(launchCustom)
+func (p *wsPick) view(d *deskTab, th *Theme, w int) []string {
+	s, _ := d.session(p.session)
+	lines := []string{""}
+	lines = append(lines, wrapped("Move "+shownName(s)+" to", w-6, th.Strong)...)
+	lines = append(lines, "")
+	for i, ws := range d.workspaces() {
+		fg, mark := th.Text, "  "
+		if i == p.hi {
+			fg, mark = th.Amber, "▸ "
 		}
-	}
-	req := fleetapi.DeskCreate{Name: strings.TrimSpace(f.name.Value()), Dir: dir, Command: command}
-	f.busy, f.err = true, ""
-	cl := c.Client
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-		defer cancel()
-		s, err := cl.DeskCreate(ctx, req)
-		if err == nil && s == nil {
-			err = errors.New("fleetd made no session")
+		here := ""
+		if ws.ID == s.Workspace {
+			here = "  (it is here)"
 		}
-		return deskMadeMsg{s: s, err: err}
+		lines = append(lines, line(w-6, nil, seg{s: mark, fg: th.Amber}, seg{s: ws.Name, fg: fg, bold: i == p.hi}, seg{s: here, fg: th.Dim}))
 	}
-}
-
-// formView is the launch form as a card for the middle of a w×h body.
-func (d *deskTab) formView(c *Ctx, w, h int) []string {
-	f, th := d.form, c.Theme
-	f.style(th)
-	cw := min(w-4, 84)
-	if cw < 24 || h < 5 {
-		return []string{Fit(th.Selected.Render("New session")+th.Muted.Render(" · enlarge me"), w)}
-	}
-	in := cw - 6 // inside the card's margins
-	const lw = 13
-	fw := max(1, in-lw)
-	label := func(field int, s string) string {
-		if f.field == field {
-			return lipgloss.NewStyle().Foreground(th.Amber).Bold(true).Render(Fit("▸ "+s, lw))
-		}
-		return th.Muted.Render(Fit("  "+s, lw))
-	}
-	rows := min(deskSuggests, max(1, h-14))
-	f.dir.SetWidth(fw - 1)
-	lines := []string{"", label(launchDir, "Directory") + fieldView(f.dir.View(), fw)}
-	lines = append(lines, f.offersView(th, rows, lw, fw)...)
-	lines = append(lines, "", label(launchCmd, "Command")+f.chipsView(th, fw))
-	if f.cmd == launchCustomCmd {
-		f.custom.SetWidth(fw - 1)
-		lines = append(lines, label(launchCustom, "Run")+fieldView(f.custom.View(), fw))
-	}
-	f.name.Placeholder = "from the directory"
-	if dir := f.target(); dir != "" {
-		f.name.Placeholder = autoName(dir, d.sessions())
-	}
-	f.name.SetWidth(fw - 1)
-	lines = append(lines, "", label(launchName, "Name")+fieldView(f.name.View(), fw), "")
-
-	switch {
-	case f.busy:
-		lines = append(lines, paint(th.Amber, "◌ launching…"))
-	case f.err != "":
-		lines = append(lines, th.Danger.Render("✕ ")+lipgloss.NewStyle().Foreground(th.Text).Render(oneLine(f.err)))
-	default:
-		lines = append(lines, th.Muted.Render("in tmux on "+d.host()+": it outlives detaching and restarts"))
-	}
-	keys := []string{hint(th, keyIs("⏎", "launch")), hint(th, keyIs("tab", "complete")), hint(th, keyIs("esc", "cancel"))}
-	toggle := th.Muted.Render("○ attach on launch ") + hint(th, keyIs("^a", ""))
-	if d.attach {
-		toggle = paint(th.Green, "✓ ") + lipgloss.NewStyle().Foreground(th.Text).Render("attach on launch ") + hint(th, keyIs("^a", ""))
-	}
-	foot := strings.Join(keys, th.Muted.Render(" · "))
-	if lipgloss.Width(foot)+lipgloss.Width(toggle)+2 > in {
-		foot = hint(th, keyIs("⏎", "launch"))
-	}
-	lines = append(lines, spread(foot, toggle, in))
-	return deskCard(th.Amber, th.Title.Render("New session"), th.Muted.Render("on "+d.host()), lines, cw)
-}
-
-// fieldView is an input's view in w cells: the ghost of a completion runs
-// past the input's own width, into its padding, which is cut.
-func fieldView(v string, w int) string {
-	if lipgloss.Width(v) > w {
-		v = ansi.Truncate(v, w, "")
-	}
-	return v
-}
-
-// offersView is the directories under the field: rows lines, lw in.
-func (f *launchForm) offersView(th *Theme, rows, lw, fw int) []string {
-	out := make([]string, rows)
-	pad := strings.Repeat(" ", lw)
-	switch {
-	case f.lookErr != "":
-		out[0] = pad + th.Danger.Render("✕ ") + th.Muted.Render(oneLine(f.lookErr))
-		return out
-	case len(f.sugg) == 0 && f.waiting:
-		out[0] = pad + th.Muted.Render("…")
-		return out
-	case len(f.sugg) == 0 && f.dir.Value() != "":
-		out[0] = pad + th.Muted.Render("no directory here starts so; ⏎ launches in what is typed")
-		return out
-	}
-	f.top = keepInView(f.top, f.hi, len(f.sugg), rows)
-	typed := f.dir.Value()
-	for i := 0; i < rows && f.top+i < len(f.sugg); i++ {
-		j := f.top + i
-		s := f.sugg[j]
-		var line string
-		if j == f.hi {
-			line = paint(th.Amber, "▸ ") + th.Selected.Render(s)
-		} else if typed != "" && strings.HasPrefix(s, typed) {
-			line = "  " + th.Muted.Render(s[:len(typed)]) + lipgloss.NewStyle().Foreground(th.Text).Render(s[len(typed):])
-		} else {
-			line = "  " + lipgloss.NewStyle().Foreground(th.Text).Render(s)
-		}
-		var tag string
-		switch {
-		case i == 0 && f.recent:
-			tag = th.Muted.Render("recent")
-		case i == rows-1 && len(f.sugg) > f.top+rows:
-			tag = th.Muted.Render(fmt.Sprintf("↓ %d more", len(f.sugg)-f.top-rows))
-		}
-		out[i] = pad + spread(line, tag, fw)
-	}
-	return out
-}
-
-// chipsView is the command picker, w wide at most: the chosen chip lit.
-func (f *launchForm) chipsView(th *Theme, w int) string {
-	render := func(short bool) string {
-		var parts []string
-		for i, ch := range launchCmds {
-			l := ch.label
-			if short {
-				l = ch.short
-			}
-			switch {
-			case i == f.cmd && f.field == launchCmd:
-				parts = append(parts, lipgloss.NewStyle().Foreground(th.Ground).Background(th.Amber).Bold(true).Render(" ◉ "+l+" "))
-			case i == f.cmd:
-				parts = append(parts, th.Selected.Render(" ◉ "+l+" "))
-			default:
-				parts = append(parts, th.Muted.Render(" ○ ")+lipgloss.NewStyle().Foreground(th.Text).Render(l+" "))
-			}
-		}
-		return strings.Join(parts, "")
-	}
-	s := render(false)
-	if lipgloss.Width(s) > w {
-		s = render(true)
-	}
-	return s
+	lines = append(lines, "", hintsFit(th, w-6, "⏎ move", "↑↓ choose", "esc cancel"))
+	return deskCard(th.Amber, "", "", lines, w)
 }

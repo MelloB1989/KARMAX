@@ -80,7 +80,8 @@ func newApp(ctx context.Context, opts Options) *App {
 		opts.Now = time.Now
 	}
 	a := &App{opts: opts, ctx: ctx, tabs: defaultTabs(), booting: !opts.NoAnim}
-	a.c = Ctx{Client: opts.Client, Theme: NewTheme(true), Now: opts.Now(), NoAnim: opts.NoAnim, Working: &Samples{}}
+	a.c = Ctx{Client: opts.Client, Theme: NewTheme(true), Now: opts.Now(), NoAnim: opts.NoAnim, Working: &Samples{},
+		Clipboard: opts.Clipboard, Local: opts.Local, DeskState: opts.DeskState}
 	a.c.Attach = func(worker string, mode fleetapi.TermMode) tea.Cmd {
 		if a.opts.Attach == nil {
 			return toast("ssh is not available in this build", true)
@@ -239,7 +240,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.c.Snap, a.since, a.err, a.back = m.Snap, m.Snap.Seq, nil, 0
 		a.c.Working.Add(a.c.Now, float64(working(m.Snap)))
-		return a, tea.Batch(a.watch(a.since), a.current().Update(m, &a.c), a.tick())
+		cmds := []tea.Cmd{a.watch(a.since), a.current().Update(m, &a.c), a.tick()}
+		for _, t := range a.tabs {
+			if w, ok := t.(waker); ok && t != a.current() && t.Visible(a.me()) {
+				cmds = append(cmds, w.Wake(&a.c))
+			}
+		}
+		return a, tea.Batch(cmds...)
 
 	case WatchErrMsg:
 		a.err = m.Err
@@ -268,13 +275,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	}
-	return a, a.current().Update(msg, &a.c)
+	cmds := []tea.Cmd{a.current().Update(msg, &a.c)}
+	for _, t := range a.tabs { // a tab's own work goes on while another is shown
+		if b, ok := t.(backgrounder); ok && t != a.current() && b.Background(msg) {
+			cmds = append(cmds, t.Update(msg, &a.c))
+		}
+	}
+	return a, tea.Batch(cmds...)
 }
 
 // key handles a key: the app's own keys unless the tab has a field
 // focused, then the tab's.
 func (a *App) key(m tea.KeyPressMsg) tea.Cmd {
 	k := m.String()
+	if r, ok := a.current().(rawer); ok && r.Raw() && !a.booting && !a.help {
+		return a.current().Update(m, &a.c) // typing into a session: every key is its
+	}
 	if k == "ctrl+c" {
 		return tea.Quit
 	}
@@ -310,7 +326,35 @@ func (a *App) View() tea.View {
 	v := tea.NewView(a.render())
 	v.AltScreen = true
 	v.WindowTitle = "KARMAX ▸ fleetctl"
+	if a.fullscreen() {
+		tab := a.current()
+		if t, ok := tab.(cursorer); ok && !a.help {
+			v.Cursor = t.Cursor()
+		}
+		if t, ok := tab.(mouser); ok && t.Mouse() {
+			v.MouseMode = tea.MouseModeCellMotion
+		}
+	}
+	for _, t := range a.tabs { // a background tab may name the window too: who needs the operator
+		if tt, ok := t.(titler); ok && t.Visible(a.me()) {
+			if s := tt.WindowTitle(); s != "" {
+				v.WindowTitle = s
+			}
+		}
+		if f, ok := t.(focuser); ok && f.ReportFocus() {
+			v.ReportFocus = true
+		}
+	}
 	return v
+}
+
+// fullscreen: the shown tab draws the whole terminal.
+func (a *App) fullscreen() bool {
+	if a.booting {
+		return false
+	}
+	f, ok := a.current().(fullscreener)
+	return ok && f.Fullscreen()
 }
 
 // The frame's fixed rows: top border, tab bar, rule, rule, footer, bottom.
@@ -326,6 +370,12 @@ func (a *App) render() string {
 	}
 	if w < 24 || h < frameRows+2 {
 		return a.tinyView(w, h)
+	}
+	if a.fullscreen() {
+		if a.help {
+			return block(a.helpView(w, h), w, h)
+		}
+		return a.current().View(&a.c, w, h)
 	}
 	t := a.c.Theme
 	edge := lipgloss.NewStyle().Foreground(t.Grey)

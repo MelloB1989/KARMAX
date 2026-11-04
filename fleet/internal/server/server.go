@@ -14,6 +14,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -236,6 +237,10 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 		}
 		index = append(index, Route{Route: pattern, Scopes: names})
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			if crossSite(r) {
+				writeErr(w, http.StatusForbidden, fmt.Errorf("a request from a web page (%s): fleetd's API takes none", cmp.Or(r.Header.Get("Origin"), r.Header.Get("Sec-Fetch-Site"))))
+				return
+			}
 			s := tok.scope(r)
 			if c := callerOf(r); c != nil {
 				s = c.scope() // the tailnet: who, not a token
@@ -286,7 +291,7 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 				if errors.Is(err, errDraining) {
 					code = http.StatusServiceUnavailable
 				}
-				if errors.Is(err, filexfer.ErrTooLarge) {
+				if _, big := err.(tooLarge); big || errors.Is(err, filexfer.ErrTooLarge) {
 					code = http.StatusRequestEntityTooLarge
 				}
 				if errors.Is(err, daemon.ErrConflict) {
@@ -1065,7 +1070,7 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 	termRoutes(route, long, ops)
 	screensRoutes(route, ops)
 	awsRoutes(route, ops) // aws.go
-	deskRoutes(route, ops)
+	deskRoutes(route, long, ops)
 
 	return withSandbox(tok, ops.IsWorker, withAgent(tok, ops.IsWorker, mux))
 }
@@ -1350,6 +1355,21 @@ type badRequest struct{ error }
 type forbidden struct{ error }
 
 type notFound struct{ error }
+
+// crossSite is a request a web page made: a browser says where the page is
+// from (Origin), or how it got here (Sec-Fetch-Site). The tailnet says who
+// a request is from, not what sent it, so any page the operator opens could
+// otherwise act as them (post to the desk, run a task), even one that
+// rebinds its own name to fleetd's address. No page of fleetd's calls its
+// API: fleetctl sends neither header, and fleetctl desk's window reaches
+// fleetd through fleetctl, which drops them.
+func crossSite(r *http.Request) bool {
+	if r.Header.Get("Origin") != "" {
+		return true
+	}
+	s := r.Header.Get("Sec-Fetch-Site")
+	return s != "" && s != "none"
+}
 
 func body(r *http.Request, v any) error {
 	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20)).Decode(v); err != nil {

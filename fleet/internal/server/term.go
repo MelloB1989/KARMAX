@@ -70,7 +70,14 @@ func termRoutes(route func(string, func(http.ResponseWriter, *http.Request) (any
 		if mode == fleetapi.TermType {
 			lease, held = locks.Take(worker, who, force)
 		}
-		ws, err := websocket.Accept(w, r, nil) // the default Origin check: no browser page drives it
+		var opts *websocket.AcceptOptions // the default Origin check: no browser page drives it
+		if _, isDesk := fleetapi.DeskName(worker); isDesk {
+			// The desk's window may be on a slow link: a terminal's bytes
+			// compress well, the more so with the window kept (about 1.3 MB
+			// a socket). Only a client that offers it gets it.
+			opts = &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover}
+		}
+		ws, err := websocket.Accept(w, r, opts)
 		if err != nil {
 			if lease != nil {
 				lease.Release()

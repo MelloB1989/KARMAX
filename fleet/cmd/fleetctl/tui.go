@@ -12,12 +12,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"golang.org/x/term"
 
+	"github.com/MelloB1989/karmax/fleet/internal/clipboard"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 	"github.com/MelloB1989/karmax/fleet/internal/identity"
@@ -63,8 +65,33 @@ func tuiCmd(args []string) error {
 			return err
 		}
 		opts.Client = &apiClient{c: c, from: sessionName()}
+		opts.Clipboard = clipboard.Bridge()
+		opts.Local = onFleetdsMachine(c.base) && os.Getenv("FLEET_DESK_UPLOAD") != "1"
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		opts.DeskState = filepath.Join(dir, "fleetctl", "desk-ui.json")
+		if demo {
+			opts.DeskState = ""
+		}
 	}
 	return tui.Run(ctx, opts)
+}
+
+// onFleetdsMachine: fleetd runs where fleetctl does (its address is this
+// machine's, or this is a fleet host reaching its own fleetd), so a file
+// here is a file there.
+func onFleetdsMachine(base string) bool {
+	if u, err := url.Parse(base); err == nil {
+		h := u.Hostname()
+		if h == "localhost" {
+			return true
+		}
+		if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+			return true
+		}
+	}
+	_, err := os.Stat(configPath())
+	return err == nil && os.Getenv("FLEETD_URL") == ""
 }
 
 // stepEvery moves the demo fleet on until ctx ends.

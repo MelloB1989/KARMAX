@@ -719,17 +719,58 @@ In `fleetctl tui`, `s` on the Fleet tab is `--shell` in the selected agent's con
 `--type`; on the Screens tab `s` watches the selected tile's session and `t` types into it.
 
 **Sessions tab** (admins). The TUI's third tab is [the desk](#the-desk--your-own-sessions-on-fleetds-machine)
-as a grid of live screens, like Screens: a tile per session in its order, polled every 2 seconds while the
-tab is shown. Each tile has a dot (green running, amber while Claude Code is in a turn, grey stopped), the
-directory, the command (claude, opus, sonnet, shell…), `↻ restored` for a while after a restart brought it
-back, and `● N attached`; a failed poll keeps the screens, marked `⚠ 14s old`. `⏎` (or `a`) attaches with
-the keyboard and `w` watches; `Ctrl-]` (a watcher: `q`, `Esc`) comes back to the TUI, which polls at once.
-`alt+1`–`alt+9` attach the Nth session (the digits stay the tab keys), `z` zooms a tile to the whole tab,
-`x` ends a session after asking (its Claude Code session stays on disk), `r` polls now. `n` opens the launch
-form: a directory completed from fleetd's machine as you type (`tab` takes the highlighted one and goes
-into it, `↑↓` choose; before you type, the recent ones), a command (Claude, Claude Opus, Claude Sonnet,
-Shell or Custom…) and a name (the directory's when empty). `⏎` launches and attaches at once; `ctrl+a` in
-the form turns attaching off.
+as workspaces, cmux's way, and it takes the whole terminal:
+- **Sidebar.** Every workspace is listed there: its name and session count, who needs you (`◆ web needs
+  you`) or how many work, and where its sessions are (directory and git branch). The one shown is a sand
+  card with its sessions under it. `⌘B` (when the terminal passes ⌘ on) or `b` hides and shows it.
+- **Live sessions.** The shown workspace's sessions are live, each in its own terminal emulator inside
+  fleetctl, laid out as its layout says: `tabs` (one at a time, under a bar of tabs: the focused one lit and
+  read whole, the rest sharing the room, with `‹n` and `n›` when more do not fit), `columns`, `rows`,
+  `grid` or `main` (the first large on the left), each split pane with a head line. `l` (or the layout name on the top line) cycles
+  it, kept on fleetd; `z` zooms the focused pane.
+- **Two modes.** Typing (the top line says `TYPING`) gives every key to the focused session, Ctrl-C and the
+  digits too. `Ctrl-]` steps out (`NAV`), where `↑↓` walk the workspaces and the shown one's sessions (the
+  view follows the cursor), and `⏎` types again.
+  - In NAV: `[` `]` change session, `{` `}` change workspace, `alt+1`–`9` go to workspace N; the digits stay
+    the TUI's tab keys.
+  - In NAV: `n` launches a session into the shown workspace (the launch form: a directory completed from
+    fleetd's machine, a command, a name), `W` makes a workspace, `r` renames (a session's label, or a
+    workspace), `m` moves a session to another workspace, `K`/`J` move it (or a workspace) up and down,
+    `x` ends a session (or removes a workspace) after asking.
+  - With ⌘ passed on: `⌘1`–`9`, `⌘[` `⌘]`, `⌘←→↑↓` (between panes) and `⌘N` work in both modes.
+  - The mouse: a click picks a workspace, a session or a pane (and types into it), and the wheel scrolls the
+    session's history (the desk's tmux has the mouse on); Shift- or Option-drag selects text as the terminal
+    does.
+- **Pastes.** A file or folder dropped on the terminal, or copied in Finder and pasted (`⌘V`), arrives as its
+  path on your machine. fleetctl sends it to fleetd (`POST /v1/desk/paste`) and types its path there instead,
+  and Claude Code takes an image's path as `[Image #N]`. **`Ctrl+V`**, Claude Code's own image key, reads
+  this machine's clipboard itself (osascript on a Mac, xclip or wl-clipboard on Linux): an image (a
+  screenshot) or the files on it go the same way, and with neither the key reaches the session as `^V`.
+  Text pastes go in as they are. On fleetd's own machine a pasted path is typed as it is.
+- **Copying out.** What a program in a session copies (tmux's copy mode, OSC 52) reaches this machine's
+  clipboard through the terminal.
+- **Notifications.** Every desk Claude Code runs with fleetd's hooks (see the desk, below), so the TUI knows
+  in Claude Code's own words what it needs ("needs your permission to use Bash", "has a question for you")
+  and when a turn ends.
+  - A session that asks for you, or finishes, while it is not on screen (or is on screen in a window you are
+    not looking at; the terminal reports focus) gets a mark on its card, row and tab, and a line in the
+    footer. It also gets a desktop notification through the terminal (OSC 777, which cmux, Ghostty and
+    iTerm2 show).
+  - What a session asks shows under it in the sidebar and in its pane's head, the top line counts who
+    needs you, and so does the window title.
+  - `u` (`⌘U` while typing) jumps to the newest news, and `!` lists the last 50 (`⏎` goes there, `c`
+    clears). The desk keeps listening while another TUI tab is shown.
+  - A session started before the hooks (or a command not Claude Code) is still news when its status
+    changes: asking, or done working.
+- **Efficiency.**
+  - Each session you have looked at keeps its screen for as long as fleetctl runs. Its connection stays for
+    5 minutes after it leaves the screen (the 10 most recent), so switching is instant; an older one
+    reconnects when shown (tmux redraws it), showing its last screen meanwhile.
+  - Each other workspace's focused session is connected before you first go there, at its pane's size.
+  - The desk's state comes by one long poll (`GET /v1/desk?since&wait`), answered when something changes.
+  - The terminals' bytes are deflated on the wire.
+- **What it remembers.** The workspace shown, each one's focused session and the sidebar are kept in the
+  user config directory (`fleetctl/desk-ui.json`).
 
 - One typist per worker. A second `--type` is told who holds it (`held by …`) and exits 1; an admin may
   `--force`, which turns the holder into a watcher (it is told so, and watches on).
@@ -771,6 +812,8 @@ desk:
   directory's name when empty, made of letters, digits, `-` and `_`, and made unique with `-2`, `-3`…) and
   a command: empty or `claude` is Claude Code with a session id fleetd chooses (`--session-id <uuid>`);
   `claude --model opus` adds its arguments; `shell` is a login shell; anything else runs as given. Every
+  Claude Code the desk starts or resumes runs with `--dangerously-skip-permissions` (the operator's rule:
+  no permission prompts), whatever the command says. Every
   command runs in your login shell (`$SHELL -lc '<command>; exec $SHELL -l'`), so PATH and the rest are
   yours, and the session stays when the command ends. A session starts detached, 200×50, in its
   directory. Its environment is fleetd's without fleetd's own (`FLEET_*`, systemd's per-service variables,
@@ -796,10 +839,38 @@ desk:
   has no transcript to resume, so it starts afresh with the same id. One that cannot come back (its
   directory is gone) is listed with why, until you end it. On the same boot, a session that is not running
   was closed by you (you exited its shell, or killed it): it is forgotten, never brought back.
+- **Workspaces.** Sessions are grouped in workspaces (at least one; a desk.json from before them puts
+  every session in Main), each with a name and a layout (`tabs`, `columns`, `rows`, `grid`, `main`) that
+  the window shows it in. A session's workspace, its place in it and a label (the name shown; tmux's name
+  stays) change with `PATCH /v1/desk/<name>`; workspaces are made, renamed, moved, given a layout and
+  removed (refused while sessions are in it, unless `?end=1`) under `/v1/desk/workspaces`.
+- **The server's options.** Whatever your tmux.conf says, the desk's server has the mouse on (the wheel
+  scrolls a session's history), no status line, `escape-time 10` (Esc reaches Claude Code at once),
+  `set-clipboard on` (a program in a session may set the clipboard of the terminal looking at it, OSC 52),
+  focus events and 20000 lines of history. They are set when the server starts, and when fleetd does.
+- **Claude Code's notes.**
+  - Every Claude Code the desk starts or resumes also runs with `--settings desk-hooks.json` (fleetd writes
+    it, and `desk-hook.sh`, in its state directory).
+  - Those hooks run `desk-hook.sh` at a notification (it needs a permission, asks something, or waits for
+    you), at the end of a turn, and when you send a prompt. The script leaves a note for the session in
+    `desk-notes/<name>`: tmux gives each session `FLEET_DESK_SESSION`, and a prompt's note keeps nothing of
+    the prompt.
+  - The list carries each session's note (`note`: `needs` with Claude Code's words, or `done`); a prompt
+    clears it.
+  - Claude Code's "still waiting for your input" a minute after a turn ended is not news again.
+- **Pastes.** `POST /v1/desk/paste?session=S&file=F` writes a file pasted, dropped or Ctrl+V'd into a session in the TUI (the
+  body, at most 512 MB; `kind=tar` a folder's tar, unpacked: directories and regular files only, each
+  inside it) to `desk-paste/<day>/<random>/<F>` in fleetd's state directory, and answers its path: typed
+  into Claude Code, an image's path becomes `[Image #N]`. Pastes are kept 7 days. `GET /v1/desk/file?path=P`
+  is a file the other way, as a download.
 - **Ending.** `DELETE /v1/desk/<name>` kills the tmux session and forgets it; the rest close up the order.
-- **Listing.** `GET /v1/desk?lines=N`: the sessions in order, running or not, attached clients, and with
-  `lines` (at most 500) each screen's last lines with ANSI: one `tmux list-sessions` and one
-  `capture-pane` per session. `GET /v1/desk/dirs?prefix=P` completes the launch form's directory: up to 30;
+- **Listing.** `GET /v1/desk?lines=N`: the workspaces and the sessions in order, running or not, attached
+  clients, each session's Claude Code status (`working`, `waiting` when it asks you something, `idle`),
+  its title (what Claude Code calls the conversation, without the spinner), its pane's directory now and
+  that directory's git branch, and with `lines` (at most 500) each screen's last lines with ANSI: one
+  `tmux list-sessions` and one `capture-pane` per session. Without `lines`, `?since=<version>&wait=<s>`
+  (at most 50) answers once the list is no longer that version: every window waiting shares one look at
+  the desk a second, and none is taken while nobody waits. `GET /v1/desk/dirs?prefix=P` completes the launch form's directory: up to 30;
   nothing typed is home, `~/code` and the latest sessions' directories; a directory is its subdirectories;
   anything else is the directories beside it that start so, in any case; dot-directories only when what is
   typed starts with a dot.

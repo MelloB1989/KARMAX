@@ -75,6 +75,7 @@ exec sleep 600
 	m.ClaudeDir = cdir
 	m.Home = home
 	m.SystemdRun = ""
+	m.HookScript, m.HookSettings = "", "" // the fake claude's argv stays as the tests read it; notes_test.go has them
 	m.Host = "kali"
 	m.BootID = func() string { return d.boot }
 	m.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "TMUX_TMPDIR=" + tmp, "SHELL=/bin/sh", "LANG=C.UTF-8"}
@@ -100,6 +101,7 @@ func (d *testDesk) restart() {
 	m := New(o.Socket, filepath.Dir(o.State))
 	m.Conf, m.Shell, m.Claude, m.ClaudeDir, m.Home = o.Conf, o.Shell, o.Claude, o.ClaudeDir, o.Home
 	m.SystemdRun, m.Host, m.BootID, m.Env, m.Log = o.SystemdRun, o.Host, o.BootID, o.Env, o.Log
+	m.HookScript, m.HookSettings, m.Notes = o.HookScript, o.HookSettings, o.Notes
 	d.Manager = m
 }
 
@@ -172,7 +174,7 @@ func TestCreateStartsClaudeCodeWithASessionOfItsOwn(t *testing.T) {
 		t.Fatalf("created %+v", s)
 	}
 	eventually(t, "claude's start", func() bool { return len(d.starts()) == 1 })
-	if got := d.starts()[0]; got != "--session-id "+s.Claude {
+	if got := d.starts()[0]; got != "--session-id "+s.Claude+" "+Dangerous {
 		t.Fatalf("claude started with %q, want its own session id", got)
 	}
 	var got fleetapi.DeskSession
@@ -240,7 +242,7 @@ func TestTheCommandRunsInTheLoginShellAndTheSessionOutlivesIt(t *testing.T) {
 	s := d.create(fleetapi.DeskCreate{Dir: "~/code", Command: "claude --model opus"})
 	o := d.create(fleetapi.DeskCreate{Dir: "~/code", Name: "echo", Command: "echo made-by-$((6*7))"})
 	eventually(t, "claude's start", func() bool { return len(d.starts()) == 1 })
-	if got := d.starts()[0]; got != "--session-id "+s.Claude+" --model opus" {
+	if got := d.starts()[0]; got != "--session-id "+s.Claude+" "+Dangerous+" --model opus" {
 		t.Fatalf("claude started with %q", got)
 	}
 	if o.Claude != "" || o.Command != "echo made-by-$((6*7))" {
@@ -364,7 +366,7 @@ func TestARebootBringsEverySessionBackInOrder(t *testing.T) {
 	eventually(t, "both claudes again", func() bool { return len(d.starts()) == 2 })
 	starts := d.starts()
 	slices.Sort(starts)
-	want := []string{"--resume " + a.Claude, "--session-id " + b.Claude + " --model opus"}
+	want := []string{"--resume " + a.Claude + " " + Dangerous, "--session-id " + b.Claude + " " + Dangerous + " --model opus"}
 	if !slices.Equal(starts, want) {
 		t.Fatalf("claude restarted with %q, want %q", starts, want)
 	}
@@ -549,17 +551,18 @@ func TestTheSessionsEnvironmentIsNotFleetds(t *testing.T) {
 func TestTheResumeReplacesTheLaunchesChoiceOfSession(t *testing.T) {
 	const id = "5e0f7a1c-0d6a-4c39-9d43-0b3c9f5e2b3d"
 	for _, c := range []struct{ cmd, want string }{
-		{"claude", "'claude' --resume " + id},
-		{"claude --model opus", "'claude' --resume " + id + " --model opus"},
-		{"claude --resume old --model opus", "'claude' --resume " + id + " --model opus"},
-		{"claude -r old -c --fork-session --session-id=x --model opus", "'claude' --resume " + id + " --model opus"},
-		{"claude -r --model opus", "'claude' --resume " + id + " --model opus"},
+		{"claude", "'claude' --resume " + id + " " + Dangerous},
+		{"claude --model opus", "'claude' --resume " + id + " " + Dangerous + " --model opus"},
+		{"claude --resume old --model opus", "'claude' --resume " + id + " " + Dangerous + " --model opus"},
+		{"claude -r old -c --fork-session --session-id=x --model opus", "'claude' --resume " + id + " " + Dangerous + " --model opus"},
+		{"claude -r --model opus", "'claude' --resume " + id + " " + Dangerous + " --model opus"},
+		{"claude --model opus " + Dangerous, "'claude' --resume " + id + " --model opus " + Dangerous}, // once
 	} {
 		if got := claudeLine("claude", c.cmd, id, true); got != c.want {
 			t.Errorf("%q: %q, want %q", c.cmd, got, c.want)
 		}
 	}
-	if got := claudeLine("claude", "claude --continue", "", false); got != "'claude' --continue" {
+	if got := claudeLine("claude", "claude --continue", "", false); got != "'claude' "+Dangerous+" --continue" {
 		t.Errorf("a launch that chooses its own session: %q", got)
 	}
 }
@@ -619,7 +622,7 @@ func TestASessionFileWithAStrangeIDIsIgnored(t *testing.T) {
 	if s, ok := (&Manager{ClaudeDir: cdir}).claudeUnder(pid); ok {
 		t.Fatalf("took %+v", s)
 	}
-	if got := claudeLine("claude", "claude", "x; true", true); got != "'claude'" {
+	if got := claudeLine("claude", "claude", "x; true", true); got != "'claude' "+Dangerous {
 		t.Fatalf("a strange id reached the line: %q", got)
 	}
 }
