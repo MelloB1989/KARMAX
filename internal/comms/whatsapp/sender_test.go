@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,7 +101,8 @@ func TestAnUnknownGroupMemberIsLookedUpNotNamedAfterTheGroup(t *testing.T) {
 		}
 		return ""
 	})
-	if m := route(t, w, body); m.SenderName != "Omar" {
+	// A second message: the same one again would not be routed twice.
+	if m := route(t, w, strings.Replace(body, `"m3"`, `"m3b"`, 1)); m.SenderName != "Omar" {
 		t.Errorf("SenderName = %q, want the looked-up name", m.SenderName)
 	}
 }

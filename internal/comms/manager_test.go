@@ -226,3 +226,52 @@ func TestSendRecordsItsProducer(t *testing.T) {
 		t.Errorf("agent send recorded as %q, must count as an answer", got["agent says another"])
 	}
 }
+
+// A message can arrive more than once: a webhook retried, a missed one
+// redelivered after a restart. Each time it carries the same id, and only the
+// first is acted on — in the same run and after a restart alike, since what
+// recognises it is the store.
+func TestAMessageThatArrivesAgainIsNotActedOnAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "karmax.db")
+	msg := Message{ID: "whatsapp:15550003333@s.whatsapp.net/dup-1", ChannelID: "15550003333@s.whatsapp.net",
+		ChannelType: "whatsapp", SenderID: "15550003333", Direction: Inbound, Content: "are we on for 5?", Timestamp: time.Now()}
+
+	run := func(arrivals int) int {
+		s, err := store.New(path, zap.NewNop())
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		defer s.Close()
+		b := bus.NewLog(s, store.DefaultWorkspace, zap.NewNop())
+		mgr := NewManager(b, s, zap.NewNop())
+		ch := newFakeChannel("whatsapp-main", "whatsapp")
+		if err := mgr.Register(ch, "agent-main"); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		events := consume(t, b, bus.EventCommsMessage)
+		ctx, stop := context.WithCancel(context.Background())
+		defer stop()
+		if err := mgr.StartAll(ctx); err != nil {
+			t.Fatalf("StartAll: %v", err)
+		}
+		for i := 0; i < arrivals; i++ {
+			ch.inbox <- msg
+		}
+		heard := 0
+		for {
+			select {
+			case <-events:
+				heard++
+			case <-time.After(300 * time.Millisecond):
+				return heard
+			}
+		}
+	}
+
+	if heard := run(2); heard != 1 {
+		t.Errorf("a message that arrived twice was acted on %d times", heard)
+	}
+	if heard := run(1); heard != 0 {
+		t.Errorf("after a restart, a message already handled was acted on again (%d)", heard)
+	}
+}

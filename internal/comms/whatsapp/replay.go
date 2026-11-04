@@ -3,164 +3,187 @@ package whatsapp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"go.uber.org/zap"
 )
 
 // A restart used to be a hole in the record. wacli POSTs each message to
-// KARMAX's webhook and retries about five times over ~15 seconds; a daemon
-// restart takes longer than that, so anything that arrived in the window was
-// delivered to a closed port, exhausted its retries and was gone — no error
-// anyone would see, because from wacli's side delivery merely failed, and from
-// KARMAX's side the message never existed.
+// KARMAX's webhook and retries for a few seconds; a daemon restart takes longer
+// than that, so anything that arrived in the window was delivered to a closed
+// port and was gone.
 //
-// The fix is to stop treating the webhook as the only path. wacli already
-// stores every message, so on startup the channel asks what it missed and
-// replays it through the ordinary route. The webhook stays the fast path; this
-// is the one that makes it complete.
+// wacli keeps every delivery with the exact body it tried to post. So a missed
+// message is redelivered, not rebuilt: the channel finds the deliveries to its
+// webhook that never landed and has wacli send each again. What arrives is the
+// event the webhook would have carried — the chats the operator scoped it to,
+// the group and mention facts, the sender's contact — through the same
+// handler as everything else. A message that arrives twice keeps one id, so
+// the store recognises the repeat (see messageKey).
+//
+// Rebuilding from wacli's message history is what this replaced, and it was
+// wrong three ways. History rows carry no group flag, chat name or mentions, so
+// a group message arrived as a direct chat and was answered as one, in the
+// group. History holds every chat, so a restart delivered the ones the webhook
+// is scoped away from: status updates, newsletters, groups nobody asked
+// KARMAX to watch. And a message the webhook's own retry had delivered was
+// routed a second time.
 const (
-	// maxReplayWindow bounds how far back a replay reaches. A daemon that was
-	// off for a week should come back to the conversation, not to a week of
-	// stale messages it will answer as though they just arrived.
+	// WebhookPath is where wacli posts this channel's events.
+	WebhookPath = "/comms/whatsapp"
+
+	// maxReplayWindow bounds how far back redelivery reaches. A daemon that
+	// was off for a week should come back to the conversation, not to a week
+	// of stale messages it will answer as though they just arrived.
 	maxReplayWindow = 12 * time.Hour
-	// maxReplayMessages bounds one catch-up, so a busy outage cannot flood the
-	// agent's mailbox faster than it drains.
-	maxReplayMessages = 200
-	replayTimeout     = 30 * time.Second
+	// maxRedeliveries bounds one sweep, so a long outage cannot flood the
+	// agent's mailbox faster than it drains; the next sweep takes the rest.
+	maxRedeliveries = 200
+	// The first sweep waits for the webhook to be listening, since a
+	// redelivery to a closed port only fails again. Later sweeps catch
+	// whatever failed while the daemon was up.
+	firstSweepAfter = 20 * time.Second
+	sweepEvery      = 5 * time.Minute
+	wacliTimeout    = 60 * time.Second
 )
 
-// CursorStore remembers how far a channel has processed. An interface, so the
-// comms package keeps knowing nothing about the database.
-type CursorStore interface {
-	CommsCursor(channelID string) (time.Time, bool, error)
-	SetCommsCursor(channelID string, at time.Time, messageID string) error
+// delivery is one of wacli's webhook delivery records.
+type delivery struct {
+	ID        int64     `json:"id"`
+	WebhookID int64     `json:"webhook_id"`
+	URL       string    `json:"url"`
+	Event     string    `json:"event"`
+	MessageID string    `json:"message_id"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-// SetCursorStore enables restart-safe replay. Without one the channel behaves
-// exactly as before: live webhooks only.
-func (w *WhatsAppChannel) SetCursorStore(cs CursorStore) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.cursors = cs
-}
-
-func (w *WhatsAppChannel) cursorStore() CursorStore {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.cursors
-}
-
-// noteProcessed advances the cursor past a message the channel has handled.
-// Called for live traffic too — otherwise the cursor only ever moves during
-// replay, and the next restart would replay everything since the last one.
-func (w *WhatsAppChannel) noteProcessed(at time.Time, messageID string) {
-	cs := w.cursorStore()
-	if cs == nil || at.IsZero() {
-		return
-	}
-	if err := cs.SetCommsCursor(w.id, at, messageID); err != nil {
-		w.log.Warn("could not record how far this channel has processed",
-			zap.String("channel_id", w.id), zap.Error(err))
-	}
-}
-
-// replayMissed routes messages that arrived while the daemon was down.
-func (w *WhatsAppChannel) replayMissed(ctx context.Context) {
-	cs := w.cursorStore()
-	if cs == nil {
-		return
-	}
-	since, seen, err := cs.CommsCursor(w.id)
-	if err != nil {
-		w.log.Warn("could not read the replay cursor; skipping catch-up",
-			zap.String("channel_id", w.id), zap.Error(err))
-		return
-	}
-	if !seen {
-		// First ever start: begin from now rather than replaying all history.
-		w.noteProcessed(time.Now(), "")
-		w.log.Info("replay cursor started from now", zap.String("channel_id", w.id))
-		return
-	}
-
-	floor := time.Now().Add(-maxReplayWindow)
-	clamped := false
-	if since.Before(floor) {
-		since, clamped = floor, true
-	}
-
-	msgs, err := w.messagesAfter(ctx, since)
-	if err != nil {
-		w.log.Warn("could not ask wacli what was missed",
-			zap.String("channel_id", w.id), zap.Error(err))
-		return
-	}
-
-	replayed, skipped := 0, 0
-	for _, m := range msgs {
-		if replayed >= maxReplayMessages {
-			// Never silently. A capped replay that reports "done" is how a gap
-			// becomes invisible again.
-			w.log.Warn("replay hit its cap; older messages were left unprocessed",
-				zap.String("channel_id", w.id), zap.Int("cap", maxReplayMessages),
-				zap.Int("remaining", len(msgs)-replayed-skipped))
-			break
+// redeliverMissed sweeps for missed messages now and then until the channel
+// stops.
+func (w *WhatsAppChannel) redeliverMissed(ctx context.Context) {
+	wait := firstSweepAfter
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
 		}
-		// Our own sends are already accounted for, and a message at exactly the
-		// cursor is the one we stopped on.
-		if m.IsFromMe || !m.Timestamp.After(since) {
-			skipped++
+		w.sweepMissed(ctx)
+		wait = sweepEvery
+	}
+}
+
+// sweepMissed has wacli redeliver every message event to this channel's
+// webhook, in the window, that no delivery has landed.
+func (w *WhatsAppChannel) sweepMissed(ctx context.Context) {
+	failed, err := w.deliveries(ctx, "--status", "failed", "--limit", "1000")
+	if err != nil {
+		w.log.Warn("could not ask wacli which deliveries failed; missed messages wait for the next sweep",
+			zap.String("channel_id", w.id), zap.Error(err))
+		return
+	}
+	now := time.Now()
+	tried := map[string]bool{}
+	redelivered, failedAgain := 0, 0
+	for _, d := range failed {
+		// Messages only: a call that rang while the daemon was down is over.
+		if d.Event != "incoming_message" && d.Event != "outgoing_message" {
 			continue
 		}
-		w.routeEvent(wacliWebhookEnvelope{
-			Event: "incoming_message",
-			Payload: wacliWebhookPayload{
-				Source:  "whatsapp_event",
-				Chat:    wacliChat{JID: m.ChatJID, Name: m.ChatName, IsGroup: m.IsGroup},
-				Message: m.wacliMessage,
-			},
-		})
-		replayed++
+		if d.MessageID == "" || !postsHere(d.URL) || now.Sub(d.CreatedAt) > maxReplayWindow {
+			continue
+		}
+		key := strconv.FormatInt(d.WebhookID, 10) + "/" + d.Event + "/" + d.MessageID
+		if tried[key] {
+			continue
+		}
+		tried[key] = true
+		if redelivered+failedAgain >= maxRedeliveries {
+			w.log.Warn("redelivery hit its cap for this sweep; the next sweep takes the rest",
+				zap.String("channel_id", w.id), zap.Int("cap", maxRedeliveries))
+			break
+		}
+		landed, err := w.landed(ctx, d)
+		if err != nil || landed {
+			continue
+		}
+		if err := w.redeliver(ctx, d.ID); err != nil {
+			failedAgain++
+			w.log.Warn("a missed message could not be redelivered; the next sweep tries again",
+				zap.String("channel_id", w.id), zap.String("message_id", d.MessageID), zap.Error(err))
+			continue
+		}
+		redelivered++
 	}
-
-	if replayed == 0 {
-		w.log.Info("nothing was missed while the daemon was down",
-			zap.String("channel_id", w.id), zap.Time("since", since))
-		return
+	if redelivered > 0 || failedAgain > 0 {
+		w.log.Info("redelivered messages the webhook missed",
+			zap.String("channel_id", w.id), zap.Int("redelivered", redelivered), zap.Int("failed", failedAgain))
 	}
-	w.log.Info("replayed messages that arrived while the daemon was down",
-		zap.String("channel_id", w.id), zap.Int("replayed", replayed),
-		zap.Time("since", since), zap.Bool("window_clamped", clamped))
 }
 
-// replayMessage is one row of wacli's message history. It embeds the webhook's
-// own message shape so a replayed message is byte-for-byte the same thing the
-// live path handles — a replay that took a different shape would be a second
-// code path to keep correct.
-type replayMessage struct {
-	wacliMessage
-	ChatName string `json:"chat_name"`
-	IsGroup  bool   `json:"is_group"`
+// landed reports whether any delivery of d's event reached the webhook: a
+// retry, or an earlier redelivery.
+func (w *WhatsAppChannel) landed(ctx context.Context, d delivery) (bool, error) {
+	all, err := w.deliveries(ctx, "--query", d.MessageID, "--limit", "100")
+	if err != nil {
+		return false, err
+	}
+	for _, o := range all {
+		if o.WebhookID == d.WebhookID && o.Event == d.Event && o.MessageID == d.MessageID &&
+			o.Status != "failed" {
+			// Delivered, or wacli still retrying it: either way not ours to
+			// send again.
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-func (w *WhatsAppChannel) messagesAfter(ctx context.Context, since time.Time) ([]replayMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, replayTimeout)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, w.wacliPath, "messages",
-		"-after", since.Format(time.RFC3339),
-		"-limit", "500",
-	).Output()
+func (w *WhatsAppChannel) deliveries(ctx context.Context, args ...string) ([]delivery, error) {
+	out, err := w.wacli(ctx, append([]string{"webhooks", "deliveries"}, args...)...)
 	if err != nil {
 		return nil, err
 	}
 	var resp struct {
-		Messages []replayMessage `json:"messages"`
+		Deliveries []delivery `json:"webhook_deliveries"`
 	}
 	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading wacli's deliveries: %w", err)
 	}
-	return resp.Messages, nil
+	return resp.Deliveries, nil
+}
+
+// redeliver has wacli post a recorded delivery again, body unchanged.
+func (w *WhatsAppChannel) redeliver(ctx context.Context, id int64) error {
+	out, err := w.wacli(ctx, "webhooks", "replay", "--id", strconv.FormatInt(id, 10))
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		OK       bool     `json:"ok"`
+		Delivery delivery `json:"delivery"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return fmt.Errorf("reading wacli's redelivery: %w", err)
+	}
+	if !resp.OK {
+		return fmt.Errorf("wacli's redelivery ended %q", resp.Delivery.Status)
+	}
+	return nil
+}
+
+func (w *WhatsAppChannel) wacli(ctx context.Context, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, wacliTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, w.wacliPath, args...).Output()
+}
+
+// postsHere reports whether a webhook URL is this channel's endpoint.
+func postsHere(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Path == WebhookPath
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -317,7 +318,7 @@ func (w *wasmKit) Gateway(ctx context.Context, prompt string, lend ...string) (s
 	for _, name := range lend {
 		t, ok := w.rt.lendableTool(name)
 		if !ok {
-			w.rt.log.Warn("a loop asked to lend an unknown tool",
+			w.rt.log.Warn("a loop asked to lend a tool the gateway may not hold (unknown, or one that sends)",
 				zap.String("loop", w.loop), zap.String("tool", name))
 			continue
 		}
@@ -525,13 +526,25 @@ func runHostTool(ctx context.Context, bin string, args ...string) (string, error
 	return string(out), nil
 }
 
-// lendableTool returns a host tool a loop may lend to the model for one call; any tool, by the operator's choice.
+// lendableTool returns a host tool a loop may lend to the model for one call.
+//
+// Lent tools only read. A gateway call decides and drafts; what it drafts is
+// sent by the loop, which knows where a message may go, through the gates every
+// send passes. A gateway that could send for itself was a second sender with
+// none of that: told to reply to a group message, it messaged the person
+// directly, then answered "I sent them a short reply…" as the text to send,
+// and the loop put that account of itself, meant for the operator, in the
+// chat.
 func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
+	if outboundTools[tools.CanonicalName(name)] {
+		return loopkit.Tool{}, false
+	}
 	switch name {
 	case "wacli":
 		return loopkit.Tool{
-			Name:        "wacli",
-			Description: "Full WhatsApp CLI access (wacli): messages, chats, resolve, contacts, receipts, send and more.",
+			Name: "wacli",
+			Description: "Read-only WhatsApp CLI (wacli): messages, chats, resolve, contacts list|lookup, receipts, " +
+				"media download, status. It cannot send: the message you want sent goes in your answer.",
 			Schema: []byte(`{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},` +
 				`"description":"e.g. [\"messages\",\"--chat\",\"<name>\",\"--limit\",\"15\"]"}},"required":["args"]}`),
 			Run: func(ctx context.Context, in map[string]any) (string, error) {
@@ -545,7 +558,11 @@ func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 				if len(args) == 0 {
 					return "", fmt.Errorf("args is required")
 				}
-				return runHostTool(ctx, hostpaths.Wacli(), args...)
+				if !wacliReads(args) {
+					return "", fmt.Errorf("wacli %s is not available here: this tool only reads. "+
+						"Put the message you want sent in your answer and it is sent from there", args[0])
+				}
+				return runHostTool(ctx, lentWacli(), args...)
 			},
 		}, true
 	}
@@ -565,6 +582,30 @@ func (rt *KarmaxRuntime) lendableTool(name string) (loopkit.Tool, bool) {
 		}
 	}
 	return loopkit.Tool{}, false
+}
+
+// lentWacli is the binary the lent wacli runs; a test points it at a fake, so a
+// regression in the read-only guard can never act on the real account.
+var lentWacli = hostpaths.Wacli
+
+// wacliReadVerbs are the wacli commands that only read, with the subcommands
+// that only read where a command also writes; nil allows any arguments.
+var wacliReadVerbs = map[string][]string{
+	"messages": nil, "chats": nil, "resolve": nil, "receipts": nil, "status": nil,
+	"contacts": {"list", "lookup"},
+	"media":    {"download"},
+}
+
+// wacliReads reports whether a wacli invocation only reads.
+func wacliReads(args []string) bool {
+	subs, ok := wacliReadVerbs[strings.ToLower(strings.TrimSpace(args[0]))]
+	if !ok {
+		return false
+	}
+	if subs == nil {
+		return true
+	}
+	return len(args) > 1 && slices.Contains(subs, strings.ToLower(strings.TrimSpace(args[1])))
 }
 
 // outboundTools are the tools whose effect lands in front of another human —

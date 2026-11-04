@@ -406,10 +406,6 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				waAgentID = chCfg.AgentID
 			}
 			ch := whatsapp.New(chCfg.ID, wacliPath, targetChat, waWebhookSecret, log)
-			// Makes restarts non-lossy: the channel records how far it has
-			// processed and, on start, replays whatever arrived while the
-			// daemon was down.
-			ch.SetCursorStore(s)
 			waChannel = ch
 			if err := commsMgr.RegisterWithOptions(ch, chCfg.AgentID, comms.ChannelOptions{
 				DND: dndEnabled(chCfg.Settings),
@@ -1000,7 +996,7 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 
 	// Mount the WhatsApp event endpoint that wacli pushes message events to.
 	if waChannel != nil {
-		wh.AddHandler("/comms/whatsapp", waChannel.HandleWebhook)
+		wh.AddHandler(whatsapp.WebhookPath, waChannel.HandleWebhook)
 	}
 	for _, ch := range webhookChannels {
 		wh.AddHandler(ch.InboundPath(), ch.HandleInbound)

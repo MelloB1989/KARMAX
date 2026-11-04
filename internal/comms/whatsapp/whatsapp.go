@@ -158,8 +158,6 @@ type WhatsAppChannel struct {
 	// message instead. Guarded by mu.
 	answerStream func(callID string) error
 	log          *zap.Logger
-	// cursors, when set, makes restarts non-lossy: see replay.go.
-	cursors CursorStore
 	// who decides whose account a message came from; names looks up a
 	// sender's label when the event carries none. Both guarded by mu.
 	who   *identity.Directory
@@ -297,8 +295,8 @@ func (w *WhatsAppChannel) Start(ctx context.Context) error {
 	)
 
 	// In the background: catching up must not delay the channel coming up, and
-	// the replayed messages route through the same inbox as live ones.
-	go w.replayMissed(w.ctx)
+	// what is redelivered arrives through the webhook like anything else.
+	go w.redeliverMissed(w.ctx)
 	return nil
 }
 
@@ -367,15 +365,6 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 		}
 		return
 	}
-	// Deferred, so it runs down every path this function returns by: an empty
-	// reaction and a real question are equally "seen", and a cursor that only
-	// advanced on messages worth acting on would replay every reaction in the
-	// window after each restart. Deferred rather than immediate so the cursor
-	// moves only once the routing below has actually happened — a crash
-	// mid-route then replays the message instead of skipping it.
-	if env.Event == "incoming_message" && env.Payload.Source != "wacli_api" {
-		defer w.noteProcessed(msg.Timestamp, msg.ID)
-	}
 	body := strings.TrimSpace(msg.Content)
 	// Media (image/PDF/Excel/doc/video/voice) arrives with an empty text body.
 	// Instead of dropping it, attach a marker so the agent knows a file came in
@@ -418,10 +407,16 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 		ts = time.Now()
 	}
 
-	who := w.speakerOf(chatJID, env.Payload.Chat.IsGroup, msg.SenderJID, env.Payload.SenderContact, env.Payload.Chat.Name)
+	// A group is a group whatever the event says: WhatsApp keeps every group
+	// on its g.us server, so the address alone settles it. An event that
+	// lacked the flag once put a group message to the monitor as a direct
+	// chat; it answered as it would one person, in the group.
+	isGroup := env.Payload.Chat.IsGroup || IsGroupJID(chatJID)
+
+	who := w.speakerOf(chatJID, isGroup, msg.SenderJID, env.Payload.SenderContact, env.Payload.Chat.Name)
 
 	cm := comms.Message{
-		ID:          uuid.New().String(),
+		ID:          messageKey(chatJID, msg.ID),
 		ChannelID:   chatJID, // reply goes back to the originating chat
 		ChannelType: "whatsapp",
 		SenderID:    normalizeJID(who.jid),
@@ -433,7 +428,7 @@ func (w *WhatsAppChannel) routeEvent(env wacliWebhookEnvelope) {
 			"chat_jid":          chatJID,
 			"event":             env.Event,
 			"source":            env.Payload.Source,
-			"is_group":          env.Payload.Chat.IsGroup,
+			"is_group":          isGroup,
 			"chat_name":         env.Payload.Chat.Name,
 			"mentions_me":       msg.MentionsMe,
 			"quoted_is_from_me": msg.QuotedIsFromMe,
@@ -462,6 +457,25 @@ func verifyWacliSignature(body []byte, secret, signature string) bool {
 	mac.Write(body)
 	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// IsGroupJID reports whether a chat address is a group's: WhatsApp keeps every
+// group on the g.us server.
+func IsGroupJID(jid string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(jid)), "@g.us")
+}
+
+// messageKey is a message's id in KARMAX: the same WhatsApp message always has
+// the same one. wacli retries a delivery it is not sure landed, and a missed one
+// is redelivered after a restart (replay.go), so a message can arrive again;
+// the store keeps one row per id, and a repeat is recognised there and not
+// acted on twice, across restarts too. Under a fresh id per arrival, every
+// repeat was a new message and was answered again.
+func messageKey(chatJID, messageID string) string {
+	if strings.TrimSpace(messageID) == "" {
+		return uuid.New().String() // nothing to recognise it by
+	}
+	return "whatsapp:" + chatJID + "/" + messageID
 }
 
 // normalizeJID reduces a JID or phone to bare digits for matching, stripping any
