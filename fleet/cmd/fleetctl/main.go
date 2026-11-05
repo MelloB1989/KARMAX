@@ -344,6 +344,10 @@ type statusError struct {
 
 func (e *statusError) Error() string { return e.msg }
 
+// Status is the HTTP status fleetd answered (the TUI's Files tab tells a
+// refusal from a link that broke by it).
+func (e *statusError) Status() int { return e.Code }
+
 // refused is an answer that retrying cannot change: the token is wrong.
 func refused(err error) bool {
 	var se *statusError

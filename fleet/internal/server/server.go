@@ -1071,6 +1071,7 @@ func handler(ops Ops, tok Tokens, orch func() *outbound.Quota, drain <-chan stru
 	screensRoutes(route, ops)
 	awsRoutes(route, ops) // aws.go
 	deskRoutes(route, long, ops)
+	fileRoutes(route, ops)
 
 	return withSandbox(tok, ops.IsWorker, withAgent(tok, ops.IsWorker, mux))
 }

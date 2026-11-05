@@ -772,6 +772,10 @@ as workspaces, cmux's way, and it takes the whole terminal:
 - **What it remembers.** The workspace shown, each one's focused session and the sidebar are kept in the
   user config directory (`fleetctl/desk-ui.json`).
 
+**Files tab** (admins). The TUI's fourth tab browses fleetd's machine's files and moves them to and from
+this one, over the local network when it can: [Fleetd's machine's files](#fleetds-machines-files--fleetctl-tuis-files-tab).
+With ten tabs, the tenth (Access) is `0`.
+
 - One typist per worker. A second `--type` is told who holds it (`held by …`) and exits 1; an admin may
   `--force`, which turns the holder into a watcher (it is told so, and watches on).
 - Watchers are many and never resize the session. A watcher that sends nothing for 12 hours is closed.
@@ -883,6 +887,65 @@ desk:
 Deploying it needs nothing beyond fleetd: lingering is on already (`loginctl enable-linger`, for fleetd
 itself), which keeps the user manager, and so the desk's scope, up while you are logged out and starts
 them at boot.
+
+## Fleetd's machine's files — `fleetctl tui`'s Files tab
+
+The Files tab (admins only) browses the files of fleetd's own machine (Kali), and moves them between it and
+the machine fleetctl runs on. Guests, agents and the console are refused; an admin device can already run
+anything there through the desk, so it gives no more than that. Code: `internal/hostfiles`; routes:
+`internal/server/files.go`; the tab: `internal/tui/tab_files.go` and `files_*.go`.
+
+```yaml
+host_files:
+  lan_listen: ":7877"   # the bulk routes on the local network, over TLS; "off" for none
+  # enabled: false      # on by default
+```
+
+- **Browsing.** `GET /v1/files?path=P` lists a folder (`~` is fleetd's user's home; a file's path is its
+  folder, the file in focus), its links with what they point at, at most 20 000 entries, gzipped when big.
+  The tab lists a folder from its cache at once and asks again behind it. It lists the folder under the
+  cursor before you open it, and previews the file under it once the cursor rests:
+  - code in its colours;
+  - markdown as a page;
+  - other bytes as hex;
+  - a picture.
+
+  Dot-files are hidden until `.`; `s` sorts by name (file2 before file10), time or size; `/` filters;
+  `g` goes to a path; `~` is home; `y` copies a path.
+- **The viewer.** `⏎` on a file opens it full screen. Text is read up to 4 MB, with line numbers, wrap
+  (`w`) and find (`/`, `n`, `N`); markdown is shown as a page (`m` shows its text). `[` `]` (`←` `→` for
+  pictures) step through the folder's files.
+- **Pictures.** `GET /v1/files/preview?path=P&w=W&h=H` is a picture of an image (PNG, JPEG, GIF, WebP,
+  BMP, TIFF, turned the way the camera says), a video's frame (ffmpeg) or a PDF's first page (pdftoppm,
+  when installed), made at the size it is shown: a 12 MB photo crosses a slow link as a few dozen KB. A
+  terminal that speaks kitty's graphics protocol (kitty, Ghostty, cmux) gets the picture itself, sent once
+  and placed with Unicode placeholders, so it moves and clears with the frame; any other gets it in
+  coloured half blocks. `FLEET_IMAGES=kitty|blocks|off` chooses.
+- **Transfers.** `d` downloads to `~/Downloads` (`D` changes where), `o` fetches a file and opens it with
+  this machine's own app, `u` or a file dropped on the window uploads into the folder shown, and Ctrl+V
+  uploads the clipboard's files or image. `L` shows this machine's files beside fleetd's (`tab` moves
+  between them, `c` copies across). Transfers run two at a time; `T` lists them, with `x` to stop one.
+  - A file goes on from where a broken link left it, either way: `GET /v1/files/read` takes `Range`, and
+    `PUT /v1/files/put?dir&name&id&offset&size` takes an upload in parts (`GET ?id=` is how much fleetd
+    holds).
+  - A folder moves as one tar (`GET /v1/files/tar`, `PUT /v1/files/untar`), gzipped on the tailnet,
+    unpacked beside its place first so a broken one leaves nothing half there.
+  - Nothing is written over: a name that is taken becomes "name 2".
+- **The local network.** When the client is on fleetd's local network, the bytes go there directly, not
+  over the tailnet:
+  - `GET /v1/files/lan` (on the tailnet) answers fleetd's LAN addresses (not the tailnet's, not
+    containers' bridges), the SHA-256 of the certificate it made at start, and a 12-hour token.
+  - The client tries every address at once, for under a second, and keeps the first that shows that
+    certificate and takes that token.
+  - The LAN listener serves only the routes that move bytes (read, preview, tar, put, untar), to the
+    token's holder. The local network sees neither the files nor the token.
+  - If the link breaks there (the laptop left home), the transfer goes back to the tailnet at once and
+    resumes. The LAN is looked for again two minutes later.
+  - The tab's head says which route is in use. On fleetd's own machine there is no route to choose.
+- **Changes.** `POST /v1/files/op`: `n` makes a folder, `r` renames, `x` moves to fleetd's trash
+  (`trash/<day>/` in its state directory, emptied after a week), `X` deletes for good. The root, home, any
+  folder above home and fleetd's state are refused. On this machine's side, `x` uses its own trash (a Mac's
+  `~/.Trash`, or the freedesktop one).
 
 ## The AWS account — `fleetctl tui`'s AWS tab
 

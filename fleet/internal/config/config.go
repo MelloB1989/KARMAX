@@ -86,6 +86,8 @@ type Config struct {
 	Cleanup Cleanup `yaml:"cleanup"`
 	// Desk is the operator's tmux sessions on fleetd's own machine.
 	Desk Desk `yaml:"desk"`
+	// HostFiles is fleetd's own machine's files, for the Files tab.
+	HostFiles HostFiles `yaml:"host_files"`
 	// AWS is the account fleetctl's AWS tab shows (aws.go); nil means none.
 	AWS *AWS `yaml:"aws"`
 }
@@ -103,6 +105,28 @@ type Desk struct {
 
 // On reports whether fleetd serves the desk.
 func (d Desk) On() bool { return d.Enabled == nil || *d.Enabled }
+
+// HostFiles is fleetd's own machine's files, browsed and moved from
+// fleetctl's Files tab (internal/hostfiles). Admins only.
+type HostFiles struct {
+	// Enabled serves them; on unless set false.
+	Enabled *bool `yaml:"enabled"`
+	// LANListen is where their bulk routes listen on the local network,
+	// over TLS, for a client on the same network to move files off the
+	// tailnet; default :7877, "off" for none.
+	LANListen string `yaml:"lan_listen"`
+}
+
+// On reports whether fleetd serves the files.
+func (f HostFiles) On() bool { return f.Enabled == nil || *f.Enabled }
+
+// LAN is the LAN listener's address; "" for none.
+func (f HostFiles) LAN() string {
+	if f.LANListen == "off" {
+		return ""
+	}
+	return f.LANListen
+}
 
 // Cleanup is fleetd's pass over what finished work left behind: agents'
 // task checkouts and scratch, their caches, their checkouts under the shared
@@ -560,6 +584,9 @@ func (c *Config) defaults() {
 	if c.Desk.Socket == "" {
 		c.Desk.Socket = "fleet-desk"
 	}
+	if c.HostFiles.LANListen == "" {
+		c.HostFiles.LANListen = ":7877"
+	}
 	if th.RestartFailures <= 0 {
 		th.RestartFailures = 3
 	}
@@ -606,6 +633,11 @@ func (c *Config) validate() error {
 	if c.AWS != nil {
 		if err := c.AWS.validate(); err != nil {
 			return err
+		}
+	}
+	if l := c.HostFiles.LAN(); l != "" {
+		if _, port, err := net.SplitHostPort(l); err != nil || port == "" {
+			return fmt.Errorf("host_files: lan_listen %q: want [address]:port, e.g. :7877, or off", l)
 		}
 	}
 	if !hostAlias.MatchString(c.Desk.Socket) {

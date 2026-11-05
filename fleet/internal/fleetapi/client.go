@@ -41,6 +41,8 @@ type Client interface {
 	// DeskTerm types in a desk session: its terminal, cols×rows, until
 	// Close. force takes the keyboard from whoever has it.
 	DeskTerm(ctx context.Context, name string, cols, rows int, force bool) (TermConn, error)
+	// Files is fleetd's machine's files (files.go); admins.
+	Files
 }
 
 // TermConn is a terminal session on fleetd (GET /v1/term/{worker}).

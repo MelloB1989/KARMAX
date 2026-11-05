@@ -150,20 +150,20 @@ func TestTabsSwitchByNumberAndTab(t *testing.T) {
 	}
 	last := vis[len(vis)-1]
 	press(a, "4")
-	if title() != "Tasks" {
+	if title() != "Files" {
 		t.Errorf("4 is %s", title())
 	}
 	press(a, "tab")
-	if title() != "Events" {
-		t.Errorf("tab after Tasks is %s", title())
+	if title() != "Tasks" {
+		t.Errorf("tab after Files is %s", title())
 	}
 	press(a, "shift+tab", "shift+tab", "shift+tab", "shift+tab", "shift+tab")
 	if title() != last {
 		t.Errorf("shift+tab wraps to %s, want %s", title(), last)
 	}
-	press(a, "1", fmt.Sprint(len(vis)))
+	press(a, "1", tabNum(len(vis)-1))
 	if title() != last {
-		t.Errorf("%d is %s", len(vis), title())
+		t.Errorf("%s is %s", tabNum(len(vis)-1), title())
 	}
 	if len(vis) < 9 {
 		press(a, "9")

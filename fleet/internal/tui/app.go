@@ -31,7 +31,7 @@ func Run(ctx context.Context, opts Options) error {
 
 // defaultTabs is the TUI's tabs in order; task 6's tabs are appended by name.
 func defaultTabs() []Tab {
-	return []Tab{newFleet(), newScreens(), newSessions(), newTasks(), newEvents(), newQuota(), newAWS(), newHosts(), newAccess()}
+	return []Tab{newFleet(), newScreens(), newSessions(), newFiles(), newTasks(), newEvents(), newQuota(), newAWS(), newHosts(), newAccess()}
 }
 
 const (
@@ -81,7 +81,7 @@ func newApp(ctx context.Context, opts Options) *App {
 	}
 	a := &App{opts: opts, ctx: ctx, tabs: defaultTabs(), booting: !opts.NoAnim}
 	a.c = Ctx{Client: opts.Client, Theme: NewTheme(true), Now: opts.Now(), NoAnim: opts.NoAnim, Working: &Samples{},
-		Clipboard: opts.Clipboard, Local: opts.Local, DeskState: opts.DeskState}
+		Clipboard: opts.Clipboard, Local: opts.Local, DeskState: opts.DeskState, FilesState: opts.FilesState}
 	a.c.Attach = func(worker string, mode fleetapi.TermMode) tea.Cmd {
 		if a.opts.Attach == nil {
 			return toast("ssh is not available in this build", true)
@@ -303,6 +303,9 @@ func (a *App) key(m tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 	tab := a.current()
+	if cl, ok := tab.(claimer); ok && cl.Claims(k) {
+		return tab.Update(m, &a.c)
+	}
 	if !tab.Capturing() {
 		n := len(a.visible())
 		switch k {
@@ -317,6 +320,8 @@ func (a *App) key(m tea.KeyPressMsg) tea.Cmd {
 			return a.show((a.shownIndex() + n - 1) % n)
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			return a.show(int(k[0] - '1'))
+		case "0":
+			return a.show(9)
 		}
 	}
 	return tab.Update(m, &a.c)
@@ -510,13 +515,13 @@ func (a *App) tabBar(w int) string {
 			}
 			switch {
 			case tb == cur:
-				b.WriteString(lipgloss.NewStyle().Foreground(t.Ground).Background(t.Amber).Bold(true).Render(fmt.Sprintf(" %d %s ", i+1, tb.Title())))
+				b.WriteString(lipgloss.NewStyle().Foreground(t.Ground).Background(t.Amber).Bold(true).Render(fmt.Sprintf(" %s %s ", tabNum(i), tb.Title())))
 			case compact && title == "":
-				b.WriteString(t.Muted.Render(fmt.Sprintf(" %d", i+1)))
+				b.WriteString(t.Muted.Render(" " + tabNum(i)))
 			case compact:
-				b.WriteString(t.Muted.Render(fmt.Sprintf(" %d ", i+1)) + lipgloss.NewStyle().Foreground(t.Text).Render(title))
+				b.WriteString(t.Muted.Render(" "+tabNum(i)+" ") + lipgloss.NewStyle().Foreground(t.Text).Render(title))
 			default:
-				b.WriteString(t.Muted.Render(fmt.Sprintf(" %d ", i+1)) + lipgloss.NewStyle().Foreground(t.Text).Render(tb.Title()+" "))
+				b.WriteString(t.Muted.Render(" "+tabNum(i)+" ") + lipgloss.NewStyle().Foreground(t.Text).Render(tb.Title()+" "))
 			}
 			if tb.Title() == "Access" && a.c.Snap != nil && a.c.Snap.Knocks > 0 {
 				badge := fmt.Sprintf("●%d", a.c.Snap.Knocks)
@@ -545,6 +550,14 @@ func (a *App) tabBar(w int) string {
 		state = "" // the tabs (and a knock) first: the banner says when fleetd is gone
 	}
 	return spread(bar, state, w)
+}
+
+// tabNum is the key that shows the i-th visible tab: 1–9, then 0.
+func tabNum(i int) string {
+	if i == 9 {
+		return "0"
+	}
+	return fmt.Sprint(i + 1)
 }
 
 // footer is the tab's keys (or a toast), and the maker's mark.
@@ -594,7 +607,7 @@ func (a *App) helpView(w, h int) string {
 	}
 	lines := []string{t.Gradient("KARMAX", true) + t.Muted.Render(" ▸ ") + t.Strong.Render("fleetctl") + t.Muted.Render("  made by MelloB · "+a.opts.Version), "",
 		t.Title.Render("Everywhere"),
-		row(fmt.Sprintf("1–%d, tab", len(a.visible())), "switch tabs (shift+tab goes back)"),
+		row(fmt.Sprintf("1–%s, tab", tabNum(len(a.visible())-1)), "switch tabs (shift+tab goes back)"),
 		row("?", "this help; any key closes it"),
 		row("q, ctrl+c", "quit"), "",
 		t.Title.Render(a.current().Title())}

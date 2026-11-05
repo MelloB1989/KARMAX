@@ -1,5 +1,5 @@
 ╭─ KARMAX ▸ fleetctl ──────────────────────────────────────────── admin · operator ── 20 workers · 3 working ── 21:04 ─╮
-│  1 Fleet   2 Screens   3 Sessions   4 Tasks   5 Events   6 Quota   7 AWS   8 Hosts   9 Access ●1              ● live │
+│  1 Fleet   2 Screens   3 Sessions   4 Files   5 Tasks   6 Events   7 Quota   8 AWS   9 Hosts   0 Access ●1    ● live │
 ├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ ┃ agent-01 · pc2          5h 34% 7d 11% · cpu 37% · 1020M  ┃ agent-07 · pc2                                          │
 │ ┃▸ ʘʘ⠶ S1 working   tui-frame-1a2b    ctx   0% Grep 5s     ┃   ✕  S1 down      container is not… ctx  16%            │

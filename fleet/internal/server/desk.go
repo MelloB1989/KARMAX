@@ -49,10 +49,16 @@ type withDesk struct {
 
 // deskOf is ops's desk; nil when fleetd serves none.
 func deskOf(ops Ops) DeskOps {
-	if w, ok := ops.(withDesk); ok {
-		return w.desk
+	for {
+		switch w := ops.(type) {
+		case withDesk:
+			return w.desk
+		case withFiles:
+			ops = w.Ops
+		default:
+			return nil
+		}
 	}
-	return nil
 }
 
 // terminal is where a worker's terminal is: a desk session's on this

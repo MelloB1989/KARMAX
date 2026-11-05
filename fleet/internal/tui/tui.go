@@ -44,6 +44,9 @@ type Options struct {
 	// DeskState is where the Sessions tab keeps its choices (the workspace
 	// shown, each one's focus, the sidebar); "" keeps none.
 	DeskState string
+	// FilesState is where the Files tab keeps its own (the folders shown,
+	// where downloads go); "" keeps none.
+	FilesState string
 }
 
 // Ctx is what every tab draws from and acts through. The app owns it; a
@@ -63,9 +66,10 @@ type Ctx struct {
 	// Fleet → Screens keeps the same agent in view.
 	Selected string
 	// Clipboard, Local and DeskState are the Options' (the Sessions tab's).
-	Clipboard clipboard.Clipboard
-	Local     bool
-	DeskState string
+	Clipboard  clipboard.Clipboard
+	Local      bool
+	DeskState  string
+	FilesState string
 }
 
 // What a tab may be besides a Tab.
@@ -86,6 +90,8 @@ type (
 	backgrounder interface{ Background(msg tea.Msg) bool }
 	// waker starts its work as snapshots come, shown or not.
 	waker interface{ Wake(c *Ctx) tea.Cmd }
+	// claimer takes a key the app would otherwise take (tab), while Claims.
+	claimer interface{ Claims(k string) bool }
 )
 
 // Tab is one tab of the TUI.

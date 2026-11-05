@@ -266,6 +266,15 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `DELETE /v1/desk/workspaces/{id}` | full | `fleetctl tui` (Sessions) | remove a workspace; 409 while sessions are in it, unless `end=1` ends them; the desk keeps one |
 | `POST /v1/desk/paste` | full | `fleetctl tui` (Sessions) | write a file pasted, dropped or Ctrl+V'd into session `session` (the body, at most 512 MB, named `file`; `kind=tar`: a folder's tar, unpacked) on fleetd's machine, kept 7 days; answers the `path` to type |
 | `GET /v1/desk/file` | full | `fleetctl tui` (Sessions) | the regular file at `path` on fleetd's machine, as a download |
+| `GET /v1/files` | full | `fleetctl tui` (Files) | the folder at `path` on fleetd's machine (a file's path: its folder, the file as `focus`), gzipped when big |
+| `POST /v1/files/op` | full | `fleetctl tui` (Files) | `mkdir`, `rename`, `trash` (kept a week) or `delete` (for good) |
+| `GET /v1/files/read` | full | `fleetctl tui` (Files) | the file at `path`, with `Range` (a broken download goes on) |
+| `GET /v1/files/preview` | full | `fleetctl tui` (Files) | a picture of the image (or video, PDF) at `path`, fit to `w`×`h` pixels |
+| `GET /v1/files/tar` | full | `fleetctl tui` (Files) | the file or folder at `path` as a tar (`gz=1`: gzipped) |
+| `PUT /v1/files/put` | full | `fleetctl tui` (Files) | bytes `offset`.. of a `size`-byte upload `id`; the last put it in `dir` as `name` |
+| `GET /v1/files/put` | full | `fleetctl tui` (Files) | how much of upload `id` fleetd holds, to go on from there |
+| `PUT /v1/files/untar` | full | `fleetctl tui` (Files) | a folder's tar, unpacked into `dir` |
+| `GET /v1/files/lan` | full | `fleetctl tui` (Files) | the files' local-network addresses, certificate hash and a 12-hour token |
 | `GET /v1/aws` | full | `fleetctl tui` (AWS) | the operator's AWS account (`fleetapi.AWSReport`): who fleetd reads as, the month's cost (Cost Explorer, read every `cost_every`), every resource in the regions (read every `every`; `refresh=1` at once), and the parts that could not be read. Callers at once share one read; 404 without `aws:` in fleet.yaml |
 <!-- routes:end -->
 

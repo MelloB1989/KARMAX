@@ -27,7 +27,7 @@ func goTab(t *testing.T, a *App, title string) tea.Cmd {
 	t.Helper()
 	for i, tb := range a.visible() {
 		if tb.Title() == title {
-			_, cmd := a.Update(keyMsg(fmt.Sprint(i + 1)))
+			_, cmd := a.Update(keyMsg(tabNum(i)))
 			return cmd
 		}
 	}

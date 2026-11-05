@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/desk"
+	"github.com/MelloB1989/karmax/fleet/internal/hostfiles"
 )
 
 // TestDeskDevServer is the desk's API on a desk of its own, for the window's
@@ -19,7 +21,9 @@ import (
 // (60) pass or the file FLEET_DESK_DEV_STOP appears. The full token is
 // dev-token; the desk's tmux is -L FLEET_DESK_DEV_SOCKET (fleet-desk-dev),
 // its state FLEET_DESK_DEV_STATE (a temp dir), its Claude Code
-// FLEET_DESK_DEV_CLAUDE (claude).
+// FLEET_DESK_DEV_CLAUDE (claude). Its files are FLEET_FILES_DEV_HOME's (the
+// state dir), their bulk routes on the local network at FLEET_FILES_DEV_LAN
+// (none when unset).
 func TestDeskDevServer(t *testing.T) {
 	addr := os.Getenv("FLEET_DESK_DEV_ADDR")
 	if addr == "" {
@@ -41,7 +45,27 @@ func TestDeskDevServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(minutes)*time.Minute)
 	defer cancel()
 	go dk.Run(ctx)
-	srv := &http.Server{Addr: addr, Handler: Handler(WithDesk(&fake{}, dk), Tokens{Full: "dev-token"}, nil)}
+	fm := hostfiles.New(state)
+	fm.Home, fm.Log = env("FLEET_FILES_DEV_HOME", state), t.Logf
+	var lan *LAN
+	if l := os.Getenv("FLEET_FILES_DEV_LAN"); l != "" {
+		_, port, _ := net.SplitHostPort(l)
+		var err error
+		if lan, err = NewLAN(port); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ops := WithFiles(WithDesk(&fake{}, dk), HostFiles(fm), lan)
+	if lan != nil {
+		ls := &http.Server{Handler: lan.Handler(ops), TLSConfig: lan.TLS()}
+		ln, err := net.Listen("tcp", os.Getenv("FLEET_FILES_DEV_LAN"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		go ls.ServeTLS(ln, "", "")
+		defer ls.Close()
+	}
+	srv := &http.Server{Addr: addr, Handler: Handler(ops, Tokens{Full: "dev-token"}, nil)}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			t.Error(err)

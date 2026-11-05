@@ -70,8 +70,9 @@ func tuiCmd(args []string) error {
 	}
 	if dir, err := os.UserConfigDir(); err == nil {
 		opts.DeskState = filepath.Join(dir, "fleetctl", "desk-ui.json")
+		opts.FilesState = filepath.Join(dir, "fleetctl", "files-ui.json")
 		if demo {
-			opts.DeskState = ""
+			opts.DeskState, opts.FilesState = "", ""
 		}
 	}
 	return tui.Run(ctx, opts)

@@ -25,6 +25,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/config"
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
 	"github.com/MelloB1989/karmax/fleet/internal/desk"
+	"github.com/MelloB1989/karmax/fleet/internal/hostfiles"
 	"github.com/MelloB1989/karmax/fleet/internal/identity"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 	"github.com/MelloB1989/karmax/fleet/internal/memory"
@@ -185,6 +186,22 @@ func run(cfgPath string, once bool) error {
 		dk.Log = log.Printf
 		ops = server.WithDesk(f, dk)
 	}
+	// The files of this machine, for admins; their bulk routes on the
+	// local network too, for a client there.
+	var fm *hostfiles.Manager
+	var lan *server.LAN
+	if cfg.HostFiles.On() {
+		fm = hostfiles.New(cfg.StateDir)
+		fm.Log = log.Printf
+		if l := cfg.HostFiles.LAN(); l != "" {
+			_, port, _ := net.SplitHostPort(l)
+			var err error
+			if lan, err = server.NewLAN(port); err != nil {
+				return fmt.Errorf("files: %w", err)
+			}
+		}
+		ops = server.WithFiles(ops, server.HostFiles(fm), lan)
+	}
 	api, drain := server.DrainingHandler(ops, tokens, orchQuota.Load)
 	var servers []*http.Server
 	serve := func(addr string, h http.Handler, what string, lc net.ListenConfig) {
@@ -219,6 +236,23 @@ func run(cfgPath string, once bool) error {
 		serve(t.Listen, server.Tailnet(api, &tailnet.Local{Socket: t.Socket}, f, t), "tailnet api", net.ListenConfig{Control: freebind})
 	}
 
+	if lan != nil {
+		s := &http.Server{Handler: lan.Handler(ops), TLSConfig: lan.TLS(), ReadHeaderTimeout: 10 * time.Second}
+		servers = append(servers, s)
+		go func() {
+			addr := cfg.HostFiles.LAN()
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				log.Printf("files on the local network: %v", err) // the rest serves on
+				return
+			}
+			log.Printf("files on the local network listening on %s", addr)
+			if err := s.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("files on the local network: %v", err)
+			}
+		}()
+	}
+
 	log.Printf("%d agents (%d workers) on %d hosts, tick %s", len(cfg.Agents), len(cfg.WorkerNames()), len(cfg.Hosts), cfg.Thresholds.Tick)
 	if dk != nil {
 		// After a reboot, its sessions come back while the API serves;
@@ -243,6 +277,9 @@ func run(cfgPath string, once bool) error {
 			return nil
 		case <-t.C:
 			tick(ctx)
+			if fm != nil {
+				fm.Sweep() // the trash and broken-off uploads, hourly
+			}
 		}
 	}
 }

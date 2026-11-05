@@ -1388,21 +1388,28 @@ func newAskLine(title, placeholder, value string, send func(string, *Ctx) tea.Cm
 }
 
 func (a *askLine) key(d *deskTab, m tea.KeyPressMsg, c *Ctx) tea.Cmd {
+	done, cmd := a.update(m, c)
+	if done {
+		d.ask = nil
+	}
+	return cmd
+}
+
+// update takes a key: done once it is answered or put away.
+func (a *askLine) update(m tea.KeyPressMsg, c *Ctx) (bool, tea.Cmd) {
 	switch m.String() {
 	case "esc":
-		d.ask = nil
-		return nil
+		return true, nil
 	case "enter":
 		v := strings.TrimSpace(a.in.Value())
 		if v == "" && !a.empty {
-			return nil
+			return false, nil
 		}
-		d.ask = nil
-		return a.send(v, c)
+		return true, a.send(v, c)
 	}
 	var cmd tea.Cmd
 	a.in, cmd = a.in.Update(m)
-	return cmd
+	return false, cmd
 }
 
 func (a *askLine) view(th *Theme, w int) []string {

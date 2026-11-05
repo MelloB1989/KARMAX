@@ -32,6 +32,9 @@ type Fake struct {
 	Calls   []string
 	// ScreensAsked is the workers of each Screens call, in order.
 	ScreensAsked [][]string
+	// HostFiles is what the Files calls reach (hostfiles.Direct over a
+	// test's directory); nil: the fake has no files.
+	HostFiles Files
 }
 
 // NewFake is a fleet of twelve agents as an admin (or a guest lent agent-09)
