@@ -144,14 +144,22 @@ type DeskWorkspace struct {
 
 // DeskCreate is POST /v1/desk's body. Name "" picks one from the dir;
 // Command "" is claude; "shell" is a login shell. Workspace "" is the
-// first workspace; Label "" shows the name.
+// first workspace; Label "" shows the name. Branch, when set, starts the
+// session in a worktree of Dir's repository on that branch instead, made
+// by worktrunk (wt) if there is none: the branch too, when it is new.
 type DeskCreate struct {
 	Name      string `json:"name"`
 	Dir       string `json:"dir"`
 	Command   string `json:"command"`
 	Workspace string `json:"workspace,omitempty"`
 	Label     string `json:"label,omitempty"`
+	Branch    string `json:"branch,omitempty"`
 }
+
+// DeskWorktreeWait is how long fleetd waits on worktrunk for a Branch's
+// worktree (it runs the repository's pre-start hooks first): a client
+// waits that much longer for the answer.
+const DeskWorktreeWait = 3 * time.Minute
 
 // DeskUpdate is PATCH /v1/desk/{name}'s body; a nil field stays. Before
 // moves the session in front of the named one (in Workspace, or its own);

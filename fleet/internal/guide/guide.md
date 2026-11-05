@@ -45,10 +45,10 @@ Useful flags: `--repo R`, `--agent A` (a particular agent, if it is free), `--ta
 Then review. The agent's claim is not the work:
 
     git -C <code>/myrepo log -p main..<branch>      # read the whole diff
-    git -C <code>/myrepo worktree add /tmp/review-<task> <branch> && (cd /tmp/review-<task> && go test ./...)
-    git -C <code>/myrepo worktree remove /tmp/review-<task>
+    wt -C <code>/myrepo switch --create review/<task> --base <branch> --no-cd -x go -- test ./...
 
-Never `git checkout` an agent's branch in the shared checkout itself: it is the operator's working tree.
+Your own worktree (worktrunk) on its commits; after the merge, `wt -C <code>/myrepo remove review/<task>`
+(`-D` if unmerged). Never `git checkout` an agent's branch in the shared checkout, nor `wt merge` one.
 
 Good: merge, gating each step on the one before with `&&`, then close the task:
 

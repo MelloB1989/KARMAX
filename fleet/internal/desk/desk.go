@@ -66,6 +66,9 @@ type Manager struct {
 	Shell string
 	// Claude is Claude Code's command, found on the login shell's PATH.
 	Claude string
+	// WT is worktrunk's command (a session on a branch starts in its
+	// worktree), found the same way; "" is wt.
+	WT string
 	// ClaudeDir is Claude Code's own (~/.claude): sessions/ says which
 	// session each claude process runs, projects/ which ones can resume.
 	ClaudeDir string
@@ -299,6 +302,11 @@ func (m *Manager) Create(ctx context.Context, c fleetapi.DeskCreate) (fleetapi.D
 	dir, err := m.dir(c.Dir)
 	if err != nil {
 		return fleetapi.DeskSession{}, err
+	}
+	if b := strings.TrimSpace(c.Branch); b != "" {
+		if dir, err = m.worktree(ctx, dir, b); err != nil {
+			return fleetapi.DeskSession{}, err
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -331,11 +331,49 @@ func TestWorktreesScriptForReal(t *testing.T) {
 	if err := l.a.RemoveWorktree(ctx, byPath[dirty]); err == nil {
 		t.Fatal("removed a worktree with unpushed work")
 	}
+	// worktrunk (a stand-in) removes it when the container has wt: unlocked
+	// first, from the repository, no hooks.
+	log := filepath.Join(t.TempDir(), "wt.log")
+	t.Setenv("WT_LOG", log)
+	fakeWT := `#!/bin/bash
+echo "$@" >> "$WT_LOG"
+[ -z "$WT_FAIL" ] || { echo "wt: no" >&2; exit 1; }
+exec git -C "$2" worktree remove "${@: -1}"
+`
+	if err := os.WriteFile(filepath.Join(l.bin, "wt"), []byte(fakeWT), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := l.a.RemoveWorktree(ctx, byPath[clean]); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(clean); !os.IsNotExist(err) {
 		t.Fatal("the clean, pushed worktree is still there")
+	}
+	if b, _ := os.ReadFile(log); strings.TrimSpace(string(b)) != "-C "+repo+" remove --foreground --no-hooks "+clean {
+		t.Fatalf("wt ran as %q", b)
+	}
+	// wt failing leaves it there, locked again.
+	t.Setenv("WT_FAIL", "1")
+	if err := l.a.RemoveWorktree(ctx, byPath[noU]); err == nil {
+		t.Fatal("wt failed, yet the removal did not")
+	}
+	if out, _ := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output(); !strings.Contains(string(out), "worktree "+noU+"\n") ||
+		!strings.Contains(strings.SplitN(string(out), "worktree "+noU+"\n", 2)[1], "locked") {
+		t.Fatalf("not kept locked:\n%s", out)
+	}
+	// Without wt (an image before it), git removes it.
+	if err := os.Remove(filepath.Join(l.bin, "wt")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", l.bin+":/usr/local/bin:/usr/bin:/bin")
+	if _, err := exec.LookPath("wt"); err == nil {
+		t.Skip("wt is installed system-wide here: the git fallback cannot be tried")
+	}
+	if err := l.a.RemoveWorktree(ctx, byPath[noU]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(noU); !os.IsNotExist(err) {
+		t.Fatal("without wt, the worktree is still there")
 	}
 }
 
@@ -698,5 +736,86 @@ func TestAgentRunInstallsTheSkillsAndTheFleetMCPServerOnEveryStart(t *testing.T)
 	}
 	if b, _ := os.ReadFile(filepath.Join(l.home, ".claude/skills/mine/SKILL.md")); string(b) != "mine" {
 		t.Errorf("agent-run removed a skill of the agent's own: %q", b)
+	}
+}
+
+// worktree.sh is the fleet's side of worktrunk in a container: the guard
+// wt's pre-remove hook runs, and Claude Code's WorktreeCreate and
+// WorktreeRemove hooks, which go through wt (a stand-in here).
+func TestWorktreeHookScript(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed")
+	}
+	root := t.TempDir()
+	work, code, bin := filepath.Join(root, "work"), filepath.Join(root, "code"), filepath.Join(root, "bin")
+	log := filepath.Join(root, "wt.log")
+	for _, d := range []string{work, code, bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte(`#!/bin/sh
+echo "$@" >> "$WT_LOG"
+printf '{"action":"created","path":"%s"}\n' "$FLEET_WORK/wt/made"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(stdin string, args ...string) (string, error) {
+		t.Helper()
+		cmd := exec.Command("sh", append([]string{"../../../packaging/fleet/home/worktree.sh"}, args...)...)
+		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "FLEET_WORK="+work, "FLEET_CODE="+code,
+			"FLEET_AGENT=agent-03:2", "WT_LOG="+log, "CLAUDE_PROJECT_DIR="+root)
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	for p, want := range map[string]bool{
+		work + "/wt/KARMAX.agent-03-topic": true,
+		code + "/.worktrees/agent-03/kb":   true, // the agent's, for kbuild
+		code + "/.worktrees/agent-03-2/kb": true, // a slot's
+		code + "/.worktrees/agent-04/kb":   false,
+		code + "/worktrees/KARMAX/review":  false, // the operator's
+		code + "/KARMAX":                   false,
+		code + "/.worktrees/agent-03":      false, // the folder itself
+		code + "/.worktrees/agent-030/x":   false,
+		"/elsewhere" + work + "/wt/x":      false,
+	} {
+		out, err := run("", "mine", p)
+		if got := err == nil; got != want {
+			t.Errorf("mine %s = %v, want %v (%s)", p, got, want, out)
+		}
+		if !want && !strings.Contains(out, "not one of agent-03's worktrees") {
+			t.Errorf("mine %s says %q", p, out)
+		}
+	}
+
+	// WorktreeCreate in a repository: the branch is the agent's, the path wt's.
+	repo := filepath.Join(root, "repo")
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	out, err := run(`{"name":"fix-it","cwd":"`+repo+`"}`, "create")
+	if err != nil || out != work+"/wt/made" {
+		t.Fatalf("create: %q, %v", out, err)
+	}
+	if b, _ := os.ReadFile(log); strings.TrimSpace(string(b)) != "-C "+repo+" switch --create fleet/agent-03/fix-it --no-cd --format=json" {
+		t.Fatalf("wt ran as %q", b)
+	}
+	// Outside one (the session's /work): no worktree, and why.
+	if out, err := run(`{"name":"fix-it","cwd":"`+work+`"}`, "create"); err == nil || !strings.Contains(out, "is not a git repository") {
+		t.Fatalf("create outside a repository: %q, %v", out, err)
+	}
+	// WorktreeRemove of someone else's: refused before wt is asked.
+	other := filepath.Join(code, ".worktrees", "agent-04", "kb")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(other, ".git"), []byte("gitdir: x\n"), 0o644)
+	_ = os.Remove(log)
+	if out, err := run(`{"worktree_path":"`+other+`"}`, "remove"); err == nil || !strings.Contains(out, "not one of agent-03's worktrees") {
+		t.Fatalf("removed another agent's: %q, %v", out, err)
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Fatal("wt was asked to remove another agent's worktree")
 	}
 }

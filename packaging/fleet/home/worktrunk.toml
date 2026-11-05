@@ -1,0 +1,34 @@
+# worktrunk (wt) in a fleet agent's container: the system config,
+# /etc/xdg/worktrunk/config.toml, under any user config an agent writes.
+# Every worktree an agent makes is wt's. See docs/AGENT-FLEET.md, "Worktrees".
+
+# The branch fleet/<agent>/<topic> of <repo> is /work/wt/<repo>.<agent>-<topic>:
+# on the agent's own volume, one directory deep, where fleetd looks. One a
+# kbuild job builds in goes under the shared code instead, which the build
+# host can see: --path <code>/.worktrees/<agent>/<topic>.
+worktree-path = "/work/wt/{{ repo }}.{{ branch | replace('fleet/', '') | sanitize }}"
+
+# An agent never merges: it pushes its branch and reports it. wt merge
+# fast-forwards the target in its worktree, which here is the operator's own
+# checkout. So nothing is committed, squashed or rebased first, and the
+# pre-merge hook refuses.
+[merge]
+commit = false
+squash = false
+rebase = false
+remove = false
+
+[pre-merge]
+fleet = "echo 'fleet: an agent never merges; push your branch and report it' >&2; exit 1"
+
+# Locked the moment it is made. The shared code's .git is every container's
+# and the host's, and a worktree in /work is missing everywhere else, so an
+# unlocked one is dropped by the first `git worktree prune` there. wt remove
+# leaves a locked worktree alone: fleetd unlocks the ones it removes.
+[pre-start]
+fleet = "git worktree lock --reason 'fleet {{ branch }}' '{{ worktree_path }}'"
+
+# wt remove (and wt step prune) removes only this agent's own worktrees:
+# never the operator's, nor another agent's.
+[pre-remove]
+fleet = "/opt/fleet/worktree.sh mine '{{ worktree_path }}'"

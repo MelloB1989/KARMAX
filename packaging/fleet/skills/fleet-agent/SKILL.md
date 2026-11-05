@@ -1,6 +1,6 @@
 ---
 name: fleet-agent
-description: Use whenever you are a fleet agent and need to talk to someone (report, ask, progress note), run anything heavier than a small test or build (a full suite, a big build, data processing, training: never in your container), use the operator's accounts (mail, calendar, WhatsApp, GitHub, Slack through the KARMAX gateway), receive files, handle a secret, or check what you may do — the full fleetctl command reference with examples and what to do when a command fails.
+description: Use whenever you are a fleet agent and need to talk to someone (report, ask, progress note), run anything heavier than a small test or build (a full suite, a big build, data processing, training: never in your container), use the operator's accounts (mail, calendar, WhatsApp, GitHub, Slack through the KARMAX gateway), receive files, handle a secret, make or remove a worktree (wt), or check what you may do — the full fleetctl command reference with examples and what to do when a command fails.
 ---
 
 # fleetctl for a fleet agent
@@ -200,6 +200,36 @@ fleetd knows you by a key in your environment (`FLEET_AGENT_KEY`); do not share
 or print it. Giving `fleetctl model` a model name sets an agent's model; leave
 that to whoever runs the fleet unless your brief tells you to.
 
+## Worktrees (wt)
+
+Every worktree you work in is worktrunk's (`wt`; its own skill, `worktrunk`,
+has the whole CLI). The fleet's config (`/etc/xdg/worktrunk/config.toml`)
+says where worktrees go, locks each one as it is made, and refuses merges.
+The repository is the shared code's: pass it with `-C`.
+
+    # a task's worktree: a new branch from the default branch, then work in it
+    p=$(wt -C <code>/<repo> switch --create fleet/<agent>/<topic> --no-cd --format=json | jq -er .path) && cd "$p"
+    #   … from the newest main:  git -C <code>/<repo> fetch origin main, then add --base origin/main
+    #   … for a kbuild job (the build host cannot see /work):  add --path <code>/.worktrees/<agent>/<topic>
+
+    wt -C <code>/<repo> list                                  # every worktree of the repository, everyone's
+    wt -C <code>/<repo> list --format=json                    # the same, for jq
+
+- `/work/wt/<repo>.<agent>-<topic>` is where a worktree goes. It lives on your
+  own volume, which your slots share. The ones in `wt list` whose path is
+  missing here are other agents', in their own containers.
+- Leave your worktrees when the task is done: fleetd removes the ones with
+  nothing to lose (clean, every commit on a remote) when your session is
+  archived, and deletes their branch once it is merged. To remove one sooner:
+  `git -C <path> worktree unlock <path> && wt -C <code>/<repo> remove --foreground <branch>`.
+  wt keeps the branch if it is not merged.
+- Never `wt merge` (the config refuses it: you push and report), never remove
+  or `wt step prune` worktrees you did not make (the config refuses that too),
+  and never `--no-hooks` around either.
+- A repository's own hooks (`.config/wt.toml`, run on create or remove) need
+  approval the first time, and here nobody can be asked: read them, then rerun
+  with `--yes`.
+
 ## GitHub
 
 `gh` and `git` pick the account from the repository: the fleet's by default,
@@ -223,3 +253,7 @@ commit a real name, login, phone number, IP or home path. Never `--no-verify`.
 | 403 | not allowed on this task (a team member's task, or a scope you lack) | stop; do not try another route |
 | `queued` from `tell` | receiver away, message kept | nothing |
 | connection refused | fleetd is away | wait a minute and retry once, then report |
+| `wt`: `Branch … already exists` | the branch was made before | `wt switch` it without `--create` |
+| `wt`: `Cannot prompt for approval` | the repository's own hooks are new to you | read `.config/wt.toml`, then rerun with `--yes` |
+| `wt`: `is not one of …'s worktrees` | a removal of someone else's worktree | leave it |
+| `wt`: `worktree is locked` | your worktree, locked when made | unlock it first (Worktrees, above) |

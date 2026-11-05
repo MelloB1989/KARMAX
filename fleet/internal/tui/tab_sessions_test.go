@@ -780,3 +780,38 @@ func TestOtherWorkspacesAreReadyBeforeShown(t *testing.T) {
 		t.Fatal("a session neither shown nor focused was connected")
 	}
 }
+
+// A branch in the launch form starts the session in a worktree of the
+// directory's repository on it (worktrunk, on fleetd's machine).
+func TestALaunchOnABranchGoesToItsWorktree(t *testing.T) {
+	r := newRig(t, 120, 40)
+	r.press("n")
+	f := r.d.form
+	if f == nil {
+		t.Fatal("n opened no form")
+	}
+	f.dir.SetValue("/home/op/code/api")
+	f.sugg = nil
+	r.press("tab") // nothing to complete: on to the branch
+	if f.field != launchBranch {
+		t.Fatalf("tab went to field %d, not the branch", f.field)
+	}
+	r.send(tea.PasteMsg{Content: "fleet/new-ui"})
+	v := r.view()
+	for _, want := range []string{"Branch", "fleet/new-ui", "fleet-new-ui", "in a worktree of its own (worktrunk)"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("the form lacks %q:\n%s", want, v)
+		}
+	}
+	r.press("enter")
+	if r.d.form != nil {
+		t.Fatalf("the form stayed: %q", r.d.form.err)
+	}
+	if !slices.Contains(r.f.Calls, `desk new name="" dir="/home/op/code/api" command="" branch="fleet/new-ui"`) {
+		t.Fatalf("calls %q", r.f.Calls)
+	}
+	s, ok := r.d.session("fleet-new-ui")
+	if !ok || s.Dir != "/home/op/code/worktrees/api/fleet-new-ui" {
+		t.Fatalf("session %+v, %v", s, ok)
+	}
+}

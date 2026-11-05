@@ -22,6 +22,8 @@
     "Stop": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
     "StopFailure": [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
     "Notification": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
-    "SessionEnd": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}]
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "/opt/fleet/event.sh"}]}],
+    "WorktreeCreate": [{"hooks": [{"type": "command", "command": "/opt/fleet/worktree.sh create"}]}],
+    "WorktreeRemove": [{"hooks": [{"type": "command", "command": "/opt/fleet/worktree.sh remove"}]}]
   }
 }

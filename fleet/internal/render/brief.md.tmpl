@@ -47,10 +47,18 @@ start.
 {{end}}
 ## Working on a task
 
-- One worktree per task, on your own branch, locked so a prune elsewhere
-  cannot drop it:
+- One worktree per task, on your own branch, made with worktrunk (`wt`):
 
-      git -C {{.Code}}/<repo> worktree add --lock /work/wt/<topic> -b fleet/{{.Agent}}/<topic>
+      p=$(wt -C {{.Code}}/<repo> switch --create fleet/{{.Agent}}/<topic> --no-cd --format=json | jq -er .path) && cd "$p"
+
+  That is `/work/wt/<repo>.{{.Agent}}-<topic>`, from the repository's default
+  branch (`--base origin/main` after a `git fetch` for the newest), locked so
+  a prune elsewhere cannot drop it. `wt -C {{.Code}}/<repo> list` shows the
+  repository's worktrees, everyone's. Never `wt merge` (you never merge),
+  never remove a worktree you did not make, and leave yours: fleetd removes
+  them once they have nothing to lose. A repository's own wt hooks
+  (`.config/wt.toml`) ask for approval the first time: read them, then add
+  `--yes`.
 
 - Commit early and often, and push your branch. Never push to `main`. Never
   rebase or force-push a branch once you have reported it: it may already be
@@ -194,7 +202,7 @@ and streams the output back; files it writes land in the shared code as yours.
 The build host cannot see `/work`. For a task you will build there, make its
 worktree under the shared code instead:
 
-    git -C {{.Code}}/<repo> worktree add --lock {{.Code}}/.worktrees/{{.Agent}}/<topic> -b fleet/{{.Agent}}/<topic>
+    wt -C {{.Code}}/<repo> switch --create fleet/{{.Agent}}/<topic> --no-cd --path {{.Code}}/.worktrees/{{.Agent}}/<topic>
 
 Plain `docker` here also talks to the build host. Quick checks (a single test,
 a lint) are fine to run locally.

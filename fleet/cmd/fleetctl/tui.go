@@ -306,7 +306,11 @@ func (a *apiClient) Desk(ctx context.Context, lines int) (*fleetapi.DeskList, er
 
 func (a *apiClient) DeskCreate(ctx context.Context, c fleetapi.DeskCreate) (*fleetapi.DeskSession, error) {
 	var s fleetapi.DeskSession
-	if err := a.do(ctx, "POST", fleetapi.PathDesk, c, &s, callTimeout); err != nil {
+	wait := callTimeout
+	if c.Branch != "" { // fleetd waits on worktrunk first, which runs the repository's hooks
+		wait = fleetapi.DeskWorktreeWait + callTimeout
+	}
+	if err := a.do(ctx, "POST", fleetapi.PathDesk, c, &s, wait); err != nil {
 		return nil, err
 	}
 	return &s, nil

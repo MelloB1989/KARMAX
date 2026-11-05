@@ -151,7 +151,8 @@ func deskCard(col color.Color, title, right string, lines []string, w int) []str
 
 // The launch form's fields.
 const (
-	launchDir = iota
+	launchDir    = iota
+	launchBranch // a worktree of the directory's repository (worktrunk)
 	launchCmd
 	launchCustom // only when Custom… is chosen
 	launchName
@@ -170,21 +171,22 @@ var launchCmds = []struct{ label, short, cmd string }{
 const launchCustomCmd = 4 // Custom…: the command is typed
 
 // launchForm is n's form: a directory, completed from fleetd's machine as
-// it is typed, the command and a name.
+// it is typed, a branch to work on in a worktree of its own (worktrunk),
+// the command and a name.
 type launchForm struct {
-	dir, custom, name textinput.Model
-	field             int
-	cmd               int      // the chosen chip
-	sugg              []string // the directories offered under the field
-	recent            bool     // they are the recent ones: nothing is typed
-	hi, top           int      // the highlighted one, the first in view
-	moved             bool     // ↑↓ chose it
-	n                 int      // the directory's edits: an answer for an older one is dropped
-	waiting           bool     // a lookup is due or out
-	lookErr           string
-	err               string // the launch's failure
-	busy              bool   // the launch is out
-	recents           []string
+	dir, branch, custom, name textinput.Model
+	field                     int
+	cmd                       int      // the chosen chip
+	sugg                      []string // the directories offered under the field
+	recent                    bool     // they are the recent ones: nothing is typed
+	hi, top                   int      // the highlighted one, the first in view
+	moved                     bool     // ↑↓ chose it
+	n                         int      // the directory's edits: an answer for an older one is dropped
+	waiting                   bool     // a lookup is due or out
+	lookErr                   string
+	err                       string // the launch's failure
+	busy                      bool   // the launch is out
+	recents                   []string
 }
 
 func newLaunchForm(t *Theme, recents []string) *launchForm {
@@ -193,7 +195,7 @@ func newLaunchForm(t *Theme, recents []string) *launchForm {
 		m.Prompt, m.Placeholder = "", ph
 		return m
 	}
-	f := &launchForm{dir: in("type a path · tab completes"), custom: in("a command, run in the directory"), name: in(""), recents: recents}
+	f := &launchForm{dir: in("type a path · tab completes"), branch: in("none: the directory itself · a branch: a worktree of its own"), custom: in("a command, run in the directory"), name: in(""), recents: recents}
 	f.dir.ShowSuggestions = true
 	f.style(t)
 	f.dir.Focus()
@@ -209,7 +211,7 @@ func (f *launchForm) style(t *Theme) {
 	s.Focused.Placeholder, s.Blurred.Placeholder = t.Muted, t.Muted
 	s.Focused.Suggestion, s.Blurred.Suggestion = t.Muted, t.Muted
 	s.Cursor.Color, s.Cursor.Blink = t.Amber, false
-	for _, m := range []*textinput.Model{&f.dir, &f.custom, &f.name} {
+	for _, m := range []*textinput.Model{&f.dir, &f.branch, &f.custom, &f.name} {
 		m.SetStyles(s)
 	}
 }
@@ -231,9 +233,9 @@ func (f *launchForm) ghost() {
 
 func (f *launchForm) fields() []int {
 	if f.cmd == launchCustomCmd {
-		return []int{launchDir, launchCmd, launchCustom, launchName}
+		return []int{launchDir, launchBranch, launchCmd, launchCustom, launchName}
 	}
-	return []int{launchDir, launchCmd, launchName}
+	return []int{launchDir, launchBranch, launchCmd, launchName}
 }
 
 // next is the field after this one (by), wrapping.
@@ -246,11 +248,14 @@ func (f *launchForm) next(by int) int {
 func (f *launchForm) focus(field int) tea.Cmd {
 	f.field = field
 	f.dir.Blur()
+	f.branch.Blur()
 	f.custom.Blur()
 	f.name.Blur()
 	switch field {
 	case launchDir:
 		return f.dir.Focus()
+	case launchBranch:
+		return f.branch.Focus()
 	case launchCustom:
 		return f.custom.Focus()
 	case launchName:
@@ -321,7 +326,7 @@ func (d *deskTab) formKey(m tea.KeyPressMsg, c *Ctx) tea.Cmd {
 // typeInto gives a key or a paste to the field in focus; an edit of the
 // directory looks again.
 func (f *launchForm) typeInto(msg tea.Msg) tea.Cmd {
-	in := map[int]*textinput.Model{launchDir: &f.dir, launchCustom: &f.custom, launchName: &f.name}[f.field]
+	in := map[int]*textinput.Model{launchDir: &f.dir, launchBranch: &f.branch, launchCustom: &f.custom, launchName: &f.name}[f.field]
 	if in == nil {
 		return nil
 	}
@@ -468,11 +473,15 @@ func (d *deskTab) launch(c *Ctx) tea.Cmd {
 			return f.focus(launchCustom)
 		}
 	}
-	req := fleetapi.DeskCreate{Name: strings.TrimSpace(f.name.Value()), Dir: dir, Command: command, Workspace: d.active}
+	req := fleetapi.DeskCreate{Name: strings.TrimSpace(f.name.Value()), Dir: dir, Command: command, Workspace: d.active, Branch: f.branchName()}
 	f.busy, f.err = true, ""
 	cl := c.Client
+	wait := callTimeout
+	if req.Branch != "" { // worktrunk makes the worktree first, running the repository's hooks
+		wait = worktreeWait
+	}
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), wait)
 		defer cancel()
 		s, err := cl.DeskCreate(ctx, req)
 		if err == nil && s == nil {
@@ -499,27 +508,35 @@ func (d *deskTab) formView(c *Ctx, w, h int) []string {
 		}
 		return th.Muted.Render(Fit("  "+s, lw))
 	}
-	rows := min(deskSuggests, max(1, h-14))
+	rows := min(deskSuggests, max(1, h-15))
 	f.dir.SetWidth(fw - 1)
 	lines := []string{"", label(launchDir, "Directory") + fieldView(f.dir.View(), fw)}
 	lines = append(lines, f.offersView(th, rows, lw, fw)...)
+	f.branch.SetWidth(fw - 1)
+	lines = append(lines, label(launchBranch, "Branch")+fieldView(f.branch.View(), fw))
 	lines = append(lines, "", label(launchCmd, "Command")+f.chipsView(th, fw))
 	if f.cmd == launchCustomCmd {
 		f.custom.SetWidth(fw - 1)
 		lines = append(lines, label(launchCustom, "Run")+fieldView(f.custom.View(), fw))
 	}
 	f.name.Placeholder = "from the directory"
-	if dir := f.target(); dir != "" {
+	if b := f.branchName(); b != "" {
+		f.name.Placeholder = autoName(strings.ReplaceAll(b, "/", "-"), d.sessions())
+	} else if dir := f.target(); dir != "" {
 		f.name.Placeholder = autoName(dir, d.sessions())
 	}
 	f.name.SetWidth(fw - 1)
 	lines = append(lines, "", label(launchName, "Name")+fieldView(f.name.View(), fw), "")
 
 	switch {
+	case f.busy && f.branchName() != "":
+		lines = append(lines, paint(th.Amber, "◌ making the worktree, then launching…"))
 	case f.busy:
 		lines = append(lines, paint(th.Amber, "◌ launching…"))
 	case f.err != "":
 		lines = append(lines, th.Danger.Render("✕ ")+lipgloss.NewStyle().Foreground(th.Text).Render(oneLine(f.err)))
+	case f.branchName() != "":
+		lines = append(lines, th.Muted.Render("in a worktree of its own (worktrunk), in tmux on "+d.host()))
 	default:
 		lines = append(lines, th.Muted.Render("in tmux on "+d.host()+": it outlives fleetctl and restarts"))
 	}
@@ -531,6 +548,13 @@ func (d *deskTab) formView(c *Ctx, w, h int) []string {
 	lines = append(lines, foot)
 	return deskCard(th.Amber, th.Title.Render("New session"), th.Muted.Render("in "+d.wsName(d.active)+" · on "+d.host()), lines, cw)
 }
+
+// branchName is the branch typed, if any.
+func (f *launchForm) branchName() string { return strings.TrimSpace(f.branch.Value()) }
+
+// worktreeWait is how long a launch on a branch may take: fleetd waits up
+// to DeskWorktreeWait on worktrunk.
+const worktreeWait = fleetapi.DeskWorktreeWait + callTimeout
 
 // fieldView is an input's view in w cells: the ghost of a completion runs
 // past the input's own width, into its padding, which is cut.

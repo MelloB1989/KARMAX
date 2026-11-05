@@ -85,6 +85,9 @@ func (f *Fake) DeskCreate(ctx context.Context, c DeskCreate) (*DeskSession, erro
 	if !slices.Contains(fakeDirs, dir) {
 		return nil, fmt.Errorf("400: no directory %s on %s", c.Dir, fakeDeskHost)
 	}
+	if b := strings.TrimSpace(c.Branch); b != "" { // worktrunk's worktree, as the operator's config lays it out
+		dir = fakeHome + "/code/worktrees/" + path.Base(dir) + "/" + strings.ReplaceAll(b, "/", "-")
+	}
 	taken := func(n string) bool {
 		return slices.ContainsFunc(f.desk, func(s DeskSession) bool { return s.Name == n })
 	}
@@ -119,7 +122,7 @@ func (f *Fake) DeskCreate(ctx context.Context, c DeskCreate) (*DeskSession, erro
 	}
 	f.desk = append(f.desk, s)
 	f.deskVer++
-	f.record("desk new name=%q dir=%q command=%q", c.Name, c.Dir, c.Command)
+	f.record("desk new name=%q dir=%q command=%q branch=%q", c.Name, c.Dir, c.Command, c.Branch)
 	return &s, nil
 }
 

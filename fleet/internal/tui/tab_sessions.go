@@ -1146,6 +1146,10 @@ func (d *deskTab) made(m deskMadeMsg) tea.Cmd {
 		return toastCmd(m.err.Error(), true)
 	}
 	s := *m.s
+	branch := ""
+	if f != nil {
+		branch = f.branchName()
+	}
 	d.form = nil
 	d.recent = append([]string{s.Dir}, slices.DeleteFunc(d.recent, func(x string) bool { return x == s.Dir })...)
 	if d.list != nil && !slices.ContainsFunc(d.list.Sessions, func(x fleetapi.DeskSession) bool { return x.Name == s.Name }) {
@@ -1157,6 +1161,9 @@ func (d *deskTab) made(m deskMadeMsg) tea.Cmd {
 	d.active, d.focus[s.Workspace] = s.Workspace, s.Name
 	d.mode = typeMode
 	d.saveUI()
+	if branch != "" {
+		return toastCmd("launched "+s.Name+" on "+branch+", in "+shortDir(s.Dir)+" · Ctrl-] steps out", false)
+	}
 	return toastCmd("launched "+s.Name+" · Ctrl-] steps out", false)
 }
 

@@ -73,7 +73,8 @@ agent-run                       # fleet's own loop, one per slot (see Slots)
 ```
 
 - **cwd `/work`** — the agent's desk, on its private volume. Worktrees go under `/work/wt/`, made by
-  the agent itself, locked (`git worktree lock`) so a `git worktree prune` on Kali can't drop them.
+  the agent itself with worktrunk (`wt`), locked so a `git worktree prune` on Kali can't drop them
+  (see "Worktrees — worktrunk", below).
 - **Name `agent-NN` is the address.** Whatever session is current answers to it. `agent-run` reads
   the session to start from `/work/.fleet/next` (empty = fresh, a session id = `--resume`), so fleetd
   rotates sessions by writing that file and killing the pane — never by typing into it.
@@ -314,7 +315,8 @@ archive manifests.
    - `transcript.jsonl.zst` plus any subagent transcripts
    - `worktrees.json`: path, branch, upstream, clean?, unpushed commits
 3. Verify by hash. Only then stop the session (`claude stop` / kill the pane).
-4. Worktrees: clean and pushed → `git worktree remove`. "Pushed" is every commit on some remote
+4. Worktrees: clean and pushed → unlocked and `wt remove --no-hooks` (`git worktree remove` in an image
+   without worktrunk), which also deletes the branch once it is merged. "Pushed" is every commit on some remote
    branch, not on the upstream: agents push without `-u`, and a worktree made from `origin/main` has
    main as its upstream. (Judged by the upstream, every task's worktree was kept, and resets slowed
    with each one.) Anything uncommitted or unpushed, or a worktree git cannot read → stays, locked,
@@ -359,6 +361,39 @@ one pass at a time, 409 while one runs).
 - **Config.** `cleanup: {every: 24h, stale: 168h}`; `enabled: false` stops the schedule (fleetctl
   cleanup still runs). `every` is at least an hour, `stale` at least a day: less deletes what an
   agent between two tasks still uses.
+
+### Worktrees — worktrunk
+
+Every worktree in the fleet is [worktrunk](https://github.com/max-sixty/worktrunk)'s (`wt`, pinned in
+the image with its checksum). The shared code's `.git` is every container's and Kali's at once, so the
+fleet's system config in the image (`packaging/fleet/home/worktrunk.toml`, at
+`/etc/xdg/worktrunk/config.toml`) sets the rules where every agent's `wt` reads them:
+
+- **Where.** The branch `fleet/<agent>/<topic>` of `<repo>` is `/work/wt/<repo>.<agent>-<topic>`: the
+  agent's own volume, one directory deep, where fleetd looks. A worktree a kbuild job builds in takes
+  `--path <code>/.worktrees/<agent>/<topic>` instead, which the build host can see.
+- **Locked when made** (a pre-start hook). A worktree in `/work` is missing everywhere else, so an
+  unlocked one is dropped by the first `git worktree prune` on Kali or in another container. wt leaves
+  a locked worktree alone; fleetd unlocks the ones it removes, and locks one again that it could not.
+- **Only one's own.** A pre-remove hook (`/opt/fleet/worktree.sh mine`) refuses `wt remove` and
+  `wt step prune` of anything but the agent's `/work/wt` and `<code>/.worktrees/<agent>`: never the
+  operator's worktrees, nor another agent's.
+- **No merges.** `wt merge` would fast-forward main in the operator's own checkout: the config turns
+  off its commit, squash and rebase steps, and a pre-merge hook refuses. Agents push and report.
+- **Claude Code's own worktrees** (`EnterWorktree`, a subagent's `isolation: worktree`) go through
+  wt too: the agents' `settings.json` routes `WorktreeCreate` and `WorktreeRemove` to
+  `/opt/fleet/worktree.sh`, on the branch `fleet/<agent>/<name>`. worktrunk's own skill is in every
+  container beside the fleet's, from the same pinned release.
+- A repository's own hooks (`.config/wt.toml`) need an approval the first time, and nobody is there to
+  give it: an agent reads them and passes `--yes`. fleetd's removals run no hooks.
+
+On Kali, `wt` is worktrunk too, for the operator, their Claude sessions, the orchestrator and the
+desk. Its config (`~/.config/worktrunk/config.toml`) puts worktrees in
+`~/code/worktrees/<repo>/<branch>`: inside the shared code, so every container sees them at the same
+path and never takes one for missing. zsh has its shell integration (`wt switch` changes directory),
+and Claude Code has worktrunk's plugin (its own worktrees go through `wt`; `wt list` shows which
+worktrees have a session working). The lead reviews an agent's branch in a worktree of its own:
+`wt switch --create review/<task> --base <branch> -x go -- test ./...` (the guide has it).
 
 ## Fleet ledger — logs, metadata, status, quota
 
@@ -820,7 +855,11 @@ desk:
   no permission prompts), whatever the command says. Every
   command runs in your login shell (`$SHELL -lc '<command>; exec $SHELL -l'`), so PATH and the rest are
   yours, and the session stays when the command ends. A session starts detached, 200×50, in its
-  directory. Its environment is fleetd's without fleetd's own (`FLEET_*`, systemd's per-service variables,
+  directory. A **branch** as well (the launch form's Branch, `branch` in `POST /v1/desk`) starts it in a
+  worktree of that directory's repository on the branch instead: worktrunk's (`wt switch`, in your login
+  shell, so your config says where), made if there is none, and the branch with it when no remote has it.
+  The name is then the worktree's directory's. What wt says when it fails is the answer (a repository's
+  own hooks that are new to you: approve them once with `wt config approvals add`). Its environment is fleetd's without fleetd's own (`FLEET_*`, systemd's per-service variables,
   anything named like a token or secret); the login shell adds yours.
 - **Its own tmux server, outside fleetd's cgroup.** fleetd is a systemd user service, and stopping or
   restarting it kills everything in its cgroup. So the desk's tmux server is started with

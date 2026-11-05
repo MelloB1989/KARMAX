@@ -63,6 +63,23 @@ RUN set -eux; arch=$(dpkg --print-architecture); \
     unzip -q /tmp/bun.zip -d /tmp && mv /tmp/bun-linux-*/bun /usr/local/bin/bun && rm -rf /tmp/bun*; \
     npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}"; \
     npm cache clean --force
+# worktrunk (wt) makes every worktree an agent works in; the fleet's system
+# config (home/worktrunk.toml) says where, locks them, and refuses merges.
+# Its own skill comes from the same release's source. Pinned by checksum.
+ARG WORKTRUNK_VERSION=0.81.0
+ARG WORKTRUNK_SHA256_X86_64=0c253f216985ce9cd7b202a11606b5ce6aa934b1019fd1fbb9b7ce2b47b1c74a
+ARG WORKTRUNK_SHA256_AARCH64=7a334d2e64c577afd0247e2411eff673360ab1f18897564f2d2e5d5374fbd74b
+ARG WORKTRUNK_SOURCE_SHA256=a21258d4797149237b0c596d6a43d5ebdb28b573117d5b446b7376bb68bc404d
+RUN set -eux; case "$(dpkg --print-architecture)" in \
+      amd64) wk=x86_64; sum=$WORKTRUNK_SHA256_X86_64 ;; arm64) wk=aarch64; sum=$WORKTRUNK_SHA256_AARCH64 ;; *) exit 1 ;; esac; \
+    rel="https://github.com/max-sixty/worktrunk/releases/download/v${WORKTRUNK_VERSION}"; \
+    curl -fsSL -o /tmp/wt.tar.xz "$rel/worktrunk-${wk}-unknown-linux-musl.tar.xz"; \
+    echo "$sum  /tmp/wt.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/wt.tar.xz -C /usr/local/bin --strip-components=1 "worktrunk-${wk}-unknown-linux-musl/wt" "worktrunk-${wk}-unknown-linux-musl/git-wt"; \
+    curl -fsSL -o /tmp/wt-src.tar.gz "$rel/source.tar.gz"; \
+    echo "$WORKTRUNK_SOURCE_SHA256  /tmp/wt-src.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt/worktrunk && tar -xzf /tmp/wt-src.tar.gz -C /opt/worktrunk --strip-components=3 "worktrunk-${WORKTRUNK_VERSION}/skills/worktrunk"; \
+    rm -f /tmp/wt.tar.xz /tmp/wt-src.tar.gz; wt --version
 # yarn and pnpm through corepack, which fetches the version a package.json pins.
 RUN corepack enable
 
@@ -82,11 +99,14 @@ COPY packaging/fleet/kbuild /usr/local/bin/kbuild
 # git and gh as the repository owner's account (fleet.yaml github.owners); the
 # gh wrapper comes before /usr/bin/gh on PATH.
 COPY packaging/fleet/gh packaging/fleet/git-credential-fleet packaging/fleet/fleet-gh-token /usr/local/bin/
-COPY packaging/fleet/home/status.sh packaging/fleet/home/event.sh packaging/fleet/home/settings.json /opt/fleet/
+COPY packaging/fleet/home/status.sh packaging/fleet/home/event.sh packaging/fleet/home/worktree.sh packaging/fleet/home/settings.json /opt/fleet/
 COPY packaging/fleet/home/gitconfig /etc/gitconfig
+COPY packaging/fleet/home/worktrunk.toml /etc/xdg/worktrunk/config.toml
 COPY packaging/fleet/tmux.conf /etc/tmux.conf
 COPY packaging/fleet/skills /opt/fleet/skills
 COPY --from=build /out/karmax /out/fleetctl /usr/local/bin/
+# worktrunk's own skill beside the fleet's: agent-run copies them all in.
+RUN cp -R /opt/worktrunk /opt/fleet/skills/worktrunk
 RUN chmod 755 /opt/fleet/agent-run /opt/fleet/*.sh /usr/local/bin/kbuild \
       /usr/local/bin/gh /usr/local/bin/git-credential-fleet /usr/local/bin/fleet-gh-token \
  && cp /opt/fleet/settings.json "$HOME_DIR/.claude/settings.json" && chown "$UID:$GID" "$HOME_DIR/.claude/settings.json"

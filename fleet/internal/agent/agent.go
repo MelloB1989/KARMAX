@@ -693,7 +693,9 @@ for f in */"$1".jsonl; do [ -e "$f" ] && rm -f -- "$f" && rm -rf -- "${f%.jsonl}
 
 // Worktree is one of the agent's worktrees: under /work/wt, or under
 // <code>/.worktrees/<agent>/ (the brief tells agents to make the ones they
-// build on the build host there).
+// build on the build host there). Agents make them with worktrunk (wt),
+// whose fleet config (packaging/fleet/home/worktrunk.toml) puts them there,
+// one directory deep, locked.
 type Worktree struct {
 	Path     string `json:"path"`
 	Branch   string `json:"branch"`
@@ -777,13 +779,27 @@ func parseWorktrees(b []byte) ([]Worktree, error) {
 	return out, nil
 }
 
-// RemoveWorktree removes a worktree that Safe said loses nothing.
+// RemoveWorktree removes a worktree that Safe said loses nothing. Agents'
+// worktrees are worktrunk's (wt), and wt removes them when the container has
+// it: the branch goes too once it is merged, and stays when it is not. It
+// runs no hooks: a repository's own need an approval nobody is there to
+// give, and the fleet's guard is for agents, not fleetd. Every worktree an
+// agent makes is locked, which wt and git both respect, so it is unlocked
+// first, and locked again if it is not removed after all.
 func (a *Agent) RemoveWorktree(ctx context.Context, w Worktree) error {
 	if !w.Safe() {
 		return fmt.Errorf("worktree %s has unpushed or uncommitted work, or a sibling slot works in it; it is never removed by the fleet", w.Path)
 	}
-	_, err := a.C.Sh(ctx, `repo=$(dirname "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)")
-git -C "$repo" worktree unlock "$1" 2>/dev/null
-git -C "$repo" worktree remove "$1"`, w.Path)
+	_, err := a.C.Sh(ctx, removeWorktreeScript, w.Path)
 	return err
 }
+
+const removeWorktreeScript = `repo=$(dirname "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)")
+git -C "$repo" worktree unlock "$1" 2>/dev/null
+if command -v wt >/dev/null 2>&1; then
+  wt -C "$repo" remove --foreground --no-hooks "$1" >&2 && exit 0
+else
+  git -C "$repo" worktree remove "$1" && exit 0
+fi
+git -C "$repo" worktree lock --reason fleet "$1" 2>/dev/null
+exit 1`
