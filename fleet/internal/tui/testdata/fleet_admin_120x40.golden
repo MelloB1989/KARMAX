@@ -1,27 +1,27 @@
 ╭─ KARMAX ▸ fleetctl ──────────────────────────────────────────── admin · operator ── 20 workers · 3 working ── 21:04 ─╮
 │  1 Fleet   2 Screens   3 Sessions   4 Files   5 Tasks   6 Events   7 Quota   8 AWS   9 Hosts   0 Access ●1    ● live │
 ├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ ┃ agent-01 · pc2          5h 34% 7d 11% · cpu 37% · 1020M  ┃ agent-07 · pc2                                          │
+│ ┃ agent-01 · pc2          5h 34% 7d 27% · cpu 37% · 1020M  ┃ agent-07 · pc2                                          │
 │ ┃▸ ʘʘ⠶ S1 working   tui-frame-1a2b    ctx   0% Grep 5s     ┃   ✕  S1 down      container is not… ctx  16%            │
 │ ┃  zᶻᶻ S2 standby   idle 21m          ctx  13%             ┃   ✕  S2 down      container is not… ctx  29%            │
 │                                                                                                                      │
-│ ┃ agent-02 · pc2           5h 99% 7d 33% · cpu 71% · 1.1G  ┃ agent-08 · pc2             5h 22% 7d 7% · cpu 5% · 1.8G │
+│ ┃ agent-02 · pc2          5h 99% 7d 100% · cpu 71% · 1.1G  ┃ agent-08 · pc2            5h 22% 7d 40% · cpu 5% · 1.8G │
 │ ┃  zᶻᶻ S1 standby   idle 22m          ctx  26%             ┃  zᶻᶻ S1 standby   idle 34m          ctx  42%            │
 │ ┃  zᶻᶻ S2 standby   idle 23m          ctx  39%             ┃  zᶻᶻ S2 standby   idle 35m          ctx  55%            │
 │                                                                                                                      │
-│ ┃ agent-03 · pc2            5h 12% 7d 4% · cpu 15% · 1.2G  ┃ agent-09 · kali sandbox   5h 17% 7d 6% · cpu 22% · 1.0G │
+│ ┃ agent-03 · pc2           5h 12% 7d 42% · cpu 15% · 1.2G  ┃ agent-09 · kali sandbox  5h 17% 7d 22% · cpu 22% · 1.0G │
 │ ┃  ❆⠁  S1 cooling   cools till 21:29  ctx  52%             ┃  ⚙⠋⠏ S1 working   port-api-7a8b     ctx  68% Bash 21s   │
 │ ┃  zᶻᶻ S2 standby   idle 25m          ctx  65%                                                                       │
-│                                                            ┃ agent-10 · kali sandbox    5h 0% 7d 0% · cpu 39% · 1.0G │
-│ ┃ agent-04 · pc2           5h 51% 7d 17% · cpu 49% · 1.3G  ┃  zᶻᶻ S1 standby   idle 37m          ctx  11%            │
+│                                                            ┃ agent-10 · kali sandbox   5h 0% 7d 31% · cpu 39% · 1.0G │
+│ ┃ agent-04 · pc2           5h 51% 7d 59% · cpu 49% · 1.3G  ┃  zᶻᶻ S1 standby   idle 37m          ctx  11%            │
 │ ┃   ?  S1 waiting   access-3c4d       ctx   8%                                                                       │
-│ ┃  zᶻᶻ S2 standby   idle 27m          ctx  21%             ┃ agent-11 · kali sandbox    5h 0% 7d 0% · cpu 56% · 1.0G │
+│ ┃  zᶻᶻ S2 standby   idle 27m          ctx  21%             ┃ agent-11 · kali sandbox   5h 0% 7d 54% · cpu 56% · 1.0G │
 │                                                            ┃  zᶻᶻ S1 standby   idle 38m          ctx  24%            │
-│ ┃ agent-05 · pc2           5h 43% 7d 14% · cpu 83% · 1.5G                                                            │
-│ ┃  zᶻᶻ S1 standby   idle 28m          ctx  34%             ┃ agent-12 · kali            5h 5% 7d 2% · cpu 73% · 2.1G │
+│ ┃ agent-05 · pc2           5h 43% 7d 61% · cpu 83% · 1.5G                                                            │
+│ ┃  zᶻᶻ S1 standby   idle 28m          ctx  34%             ┃ agent-12 · kali           5h 5% 7d 21% · cpu 73% · 2.1G │
 │ ┃  ⚙⠋⠏ S2 working   term-5e6f         ctx  47% Bash 14s    ┃  zᶻᶻ S1 standby   idle 39m          ctx  37%            │
 │                                                                                                                      │
-│ ┃ agent-06 · pc2             5h 8% 7d 3% · cpu 27% · 1.6G                                                            │
+│ ┃ agent-06 · pc2            5h 8% 7d 56% · cpu 27% · 1.6G                                                            │
 │ ┃  zᶻᶻ S1 standby   idle 30m          ctx  60%                                                                       │
 │ ┃  zᶻᶻ S2 standby   idle 31m          ctx   3%                                                                       │
 │                                                                                                                      │

@@ -32,7 +32,7 @@ build account, one at a time fleet-wide (they queue on the host's `flock ~/heavy
 ## The loop
 
     fleetctl run --repo myrepo "Fix the redirect after login. Repro: ... Done when: go test ./auth passes."
-    # task 20261012-fix-the-redirect-after-3f2a → agent-02 (lowest 5h use)
+    # task 20261012-fix-the-redirect-after-3f2a → agent-02 (7d 20%, 18%/day till Fri 07:30, 5h 3%)
 
     fleetctl wait --task 20261012-fix-the-redirect-after-3f2a     # blocks until the agent reports
     fleetctl result 20261012-fix-the-redirect-after-3f2a          # reports, branch commits, state
@@ -94,9 +94,24 @@ Start several tasks without `--wait`, keep the ids, then wait for each:
 
 Two `run`s at once never get the same agent. With every agent busy `run` exits 5 and says why each was
 passed over (`--queue 30m` retries until one frees up). `fleetctl pick --repo R` shows the choice: an agent
-with no busy slot first (each runs several sessions, its **slots**: `agent-02`, `agent-02:2`), then the last
-to work in that repo, the least quota used, the longest idle. Members' and operator tasks never share one.
-An agent rate-limited, `low` or `reserved` (its 5-hour or 7-day window nearly spent) is held back by its quota: `fleetctl quota` says until when, and `fleetctl quota wait [<agent>…]`, run in the background, returns when a hold lifts.
+with no busy slot first (each runs several sessions, its **slots**: `agent-02`, `agent-02:2`), then the most
+week room (below), the last to work in that repo, the least 5-hour use, the longest idle. Members' and operator
+tasks never share one.
+
+## Quota: spend the weeks well
+
+Each agent's subscription has a 5-hour window and a weekly one, shared by its slots. The week is scarce: a spent
+5-hour window costs hours, a spent week idles the agent for days. Each account's week resets at its own fixed time.
+**Week room** is the week left over the days to its reset (fresh: 14%/day); `quota`, `ls`, `pick` show it.
+
+- Use it or lose it: room left at a reset is gone. Agents that reset within a day with room left are spare
+  capacity: let `run` give them the big, long or exploratory work (it weighs week room first), backlog if idle.
+- Under ~7%/day (amber in the TUI's Quota tab): short, sharp tasks or none, never long work by `--agent`.
+  Before a fan-out read `fleetctl quota`: no more parallel tasks than agents with room; else queue the rest.
+- Spend quota on the work, not on finding it: name the files, repro and done-when command; close tasks with
+  `done --task` (a long session re-reads its context every turn); cancel loops; `--model opus` only if needed.
+- Held back (rate-limited; `low`: 5 h ≥ 80 %; `reserved`: 7 d ≥ 90 %, by default): no new task, its tasks carry
+  on; `fleetctl quota` says until when, `quota wait [<agent>…]` in the background returns then (not a loop).
 
 ## Choosing the model
 
@@ -105,17 +120,13 @@ model id). Only agents whose `models:` list in `fleet.yaml` allows it are candid
 listed with why they were passed over. fleetd types `/model` into the session before the brief goes in,
 and when the task closes and the session rotates the agent goes back to its own model.
 
-`fleetctl model <agent>` shows an agent's default (from `fleet.yaml`), its override and the model its
-session shows now. `fleetctl model <agent> opus` sets an override that outlasts fleetd restarts, and
-`fleetctl model <agent> --reset` clears it. fleetd applies a change when the session is idle, never
-mid-turn, and once per change; a fresh session is asked again. Only an admin may change models.
+`fleetctl model <agent>` shows its default (`fleet.yaml`), override and current model; `model <agent> opus` sets an
+override that outlasts restarts, `--reset` clears it (admins only). It applies when the session is idle, once per change.
 
-## Files
+## Files, questions, follow-ups, cancel
 
     fleetctl run --attach ./spec.pdf "Build to the spec."     # /work/inbox/<task>/, named in the brief
     fleetctl cp ./notes.pdf agent-03; fleetctl cp agent-03:/work/out ./results   # /work, /tmp; 2 GiB; a week unused once its task is done, gone
-
-## Questions, follow-ups, cancel
 
 An agent that is stuck or missing context asks you with `fleetctl ask`, which blocks it until you answer.
 Your background `wait` returns the question, marked `[question]`; `result` lists it too. Answer with
@@ -147,7 +158,7 @@ secret exec OPENAI_API_KEY=openai -- <cmd>` (or `get --to`), only on your side's
     fleetctl pick --repo R      # who would get a task, and why the others would not
     fleetctl peek agent-02      # the agent's screen now (do not poll it: `wait` returns when it reports)
     fleetctl ssh agent-02       # its live session in your terminal: --type to type, --shell a shell; Ctrl-] leaves (q too, watching)
-    fleetctl tasks --open       # every task still open; fleetctl quota: windows, and who is held back until when
+    fleetctl tasks --open       # every task still open; fleetctl quota: windows, week room, who is held back
 
 ## The operator's memory
 
@@ -176,9 +187,7 @@ Untagged, every command says how to ask. As a guest you use only the agents lent
 before you start another, or pass `--queue`. `--repo` names a checkout in the fleet host's code directory; for a repo that is not there, say in the brief where to clone it from.
 Agents work in the fleet host's checkouts: review what they push with `git fetch origin <branch>` in yours.
 
-## Guests and sandboxes
-
-A guest's lent agents are sandboxes: none of the operator's code, accounts or GitHub. Code goes in and out with sync:
+A guest's lent agents are **sandboxes**: none of the operator's code, accounts or GitHub. Code goes in and out with sync:
 
     fleetctl sync ./myrepo agent-09:/work/code/myrepo && fleetctl run --agent agent-09 --repo myrepo "…"
     fleetctl sync agent-09:/work/code/myrepo ./myrepo        # the results, as its report says
@@ -212,13 +221,8 @@ the fleet, and anything that runs code or starts an agent are refused outright. 
 
 ## Exit codes
 
-| code | meaning |
-|---|---|
-| 0 | ok |
-| 1 | error (message on stderr) |
-| 3 | `wait`: the agent is down, cooling or disabled |
-| 4 | `wait`, `quota wait`: timeout |
-| 5 | `run`, `pick`: no free agent (exit 5); the candidates are printed |
+0 ok; 1 error (message on stderr); 3 `wait`: the agent is down, cooling or disabled; 4 `wait`, `quota wait`:
+timeout; 5 `run`, `pick`: no free agent (exit 5), and the candidates are printed.
 
 ## HTTP, for scripts
 
@@ -232,15 +236,11 @@ to assign; console tokens may read.
 | `fleetctl model` | `GET /v1/agents/{agent}/model`; `POST` `{model}` or `{reset}` (operator token only) |
 | `fleetctl result` | `GET /v1/tasks/{id}` |
 | `fleetctl wait` | `GET /v1/wait?task=&after=&timeout=` (agent optional with a task; `new=<name>` for unseen messages only) |
-| `fleetctl followup` | `POST /v1/tasks/{id}/followup` `{from, text}` |
-| `fleetctl answer` | `POST /v1/tasks/{id}/answer` `{from, text}` |
-| `fleetctl cancel` | `POST /v1/tasks/{id}/cancel` `{from, reason}` |
+| `fleetctl followup`, `answer`, `cancel` | `POST /v1/tasks/{id}/followup`, `/answer` `{from, text}`; `POST /v1/tasks/{id}/cancel` `{from, reason}` |
 | `fleetctl done --task` | `POST /v1/done` `{task, outcome, branch, pr}` |
 | `fleetctl guide` | `GET /v1/guide` → `{text}` |
-| `fleetctl memory recall` | `GET /v1/memory/recall?q=&limit=` → `{query, memories: [{path, title, content, score}]}` |
-| `fleetctl memory suggest` | `POST /v1/memory/suggest` `{text, why}` → `{to}` |
-| `fleetctl karmax tools` | `GET /v1/karmax/tools` → `[{name, description, class}]` |
-| `fleetctl karmax call` | `POST /v1/karmax/call` `{tool, args, reason, timeout}` → `{result}` or `{approval}`, then `GET /v1/approvals/{id}?wait=5m` |
+| `fleetctl memory recall`, `suggest` | `GET /v1/memory/recall?q=&limit=` → `{query, memories: [{path, title, content, score}]}`; `POST /v1/memory/suggest` `{text, why}` → `{to}` |
+| `fleetctl karmax tools`, `call` | `GET /v1/karmax/tools` → `[{name, description, class}]`; `POST /v1/karmax/call` `{tool, args, reason, timeout}` → `{result}` or `{approval}`, then `GET /v1/approvals/{id}?wait=5m` |
 | `fleetctl approvals`, `approve`, `deny` | `GET /v1/approvals?state=pending`; `POST /v1/approvals/{id}/approve`, `/deny` `{by, reason}` |
 | `fleetctl secret …` | `POST`/`GET /v1/secrets`, `POST /v1/secrets/{name}/grant` \| `revoke` `{task \| agent, ttl}`, `DELETE /v1/secrets/{name}` |
 

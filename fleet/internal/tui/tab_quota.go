@@ -125,6 +125,22 @@ func runOutCell(t *Theme, a fleetapi.Account, now time.Time) string {
 	return t.Muted.Render("ok till reset")
 }
 
+// weekRoomCell is the account's weekly room, a day, and how long until its
+// week resets: amber under half a fresh week's pace, red under a quarter.
+func weekRoomCell(t *Theme, a fleetapi.Account, now time.Time) string {
+	if a.SevenDay >= 100 {
+		return t.Danger.Render("out for " + untilAge(now, a.SevenResets))
+	}
+	s := fmt.Sprintf("%.0f%%/d", a.WeekRoom)
+	switch {
+	case a.WeekRoom < fleetapi.WeekEven/4:
+		s = t.Danger.Render(s)
+	case a.WeekRoom < fleetapi.WeekEven/2:
+		s = lipgloss.NewStyle().Foreground(t.Amber).Render(s)
+	}
+	return s + t.Muted.Render(" · "+untilAge(now, a.SevenResets))
+}
+
 // hhmm is a time as the TUI's user reads it: 20:40, in now's zone.
 func hhmm(at, now time.Time) string {
 	if at.IsZero() {
@@ -165,25 +181,26 @@ func (q *quota) View(c *Ctx, w, h int) string {
 			}
 			return t.Strong.Render(a.Name)
 		}},
-		{head: "AGENTS", w: 14, drop: 3, cell: func(a fleetapi.Account) string {
+		{head: "AGENTS", w: 14, drop: 5, cell: func(a fleetapi.Account) string {
 			if a.Orchestrator {
 				return t.Muted.Render("orchestrator")
 			}
 			return t.Muted.Render(strings.Join(a.Agents, ","))
 		}},
 		{head: "5H", w: 15, cell: func(a fleetapi.Account) string { return Bar(t, a.FiveHour, 10) + " " + pctCell(t, a.FiveHour) }},
-		{head: "RESETS", w: 6, drop: 1, cell: func(a fleetapi.Account) string { return untilAge(now, a.FiveResets) }},
-		{head: "LAST 5H", w: 12, drop: 4, grow: true, most: 30, cell: func(a fleetapi.Account) string {
+		{head: "RESETS", w: 6, drop: 3, cell: func(a fleetapi.Account) string { return untilAge(now, a.FiveResets) }},
+		{head: "LAST 5H", w: 12, drop: 6, grow: true, most: 30, cell: func(a fleetapi.Account) string {
 			return Spark(t, a.History, min(len(a.History), 30), 100, t.Cyan)
 		}},
-		{head: "BURN", w: 7, drop: 2, cell: func(a fleetapi.Account) string {
+		{head: "BURN", w: 7, drop: 4, cell: func(a fleetapi.Account) string {
 			if a.BurnPerHour <= 0 {
 				return t.Muted.Render("—")
 			}
 			return fmt.Sprintf("%.1f%%/h", a.BurnPerHour)
 		}},
-		{head: "RUN-OUT", w: 14, cell: func(a fleetapi.Account) string { return runOutCell(t, a, now) }},
-		{head: "7D", w: 12, drop: 5, cell: func(a fleetapi.Account) string { return Bar(t, a.SevenDay, 7) + " " + pctCell(t, a.SevenDay) }},
+		{head: "RUN-OUT", w: 14, drop: 1, cell: func(a fleetapi.Account) string { return runOutCell(t, a, now) }},
+		{head: "7D", w: 12, cell: func(a fleetapi.Account) string { return Bar(t, a.SevenDay, 7) + " " + pctCell(t, a.SevenDay) }},
+		{head: "WEEK ROOM", w: 15, drop: 2, cell: func(a fleetapi.Account) string { return weekRoomCell(t, a, now) }},
 	}
 	as := quotaOrder(c.Snap)
 	head, rows := tableLayout(t, cols, as, w)

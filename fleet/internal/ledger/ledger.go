@@ -263,7 +263,7 @@ type Quota struct {
 	At                      time.Time
 	FiveHour, SevenDay      float64
 	FiveResets, SevenResets time.Time
-	Source                  string // statusline | stopfailure | harness
+	Source                  string // statusline | stopfailure | harness | probe
 }
 
 // Aged is q as of now: a window whose reset has passed is a new one that no

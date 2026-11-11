@@ -250,7 +250,7 @@ func (f *Fleet) buildSnapshot(now time.Time, seq uint64) *fullSnapshot {
 		s.Workers = append(s.Workers, fleetapi.Worker{Agent: r.Agent, SlotOf: r.SlotOf, Slot: r.Slot, Host: r.Host,
 			Container: cw.Container, Account: r.Account, State: r.State, Task: r.Task, Idle: r.Idle, IdleS: r.IdleS,
 			Model: r.Model, Alerts: r.Alerts, RecordedAt: r.RecordedAt, FiveHour: r.FiveHour, SevenDay: r.SevenDay,
-			FiveResets: r.FiveResets, SevenResets: r.SevenResets, QuotaAt: r.QuotaAt, Context: r.Context, Low: r.Low,
+			FiveResets: r.FiveResets, SevenResets: r.SevenResets, QuotaAt: r.QuotaAt, WeekRoom: r.WeekRoom, Context: r.Context, Low: r.Low,
 			Reserved: r.Reserved, Models: r.Models, Session: r.Session, Reason: r.Reason, Cooling: r.Cooling,
 			Unreachable: r.Unreachable, Rotating: r.Rotating, Sandbox: cw.Sandbox, Activity: Activity(r, f.lastTool(r), now)})
 	}
@@ -421,7 +421,7 @@ const historyStep = 5 * time.Minute
 
 // accounts is each subscription's quota: its latest windows, the last 5
 // hours of its 5-hour window, the burn rate over the last hour and when it
-// runs out at that rate. The orchestrator's is last.
+// runs out at that rate, and its weekly room. The orchestrator's is last.
 func (f *Fleet) accounts(now time.Time) []fleetapi.Account {
 	byAccount := map[string][]string{}
 	for _, name := range f.cfg.AgentNames() {
@@ -470,6 +470,7 @@ func (f *Fleet) accounts(now time.Time) []fleetapi.Account {
 		}
 		a.BurnPerHour = burn(h, q, now)
 		a.RunOut = runOut(q, a.BurnPerHour, now)
+		a.WeekRoom = WeekRoom(q.SevenDay, q.SevenResets, now)
 		out = append(out, a)
 	}
 	return out

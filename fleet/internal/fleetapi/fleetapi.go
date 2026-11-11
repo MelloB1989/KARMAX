@@ -73,6 +73,9 @@ type Worker struct {
 	FiveResets  time.Time `json:"five_hour_resets,omitzero"`
 	SevenResets time.Time `json:"seven_day_resets,omitzero"`
 	QuotaAt     time.Time `json:"quota_as_of,omitzero"`
+	// WeekRoom is the account's weekly room: points a day of its weekly
+	// limit left until its 7-day window resets.
+	WeekRoom    float64   `json:"week_room_per_day"`
 	Context     float64   `json:"context_pct"`
 	Low         bool      `json:"low,omitempty"`
 	Reserved    bool      `json:"reserved,omitempty"`
@@ -163,8 +166,11 @@ type Account struct {
 	BurnPerHour float64 `json:"burn_per_hour"`
 	// RunOut is when the 5-hour window reaches 100 % at that rate; zero
 	// when it resets first.
-	RunOut  time.Time `json:"run_out,omitzero"`
-	History []Point   `json:"history"` // the 5-hour window's %, last 5 h
+	RunOut time.Time `json:"run_out,omitzero"`
+	// WeekRoom is points a day of the weekly limit left until the 7-day
+	// window resets: what fleetd's picks weigh first.
+	WeekRoom float64 `json:"week_room_per_day"`
+	History  []Point `json:"history"` // the 5-hour window's %, last 5 h
 }
 
 // Point is one sample of a series.

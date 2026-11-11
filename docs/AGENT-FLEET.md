@@ -163,8 +163,13 @@ What slots share, and how fleetd treats it:
   from the other side, and the 409 says so.
 
 The pick spreads first: a worker on an agent whose slots are all free ranks before a worker on an
-agent that already has a busy slot; repo affinity (any slot's last task), quota and idle time decide
-after that.
+agent that already has a busy slot. Then the most **week room** — the share of the account's weekly
+limit left, over the days until its 7-day window resets (a fresh week is 14 %/day) — compared coarsely
+(tiers a factor of √2 wide, one centred on a fresh week's pace), because a week spent early stops an
+agent for days while a spent 5-hour window costs hours, and room left at a reset is lost. Repo affinity
+(any slot's last task), the 5-hour window, the 7-day one and idle time decide after that. Each account's
+week resets at its own fixed time, staggered across the week, so the agents resetting soonest with room
+left are the ones that get the work.
 
 **Sizing.** Each slot is a claude process and what it runs: allow about **1.25 GB of container
 memory per slot** (`agents.<name>.memory`), so 2.5 GB for the default two. tmux 3.5a crashed when a
@@ -452,9 +457,9 @@ Plus the archives (transcripts and manifests) and fleetd's own log in journald.
 |---|---|
 | **The orchestrator** | `fleetctl status --json`: one compact row per agent — state, task, idle, 5 h %, 7 d %, reset times, context %, allowed models. Read before assigning work. Its persona says: don't give an agent at `low` or `reserved` a big task when another is free. |
 | **The orchestrator, pushed** | fleetd POSTs state changes (`fleet.agent.cooling`, `.quota_held`, `.quota_reset`, `.disabled`, `.stale`, `.idle_on_task`, `.crashed`) to a KARMAX **webhook route** — `webhooks.routes` in `karmax.yaml` already turns a POST into a bus event — so they arrive as orchestrator turns. Existing feature, no daemon code. |
-| **You, at a terminal** | `fleetctl ls` (AGENT HOST STATE TASK IDLE 5H% 7D% RESET CTX% WORKTREES), `fleetctl quota` (and the agents their quota holds back, until when), `fleetctl quota wait [<agent>…]` (until a hold lifts; exit 4 at `--timeout`, 12 h), `fleetctl events agent-03 --since 2h`, `fleetctl usage --by agent --since 7d`, `fleetctl history agent-03`. All take `--json`. |
+| **You, at a terminal** | `fleetctl ls` (AGENT HOST STATE TASK IDLE 5H% RESET 7D% WEEK ROOM CTX% MODELS), `fleetctl quota` (each account's windows and week room, and the agents their quota holds back, until when), `fleetctl quota wait [<agent>…]` (until a hold lifts; exit 4 at `--timeout`, 12 h), `fleetctl events agent-03 --since 2h`, `fleetctl usage --by agent --since 7d`, `fleetctl history agent-03`. All take `--json`. |
 | **You, in the KARMAX app** | A **Fleet** dashboard, created once with KARMAX's existing `dashboard` tool. fleetd rewrites its `data/*.json` under `~/.karmax/dashboards/<id>/` every tick; the app renders straight off those files. No daemon code. |
-| **Quota holds** | An agent is held back from new tasks by its quota while it is rate-limited (`cooling`), `low` (5 h ≥ `low_5h`) or `reserved` (7 d ≥ `reserved_7d`); its slots share the hold. Slot 1's tick tells the orchestrator once when a low or reserved hold begins (`quota_held`, with when it lifts; a rate limit is told as `cooling`) and once when the hold lifts (`quota_reset`), even if the agent was down or out of reach at the reset (`quota_held` in its state remembers the hold until its end is told). Claude sessions, which get no pushes, run `fleetctl quota wait` in the background. |
+| **Quota holds** | An agent is held back from new tasks by its quota while it is rate-limited (`cooling`), `low` (5 h ≥ `low_5h`) or `reserved` (7 d ≥ `reserved_7d`); its slots share the hold. Slot 1's tick tells the orchestrator once when a low or reserved hold begins (`quota_held`, with when it lifts; a rate limit is told as `cooling`) and once when the hold lifts (`quota_reset`), even if the agent was down or out of reach at the reset (`quota_held` in its state remembers the hold until its end is told). Claude sessions, which get no pushes, run `fleetctl quota wait` in the background. Short of a hold, the week decides who gets work: `week_room_per_day` is on every row of `status --json`, every candidate of `pick`, and every account in the TUI's Quota tab (WEEK ROOM: amber under half a fresh week's pace, red under a quarter). The fleet skill and the orchestrator's brief say how to spend the weeks. A status line has the windows only as of a session's last turn, so fleetd also reads each account's live windows itself every `quota_probe` (default 1m, at least 20s, negative is off; one token of Haiku asked with the agent's own token, the answer's rate-limit headers read, source `probe` in `fleetctl quota`): the Quota tab, the Fleet cards and the pick always have the newest of the two. |
 | **You, on your phone** | `karmax notify` for the few things worth a push: an agent disabled, all agents cooling, a crash loop, a 7-day window ≥ 90 %. |
 
 ## Putting the fleet to work from any Claude session
@@ -997,7 +1002,7 @@ the cache, `e` what could not be read). fleetd reads it with the AWS CLI v2 (`GE
 ```yaml
 aws:
   keys_csv: ~/code/secrets/aws/reader_accessKeys.csv  # the CSV the IAM console downloads for an access key
-  # regions: [ap-south-1, us-east-1]   # the default; [all] is every region the account has enabled
+  # regions: [all]   # the default: every region the account has enabled; or a list, e.g. [ap-south-1, us-east-1]
   # every: 5m                          # resources are read again this old (at least 1m)
   # cost_every: 6h                     # Cost Explorer, which charges per call (at least 1h)
   # cli: ~/.local/bin/aws              # default: the PATH's aws, else ~/.local/bin/aws
@@ -1018,8 +1023,12 @@ aws:
   apart, or an account on credits would show $0. Each call is charged $0.01, so a cost read (three calls)
   happens every `cost_every` (6h: about $0.12 a day), and `r` reads it again only once it is an hour old.
   A new account has no forecast yet; that is not an error.
-- **Sharing.** The read is fleetd's, cached and shared: callers at once share one read, and a caller who
-  leaves does not end it. The tab reads when shown, then every 5 minutes while shown.
+- **Sharing and cache.** The read is fleetd's, cached and shared: callers at once share one read, and a
+  caller who leaves does not end it. What is old is answered at once from the cache and read again behind
+  the answer, so the tab never waits on a read of every region; only a first read with nothing cached, and
+  `r`, wait. The cache is kept in `<state_dir>/aws-cache.json` (0600; what the tab shows, no keys), so a
+  restart starts with the last read and does not pay for the cost again. The tab reads when shown, then
+  every 5 minutes while shown.
 
 ## Heavy jobs — not in an agent's container
 

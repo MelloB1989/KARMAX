@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/daemon"
+	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 	"github.com/MelloB1989/karmax/fleet/internal/ledger"
 )
 
@@ -36,16 +37,18 @@ func quotaCmd(args []string) error {
 			accts = append(accts, a)
 		}
 		slices.Sort(accts)
+		now := time.Now()
 		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(w, "ACCOUNT\t5H%\tRESETS\t7D%\tRESETS\tAS OF\tSOURCE")
+		fmt.Fprintln(w, "ACCOUNT\t5H%\tRESETS\t7D%\tRESETS\tWEEK ROOM\tAS OF\tSOURCE")
 		for _, acct := range accts {
-			x := q[acct]
-			fmt.Fprintf(w, "%s\t%.0f\t%s\t%.0f\t%s\t%s\t%s\n", acct, x.FiveHour, clock(x.FiveResets), x.SevenDay,
-				clock(x.SevenResets), clock(x.At), x.Source)
+			x := q[acct].Aged(now)
+			fmt.Fprintf(w, "%s\t%.0f\t%s\t%.0f\t%s\t%.0f%%/day\t%s\t%s\n", acct, x.FiveHour, clock(x.FiveResets), x.SevenDay,
+				clock(x.SevenResets), fleetapi.WeekRoom(x.SevenDay, x.SevenResets, now), clock(x.At), x.Source)
 		}
 		if err := w.Flush(); err != nil {
 			return err
 		}
+		fmt.Printf("WEEK ROOM is the weekly limit left a day until its reset (a fresh week: %.0f%%/day); new tasks go\nto the agents with the most of it first, so no week runs out days before its reset.\n", fleetapi.WeekEven)
 		c, err := newClient()
 		if err != nil {
 			return err
@@ -54,7 +57,6 @@ func quotaCmd(args []string) error {
 		if err != nil {
 			return nil // the windows are printed; the holds are a bonus
 		}
-		now := time.Now()
 		var held []agentHold
 		for _, h := range agentHolds(rows) {
 			if h.Held() {

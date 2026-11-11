@@ -198,7 +198,7 @@ the index written out, not a separate list. To refresh it after a route changes:
 |---|---|---|---|
 | `GET /v1` | full, relay, console, guest | `fleetctl api` | the index of every route and the scopes that may call it |
 | `GET /v1/whoami` | full, relay, console, guest, sandbox | `fleetctl whoami` | which scope and name this token has (on the tailnet: your login, device and, for a guest, its lent agents) |
-| `GET /v1/status` | full, relay, console, guest | `fleetctl status`, `ls` | one row per agent (phase, task, idle, model, alerts), plus the orchestrator's quota; a guest's lent agents only |
+| `GET /v1/status` | full, relay, console, guest | `fleetctl status`, `ls` | one row per agent (phase, task, idle, model, alerts, quota windows and `week_room_per_day`), plus the orchestrator's quota; a guest's lent agents only |
 | `POST /v1/tell` | full, relay, console, sandbox | `fleetctl tell` | deliver a message to a session; to `operator`, a person or a session that assigned a task it is stored in the inbox; `kind` is `report` (default), `question` or `progress` |
 | `POST /v1/ask` | relay, sandbox | `fleetctl ask` | an agent files a question under its task to its assigner and blocks until the answer arrives (`answer`) or `timeout` (default 30m) passes (`timed_out`); it waits for nothing else; while fleetd shuts down it answers 503 (the question stays filed, and is not asked again) |
 | `POST /v1/tasks/{id}/answer` | full, relay, guest | `fleetctl answer` | answer the question the task's agent is blocked on: the text is the output of its ask; with nothing blocked it is a follow-up. An agent (relay) may answer only a task it assigned |
@@ -227,7 +227,7 @@ the index written out, not a separate list. To refresh it after a route changes:
 | `GET /v1/tasks` | full, console, guest | `fleetctl tasks` | tasks, open or all; a guest's own |
 | `GET /v1/activity` | full, console, guest | `fleetctl activity` | event counts per agent in time buckets; a guest's lent agents' only |
 | `GET /v1/today` | full, console | `fleetctl today` | tasks closed and spend since local midnight |
-| `GET /v1/pick` | full, console, guest | `fleetctl pick` | which agent a new task would go to, and why each other was passed over |
+| `GET /v1/pick` | full, console, guest | `fleetctl pick` | which agent a new task would go to, and why each other was passed over (each candidate with its `week_room_per_day`) |
 | `GET /v1/peek` | full, console, guest | `fleetctl peek` | the last lines of an agent's pane; a guest's only on a lent agent not at work on someone else's task |
 | `POST /v1/prompt` | full, console | `fleetctl prompt` | type into an agent's session as the operator |
 | `GET /v1/archives` | full, console | `fleetctl archive ls` | list archived sessions |

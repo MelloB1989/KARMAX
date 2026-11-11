@@ -91,12 +91,15 @@ func TestPickQuotaThenIdle(t *testing.T) {
 	set(f, "agent-01", func(s *reconcile.State) { s.Quota.FiveHour, s.Quota.SevenDay = 40, 10; s.LastBusy = t0.Add(-time.Hour) })
 	set(f, "agent-02", func(s *reconcile.State) { s.Quota.FiveHour, s.Quota.SevenDay = 10, 50; s.LastBusy = t0.Add(-time.Hour) })
 	set(f, "agent-03", func(s *reconcile.State) {
-		s.Quota.FiveHour, s.Quota.SevenDay = 10, 20
+		s.Quota.FiveHour, s.Quota.SevenDay = 10, 12 // a week about as roomy as agent-01's
 		s.LastBusy = t0.Add(-time.Minute)
 	})
 	r := f.Pick("", t0)
 	if r.Agent != "agent-03" {
-		t.Fatalf("lowest 5h, then lowest 7d: %+v", r)
+		t.Fatalf("weeks level, the lowest 5h: %+v", r)
+	}
+	if r.Candidates[2].Agent != "agent-02" {
+		t.Errorf("the least week room last, its 5h notwithstanding: %+v", r.Candidates)
 	}
 	if len(r.Candidates) != 3 || r.Candidates[0].Agent != "agent-03" || !r.Candidates[0].Eligible {
 		t.Errorf("chosen candidate first: %+v", r.Candidates)

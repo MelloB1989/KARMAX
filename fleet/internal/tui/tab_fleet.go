@@ -453,7 +453,7 @@ func card(c *Ctx, g group, boxes map[string]fleetapi.Container, w int, bars, gap
 		head += " " + t.Danger.Render("▲ "+strings.Join(ld.Alerts, ", "))
 	}
 	var right []string
-	if !bars && ld.State != "down" {
+	if ld.State != "down" {
 		right = append(right, t.Muted.Render("5h ")+paint(quotaColor(t, ld.FiveHour), fmt.Sprintf("%.0f%%", ld.FiveHour))+
 			t.Muted.Render(" 7d ")+paint(quotaColor(t, ld.SevenDay), fmt.Sprintf("%.0f%%", ld.SevenDay)))
 	}

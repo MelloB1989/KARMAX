@@ -23,7 +23,7 @@ func TestTheAWSSectionFillsDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := c.AWS
-	if a == nil || a.KeysCSV != "/h/secrets/aws/reader.csv" || !slices.Equal(a.Regions, []string{"ap-south-1", "us-east-1"}) ||
+	if a == nil || a.KeysCSV != "/h/secrets/aws/reader.csv" || !slices.Equal(a.Regions, []string{"all"}) ||
 		a.Every != 5*time.Minute || a.CostEvery != 6*time.Hour || a.CLI != "" {
 		t.Fatalf("aws = %+v", a)
 	}
@@ -51,6 +51,23 @@ func TestTheAWSSectionRefusesWhatWouldGoWrong(t *testing.T) {
 		}
 		if err != nil && strings.Contains(err.Error(), "AKIAEXAMPLEKEY000001") {
 			t.Errorf("%s: the error repeats what looks like a key: %v", name, err)
+		}
+	}
+}
+
+func TestQuotaProbeDefaultsToAMinute(t *testing.T) {
+	for _, c := range []struct {
+		yaml string
+		want time.Duration
+	}{
+		{"", time.Minute}, {"quota_probe: 5s\n", 20 * time.Second}, {"quota_probe: 3m\n", 3 * time.Minute}, {"quota_probe: -1s\n", -time.Second},
+	} {
+		cfg, err := Parse([]byte(awsBase + c.yaml))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.QuotaProbe != c.want {
+			t.Errorf("%q: %v, want %v", c.yaml, cfg.QuotaProbe, c.want)
 		}
 	}
 }

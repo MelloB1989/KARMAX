@@ -140,8 +140,10 @@ func (f *Fake) snapshot() *Snapshot {
 			}
 			w := Worker{Agent: name, SlotOf: a.agent, Slot: k, Host: a.host, Container: cont, Account: a.account,
 				Models: []string{"sonnet", "opus"}, Model: "opus", Sandbox: a.sandbox, Alerts: []string{},
-				FiveHour: math.Min(a.five+float64(f.step%8), 100), SevenDay: a.five / 3, FiveResets: now.Add(time.Duration(90+i*7) * time.Minute),
-				QuotaAt: now.Add(-time.Minute), Context: float64((i*13 + f.step) % 70), RecordedAt: now.Add(-3 * time.Second)}
+				FiveHour: math.Min(a.five+float64(f.step%8), 100), SevenDay: math.Min(a.five*0.8+float64(i*23%60), 100), FiveResets: now.Add(time.Duration(90+i*7) * time.Minute),
+				SevenResets: now.Add(time.Duration(5+i*37%160) * time.Hour),
+				QuotaAt:     now.Add(-time.Minute), Context: float64((i*13 + f.step) % 70), RecordedAt: now.Add(-3 * time.Second)}
+			w.WeekRoom = WeekRoom(w.SevenDay, w.SevenResets, now)
 			switch {
 			case a.state == "down":
 				w.State, w.Reason, w.Alerts = "down", "container is not running", []string{"down"}
@@ -207,7 +209,8 @@ func (f *Fake) snapshot() *Snapshot {
 		}
 		accounts[w.Account] = true
 		a := Account{Name: w.Account, Agents: []string{w.SlotOf}, FiveHour: w.FiveHour, SevenDay: w.SevenDay,
-			FiveResets: w.FiveResets, At: w.QuotaAt, BurnPerHour: float64(len(s.Quota)%4) * 6.5}
+			FiveResets: w.FiveResets, SevenResets: w.SevenResets, WeekRoom: w.WeekRoom, At: w.QuotaAt,
+			BurnPerHour: float64(len(s.Quota)%4) * 6.5}
 		if a.BurnPerHour > 0 {
 			if out := now.Add(time.Duration((100 - a.FiveHour) / a.BurnPerHour * float64(time.Hour))); out.Before(a.FiveResets) {
 				a.RunOut = out
@@ -217,7 +220,8 @@ func (f *Fake) snapshot() *Snapshot {
 		s.Quota = append(s.Quota, a)
 	}
 	if f.Role == RoleAdmin {
-		s.Quota = append(s.Quota, Account{Name: "karmax", Orchestrator: true, FiveHour: 2, SevenDay: 6, FiveResets: now.Add(3 * time.Hour), At: now})
+		s.Quota = append(s.Quota, Account{Name: "karmax", Orchestrator: true, FiveHour: 2, SevenDay: 6, FiveResets: now.Add(3 * time.Hour),
+			SevenResets: now.Add(100 * time.Hour), WeekRoom: WeekRoom(6, now.Add(100*time.Hour), now), At: now})
 	}
 	kinds := []struct{ agent, kind, detail string }{
 		{"agent-01", "fleet.report", `{"task":"20261025-tui-frame-1a2b","text":"frame and tabs render at 80x24"}`},
@@ -318,7 +322,7 @@ func (f *Fake) Run(ctx context.Context, r RunRequest) (*RunReply, error) {
 	}
 	f.tasks = append([]Task{{ID: id, Agent: agent, Assigner: assigner, Repo: r.Repo, Model: r.Model, Assigned: f.Now(), AdminWork: f.Role == RoleAdmin}}, f.tasks...)
 	f.record("run %s %q", agent, r.Brief)
-	return &RunReply{Task: id, Agent: agent, Why: "free, lowest 5h use"}, nil
+	return &RunReply{Task: id, Agent: agent, Why: "free, the most weekly room"}, nil
 }
 
 func (f *Fake) closeTask(id, outcome string) error {

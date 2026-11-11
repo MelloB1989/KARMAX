@@ -31,6 +31,7 @@ import (
 	"github.com/MelloB1989/karmax/fleet/internal/memory"
 	"github.com/MelloB1989/karmax/fleet/internal/otlp"
 	"github.com/MelloB1989/karmax/fleet/internal/outbound"
+	"github.com/MelloB1989/karmax/fleet/internal/quotaprobe"
 	"github.com/MelloB1989/karmax/fleet/internal/server"
 	"github.com/MelloB1989/karmax/fleet/internal/tailnet"
 	"github.com/MelloB1989/karmax/fleet/internal/target"
@@ -139,7 +140,20 @@ func run(cfgPath string, once bool) error {
 		// The AWS tab's account: read when asked, the keys only ever in the
 		// aws CLI's environment.
 		f.AWSDash = awsdash.New(awsdash.Options{KeysCSV: a.KeysCSV, Regions: a.Regions, Every: a.Every,
-			CostEvery: a.CostEvery, CLI: awsdash.FindCLI(a.CLI, cfg.Home)})
+			CostEvery: a.CostEvery, CLI: awsdash.FindCLI(a.CLI, cfg.Home),
+			CacheFile: filepath.Join(cfg.StateDir, "aws-cache.json")})
+	}
+	if cfg.QuotaProbe > 0 {
+		tokens := map[string]string{}
+		for _, n := range cfg.AgentNames() {
+			if a := cfg.Agents[n]; env[a.TokenEnv] != "" && tokens[a.Account] == "" {
+				tokens[a.Account] = env[a.TokenEnv]
+			}
+		}
+		if t := env[cfg.Orchestrator.TokenEnv]; t != "" && !cfg.Orchestrator.Native {
+			tokens[cfg.Orchestrator.Name] = t
+		}
+		f.ProbeQuota(quotaprobe.Prober{}, tokens, cfg.QuotaProbe)
 	}
 	f.HostStats = func(ctx context.Context, host string) ([]ledger.HostSample, error) {
 		c := target.Container{Exec: cfg.Hosts[host].Exec}
@@ -163,8 +177,10 @@ func run(cfgPath string, once bool) error {
 		defer qcancel()
 		if q, err := karmax.Quota(qctx); err == nil {
 			orchQuota.Store(q)
-			_ = db.AddQuota(ledger.Quota{Account: o.Name, At: now, FiveHour: q.FiveHour, FiveResets: q.FiveHourResets,
-				SevenDay: q.SevenDay, SevenResets: q.SevenDayResets, Source: "harness"})
+			if _, live := f.Probed(o.Name, now, 3*cfg.QuotaProbe); !live {
+				_ = db.AddQuota(ledger.Quota{Account: o.Name, At: now, FiveHour: q.FiveHour, FiveResets: q.FiveHourResets,
+					SevenDay: q.SevenDay, SevenResets: q.SevenDayResets, Source: "harness"})
+			}
 		}
 		if err := writeDashboard(dash, f, db, orchQuota.Load(), now); err != nil {
 			log.Printf("dashboard: %v", err)

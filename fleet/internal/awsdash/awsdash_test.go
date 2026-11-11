@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -124,7 +126,7 @@ func fixtures() *fakeCLI {
 }
 
 func newDash(f *fakeCLI, clock *time.Time) *Dash {
-	return New(Options{Run: f, Now: func() time.Time { return *clock }})
+	return New(Options{Run: f, Regions: []string{"ap-south-1", "us-east-1"}, Now: func() time.Time { return *clock }})
 }
 
 func find(r *fleetapi.AWSReport, service, id string) (fleetapi.AWSResource, bool) {
@@ -252,6 +254,7 @@ func TestCostIsReadSeldom(t *testing.T) {
 		if _, err := d.Report(context.Background(), refresh); err != nil {
 			t.Fatal(err)
 		}
+		d.Wait() // an old read goes on behind the answer
 	}
 	read(false)
 	read(false)
@@ -412,5 +415,53 @@ func TestNoKeysNoReport(t *testing.T) {
 	d := New(Options{KeysCSV: "/nonexistent/keys.csv", CLI: "/bin/false"})
 	if _, err := d.Report(context.Background(), false); err == nil || !strings.Contains(err.Error(), "keys_csv") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// What is old is answered from the cache at once and read again behind it.
+func TestAStaleReadIsAnsweredFromTheCache(t *testing.T) {
+	f, clock := fixtures(), now
+	d := newDash(f, &clock)
+	first, err := d.Report(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = now.Add(10 * time.Minute)
+	got, err := d.Report(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.At.Equal(first.At) || len(got.Items) != len(first.Items) {
+		t.Errorf("an old read was waited for: at %v, was %v", got.At, first.At)
+	}
+	d.Wait()
+	if again, _ := d.Report(context.Background(), false); !again.At.Equal(clock) {
+		t.Errorf("not read again behind the answer: at %v, want %v", again.At, clock)
+	}
+}
+
+// The last read is on disk: a new fleetd shows it before it reads anything.
+func TestTheCacheSurvivesARestart(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "aws-cache.json")
+	f, clock := fixtures(), now
+	d := New(Options{Run: f, Regions: []string{"ap-south-1", "us-east-1"}, CacheFile: file, Now: func() time.Time { return clock }})
+	first, err := d.Report(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(file); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("cache file: %v %v", fi, err)
+	}
+	g := &fakeCLI{out: map[string]string{}}
+	e := New(Options{Run: g, Regions: []string{"ap-south-1", "us-east-1"}, CacheFile: file, Now: func() time.Time { return clock.Add(time.Minute) }})
+	got, err := e.Report(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != len(first.Items) || got.Cost == nil || got.Account != first.Account {
+		t.Errorf("not restored: %d items, cost %v", len(got.Items), got.Cost)
+	}
+	if n := g.called(""); n != 0 {
+		t.Errorf("a fresh cache was read again: %d calls", n)
 	}
 }

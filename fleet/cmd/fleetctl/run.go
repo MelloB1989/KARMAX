@@ -213,13 +213,13 @@ func pickCmd(args []string) error {
 
 func printCandidates(cs []daemon.Candidate) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tOK\t5H\t7D\tIDLE\tWHY")
+	fmt.Fprintln(w, "AGENT\tOK\t5H\t7D\tWEEK ROOM\tIDLE\tWHY")
 	for _, c := range cs {
 		ok := "no"
 		if c.Eligible {
 			ok = "yes"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%.0f%%\t%.0f%%\t%s\t%s\n", c.Agent, ok, c.FiveHour, c.SevenDay,
+		fmt.Fprintf(w, "%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%/day\t%s\t%s\n", c.Agent, ok, c.FiveHour, c.SevenDay, c.WeekRoom,
 			daemon.Dur(time.Duration(c.IdleS)*time.Second), c.Why)
 	}
 	_ = w.Flush()

@@ -1413,7 +1413,7 @@ func askFleetd(route string, hosts []string) error {
 
 func table(rows []daemon.Row, orch *outbound.Quota) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tHOST\tSTATE\tTASK\tIDLE\t5H%\t7D%\tRESET\tCTX%\tMODELS")
+	fmt.Fprintln(w, "AGENT\tHOST\tSTATE\tTASK\tIDLE\t5H%\tRESET\t7D%\tWEEK ROOM\tCTX%\tMODELS")
 	for _, r := range rows {
 		state := r.State
 		if r.Low {
@@ -1429,11 +1429,13 @@ func table(rows []daemon.Row, orch *outbound.Quota) error {
 		if r.Slot > 1 {
 			name = "  " + name // under its agent's slot 1
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%.0f\t%.0f\t%s\t%.0f\t%s\n", name, r.Host, state, dash(r.Task), dash(r.Idle),
-			r.FiveHour, r.SevenDay, clock(r.FiveResets), r.Context, strings.Join(r.Models, ","))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%.0f\t%s\t%.0f\t%.0f%%/day\t%.0f\t%s\n", name, r.Host, state, dash(r.Task), dash(r.Idle),
+			r.FiveHour, clock(r.FiveResets), r.SevenDay, r.WeekRoom, r.Context, strings.Join(r.Models, ","))
 	}
 	if orch != nil {
-		fmt.Fprintf(w, "karmax\t-\torchestrator\t-\t-\t%.0f\t%.0f\t%s\t-\t-\n", orch.FiveHour, orch.SevenDay, clock(orch.FiveHourResets))
+		now := time.Now()
+		fmt.Fprintf(w, "karmax\t-\torchestrator\t-\t-\t%.0f\t%s\t%.0f\t%.0f%%/day\t-\t-\n", orch.FiveHour, clock(orch.FiveHourResets),
+			orch.SevenDay, daemon.WeekRoom(orch.SevenDay, orch.SevenDayResets, now))
 	}
 	return w.Flush()
 }

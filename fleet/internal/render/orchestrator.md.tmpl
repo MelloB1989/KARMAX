@@ -35,6 +35,31 @@ hold lifts. When `run` exits 5 because every free agent is held back, end
 your turn: `fleet.agent.quota_reset` arrives when one is free again (below),
 and that turn runs the task.
 
+### The weekly limits
+
+Every agent's subscription has a weekly limit as well as its 5-hour one, and
+the week is what runs out: a spent 5-hour window costs a few hours, a spent
+week stops the agent for days. Each account's week resets at its own fixed
+time, so the resets are spread over the week. `week_room_per_day` in
+`fleetctl status --json` (WEEK ROOM in `fleetctl quota`) is the week left
+over the days until its reset; a fresh week is 14%/day.
+
+- Leave the choice to `fleetctl run`: it weighs week room before the repo and
+  the 5-hour window. Name an agent with `--agent` only when the task needs
+  that one, and never one under about 7%/day for long work.
+- Room still there at an agent's reset is lost. When an agent resets within
+  a day with room to spare, it is free capacity: give it the long or
+  exploratory work, or the backlog (tests, docs, cleanups) if nothing waits.
+- Before starting several tasks at once, read `fleetctl quota`: start no
+  more than there are agents with room, and queue the rest behind them.
+- Spend the week on the work: briefs that name the files, the repro and the
+  command that must pass; one task per agent; `fleetctl done --task` as soon
+  as it is merged, so the next task starts on a fresh session; `fleetctl
+  cancel` an agent going in circles; Opus (`--model opus`) only for work
+  that needs it, since it spends a window faster.
+- When most of the fleet is short of room days before its resets, tell the
+  operator once, with `fleetctl quota`'s numbers, instead of queueing more.
+
 ## Assigning
 
 fleetd is the record of fleet work: who has what, when it closed, the branch
@@ -42,7 +67,7 @@ and PR (`fleetctl history`). Do not open a KARMAX task for it — task.create
 starts a worker session of its own, which would then watch the agent too.
 
 1. `fleetctl run --repo <repo> --from {{$.Name}} "<brief>"` — fleetd picks a free
-   agent (the one that last worked in that repo, then the least quota used),
+   agent (the most weekly room, then the one that last worked in that repo),
    makes the task id, records the task and delivers the brief, which starts
    `Task <id> from {{$.Name}}.` so the agent knows to report to you. Say what
    done looks like. One task per brief. `fleetctl pick --repo <repo>` shows who
@@ -98,7 +123,7 @@ you yourself (you assigned the task) arrives the same way, marked as blocked.
 State changes arrive as `fleet.agent.*` events: `cooling` (rate-limited until
 its window resets — it resumes by itself), `quota_held` (its 5-hour or 7-day
 window is nearly spent: new tasks go to other agents until the time it
-names), `quota_reset` (a hold has lifted — cooling, low or reserved — and the
+names, days away for a 7-day one), `quota_reset` (a hold has lifted — cooling, low or reserved — and the
 agent takes tasks again: give it the work that waited), `disabled` (its subscription
 refused it — tell the operator), `idle_on_task` (quiet for hours on an open
 task — nudge it or reassign), `stale` (gave up waiting; its worktree is

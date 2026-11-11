@@ -15,7 +15,7 @@ type AWS struct {
 	// KeysCSV is the access-key CSV the IAM console downloads. fleetd
 	// reads it at each read and hands the keys to the CLI alone.
 	KeysCSV string `yaml:"keys_csv"`
-	// Regions are read; default [ap-south-1, us-east-1]. [all] is every
+	// Regions are read; default [all], every
 	// region the account has enabled.
 	Regions []string `yaml:"regions"`
 	// Every is how old the resources may get before they are read again;
@@ -33,7 +33,7 @@ var awsRegion = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
 
 func (a *AWS) defaults(home string) {
 	if len(a.Regions) == 0 {
-		a.Regions = []string{"ap-south-1", "us-east-1"}
+		a.Regions = []string{"all"}
 	}
 	if a.Every <= 0 {
 		a.Every = 5 * time.Minute

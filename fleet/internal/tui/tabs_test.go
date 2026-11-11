@@ -292,7 +292,7 @@ func TestDenseModeWhenAgentsDoNotFit(t *testing.T) {
 	}
 	a.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	v := ansi.Strip(view(a))
-	if strings.Contains(v, "5h ███") || !strings.Contains(v, "5h 34% 7d 11%") {
+	if strings.Contains(v, "5h ███") || !strings.Contains(v, "5h 34% 7d 27%") {
 		t.Errorf("120x40 has no room for bars, so the windows go in the header:\n%s", v)
 	}
 	if !strings.Contains(v, "agent-12") {

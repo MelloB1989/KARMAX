@@ -22,11 +22,14 @@ var ErrBadInput = errors.New("bad input")
 
 // Candidate is one agent as Pick weighed it.
 type Candidate struct {
-	Agent    string  `json:"agent"`
-	Eligible bool    `json:"eligible"`
-	Why      string  `json:"why"`
-	FiveHour float64 `json:"five_hour_pct"`
-	SevenDay float64 `json:"seven_day_pct"`
+	Agent       string    `json:"agent"`
+	Eligible    bool      `json:"eligible"`
+	Why         string    `json:"why"`
+	FiveHour    float64   `json:"five_hour_pct"`
+	SevenDay    float64   `json:"seven_day_pct"`
+	SevenResets time.Time `json:"seven_day_resets,omitzero"`
+	// WeekRoom is its account's weekly room, in points a day (WeekRoom).
+	WeekRoom float64 `json:"week_room_per_day"`
 	IdleS    int64   `json:"idle_s"`
 }
 
@@ -66,9 +69,10 @@ func (f *Fleet) PickModel(repo, model string, now time.Time) PickReply {
 // low or reserved; its agent's models: list allows the model; and, for a
 // task with a known side, no sibling slot holds a task from the other side
 // (OperatorAssigner). Best first: a worker on an agent with no busy slot (tasks
-// spread over containers before they share one), then the agent whose last
-// task was in the same repo, then the lowest 5 h quota use, the lowest 7 d,
-// the longest idle.
+// spread over containers before they share one), then the most weekly room
+// (WeekRoom, coarsely: a week spent early stops an agent for days), then the
+// agent whose last task was in the same repo, the lowest 5 h quota use, the
+// lowest 7 d, the longest idle.
 func (f *Fleet) PickFor(repo, from, model string, now time.Time) PickReply {
 	return f.pickAmong(repo, from, model, nil, now)
 }
@@ -98,7 +102,8 @@ func (f *Fleet) pickAmong(repo, from, model string, among []string, now time.Tim
 	}
 	var all []scored
 	for _, r := range rows {
-		c := Candidate{Agent: r.Agent, FiveHour: r.FiveHour, SevenDay: r.SevenDay, IdleS: r.IdleS}
+		c := Candidate{Agent: r.Agent, FiveHour: r.FiveHour, SevenDay: r.SevenDay, SevenResets: r.SevenResets,
+			WeekRoom: r.WeekRoom, IdleS: r.IdleS}
 		c.Why = f.ineligible(r)
 		if c.Why == "" && f.worker(r.Agent).Sandbox && !slices.Contains(among, r.SlotOf) {
 			c.Why = notLent
@@ -125,6 +130,8 @@ func (f *Fleet) pickAmong(repo, from, model string, among []string, now time.Tim
 			return a.c.Agent < b.c.Agent
 		case (a.busy == 0) != (b.busy == 0):
 			return a.busy == 0
+		case weekTier(a.c.WeekRoom) != weekTier(b.c.WeekRoom):
+			return weekTier(a.c.WeekRoom) > weekTier(b.c.WeekRoom)
 		case a.affinity != b.affinity:
 			return a.affinity
 		case a.c.FiveHour != b.c.FiveHour:
@@ -145,7 +152,8 @@ func (f *Fleet) pickAmong(repo, from, model string, among []string, now time.Tim
 	}
 	top := all[0]
 	reply.Agent = top.c.Agent
-	why := fmt.Sprintf("5h %.0f%%, 7d %.0f%%, idle %s", top.c.FiveHour, top.c.SevenDay, Dur(time.Duration(top.c.IdleS)*time.Second))
+	why := fmt.Sprintf("%s, 5h %.0f%%, idle %s", weekWhy(top.c.SevenDay, top.c.WeekRoom, top.c.SevenResets, now),
+		top.c.FiveHour, Dur(time.Duration(top.c.IdleS)*time.Second))
 	if top.affinity {
 		why = "last task was in " + repo + "; " + why
 	}

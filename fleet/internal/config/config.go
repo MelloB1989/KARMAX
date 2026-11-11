@@ -40,6 +40,11 @@ type Config struct {
 	ClaudeVersion string `yaml:"claude_version"`
 	EnvFile       string `yaml:"env_file"`
 	StateDir      string `yaml:"state_dir"`
+	// QuotaProbe is how often each account's live 5-hour and 7-day windows
+	// are read (one token of Haiku, by the agent's own token): a status line
+	// has them only as of a session's last turn. Default 1m, at least 20s;
+	// negative is off.
+	QuotaProbe time.Duration `yaml:"quota_probe"`
 
 	// Listen is fleetd's local API. RelayListen, when set, is the second
 	// listener PC2's agents reach for `fleetctl tell`; it requires the bearer
@@ -478,6 +483,11 @@ func (c *Config) defaults() {
 	or(&c.Code, filepath.Join(c.Home, "code"))
 	or(&c.EnvFile, filepath.Join(c.Home, ".karmax", ".env"))
 	or(&c.StateDir, filepath.Join(c.Home, ".karmax", "fleet"))
+	if c.QuotaProbe == 0 {
+		c.QuotaProbe = time.Minute
+	} else if c.QuotaProbe > 0 {
+		c.QuotaProbe = max(c.QuotaProbe, 20*time.Second)
+	}
 	or(&c.Karmax.DataDir, filepath.Join(c.Home, ".karmax"))
 	if c.Image == "" {
 		c.Image = "karmax-fleet:latest"

@@ -132,6 +132,8 @@ type Fleet struct {
 	Karmax Gateway
 	// AWSDash, when set, reads the operator's AWS account (aws.go).
 	AWSDash AWSReader
+	// qprobe reads each account's live windows (probe.go); nil is off.
+	qprobe *quotaProbe
 	// Log receives fleetd's own diagnostics.
 	Log func(format string, args ...any)
 	// vault seals the secrets the operator hands agents (secrets.go).
@@ -254,6 +256,7 @@ func (f *Fleet) Tick(ctx context.Context, now time.Time) {
 	began := time.Now()
 	f.tickStarted()
 	defer func() { f.tickEnded(now, time.Since(began)) }()
+	f.probeDue(now)
 	var wg sync.WaitGroup
 	for _, name := range f.cfg.WorkerNames() {
 		wg.Add(1)
@@ -439,10 +442,15 @@ func (f *Fleet) sharedCooling(st reconcile.State, now time.Time) reconcile.State
 // a window that has reset since must not come back from it.
 func (f *Fleet) sharedQuota(st reconcile.State, now time.Time) reconcile.State {
 	sibs := f.cfg.Siblings(st.Name)
-	if len(sibs) == 0 {
+	q, live := st.Quota, false
+	if w, ok := f.cfg.Worker(st.Name); ok {
+		if pq, ok := f.Probed(w.Account, now, 15*time.Minute); ok {
+			q, live = newerQuota(q, pq), true
+		}
+	}
+	if len(sibs) == 0 && !live {
 		return st
 	}
-	q := st.Quota
 	for _, sib := range sibs {
 		q = newerQuota(q, f.State(sib).Quota.Aged(now))
 	}
@@ -481,13 +489,23 @@ func (f *Fleet) recordQuota(now time.Time) {
 		}
 		byAccount[w.Account] = newerQuota(q, f.State(name).Quota)
 	}
+	live := map[string]bool{}
+	for acct, q := range byAccount {
+		if pq, ok := f.Probed(acct, now, 15*time.Minute); ok {
+			byAccount[acct], live[acct] = newerQuota(q, pq), true
+		}
+	}
 	for _, acct := range accounts {
 		q := byAccount[acct]
 		if q.At.Before(now) {
 			continue // no status line this tick: nothing new to record
 		}
+		src := "statusline"
+		if live[acct] {
+			src = "probe" // the newest of the two, the live reading among them
+		}
 		if err := f.db.AddQuota(ledger.Quota{Account: acct, At: now, FiveHour: q.FiveHour, FiveResets: q.FiveHourResets,
-			SevenDay: q.SevenDay, SevenResets: q.SevenDayResets, Source: "statusline"}); err != nil {
+			SevenDay: q.SevenDay, SevenResets: q.SevenDayResets, Source: src}); err != nil {
 			f.Log("ledger: quota %s: %v", acct, err)
 		}
 	}
@@ -1417,13 +1435,16 @@ type Row struct {
 	FiveResets  time.Time `json:"five_hour_resets,omitzero"`
 	SevenResets time.Time `json:"seven_day_resets,omitzero"`
 	QuotaAt     time.Time `json:"quota_as_of,omitzero"`
-	Context     float64   `json:"context_pct"`
-	Low         bool      `json:"low,omitempty"`
-	Reserved    bool      `json:"reserved,omitempty"`
-	Models      []string  `json:"models"`
-	Session     string    `json:"session,omitempty"`
-	Reason      string    `json:"disabled_reason,omitempty"`
-	Cooling     time.Time `json:"cooling_until,omitzero"`
+	// WeekRoom is the account's weekly room: points a day of its weekly limit
+	// left until its 7-day window resets (WeekRoom).
+	WeekRoom float64   `json:"week_room_per_day"`
+	Context  float64   `json:"context_pct"`
+	Low      bool      `json:"low,omitempty"`
+	Reserved bool      `json:"reserved,omitempty"`
+	Models   []string  `json:"models"`
+	Session  string    `json:"session,omitempty"`
+	Reason   string    `json:"disabled_reason,omitempty"`
+	Cooling  time.Time `json:"cooling_until,omitzero"`
 	// Unreachable: its host did not answer the last tick.
 	Unreachable bool `json:"unreachable,omitempty"`
 	// Rotating: its task is done, and its fresh session is not up yet.
@@ -1473,7 +1494,7 @@ func (f *Fleet) Status(now time.Time) []Row {
 		reserved := st.Reserved && q.SevenDayResets.Equal(st.Quota.SevenDayResets)
 		rows = append(rows, Row{Agent: name, SlotOf: a.Agent, Slot: a.Slot, Host: a.Host, Account: a.Account, State: string(phase), Task: task,
 			Idle: idle, IdleS: idleS, Model: st.Model, Alerts: activeAlerts(st), RecordedAt: st.RecordedAt, FiveHour: q.FiveHour, SevenDay: q.SevenDay, FiveResets: q.FiveHourResets,
-			SevenResets: q.SevenDayResets, QuotaAt: q.At, Context: st.ContextPct, Low: low,
+			SevenResets: q.SevenDayResets, QuotaAt: q.At, WeekRoom: WeekRoom(q.SevenDay, q.SevenDayResets, now), Context: st.ContextPct, Low: low,
 			Reserved: reserved, Models: a.Models, Session: st.SessionID, Reason: st.DisabledReason, Cooling: st.CoolingUntil,
 			Unreachable: !st.UnreachableSince.IsZero(), Rotating: st.Done})
 	}

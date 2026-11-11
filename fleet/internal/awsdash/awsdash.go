@@ -15,13 +15,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MelloB1989/karmax/fleet/internal/fleetapi"
 )
 
 // DefaultRegions are read when fleet.yaml names none.
-var DefaultRegions = []string{"ap-south-1", "us-east-1"}
+var DefaultRegions = []string{"all"}
 
 const (
 	parallel    = 8                // CLI calls at once
@@ -39,6 +40,7 @@ type Options struct {
 	Every     time.Duration // the resources are read again after this
 	CostEvery time.Duration // Cost Explorer is read again after this
 	CLI       string        // the aws binary (FindCLI)
+	CacheFile string        // the last read is kept here, so a restart starts with it ("" is memory only)
 	Run       Runner        // nil runs CLI with KeysCSV's keys
 	Now       func() time.Time
 }
@@ -47,8 +49,12 @@ type Options struct {
 type Dash struct {
 	o Options
 
-	mu      sync.Mutex
-	regions []string // resolved: [all] read once
+	rmu sync.Mutex  // one read at a time
+	bg  atomic.Bool // a read behind Report is under way
+	wg  sync.WaitGroup
+
+	mu      sync.Mutex // guards what follows
+	regions []string   // resolved: [all] read once
 	account string
 	user    string
 	items   []fleetapi.AWSResource
@@ -74,67 +80,130 @@ func New(o Options) *Dash {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Dash{o: o}
+	d := &Dash{o: o}
+	d.load()
+	return d
 }
 
-// Report is the account as last read, read again where that is old: the
-// resources after Every (or at once on refresh), the cost after CostEvery
-// (on refresh, once it is an hour old). Callers wait for one another, so
-// one read serves them all. It fails only when there are no keys to read
-// with.
+// Report is the account as last read, at once. What is old is read again
+// behind it, so a view never waits on a read of every region: the resources
+// after Every, the cost after CostEvery. Only a first read with nothing
+// cached, and a refresh, wait for the read; a refresh reads the resources
+// now and the cost once it is an hour old. It fails only when there are no
+// keys to read with.
 func (d *Dash) Report(ctx context.Context, refresh bool) (*fleetapi.AWSReport, error) {
 	d.mu.Lock()
+	needRes, needCost := d.needs(refresh)
+	cached := !d.resAt.IsZero()
+	d.mu.Unlock()
+	switch {
+	case !needRes && !needCost:
+	case cached && !refresh:
+		d.background()
+	default:
+		if err := d.fetch(ctx, refresh); err != nil {
+			return nil, err
+		}
+	}
+	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.report(), nil
+}
+
+// Wait returns when the reads behind Report are done (tests).
+func (d *Dash) Wait() { d.wg.Wait() }
+
+// needs is what is old enough to read again; d.mu is held.
+func (d *Dash) needs(refresh bool) (res, cost bool) {
 	now := d.o.Now()
-	needRes := refresh || d.resAt.IsZero() || now.Sub(d.resAt) >= d.o.Every
+	res = refresh || d.resAt.IsZero() || now.Sub(d.resAt) >= d.o.Every
 	costWait := d.o.CostEvery
 	if !d.costOK {
 		costWait = d.o.Every // a failed read is tried again with the resources
 	}
-	needCost := d.costAt.IsZero() || now.Sub(d.costAt) >= costWait || refresh && now.Sub(d.costAt) >= costRefreshAfter
-	if needRes || needCost {
-		run := d.o.Run
-		if run == nil {
-			k, err := readKeys(d.o.KeysCSV)
-			if err != nil {
-				return nil, err
-			}
-			run = newCLI(d.o.CLI, k)
-		}
-		c := &caller{run: run, sem: make(chan struct{}, parallel)}
-		d.read(ctx, c, now, needRes, needCost)
+	cost = d.costAt.IsZero() || now.Sub(d.costAt) >= costWait || refresh && now.Sub(d.costAt) >= costRefreshAfter
+	return res, cost
+}
+
+// background reads again what is old, once at a time, on its own clock: the
+// caller that started it may be gone.
+func (d *Dash) background() {
+	if !d.bg.CompareAndSwap(false, true) {
+		return
 	}
-	return d.report(), nil
+	d.wg.Go(func() {
+		defer d.bg.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		_ = d.fetch(ctx, false)
+	})
+}
+
+// fetch reads what is old, one read at a time (a read that came while
+// another ran finds it done), and keeps the answer on disk.
+func (d *Dash) fetch(ctx context.Context, refresh bool) error {
+	d.rmu.Lock()
+	defer d.rmu.Unlock()
+	d.mu.Lock()
+	now := d.o.Now()
+	needRes, needCost := d.needs(refresh)
+	d.mu.Unlock()
+	if !needRes && !needCost {
+		return nil
+	}
+	run := d.o.Run
+	if run == nil {
+		k, err := readKeys(d.o.KeysCSV)
+		if err != nil {
+			return err
+		}
+		run = newCLI(d.o.CLI, k)
+	}
+	c := &caller{run: run, sem: make(chan struct{}, parallel)}
+	d.read(ctx, c, now, needRes, needCost)
+	d.save()
+	return nil
 }
 
 // read reads who the keys are, then the resources and the cost side by side.
 // Keys that do not work stop it there: every other call would fail the same.
 func (d *Dash) read(ctx context.Context, c *caller, now time.Time, res, cost bool) {
-	if res || d.account == "" {
+	d.mu.Lock()
+	known, regions := d.account != "", d.regions
+	d.mu.Unlock()
+	if res || !known {
 		acct, user, err := identity(ctx, c)
 		if err != nil {
+			d.mu.Lock()
 			d.errs, d.resAt = []string{trim("sts: " + err.Error())}, now
 			d.costErr, d.costAt, d.costOK = nil, now, false
+			d.mu.Unlock()
 			return
 		}
+		d.mu.Lock()
 		d.account, d.user = acct, user
+		d.mu.Unlock()
 	}
 	var wg sync.WaitGroup
 	if res {
 		wg.Go(func() {
-			regions, errs := d.resolveRegions(ctx, c)
-			d.items, d.errs = readResources(ctx, c, regions)
-			d.errs = append(errs, d.errs...)
-			d.regions, d.resAt = regions, now
+			regs, errs := d.resolveRegions(ctx, c, regions)
+			items, rerrs := readResources(ctx, c, regs)
+			d.mu.Lock()
+			d.items, d.errs = items, append(errs, rerrs...)
+			d.regions, d.resAt = regs, now
+			d.mu.Unlock()
 		})
 	}
 	if cost {
 		wg.Go(func() {
 			got, errs := readCost(ctx, c, now)
+			d.mu.Lock()
 			d.costErr, d.costAt, d.costOK = errs, now, got != nil
 			if got != nil {
 				d.cost = got
 			}
+			d.mu.Unlock()
 		})
 	}
 	wg.Wait()
@@ -142,12 +211,12 @@ func (d *Dash) read(ctx context.Context, c *caller, now time.Time, res, cost boo
 
 // resolveRegions is the regions to read: fleet.yaml's, or with [all] every
 // region the account has enabled (read once; the defaults if it fails).
-func (d *Dash) resolveRegions(ctx context.Context, c *caller) ([]string, []string) {
+func (d *Dash) resolveRegions(ctx context.Context, c *caller, known []string) ([]string, []string) {
 	if !slices.Equal(d.o.Regions, []string{"all"}) {
 		return d.o.Regions, nil
 	}
-	if d.regions != nil {
-		return d.regions, nil
+	if known != nil {
+		return known, nil
 	}
 	got, err := enabledRegions(ctx, c)
 	if err != nil {
