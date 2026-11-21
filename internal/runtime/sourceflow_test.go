@@ -136,13 +136,14 @@ func newSourceFlow(t *testing.T, disposition string, urgency float64) *sourceFlo
 	}
 	f := &sourceFlow{a: a, mem: mem, db: db, brain: newRecordingBrain()}
 	rt := &KarmaxRuntime{store: db, log: zap.NewNop(), bus: b, agents: reg, memory: factory,
-		loopDefaultAgent: "nexus", reflex: stubScreener(t, disposition, urgency), policy: policy.Default(),
-		messageOperator: func(text string) error {
-			f.mu.Lock()
-			f.operator = append(f.operator, text)
-			f.mu.Unlock()
-			return nil
-		}}
+		loopDefaultAgent: "nexus", reflex: stubScreener(t, disposition, urgency), policy: policy.Default()}
+	rt.messageOperator = func(text string) error {
+		f.mu.Lock()
+		f.operator = append(f.operator, text)
+		f.mu.Unlock()
+		return nil
+	}
+	rt.reportOperator = rt.messageOperator
 	f.rt = rt
 	a.SetScreener(rt.screenEvent)
 	rt.applyOperatingPolicy(a)

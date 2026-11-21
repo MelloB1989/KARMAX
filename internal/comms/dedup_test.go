@@ -40,7 +40,7 @@ func TestTheDuplicatesThatWereActuallySent(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			why, dup := isRepeat(tc.content, tc.prev, now)
+			why, dup := isRepeat(tc.content, tc.prev, now, false)
 			if !dup {
 				t.Fatalf("isRepeat() = false; this message was sent twice in the real thread")
 			}
@@ -95,7 +95,7 @@ func TestLegitimateMessagesStillGoOut(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if why, dup := isRepeat(tc.content, tc.prev, now); dup {
+			if why, dup := isRepeat(tc.content, tc.prev, now, false); dup {
 				t.Fatalf("isRepeat() = true (%s); this message should have gone out", why)
 			}
 		})
@@ -117,5 +117,26 @@ func TestConcurrentIdenticalSendsOnlyReserveOnce(t *testing.T) {
 	g.release(key)
 	if !g.reserve(key, now) {
 		t.Fatal("once the first send finishes the key must be free again")
+	}
+}
+
+// The incident: three chat messages from one person arrived seconds apart,
+// each an urgent page. The pages share their frame and the sender's name, so
+// the rephrase test called the second and third repeats and they never went.
+func TestTwoNoticesAboutDifferentThingsBothGoOut(t *testing.T) {
+	now := time.Date(2026, 11, 21, 8, 49, 6, 0, time.UTC)
+	first := "⚠️ Urgent — Chat DM from Omar Haddad: team subscription (gchat · ops@example.com)\nOmar sent \"team subscription\" with no question in it. I have not replied."
+	second := "⚠️ Urgent — Chat DM from Omar Haddad: premium seat (gchat · ops@example.com)\nOmar sent \"premium seat\" with no question in it. I have not replied."
+	prev := []pastMessage{{Content: first, At: now.Add(-3 * time.Second)}}
+
+	if why, dup := isRepeat(second, prev, now, true); dup {
+		t.Errorf("a page about a different message was refused (%s); the operator never saw it", why)
+	}
+	if _, dup := isRepeat(first, prev, now, true); !dup {
+		t.Error("the same page twice is still a repeat")
+	}
+	// The same pair as free prose is what the rephrase test exists for.
+	if _, dup := isRepeat(second, prev, now, false); !dup {
+		t.Error("this pair no longer trips the rephrase test, so it does not show what a notice is spared")
 	}
 }

@@ -331,6 +331,21 @@ func (h *Host) envValue(k string) string {
 	return ""
 }
 
+// addFix is the command that signs a new account in on this host: with gog
+// when it is installed, else with gws in a directory of its own.
+func (h *Host) addFix(account string) string {
+	if h.Gog != "" {
+		return fmt.Sprintf("gog auth add %s --services calendar,chat,gmail", account)
+	}
+	name, _, _ := strings.Cut(account, "@")
+	dir := h.DefaultGwsDir
+	if dir == "" {
+		dir = "~/.config/gws"
+	}
+	return Login{Email: account, Path: Gws, Dir: dir + "-" + name,
+		keyring: h.envValue("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND")}.Fix()
+}
+
 // Accounts returns a recent discovery, looking again when it is stale.
 func (h *Host) Accounts(ctx context.Context) Discovery {
 	ttl := h.TTL
@@ -350,31 +365,43 @@ func (h *Host) Accounts(ctx context.Context) Discovery {
 	return d
 }
 
-// Forget drops the cached discovery and every cached login, so the next call
-// looks again.
+// Forget drops the cached discovery and ages every cached login, so the next
+// call looks again.
 func (h *Host) Forget() {
 	h.mu.Lock()
 	h.last = Discovery{}
-	h.gwsSeen = nil
+	for dir, c := range h.gwsSeen {
+		c.at = time.Time{}
+		h.gwsSeen[dir] = c
+	}
 	h.mu.Unlock()
 }
 
 // gwsLoginCached is gwsLogin, reusing the last answer while the directory's
-// credentials are unchanged.
+// credentials are unchanged, and when gws cannot be asked.
 func (h *Host) gwsLoginCached(ctx context.Context, dir string) (Login, error) {
 	stamp := ""
 	if h.Stamp != nil {
 		stamp = h.Stamp(dir)
 	}
+	var known *Login
 	if stamp != "" {
 		h.mu.Lock()
 		c, ok := h.gwsSeen[dir]
 		h.mu.Unlock()
-		if ok && c.stamp == stamp && time.Since(c.at) < gwsRecheck {
-			return c.login, nil
+		if ok && c.stamp == stamp {
+			if time.Since(c.at) < gwsRecheck {
+				return c.login, nil
+			}
+			known = &c.login
 		}
 	}
 	l, err := h.gwsLogin(ctx, dir)
+	if err != nil && known != nil {
+		// gws could not be asked (it checks its token with Google), and the
+		// stored credentials are the ones last seen: the login is still there.
+		return *known, nil
+	}
 	if err != nil || stamp == "" {
 		return l, err
 	}

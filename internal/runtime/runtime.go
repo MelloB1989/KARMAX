@@ -156,6 +156,8 @@ type KarmaxRuntime struct {
 	// that finish after whoever asked for them has gone — a call that ended
 	// before the task it handed off came back. Nil when there is no channel.
 	messageOperator func(text string) error
+	// reportOperator delivers a turn's report there, as a notice.
+	reportOperator func(text string) error
 
 	// voice holds the voice integrations this instance can place calls through.
 	voice *voice.Registry
@@ -1100,6 +1102,13 @@ func New(cfg *config.KarmaxConfig, log *zap.Logger) (*KarmaxRuntime, error) {
 				return nil
 			}
 			return func(text string) error { return commsMgr.SendFrom(comms.ProducerLoop, chID, waTarget, text) }
+		}(),
+		reportOperator: func() func(string) error {
+			chID, _ := commsMgr.FindChannelIDByType("whatsapp")
+			if chID == "" || waTarget == "" {
+				return nil
+			}
+			return func(text string) error { return commsMgr.SendFrom(comms.ProducerNotice, chID, waTarget, text) }
 		}(),
 		voice:        voiceReg,
 		routedKinds:  routedKinds,

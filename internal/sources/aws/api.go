@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -70,6 +71,23 @@ type Alarm struct {
 	// Expressions holds a metric-math alarm's queries, which have no single
 	// metric of their own.
 	Expressions []string
+	// Actions are the ARNs the alarm calls on any state change.
+	Actions []string
+}
+
+// drivesScaling reports an alarm that exists for an autoscaler to act on:
+// every action it has is a scaling policy. Its changes are the autoscaler at
+// work, not something a person was asked to look at.
+func (a *Alarm) drivesScaling() bool {
+	if a == nil || len(a.Actions) == 0 {
+		return false
+	}
+	for _, arn := range a.Actions {
+		if p := strings.SplitN(arn, ":", 4); len(p) < 4 || p[0] != "arn" || p[2] != "autoscaling" {
+			return false
+		}
+	}
+	return true
 }
 
 // Dimension is one name=value pair of a metric.

@@ -73,8 +73,10 @@ func (g *sendGuard) release(key string) {
 
 // isRepeat reports whether content has just been said to target, and why.
 //
-// recent is the outbound history for that target, newest first.
-func isRepeat(content string, recent []pastMessage, now time.Time) (string, bool) {
+// recent is the outbound history for that target, newest first. A notice
+// (ProducerNotice) repeats only word for word: its frame is fixed, so two
+// notices about different things share most of their words.
+func isRepeat(content string, recent []pastMessage, now time.Time, notice bool) (string, bool) {
 	norm := normalizeMessage(content)
 	if norm == "" {
 		return "", false
@@ -93,7 +95,7 @@ func isRepeat(content string, recent []pastMessage, now time.Time) (string, bool
 		if prev == norm {
 			return "an identical message went to this target " + humanAge(age) + " ago", true
 		}
-		if age <= rephraseWindow && len(words) >= minWordsForRephrase {
+		if !notice && age <= rephraseWindow && len(words) >= minWordsForRephrase {
 			if overlapRatio(words, significantWords(prev)) >= rephraseRatio {
 				return "the same message in different words went to this target " + humanAge(age) + " ago", true
 			}

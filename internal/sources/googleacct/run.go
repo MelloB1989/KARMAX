@@ -99,12 +99,32 @@ func classify(path Path, op string, code int, stdout, stderr []byte, runErr erro
 		strings.Contains(low, `"code": 401`), strings.Contains(low, `"code":401`):
 		e.auth = true
 	}
+	// A token request that never reached Google, or that Google itself
+	// failed, says nothing about the sign-in.
+	if e.auth && unanswered(low) {
+		e.auth = false
+	}
 	if path == Gog && code == 5 || strings.Contains(low, `"code": 404`) || strings.Contains(low, `"code":404`) ||
 		strings.Contains(low, `"code": 410`) || strings.Contains(low, `"code":410`) || strings.Contains(low, "fullsyncrequired") ||
 		strings.Contains(low, "sync token is no longer valid") {
 		e.gone = true
 	}
 	return e
+}
+
+// unanswered reports a failure of the network or of Google's own servers, as
+// opposed to Google refusing the login.
+func unanswered(low string) bool {
+	if strings.Contains(low, "invalid_grant") || strings.Contains(low, "expired or revoked") {
+		return false
+	}
+	for _, m := range []string{"connection failure", "connect error", "connection refused", "connection reset",
+		"network is unreachable", "dns error", "timed out", "internal_failure", "server_error", "temporarily_unavailable"} {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeJSON reads a CLI's JSON output, skipping any banner line before it.

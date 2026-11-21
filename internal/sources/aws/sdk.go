@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -114,6 +115,7 @@ func (a *sdkAPI) Alarms(ctx context.Context) ([]Alarm, error) {
 				Name: sdkaws.ToString(c.AlarmName), ARN: sdkaws.ToString(c.AlarmArn), Description: sdkaws.ToString(c.AlarmDescription),
 				Composite: true, Rule: sdkaws.ToString(c.AlarmRule), State: string(c.StateValue), Reason: sdkaws.ToString(c.StateReason),
 				UpdatedAt: stateChangedAt(c.StateTransitionedTimestamp, c.StateUpdatedTimestamp),
+				Actions:   slices.Concat(c.AlarmActions, c.OKActions, c.InsufficientDataActions),
 			})
 		}
 	}
@@ -128,6 +130,7 @@ func metricAlarm(m cwtypes.MetricAlarm) Alarm {
 		Namespace: sdkaws.ToString(m.Namespace), Metric: sdkaws.ToString(m.MetricName),
 		Statistic: string(m.Statistic), Period: sdkaws.ToInt32(m.Period), EvaluationPeriods: sdkaws.ToInt32(m.EvaluationPeriods),
 		Comparison: string(m.ComparisonOperator), Threshold: m.Threshold,
+		Actions: slices.Concat(m.AlarmActions, m.OKActions, m.InsufficientDataActions),
 	}
 	if a.Statistic == "" {
 		a.Statistic = sdkaws.ToString(m.ExtendedStatistic)

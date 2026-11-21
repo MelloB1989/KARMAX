@@ -208,3 +208,90 @@ func TestTokensNeverReachAnErrorMessage(t *testing.T) {
 		t.Fatalf("error leaked a token: %v", err)
 	}
 }
+
+// The incident: the host's DNS failed for hours. gws could not fetch a token
+// and said so as an auth error, and KARMAX paged that three healthy accounts
+// were signed out. Not reaching Google says nothing about the sign-in.
+func TestANetworkFailureIsNotASignOut(t *testing.T) {
+	for _, detail := range []string{
+		`error[auth]: Authentication failed: Failed to get token: Connection failure: Hyper error: client error (Connect): tcp connect error: Connection timed out (os error 110) { "error": { "code": 401, "message": "Authentication failed: Failed to get token: Connection failure", "reason": "authError" } }`,
+		`error[auth]: Authentication failed: Failed to get token: Server error: internal_failure: internal_failure { "error": { "code": 401, "reason": "authError" } }`,
+	} {
+		f := &fakeCLI{}
+		f.on("gog", "", "auth list", reply{out: `{"accounts":[]}`})
+		f.on("gws", "", "auth status", reply{out: gwsStatus("priya@example.com", true)})
+		f.on("gws", "", "calendar events list", reply{errOut: detail, code: 2})
+		c := NewClient(hostWith(f, "/cfg/gws"), time.UTC)
+		_, err := c.Events(context.Background(), "priya@example.com", gcal.Query{})
+		var ae *AuthError
+		if err == nil || errors.As(err, &ae) {
+			t.Errorf("a failure to reach Google was read as a sign-out: %v", err)
+		}
+	}
+	// Google refusing the login is still one, whatever else the text says.
+	f := &fakeCLI{}
+	f.on("gog", "", "auth list", reply{out: `{"accounts":[]}`})
+	f.on("gws", "", "auth status", reply{out: gwsStatus("priya@example.com", true)})
+	f.on("gws", "", "calendar events list", reply{errOut: `error[auth]: Failed to get token: Server error: invalid_grant: Token has been expired or revoked.`, code: 2})
+	_, err := NewClient(hostWith(f, "/cfg/gws"), time.UTC).Events(context.Background(), "priya@example.com", gcal.Query{})
+	var ae *AuthError
+	if !errors.As(err, &ae) {
+		t.Errorf("a revoked login must still be reported as signed out: %v", err)
+	}
+}
+
+// gws checks its token with Google when asked who is signed in, so with the
+// network down it cannot answer. The stored credentials have not changed, so
+// the login last seen there is still the login: the account does not vanish.
+func TestAnAccountStaysKnownWhileGwsCannotBeAsked(t *testing.T) {
+	f := &fakeCLI{}
+	f.on("gws", "", "auth status", reply{out: gwsStatus("priya@example.com", true)})
+	h := hostWith(f, "/cfg/gws")
+	h.Gog = ""
+	h.Stamp = func(string) string { return "v1" }
+	if d := h.Discover(context.Background()); len(d.Accounts) != 1 {
+		t.Fatalf("first discovery: %v %v", d.Accounts, d.Errors)
+	}
+
+	f.rules = nil
+	f.on("gws", "", "auth status", reply{errOut: "error: HTTP request failed: error sending request", code: 1})
+	h.Forget()
+	d := h.Discover(context.Background())
+	if _, ok := d.Find("priya@example.com"); !ok {
+		t.Fatalf("the account vanished when gws could not be asked: %v %v", d.Accounts, d.Errors)
+	}
+
+	// Changed credentials are a different login: the old answer is not reused.
+	h.Stamp = func(string) string { return "v2" }
+	h.Forget()
+	if d := h.Discover(context.Background()); len(d.Accounts) != 0 || len(d.Errors) != 1 {
+		t.Errorf("a login whose credentials changed was assumed: %v %v", d.Accounts, d.Errors)
+	}
+}
+
+// With no login to fall back on, a discovery that could not look everywhere
+// does not claim the account has no login, and the fix names a CLI the host
+// has.
+func TestAnAccountNotFoundIsUnknownOnlyWhenEveryLoginWasLookedAt(t *testing.T) {
+	f := &fakeCLI{}
+	f.on("gws", "", "auth status", reply{errOut: "error: HTTP request failed: error sending request", code: 1})
+	h := hostWith(f, "/cfg/gws")
+	h.Gog, h.DefaultGwsDir = "", "/cfg/gws"
+	_, err := NewClient(h, time.UTC).Events(context.Background(), "priya@example.com", gcal.Query{})
+	var ue *UnknownAccountError
+	if err == nil || errors.As(err, &ue) {
+		t.Errorf("gws could not be asked, yet the account was called unknown: %v", err)
+	}
+
+	f = &fakeCLI{}
+	f.on("gws", "", "auth status", reply{out: gwsStatus("rahul@example.com", true)})
+	h = hostWith(f, "/cfg/gws")
+	h.Gog, h.DefaultGwsDir = "", "/cfg/gws"
+	_, err = NewClient(h, time.UTC).Events(context.Background(), "priya@example.com", gcal.Query{})
+	if !errors.As(err, &ue) {
+		t.Fatalf("want an unknown account, got %v", err)
+	}
+	if strings.Contains(err.Error(), "gog") || !strings.Contains(err.Error(), "GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/cfg/gws-priya gws auth login") {
+		t.Errorf("the fix should use gws, the CLI this host has: %v", err)
+	}
+}

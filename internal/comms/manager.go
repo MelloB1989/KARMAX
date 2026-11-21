@@ -400,12 +400,16 @@ const (
 	// the failed-turn notice. Its words are the same every time by design and
 	// each is about a different message, so it is never a repeat of the last.
 	ProducerStatus = "status"
+	// ProducerNotice marks a report KARMAX composes about one event in a
+	// fixed frame: the urgent page, the sent-as report. Two of them about
+	// different events read alike, so only the same text is a repeat.
+	ProducerNotice = "notice"
 )
 
 // IsAnswerProducer reports whether an outbound recorded with this producer
 // could be an agent's reply to the operator, as opposed to a loop or system post.
 func IsAnswerProducer(producer string) bool {
-	return producer != ProducerLoop && producer != ProducerSystem && producer != ProducerStatus
+	return producer != ProducerLoop && producer != ProducerSystem && producer != ProducerStatus && producer != ProducerNotice
 }
 
 // SendFrom is Send with the producer recorded on the stored outbound, so the
@@ -635,7 +639,7 @@ func (m *Manager) send(ctx context.Context, producer, channelID, target, content
 	// through, so it is the only place that can see a repeat regardless of
 	// which loop, tool or recipe produced it. A turn-status notice is the
 	// exception: the same words about a different message each time.
-	if why, dup := m.recentlySaid(target, content); dup && producer != ProducerStatus {
+	if why, dup := m.recentlySaid(target, content, producer == ProducerNotice); dup && producer != ProducerStatus {
 		m.log.Info("refusing a duplicate message",
 			zap.String("target", target),
 			zap.String("reason", why),
@@ -750,7 +754,7 @@ func (m *Manager) publishCritical(agentID, channelID, message string, fields map
 // restart does not wipe the memory of what was said — the daemon restarting
 // between two halves of a duplicate pair is exactly when it is least able to
 // notice.
-func (m *Manager) recentlySaid(target, content string) (string, bool) {
+func (m *Manager) recentlySaid(target, content string, notice bool) (string, bool) {
 	if m.store == nil {
 		return "", false
 	}
@@ -768,7 +772,7 @@ func (m *Manager) recentlySaid(target, content string) (string, bool) {
 		}
 		recent = append(recent, pastMessage{Content: r.Content, At: r.CreatedAt})
 	}
-	return isRepeat(content, recent, time.Now())
+	return isRepeat(content, recent, time.Now(), notice)
 }
 
 func truncateForLog(s string) string {

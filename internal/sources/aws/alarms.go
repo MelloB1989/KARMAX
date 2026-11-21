@@ -146,7 +146,7 @@ func (s *Source) pollAlarmsOf(ctx context.Context, r reader) (alarmResult, error
 }
 
 // publishHistory publishes each transition into ALARM, and each from ALARM
-// back to OK. A transition into ALARM is urgent only while it still holds:
+// back to OK, of the alarms a person is meant to see (see drivesScaling). A transition into ALARM is urgent only while it still holds:
 // the alarm's latest change, and the alarm in ALARM now.
 func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*Alarm, firstSight bool, now time.Time) (int, error) {
 	latest := map[string]time.Time{}
@@ -165,6 +165,9 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 			continue // data arriving or going missing is not news
 		}
 		a := byName[t.Alarm]
+		if a.drivesScaling() {
+			continue
+		}
 		stillFiring := a != nil && a.State == "ALARM" && !t.At.Before(latest[t.Alarm])
 		if t.To == "ALARM" {
 			told[t.Alarm] = true
@@ -183,7 +186,7 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 	// The first read of an account: alarms already firing before the
 	// lookback are told once, as context rather than news.
 	for _, a := range byName {
-		if a.State != "ALARM" || told[a.Name] {
+		if a.State != "ALARM" || told[a.Name] || a.drivesScaling() {
 			continue
 		}
 		t := Transition{Alarm: a.Name, Composite: a.Composite, At: a.UpdatedAt, To: "ALARM", Reason: a.Reason}
@@ -223,7 +226,7 @@ func (s *Source) compareStates(r reader, alarms []Alarm, now time.Time, firstSig
 		case a.State == "OK" && found && prevState == "ALARM":
 			t = &Transition{Alarm: a.Name, At: a.UpdatedAt, From: "ALARM", To: "OK", Reason: a.Reason}
 		}
-		if t != nil {
+		if t != nil && !a.drivesScaling() {
 			urgent := t.To == "ALARM" && now.Sub(a.UpdatedAt) <= s.cfg.AlarmLookback
 			ok, err := s.emit(asBacklog(s.alarmEvent(r, *t, a, urgent), firstSight))
 			if err != nil {

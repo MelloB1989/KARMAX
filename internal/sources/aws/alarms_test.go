@@ -312,3 +312,49 @@ func TestAnAliasNamesTheAccount(t *testing.T) {
 		t.Fatalf("events = %+v", evs)
 	}
 }
+
+// The incident: target-tracking alarms flap all day as services scale, and
+// each change was an urgent page and a turn of the agent — about 86 a day,
+// enough to fill its queue so that later events were dropped. An alarm whose
+// only actions are scaling policies is the autoscaler's own signal.
+func TestAnAlarmThatOnlyDrivesScalingIsNotNews(t *testing.T) {
+	policy := "arn:aws:autoscaling:us-east-1:111122223333:scalingPolicy:0example:resource/ecs/service/example/api:policyName/cpu"
+	topic := "arn:aws:sns:us-east-1:111122223333:example-pager"
+	scaling := cpuAlarm("OK", time.Time{})
+	scaling.Name, scaling.Actions = "TargetTracking-service/example/api-AlarmHigh-0example", []string{policy}
+	paged := cpuAlarm("OK", time.Time{})
+	paged.Name, paged.Actions = "example-api-cpu-paged", []string{policy, topic}
+
+	for _, history := range []bool{true, false} {
+		acct := &fakeAPI{account: "111122223333", alarms: []Alarm{scaling, paged}}
+		if !history {
+			acct.historyErr = &DeniedError{Err: errors.New("cloudwatch:DescribeAlarmHistory")}
+		}
+		h := newHarness(t, Config{Profiles: []string{"ops-admin"}}, map[string]*fakeAPI{"ops-admin": acct})
+		h.src.PollAlarms(context.Background())
+		h.take()
+
+		fired := h.now.Add(2 * time.Minute)
+		a, b := scaling, paged
+		a.State, a.UpdatedAt, b.State, b.UpdatedAt = "ALARM", fired, "ALARM", fired
+		acct.alarms = []Alarm{a, b}
+		acct.history = []Transition{
+			{Alarm: a.Name, At: fired, From: "OK", To: "ALARM"},
+			{Alarm: b.Name, At: fired, From: "OK", To: "ALARM"},
+		}
+		h.now = h.now.Add(5 * time.Minute)
+		if _, err := h.src.PollAlarms(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		evs := h.take()
+		if len(evs) != 1 || evs[0].Data["alarm"] != paged.Name {
+			t.Errorf("history=%v: published %+v; want only the alarm that also pages someone", history, evs)
+		}
+	}
+
+	// An alarm with no actions, or one deleted since, is still told.
+	none := cpuAlarm("ALARM", time.Time{})
+	if none.drivesScaling() || (*Alarm)(nil).drivesScaling() {
+		t.Error("an alarm without actions was taken for a scaling alarm")
+	}
+}

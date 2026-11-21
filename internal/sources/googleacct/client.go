@@ -64,6 +64,8 @@ type AuthError struct {
 	Tried []Login
 	// Why is each login's failure, in the same order.
 	Why []string
+
+	gog bool // gog is on this host, so adding the account to it is a fix
 }
 
 func (e *AuthError) Error() string {
@@ -93,7 +95,7 @@ func (e *AuthError) Fixes() []string {
 			out = append(out, f)
 		}
 	}
-	if f := (Login{Email: e.Account, Path: Gog}).FixFor(e.Service); !seen[f] {
+	if f := (Login{Email: e.Account, Path: Gog}).FixFor(e.Service); e.gog && !seen[f] {
 		out = append(out, f)
 	}
 	return out
@@ -103,6 +105,8 @@ func (e *AuthError) Fixes() []string {
 type UnknownAccountError struct {
 	Account string
 	Known   []string
+	// Fix is the command that signs the account in on this host.
+	Fix string
 }
 
 func (e *UnknownAccountError) Error() string {
@@ -110,8 +114,7 @@ func (e *UnknownAccountError) Error() string {
 	if len(e.Known) > 0 {
 		known = strings.Join(e.Known, ", ")
 	}
-	return fmt.Sprintf("no Google login on this host is for %s (signed in: %s); add it with `gog auth add %s --services calendar,chat,gmail`",
-		e.Account, known, e.Account)
+	return fmt.Sprintf("no Google login on this host is for %s (signed in: %s); add it with `%s`", e.Account, known, e.Fix)
 }
 
 // with runs op through an account's logins, best first, moving to the next
@@ -121,14 +124,20 @@ func (c *Client) with(ctx context.Context, account, service string, op func(Logi
 	account = strings.ToLower(strings.TrimSpace(account))
 	d := c.h.Accounts(ctx)
 	a, ok := d.Find(account)
-	if !ok {
-		known := d.Emails()
-		sort.Strings(known)
-		err := &UnknownAccountError{Account: account, Known: known}
+	if !ok && len(d.Errors) > 0 {
+		// Not every login could be looked at, so this one may be among them.
+		err := fmt.Errorf("could not look for a Google login for %s: %s", account, strings.Join(d.Errors, "; "))
 		c.record(account, Login{}, err)
 		return err
 	}
-	ae := &AuthError{Account: account, Service: service}
+	if !ok {
+		known := d.Emails()
+		sort.Strings(known)
+		err := &UnknownAccountError{Account: account, Known: known, Fix: c.h.addFix(account)}
+		c.record(account, Login{}, err)
+		return err
+	}
+	ae := &AuthError{Account: account, Service: service, gog: c.h.Gog != ""}
 	for _, l := range a.Logins {
 		if l.Problem != "" {
 			ae.Tried, ae.Why = append(ae.Tried, l), append(ae.Why, l.Problem)
