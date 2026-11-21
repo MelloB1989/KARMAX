@@ -209,9 +209,7 @@ func TestTokensNeverReachAnErrorMessage(t *testing.T) {
 	}
 }
 
-// The incident: the host's DNS failed for hours. gws could not fetch a token
-// and said so as an auth error, and KARMAX paged that three healthy accounts
-// were signed out. Not reaching Google says nothing about the sign-in.
+// A host with broken DNS once paged that three healthy accounts were signed out.
 func TestANetworkFailureIsNotASignOut(t *testing.T) {
 	for _, detail := range []string{
 		`error[auth]: Authentication failed: Failed to get token: Connection failure: Hyper error: client error (Connect): tcp connect error: Connection timed out (os error 110) { "error": { "code": 401, "message": "Authentication failed: Failed to get token: Connection failure", "reason": "authError" } }`,
@@ -240,9 +238,7 @@ func TestANetworkFailureIsNotASignOut(t *testing.T) {
 	}
 }
 
-// gws checks its token with Google when asked who is signed in, so with the
-// network down it cannot answer. The stored credentials have not changed, so
-// the login last seen there is still the login: the account does not vanish.
+// With the network down gws cannot say who is signed in; unchanged credentials mean the same login.
 func TestAnAccountStaysKnownWhileGwsCannotBeAsked(t *testing.T) {
 	f := &fakeCLI{}
 	f.on("gws", "", "auth status", reply{out: gwsStatus("priya@example.com", true)})
@@ -269,9 +265,7 @@ func TestAnAccountStaysKnownWhileGwsCannotBeAsked(t *testing.T) {
 	}
 }
 
-// With no login to fall back on, a discovery that could not look everywhere
-// does not claim the account has no login, and the fix names a CLI the host
-// has.
+// An account is unknown only when every login was looked at, and the fix names a CLI the host has.
 func TestAnAccountNotFoundIsUnknownOnlyWhenEveryLoginWasLookedAt(t *testing.T) {
 	f := &fakeCLI{}
 	f.on("gws", "", "auth status", reply{errOut: "error: HTTP request failed: error sending request", code: 1})

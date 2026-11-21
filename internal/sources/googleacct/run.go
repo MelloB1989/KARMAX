@@ -99,8 +99,7 @@ func classify(path Path, op string, code int, stdout, stderr []byte, runErr erro
 		strings.Contains(low, `"code": 401`), strings.Contains(low, `"code":401`):
 		e.auth = true
 	}
-	// A token request that never reached Google, or that Google itself
-	// failed, says nothing about the sign-in.
+	// A token request Google never answered says nothing about the sign-in.
 	if e.auth && unanswered(low) {
 		e.auth = false
 	}
@@ -112,8 +111,7 @@ func classify(path Path, op string, code int, stdout, stderr []byte, runErr erro
 	return e
 }
 
-// unanswered reports a failure of the network or of Google's own servers, as
-// opposed to Google refusing the login.
+// unanswered reports a network or Google-side failure, as opposed to Google refusing the login.
 func unanswered(low string) bool {
 	if strings.Contains(low, "invalid_grant") || strings.Contains(low, "expired or revoked") {
 		return false

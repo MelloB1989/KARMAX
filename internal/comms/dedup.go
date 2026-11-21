@@ -74,8 +74,7 @@ func (g *sendGuard) release(key string) {
 // isRepeat reports whether content has just been said to target, and why.
 //
 // recent is the outbound history for that target, newest first. A notice
-// (ProducerNotice) repeats only word for word: its frame is fixed, so two
-// notices about different things share most of their words.
+// repeats only word for word: two about different things share their frame.
 func isRepeat(content string, recent []pastMessage, now time.Time, notice bool) (string, bool) {
 	norm := normalizeMessage(content)
 	if norm == "" {

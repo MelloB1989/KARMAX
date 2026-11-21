@@ -331,8 +331,7 @@ func (h *Host) envValue(k string) string {
 	return ""
 }
 
-// addFix is the command that signs a new account in on this host: with gog
-// when it is installed, else with gws in a directory of its own.
+// addFix is the command that signs a new account in: gog when installed, else gws in its own directory.
 func (h *Host) addFix(account string) string {
 	if h.Gog != "" {
 		return fmt.Sprintf("gog auth add %s --services calendar,chat,gmail", account)
@@ -365,8 +364,7 @@ func (h *Host) Accounts(ctx context.Context) Discovery {
 	return d
 }
 
-// Forget drops the cached discovery and ages every cached login, so the next
-// call looks again.
+// Forget drops the cached discovery and ages every cached login, so the next call looks again.
 func (h *Host) Forget() {
 	h.mu.Lock()
 	h.last = Discovery{}
@@ -377,8 +375,7 @@ func (h *Host) Forget() {
 	h.mu.Unlock()
 }
 
-// gwsLoginCached is gwsLogin, reusing the last answer while the directory's
-// credentials are unchanged, and when gws cannot be asked.
+// gwsLoginCached is gwsLogin, reusing the last answer for unchanged credentials or when gws cannot be asked.
 func (h *Host) gwsLoginCached(ctx context.Context, dir string) (Login, error) {
 	stamp := ""
 	if h.Stamp != nil {
@@ -398,8 +395,7 @@ func (h *Host) gwsLoginCached(ctx context.Context, dir string) (Login, error) {
 	}
 	l, err := h.gwsLogin(ctx, dir)
 	if err != nil && known != nil {
-		// gws could not be asked (it checks its token with Google), and the
-		// stored credentials are the ones last seen: the login is still there.
+		// gws could not be asked, and the stored credentials are the ones last seen.
 		return *known, nil
 	}
 	if err != nil || stamp == "" {

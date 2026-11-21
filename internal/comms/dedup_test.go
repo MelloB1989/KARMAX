@@ -120,9 +120,7 @@ func TestConcurrentIdenticalSendsOnlyReserveOnce(t *testing.T) {
 	}
 }
 
-// The incident: three chat messages from one person arrived seconds apart,
-// each an urgent page. The pages share their frame and the sender's name, so
-// the rephrase test called the second and third repeats and they never went.
+// Pages about different messages share a frame and a sender; the rephrase test once refused them as repeats.
 func TestTwoNoticesAboutDifferentThingsBothGoOut(t *testing.T) {
 	now := time.Date(2026, 11, 21, 8, 49, 6, 0, time.UTC)
 	first := "⚠️ Urgent — Chat DM from Omar Haddad: team subscription (gchat · ops@example.com)\nOmar sent \"team subscription\" with no question in it. I have not replied."

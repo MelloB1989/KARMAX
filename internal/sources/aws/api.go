@@ -75,9 +75,7 @@ type Alarm struct {
 	Actions []string
 }
 
-// drivesScaling reports an alarm that exists for an autoscaler to act on:
-// every action it has is a scaling policy. Its changes are the autoscaler at
-// work, not something a person was asked to look at.
+// drivesScaling reports an alarm whose every action is a scaling policy: the autoscaler's signal, not a person's.
 func (a *Alarm) drivesScaling() bool {
 	if a == nil || len(a.Actions) == 0 {
 		return false

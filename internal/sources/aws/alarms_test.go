@@ -313,10 +313,7 @@ func TestAnAliasNamesTheAccount(t *testing.T) {
 	}
 }
 
-// The incident: target-tracking alarms flap all day as services scale, and
-// each change was an urgent page and a turn of the agent — about 86 a day,
-// enough to fill its queue so that later events were dropped. An alarm whose
-// only actions are scaling policies is the autoscaler's own signal.
+// Target-tracking alarms flap as services scale; each change was once a page and an agent turn.
 func TestAnAlarmThatOnlyDrivesScalingIsNotNews(t *testing.T) {
 	policy := "arn:aws:autoscaling:us-east-1:111122223333:scalingPolicy:0example:resource/ecs/service/example/api:policyName/cpu"
 	topic := "arn:aws:sns:us-east-1:111122223333:example-pager"
@@ -356,5 +353,43 @@ func TestAnAlarmThatOnlyDrivesScalingIsNotNews(t *testing.T) {
 	none := cpuAlarm("ALARM", time.Time{})
 	if none.drivesScaling() || (*Alarm)(nil).drivesScaling() {
 		t.Error("an alarm without actions was taken for a scaling alarm")
+	}
+}
+
+// After a login lapses for days, the next read covers the lookback, not every change since.
+func TestAReadAfterALapseCoversTheLookbackOnly(t *testing.T) {
+	acct := &fakeAPI{account: "111122223333"}
+	h := newHarness(t, Config{Profiles: []string{"ops-admin"}}, map[string]*fakeAPI{"ops-admin": acct})
+	h.src.PollAlarms(context.Background())
+	h.take()
+
+	h.now = h.now.Add(72 * time.Hour)
+	old, fresh := cpuAlarm("ALARM", h.now.Add(-48*time.Hour)), cpuAlarm("ALARM", h.now.Add(-10*time.Minute))
+	old.Name, fresh.Name = "example-queue-stuck", "example-api-down"
+	acct.alarms = []Alarm{old, fresh}
+	acct.history = []Transition{{Alarm: fresh.Name, At: fresh.UpdatedAt, From: "OK", To: "ALARM"}}
+	if _, err := h.src.PollAlarms(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if asked := acct.historyAsk[len(acct.historyAsk)-1]; asked.Before(h.now.Add(-DefaultAlarmLookback - time.Minute)) {
+		t.Errorf("history was asked from %v, %v back; a lapse reads the lookback", asked, h.now.Sub(asked))
+	}
+	got := map[string]bool{}
+	for _, e := range h.take() {
+		got[e.Data["alarm"].(string)] = e.Urgent
+		if e.Backlog {
+			t.Errorf("%v was marked backlog; this is not the first sight of the account", e.Data["alarm"])
+		}
+	}
+	if urgent, told := got[fresh.Name]; !told || !urgent {
+		t.Errorf("the alarm that just went off: told=%v urgent=%v", told, urgent)
+	}
+	if urgent, told := got[old.Name]; !told || urgent {
+		t.Errorf("the alarm standing since the gap: told=%v urgent=%v, want told once without paging", told, urgent)
+	}
+	h.now = h.now.Add(5 * time.Minute)
+	h.src.PollAlarms(context.Background())
+	if again := h.take(); len(again) != 0 {
+		t.Errorf("told again on the next read: %+v", again)
 	}
 }

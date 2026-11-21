@@ -115,19 +115,23 @@ func (s *Source) pollAlarmsOf(ctx context.Context, r reader) (alarmResult, error
 	now := s.now()
 	cursorKey := r.account + "/" + r.region
 	from := now.Add(-s.cfg.AlarmLookback)
-	firstSight := true
+	firstSight, lapsed := true, false
 	if v, found, err := s.kv.Get(alarmCursorGroup, cursorKey); err != nil {
 		return res, err
 	} else if found {
 		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
-			from, firstSight = t.Add(-historyOverlap), false
+			firstSight = false
+			// A login that lapsed for days resumes at the lookback, not at days of old changes.
+			if lapsed = t.Add(-historyOverlap).Before(from); !lapsed {
+				from = t.Add(-historyOverlap)
+			}
 		}
 	}
 
 	hist, err := r.api.AlarmHistory(ctx, from, now)
 	switch {
 	case err == nil:
-		n, err := s.publishHistory(r, hist, byName, firstSight, now)
+		n, err := s.publishHistory(r, hist, byName, firstSight, lapsed, now)
 		res.published += n
 		if err != nil {
 			return res, err
@@ -148,7 +152,7 @@ func (s *Source) pollAlarmsOf(ctx context.Context, r reader) (alarmResult, error
 // publishHistory publishes each transition into ALARM, and each from ALARM
 // back to OK, of the alarms a person is meant to see (see drivesScaling). A transition into ALARM is urgent only while it still holds:
 // the alarm's latest change, and the alarm in ALARM now.
-func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*Alarm, firstSight bool, now time.Time) (int, error) {
+func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*Alarm, firstSight, lapsed bool, now time.Time) (int, error) {
 	latest := map[string]time.Time{}
 	for _, t := range hist {
 		if t.At.After(latest[t.Alarm]) {
@@ -180,11 +184,10 @@ func (s *Source) publishHistory(r reader, hist []Transition, byName map[string]*
 			n++
 		}
 	}
-	if !firstSight {
+	if !firstSight && !lapsed {
 		return n, nil
 	}
-	// The first read of an account: alarms already firing before the
-	// lookback are told once, as context rather than news.
+	// First read, or first after a lapse: alarms firing since before the lookback are told once, as context.
 	for _, a := range byName {
 		if a.State != "ALARM" || told[a.Name] || a.drivesScaling() {
 			continue

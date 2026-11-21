@@ -400,9 +400,7 @@ const (
 	// the failed-turn notice. Its words are the same every time by design and
 	// each is about a different message, so it is never a repeat of the last.
 	ProducerStatus = "status"
-	// ProducerNotice marks a report KARMAX composes about one event in a
-	// fixed frame: the urgent page, the sent-as report. Two of them about
-	// different events read alike, so only the same text is a repeat.
+	// ProducerNotice marks a fixed-frame report about one event; only the same text repeats it.
 	ProducerNotice = "notice"
 )
 
